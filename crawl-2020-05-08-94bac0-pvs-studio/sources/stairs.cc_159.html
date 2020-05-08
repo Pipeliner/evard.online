@@ -1,0 +1,1196 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>stairs.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#include &quot;stairs.h&quot;</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &lt;sstream&gt;</a>
+<a name="ln6"> </a>
+<a name="ln7">#include &quot;abyss.h&quot;</a>
+<a name="ln8">#include &quot;act-iter.h&quot;</a>
+<a name="ln9">#include &quot;areas.h&quot;</a>
+<a name="ln10">#include &quot;artefact.h&quot;</a>
+<a name="ln11">#include &quot;bloodspatter.h&quot;</a>
+<a name="ln12">#include &quot;branch.h&quot;</a>
+<a name="ln13">#include &quot;chardump.h&quot;</a>
+<a name="ln14">#include &quot;colour.h&quot;</a>
+<a name="ln15">#include &quot;coordit.h&quot;</a>
+<a name="ln16">#include &quot;delay.h&quot;</a>
+<a name="ln17">#include &quot;dgn-overview.h&quot;</a>
+<a name="ln18">#include &quot;directn.h&quot;</a>
+<a name="ln19">#include &quot;env.h&quot;</a>
+<a name="ln20">#include &quot;files.h&quot;</a>
+<a name="ln21">#include &quot;god-passive.h&quot; // passive_t::slow_abyss</a>
+<a name="ln22">#include &quot;hints.h&quot;</a>
+<a name="ln23">#include &quot;hiscores.h&quot;</a>
+<a name="ln24">#include &quot;item-name.h&quot;</a>
+<a name="ln25">#include &quot;items.h&quot;</a>
+<a name="ln26">#include &quot;level-state-type.h&quot;</a>
+<a name="ln27">#include &quot;losglobal.h&quot;</a>
+<a name="ln28">#include &quot;mapmark.h&quot;</a>
+<a name="ln29">#include &quot;message.h&quot;</a>
+<a name="ln30">#include &quot;mon-death.h&quot;</a>
+<a name="ln31">#include &quot;movement.h&quot;</a>
+<a name="ln32">#include &quot;notes.h&quot;</a>
+<a name="ln33">#include &quot;orb-type.h&quot;</a>
+<a name="ln34">#include &quot;output.h&quot;</a>
+<a name="ln35">#include &quot;prompt.h&quot;</a>
+<a name="ln36">#include &quot;religion.h&quot;</a>
+<a name="ln37">#include &quot;spl-clouds.h&quot;</a>
+<a name="ln38">#include &quot;spl-damage.h&quot;</a>
+<a name="ln39">#include &quot;spl-other.h&quot;</a>
+<a name="ln40">#include &quot;state.h&quot;</a>
+<a name="ln41">#include &quot;stringutil.h&quot;</a>
+<a name="ln42">#include &quot;terrain.h&quot;</a>
+<a name="ln43">#ifdef USE_TILE_LOCAL</a>
+<a name="ln44"> #include &quot;tilepick.h&quot;</a>
+<a name="ln45">#endif</a>
+<a name="ln46">#include &quot;tiles-build-specific.h&quot;</a>
+<a name="ln47">#include &quot;traps.h&quot;</a>
+<a name="ln48">#include &quot;travel.h&quot;</a>
+<a name="ln49">#include &quot;view.h&quot;</a>
+<a name="ln50">#include &quot;xom.h&quot;</a>
+<a name="ln51"> </a>
+<a name="ln52">bool check_annotation_exclusion_warning()</a>
+<a name="ln53">{</a>
+<a name="ln54">    level_id  next_level_id = level_id::get_next_level_id(you.pos());</a>
+<a name="ln55"> </a>
+<a name="ln56">    crawl_state.level_annotation_shown = false;</a>
+<a name="ln57">    bool might_be_dangerous = false;</a>
+<a name="ln58"> </a>
+<a name="ln59">    if (level_annotation_has(&quot;!&quot;, next_level_id)</a>
+<a name="ln60">        &amp;&amp; next_level_id != level_id::current()</a>
+<a name="ln61">        &amp;&amp; is_connected_branch(next_level_id))</a>
+<a name="ln62">    {</a>
+<a name="ln63">        mprf(MSGCH_PROMPT, &quot;Warning, next level annotated: &lt;yellow&gt;%s&lt;/yellow&gt;&quot;,</a>
+<a name="ln64">             get_level_annotation(next_level_id).c_str());</a>
+<a name="ln65">        might_be_dangerous = true;</a>
+<a name="ln66">        crawl_state.level_annotation_shown = true;</a>
+<a name="ln67">    }</a>
+<a name="ln68">    else if (is_exclude_root(you.pos())</a>
+<a name="ln69">             &amp;&amp; feat_is_travelable_stair(grd(you.pos()))</a>
+<a name="ln70">             &amp;&amp; !strstr(get_exclusion_desc(you.pos()).c_str(), &quot;cloud&quot;))</a>
+<a name="ln71">    {</a>
+<a name="ln72">        mprf(MSGCH_WARN, &quot;This staircase is marked as excluded!&quot;);</a>
+<a name="ln73">        might_be_dangerous = true;</a>
+<a name="ln74">    }</a>
+<a name="ln75"> </a>
+<a name="ln76">    if (feat_is_travelable_stair(grd(you.pos())))</a>
+<a name="ln77">    {</a>
+<a name="ln78">        if (LevelInfo *li = travel_cache.find_level_info(level_id::current()))</a>
+<a name="ln79">        {</a>
+<a name="ln80">            if (const stair_info *si = li-&gt;get_stair(you.pos()))</a>
+<a name="ln81">            {</a>
+<a name="ln82">                if (stairs_destination_is_excluded(*si))</a>
+<a name="ln83">                {</a>
+<a name="ln84">                    mprf(MSGCH_WARN,</a>
+<a name="ln85">                         &quot;This staircase leads to a travel-excluded area!&quot;);</a>
+<a name="ln86">                    might_be_dangerous = true;</a>
+<a name="ln87">                }</a>
+<a name="ln88">            }</a>
+<a name="ln89">        }</a>
+<a name="ln90">    }</a>
+<a name="ln91"> </a>
+<a name="ln92">    if (might_be_dangerous</a>
+<a name="ln93">        &amp;&amp; !yesno(&quot;Enter next level anyway?&quot;, true, 'n', true, false))</a>
+<a name="ln94">    {</a>
+<a name="ln95">        canned_msg(MSG_OK);</a>
+<a name="ln96">        interrupt_activity(activity_interrupt::force);</a>
+<a name="ln97">        crawl_state.level_annotation_shown = false;</a>
+<a name="ln98">        return false;</a>
+<a name="ln99">    }</a>
+<a name="ln100">    return true;</a>
+<a name="ln101">}</a>
+<a name="ln102"> </a>
+<a name="ln103">static void _player_change_level_reset()</a>
+<a name="ln104">{</a>
+<a name="ln105">    you.prev_targ  = MHITNOT;</a>
+<a name="ln106">    if (you.pet_target != MHITYOU)</a>
+<a name="ln107">        you.pet_target = MHITNOT;</a>
+<a name="ln108"> </a>
+<a name="ln109">    you.prev_grd_targ.reset();</a>
+<a name="ln110">}</a>
+<a name="ln111"> </a>
+<a name="ln112">static void _player_change_level(level_id lev)</a>
+<a name="ln113">{</a>
+<a name="ln114">    you.depth         = lev.depth;</a>
+<a name="ln115">    you.where_are_you = lev.branch;</a>
+<a name="ln116">}</a>
+<a name="ln117"> </a>
+<a name="ln118">static void _maybe_destroy_shaft(const coord_def &amp;p)</a>
+<a name="ln119">{</a>
+<a name="ln120">    trap_def* trap = trap_at(p);</a>
+<a name="ln121">    if (trap &amp;&amp; trap-&gt;type == TRAP_SHAFT)</a>
+<a name="ln122">        trap-&gt;destroy(true);</a>
+<a name="ln123">}</a>
+<a name="ln124"> </a>
+<a name="ln125">static bool _stair_moves_pre(dungeon_feature_type stair)</a>
+<a name="ln126">{</a>
+<a name="ln127">    if (crawl_state.prev_cmd == CMD_WIZARD)</a>
+<a name="ln128">        return false;</a>
+<a name="ln129"> </a>
+<a name="ln130">    if (stair != grd(you.pos()))</a>
+<a name="ln131">        return false;</a>
+<a name="ln132"> </a>
+<a name="ln133">    if (feat_stair_direction(stair) == CMD_NO_CMD)</a>
+<a name="ln134">        return false;</a>
+<a name="ln135"> </a>
+<a name="ln136">    if (!you.duration[DUR_REPEL_STAIRS_CLIMB])</a>
+<a name="ln137">        return false;</a>
+<a name="ln138"> </a>
+<a name="ln139">    int pct;</a>
+<a name="ln140">    if (you.duration[DUR_REPEL_STAIRS_MOVE])</a>
+<a name="ln141">        pct = 29;</a>
+<a name="ln142">    else</a>
+<a name="ln143">        pct = 50;</a>
+<a name="ln144"> </a>
+<a name="ln145">    // When the effect is still strong, the chance to actually catch a stair</a>
+<a name="ln146">    // is smaller. (Assuming the duration starts out at 500.)</a>
+<a name="ln147">    const int dur = max(0, you.duration[DUR_REPEL_STAIRS_CLIMB] - 200);</a>
+<a name="ln148">    pct += dur/20;</a>
+<a name="ln149"> </a>
+<a name="ln150">    if (!x_chance_in_y(pct, 100))</a>
+<a name="ln151">        return false;</a>
+<a name="ln152"> </a>
+<a name="ln153">    // Get feature name before sliding stair over.</a>
+<a name="ln154">    string stair_str = feature_description_at(you.pos(), false, DESC_THE);</a>
+<a name="ln155"> </a>
+<a name="ln156">    if (!slide_feature_over(you.pos()))</a>
+<a name="ln157">        return false;</a>
+<a name="ln158"> </a>
+<a name="ln159">    string verb = stair_climb_verb(stair);</a>
+<a name="ln160"> </a>
+<a name="ln161">    mprf(&quot;%s moves away as you attempt to %s it!&quot;, stair_str.c_str(),</a>
+<a name="ln162">         verb.c_str());</a>
+<a name="ln163"> </a>
+<a name="ln164">    you.turn_is_over = true;</a>
+<a name="ln165"> </a>
+<a name="ln166">    return true;</a>
+<a name="ln167">}</a>
+<a name="ln168"> </a>
+<a name="ln169">static void _climb_message(dungeon_feature_type stair, bool going_up,</a>
+<a name="ln170">                           branch_type old_branch)</a>
+<a name="ln171">{</a>
+<a name="ln172">    if (!is_connected_branch(old_branch))</a>
+<a name="ln173">        return;</a>
+<a name="ln174"> </a>
+<a name="ln175">    if (feat_is_portal(stair))</a>
+<a name="ln176">        mpr(&quot;The world spins around you as you enter the gateway.&quot;);</a>
+<a name="ln177">    else if (feat_is_escape_hatch(stair))</a>
+<a name="ln178">    {</a>
+<a name="ln179">        if (going_up)</a>
+<a name="ln180">            mpr(&quot;A mysterious force pulls you upwards.&quot;);</a>
+<a name="ln181">        else</a>
+<a name="ln182">        {</a>
+<a name="ln183">            mprf(&quot;You %s downwards.&quot;,</a>
+<a name="ln184">                 you.airborne() ? &quot;fly&quot; : &quot;slide&quot;);</a>
+<a name="ln185">        }</a>
+<a name="ln186">        mpr(&quot;The hatch slams shut behind you.&quot;);</a>
+<a name="ln187">    }</a>
+<a name="ln188">    else if (feat_is_gate(stair))</a>
+<a name="ln189">    {</a>
+<a name="ln190">        mprf(&quot;You %s %s through the gate.&quot;,</a>
+<a name="ln191">             you.airborne() ? &quot;fly&quot; : &quot;go&quot;,</a>
+<a name="ln192">             going_up ? &quot;up&quot; : &quot;down&quot;);</a>
+<a name="ln193">    }</a>
+<a name="ln194">    else</a>
+<a name="ln195">    {</a>
+<a name="ln196">        mprf(&quot;You %s %swards.&quot;,</a>
+<a name="ln197">             you.airborne() ? &quot;fly&quot; : &quot;climb&quot;,</a>
+<a name="ln198">             going_up ? &quot;up&quot; : &quot;down&quot;);</a>
+<a name="ln199">    }</a>
+<a name="ln200">}</a>
+<a name="ln201"> </a>
+<a name="ln202">static void _clear_golubria_traps()</a>
+<a name="ln203">{</a>
+<a name="ln204">    for (auto c : find_golubria_on_level())</a>
+<a name="ln205">    {</a>
+<a name="ln206">        trap_def *trap = trap_at(c);</a>
+<a name="ln207">        if (trap &amp;&amp; trap-&gt;type == TRAP_GOLUBRIA)</a>
+<a name="ln208">            trap-&gt;destroy();</a>
+<a name="ln209">    }</a>
+<a name="ln210">}</a>
+<a name="ln211"> </a>
+<a name="ln212">static void _clear_prisms()</a>
+<a name="ln213">{</a>
+<a name="ln214">    for (auto &amp;mons : menv_real)</a>
+<a name="ln215">        if (mons.type == MONS_FULMINANT_PRISM)</a>
+<a name="ln216">            mons.reset();</a>
+<a name="ln217">}</a>
+<a name="ln218"> </a>
+<a name="ln219">void leaving_level_now(dungeon_feature_type stair_used)</a>
+<a name="ln220">{</a>
+<a name="ln221">    if (stair_used == DNGN_EXIT_ZIGGURAT)</a>
+<a name="ln222">    {</a>
+<a name="ln223">        if (you.depth == 27)</a>
+<a name="ln224">            you.zigs_completed++;</a>
+<a name="ln225">        mark_milestone(&quot;zig.exit&quot;, make_stringf(&quot;left a ziggurat at level %d.&quot;,</a>
+<a name="ln226">                       you.depth));</a>
+<a name="ln227">    }</a>
+<a name="ln228"> </a>
+<a name="ln229">    if (stair_used == DNGN_EXIT_ABYSS)</a>
+<a name="ln230">    {</a>
+<a name="ln231">#ifdef DEBUG</a>
+<a name="ln232">        auto &amp;vault_list =  you.vault_list[level_id::current()];</a>
+<a name="ln233">        vault_list.push_back(&quot;[exit]&quot;);</a>
+<a name="ln234">#endif</a>
+<a name="ln235">    }</a>
+<a name="ln236"> </a>
+<a name="ln237">    dungeon_events.fire_position_event(DET_PLAYER_CLIMBS, you.pos());</a>
+<a name="ln238">    dungeon_events.fire_event(DET_LEAVING_LEVEL);</a>
+<a name="ln239"> </a>
+<a name="ln240">    _clear_golubria_traps();</a>
+<a name="ln241">    _clear_prisms();</a>
+<a name="ln242"> </a>
+<a name="ln243">    end_recall();</a>
+<a name="ln244">}</a>
+<a name="ln245"> </a>
+<a name="ln246">static void _update_travel_cache(const level_id&amp; old_level,</a>
+<a name="ln247">                                 const coord_def&amp; stair_pos)</a>
+<a name="ln248">{</a>
+<a name="ln249">    // If the old level is gone, nothing to save.</a>
+<a name="ln250">    if (!you.save || !you.save-&gt;has_chunk(old_level.describe()))</a>
+<a name="ln251">        return;</a>
+<a name="ln252"> </a>
+<a name="ln253">    // Update stair information for the stairs we just ascended, and the</a>
+<a name="ln254">    // down stairs we're currently on.</a>
+<a name="ln255">    level_id  new_level_id    = level_id::current();</a>
+<a name="ln256"> </a>
+<a name="ln257">    if (can_travel_interlevel())</a>
+<a name="ln258">    {</a>
+<a name="ln259">        LevelInfo &amp;old_level_info =</a>
+<a name="ln260">                    travel_cache.get_level_info(old_level);</a>
+<a name="ln261">        LevelInfo &amp;new_level_info =</a>
+<a name="ln262">                    travel_cache.get_level_info(new_level_id);</a>
+<a name="ln263">        new_level_info.update();</a>
+<a name="ln264"> </a>
+<a name="ln265">        // First we update the old level's stair.</a>
+<a name="ln266">        level_pos lp;</a>
+<a name="ln267">        lp.id  = new_level_id;</a>
+<a name="ln268">        lp.pos = you.pos();</a>
+<a name="ln269"> </a>
+<a name="ln270">        bool guess = false;</a>
+<a name="ln271">        // Ugly hack warning:</a>
+<a name="ln272">        // The stairs in the Vestibule of Hell exhibit special behaviour:</a>
+<a name="ln273">        // they always lead back to the dungeon level that the player</a>
+<a name="ln274">        // entered the Vestibule from. This means that we need to pretend</a>
+<a name="ln275">        // we don't know where the upstairs from the Vestibule go each time</a>
+<a name="ln276">        // we take it. If we don't, interlevel travel may try to use portals</a>
+<a name="ln277">        // to Hell as shortcuts between dungeon levels, which won't work,</a>
+<a name="ln278">        // and will confuse the dickens out of the player (well, it confused</a>
+<a name="ln279">        // the dickens out of me when it happened).</a>
+<a name="ln280">        if ((new_level_id == BRANCH_DUNGEON || new_level_id == BRANCH_DEPTHS)</a>
+<a name="ln281">            &amp;&amp; old_level == BRANCH_VESTIBULE)</a>
+<a name="ln282">        {</a>
+<a name="ln283">            old_level_info.clear_stairs(DNGN_EXIT_HELL);</a>
+<a name="ln284">        }</a>
+<a name="ln285">        else</a>
+<a name="ln286">            old_level_info.update_stair(stair_pos, lp, guess);</a>
+<a name="ln287"> </a>
+<a name="ln288">        // We *guess* that going up a staircase lands us on a downstair,</a>
+<a name="ln289">        // and that we can descend that downstair and get back to where we</a>
+<a name="ln290">        // came from. This assumption is guaranteed false when climbing out</a>
+<a name="ln291">        // of one of the branches of Hell.</a>
+<a name="ln292">        if (new_level_id != BRANCH_VESTIBULE</a>
+<a name="ln293">            || !is_hell_subbranch(old_level.branch))</a>
+<a name="ln294">        {</a>
+<a name="ln295">            // Set the new level's stair, assuming arbitrarily that going</a>
+<a name="ln296">            // downstairs will land you on the same upstairs you took to</a>
+<a name="ln297">            // begin with (not necessarily true).</a>
+<a name="ln298">            lp.id = old_level;</a>
+<a name="ln299">            lp.pos = stair_pos;</a>
+<a name="ln300">            new_level_info.update_stair(you.pos(), lp, true);</a>
+<a name="ln301">        }</a>
+<a name="ln302">    }</a>
+<a name="ln303">}</a>
+<a name="ln304"> </a>
+<a name="ln305">// These checks are probably unnecessary.</a>
+<a name="ln306">static bool _check_stairs(const dungeon_feature_type ftype, bool going_up)</a>
+<a name="ln307">{</a>
+<a name="ln308">    // If it's not bidirectional, check that the player is headed</a>
+<a name="ln309">    // in the right direction.</a>
+<a name="ln310">    if (!feat_is_bidirectional_portal(ftype))</a>
+<a name="ln311">    {</a>
+<a name="ln312">        if (feat_stair_direction(ftype) != (going_up ? CMD_GO_UPSTAIRS</a>
+<a name="ln313">                                                     : CMD_GO_DOWNSTAIRS))</a>
+<a name="ln314">        {</a>
+<a name="ln315">            if (ftype == DNGN_STONE_ARCH)</a>
+<a name="ln316">                mpr(&quot;There is nothing on the other side of the stone arch.&quot;);</a>
+<a name="ln317">            else if (ftype == DNGN_ABANDONED_SHOP)</a>
+<a name="ln318">                mpr(&quot;This shop has been abandoned, nothing of value remains.&quot;);</a>
+<a name="ln319">            else if (going_up)</a>
+<a name="ln320">                mpr(&quot;You can't go up here!&quot;);</a>
+<a name="ln321">            else</a>
+<a name="ln322">                mpr(&quot;You can't go down here!&quot;);</a>
+<a name="ln323">            return false;</a>
+<a name="ln324">        }</a>
+<a name="ln325">    }</a>
+<a name="ln326"> </a>
+<a name="ln327">    return true;</a>
+<a name="ln328">}</a>
+<a name="ln329"> </a>
+<a name="ln330">static bool _check_fall_down_stairs(const dungeon_feature_type ftype, bool going_up)</a>
+<a name="ln331">{</a>
+<a name="ln332">    if (!you.airborne()</a>
+<a name="ln333">        &amp;&amp; you.confused()</a>
+<a name="ln334">        &amp;&amp; !feat_is_escape_hatch(ftype)</a>
+<a name="ln335">        &amp;&amp; coinflip())</a>
+<a name="ln336">    {</a>
+<a name="ln337">        const char* fall_where = &quot;down the stairs&quot;;</a>
+<a name="ln338">        if (!feat_is_staircase(ftype))</a>
+<a name="ln339">            fall_where = &quot;through the gate&quot;;</a>
+<a name="ln340"> </a>
+<a name="ln341">        mprf(&quot;In your confused state, you trip and fall %s%s.&quot;,</a>
+<a name="ln342">             going_up ? &quot;back &quot; : &quot;&quot;, fall_where);</a>
+<a name="ln343">        if (!feat_is_staircase(ftype))</a>
+<a name="ln344">            ouch(1, KILLED_BY_FALLING_THROUGH_GATE);</a>
+<a name="ln345">        else</a>
+<a name="ln346">            ouch(1, KILLED_BY_FALLING_DOWN_STAIRS);</a>
+<a name="ln347"> </a>
+<a name="ln348">        // Note that if going downstairs, this only does damage.</a>
+<a name="ln349">        // It doesn't cancel the level transition.</a>
+<a name="ln350">        if (going_up)</a>
+<a name="ln351">        {</a>
+<a name="ln352">            you.turn_is_over = true;</a>
+<a name="ln353">            return true;</a>
+<a name="ln354">        }</a>
+<a name="ln355">    }</a>
+<a name="ln356"> </a>
+<a name="ln357">    return false;</a>
+<a name="ln358">}</a>
+<a name="ln359"> </a>
+<a name="ln360">static void _rune_effect(dungeon_feature_type ftype)</a>
+<a name="ln361">{</a>
+<a name="ln362">    // Nothing even remotely flashy for Zig.</a>
+<a name="ln363">    if (ftype != DNGN_ENTER_ZIGGURAT)</a>
+<a name="ln364">    {</a>
+<a name="ln365">        vector&lt;int&gt; runes;</a>
+<a name="ln366">        for (int i = 0; i &lt; NUM_RUNE_TYPES; i++)</a>
+<a name="ln367">            if (you.runes[i])</a>
+<a name="ln368">                runes.push_back(i);</a>
+<a name="ln369"> </a>
+<a name="ln370">        ASSERT(runes.size() &gt;= 1);</a>
+<a name="ln371">        shuffle_array(runes);</a>
+<a name="ln372"> </a>
+<a name="ln373">        // Zot is extra flashy.</a>
+<a name="ln374">        if (ftype == DNGN_ENTER_ZOT)</a>
+<a name="ln375">        {</a>
+<a name="ln376">            ASSERT(runes.size() &gt;= 3);</a>
+<a name="ln377"> </a>
+<a name="ln378">            mprf(&quot;You insert the %s rune into the lock.&quot;, rune_type_name(runes[2]));</a>
+<a name="ln379">#ifdef USE_TILE_LOCAL</a>
+<a name="ln380">            tiles.add_overlay(you.pos(), tileidx_zap(rune_colour(runes[2])));</a>
+<a name="ln381">            update_screen();</a>
+<a name="ln382">#else</a>
+<a name="ln383">            flash_view(UA_BRANCH_ENTRY, rune_colour(runes[2]));</a>
+<a name="ln384">#endif</a>
+<a name="ln385">            mpr(&quot;The lock glows eerily!&quot;);</a>
+<a name="ln386">            // included in default force_more_message</a>
+<a name="ln387"> </a>
+<a name="ln388">            mprf(&quot;You insert the %s rune into the lock.&quot;, rune_type_name(runes[1]));</a>
+<a name="ln389">            big_cloud(CLOUD_BLUE_SMOKE, &amp;you, you.pos(), 20, 7 + random2(7));</a>
+<a name="ln390">            viewwindow();</a>
+<a name="ln391">            mpr(&quot;Heavy smoke blows from the lock!&quot;);</a>
+<a name="ln392">            // included in default force_more_message</a>
+<a name="ln393">        }</a>
+<a name="ln394"> </a>
+<a name="ln395">        mprf(&quot;You insert the %s rune into the lock.&quot;, rune_type_name(runes[0]));</a>
+<a name="ln396"> </a>
+<a name="ln397">        if (silenced(you.pos()))</a>
+<a name="ln398">            mpr(&quot;The gate opens wide!&quot;);</a>
+<a name="ln399">        else</a>
+<a name="ln400">            mpr(&quot;With a soft hiss the gate opens wide!&quot;);</a>
+<a name="ln401">        // these are included in default force_more_message</a>
+<a name="ln402">    }</a>
+<a name="ln403">}</a>
+<a name="ln404"> </a>
+<a name="ln405">static void _gauntlet_effect()</a>
+<a name="ln406">{</a>
+<a name="ln407">    // already doomed</a>
+<a name="ln408">    if (you.species == SP_FORMICID)</a>
+<a name="ln409">        return;</a>
+<a name="ln410"> </a>
+<a name="ln411">    mprf(MSGCH_WARN, &quot;The nature of this place prevents you from teleporting.&quot;);</a>
+<a name="ln412"> </a>
+<a name="ln413">    if (you.has_mutation(MUT_TELEPORT, true)</a>
+<a name="ln414">        || you.wearing(EQ_RINGS, RING_TELEPORTATION, true)</a>
+<a name="ln415">        || you.scan_artefacts(ARTP_CAUSE_TELEPORTATION, true))</a>
+<a name="ln416">    {</a>
+<a name="ln417">        mpr(&quot;You feel stable on this floor.&quot;);</a>
+<a name="ln418">    }</a>
+<a name="ln419">}</a>
+<a name="ln420"> </a>
+<a name="ln421">static void _new_level_amuses_xom(dungeon_feature_type feat,</a>
+<a name="ln422">                                  dungeon_feature_type old_feat,</a>
+<a name="ln423">                                  bool shaft, int shaft_depth, bool voluntary)</a>
+<a name="ln424">{</a>
+<a name="ln425">    switch (you.where_are_you)</a>
+<a name="ln426">    {</a>
+<a name="ln427">    default:</a>
+<a name="ln428">        // Xom thinks it's funny if you enter a new level via shaft</a>
+<a name="ln429">        // or escape hatch, for shafts it's funnier the deeper you fell.</a>
+<a name="ln430">        if (shaft || feat_is_escape_hatch(feat))</a>
+<a name="ln431">            xom_is_stimulated(shaft_depth * 50);</a>
+<a name="ln432">        else if (!is_connected_branch(you.where_are_you))</a>
+<a name="ln433">            xom_is_stimulated(25);</a>
+<a name="ln434">        else</a>
+<a name="ln435">            xom_is_stimulated(10);</a>
+<a name="ln436">        break;</a>
+<a name="ln437"> </a>
+<a name="ln438">    case BRANCH_ZIGGURAT:</a>
+<a name="ln439">        // The best way to die currently.</a>
+<a name="ln440">        xom_is_stimulated(50);</a>
+<a name="ln441">        break;</a>
+<a name="ln442"> </a>
+<a name="ln443">    case BRANCH_PANDEMONIUM:</a>
+<a name="ln444">        xom_is_stimulated(100);</a>
+<a name="ln445">        break;</a>
+<a name="ln446"> </a>
+<a name="ln447">    case BRANCH_ABYSS:</a>
+<a name="ln448">        if (voluntary &amp;&amp; old_feat == DNGN_ENTER_ABYSS)</a>
+<a name="ln449">            xom_is_stimulated(100, XM_INTRIGUED);</a>
+<a name="ln450">        else</a>
+<a name="ln451">            xom_is_stimulated(200);</a>
+<a name="ln452">        break;</a>
+<a name="ln453">    }</a>
+<a name="ln454">}</a>
+<a name="ln455"> </a>
+<a name="ln456">/**</a>
+<a name="ln457"> * Determine destination level.</a>
+<a name="ln458"> *</a>
+<a name="ln459"> * @param how         How the player is trying to travel.</a>
+<a name="ln460"> *                    (e.g. stairs, traps, portals, etc)</a>
+<a name="ln461"> * @param forced      True if the player is forcing the traveling attempt.</a>
+<a name="ln462"> *                    (e.g. forcibly exiting the abyss, etc)</a>
+<a name="ln463"> * @param going_up    True if the player is going upstairs.</a>
+<a name="ln464"> * @param known_shaft True if the player is intentionally shafting themself.</a>
+<a name="ln465"> * @return            The destination level, if valid. Note the default value</a>
+<a name="ln466"> *                    of dest is not valid (since depth = -1) and this is</a>
+<a name="ln467"> *                    generally what is returned for invalid destinations.</a>
+<a name="ln468"> *                    But note the special case when failing to climb stairs</a>
+<a name="ln469"> *                    when attempting to leave the dungeon, depth = 1.</a>
+<a name="ln470"> */</a>
+<a name="ln471">static level_id _travel_destination(const dungeon_feature_type how,</a>
+<a name="ln472">                                    bool forced, bool going_up,</a>
+<a name="ln473">                                    bool known_shaft)</a>
+<a name="ln474">{</a>
+<a name="ln475">    const bool shaft = known_shaft || how == DNGN_TRAP_SHAFT;</a>
+<a name="ln476">    level_id shaft_dest;</a>
+<a name="ln477">    level_id dest;</a>
+<a name="ln478">    if (shaft)</a>
+<a name="ln479">    {</a>
+<a name="ln480">        if (!is_valid_shaft_level())</a>
+<a name="ln481">        {</a>
+<a name="ln482">            if (known_shaft)</a>
+<a name="ln483">                mpr(&quot;The shaft disappears in a puff of logic!&quot;);</a>
+<a name="ln484">            _maybe_destroy_shaft(you.pos());</a>
+<a name="ln485">            return dest;</a>
+<a name="ln486">        }</a>
+<a name="ln487"> </a>
+<a name="ln488">        shaft_dest = you.shaft_dest();</a>
+<a name="ln489">    }</a>
+<a name="ln490">    // How far down you fall via a shaft or hatch.</a>
+<a name="ln491">    const int shaft_depth = (shaft ? shaft_dest.depth - you.depth : 1);</a>
+<a name="ln492"> </a>
+<a name="ln493">    // Only check the current position for a legal stair traverse.</a>
+<a name="ln494">    // Check that we're going the right way (if we're not falling through</a>
+<a name="ln495">    // a shaft or being forced).</a>
+<a name="ln496">    if (!shaft &amp;&amp; !forced &amp;&amp; !_check_stairs(how, going_up))</a>
+<a name="ln497">        return dest;</a>
+<a name="ln498"> </a>
+<a name="ln499">    // Up and down both work for some portals.</a>
+<a name="ln500">    // Canonicalize the direction: hell exits into the vestibule are considered</a>
+<a name="ln501">    // going up; everything else is going down. This mostly affects which way you</a>
+<a name="ln502">    // fall if confused.</a>
+<a name="ln503">    if (feat_is_bidirectional_portal(how))</a>
+<a name="ln504">        going_up = (how == DNGN_ENTER_HELL &amp;&amp; player_in_hell(false));</a>
+<a name="ln505"> </a>
+<a name="ln506">    if (_stair_moves_pre(how))</a>
+<a name="ln507">        return dest;</a>
+<a name="ln508"> </a>
+<a name="ln509">    // Falling down is checked before the transition if going upstairs, since</a>
+<a name="ln510">    // it might prevent the transition itself.</a>
+<a name="ln511">    if (going_up &amp;&amp; _check_fall_down_stairs(how, true))</a>
+<a name="ln512">    {</a>
+<a name="ln513">        // TODO: This probably causes an obscure bug where confused players</a>
+<a name="ln514">        // going 'down' into the vestibule are twice as likely to fall, because</a>
+<a name="ln515">        // they have to pass a check here, and later in floor_transition</a>
+<a name="ln516">        // Right solution is probably to use the canonicalized direction everywhere</a>
+<a name="ln517"> </a>
+<a name="ln518">        // If player falls down the stairs trying to leave the dungeon, we set</a>
+<a name="ln519">        // the destination depth to 1 (i.e. D:1)</a>
+<a name="ln520">        if (how == DNGN_EXIT_DUNGEON)</a>
+<a name="ln521">            dest.depth = 1;</a>
+<a name="ln522">        return dest;</a>
+<a name="ln523">    }</a>
+<a name="ln524"> </a>
+<a name="ln525">    if (shaft)</a>
+<a name="ln526">    {</a>
+<a name="ln527">        if (shaft_dest == level_id::current())</a>
+<a name="ln528">        {</a>
+<a name="ln529">            if (known_shaft)</a>
+<a name="ln530">            {</a>
+<a name="ln531">                mpr(&quot;Strange, the shaft seems to lead back to this level.&quot;);</a>
+<a name="ln532">                mpr(&quot;The strain on the space-time continuum destroys the &quot;</a>
+<a name="ln533">                    &quot;shaft!&quot;);</a>
+<a name="ln534">            }</a>
+<a name="ln535">            _maybe_destroy_shaft(you.pos());</a>
+<a name="ln536">            return dest;</a>
+<a name="ln537">        }</a>
+<a name="ln538"> </a>
+<a name="ln539">        if (!known_shaft)</a>
+<a name="ln540">        {</a>
+<a name="ln541">            mark_milestone(&quot;shaft&quot;, &quot;fell down a shaft to &quot;</a>
+<a name="ln542">                                    + shaft_dest.describe() + &quot;.&quot;);</a>
+<a name="ln543">        }</a>
+<a name="ln544"> </a>
+<a name="ln545">        mprf(&quot;You %s into a shaft and drop %d floor%s!&quot;,</a>
+<a name="ln546">             you.airborne() ? &quot;are sucked&quot; : &quot;fall&quot;,</a>
+<a name="ln547">             shaft_depth,</a>
+<a name="ln548">             shaft_depth &gt; 1 ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln549"> </a>
+<a name="ln550">        // Shafts are one-time-use.</a>
+<a name="ln551">        mpr(&quot;The shaft crumbles and collapses.&quot;);</a>
+<a name="ln552">        _maybe_destroy_shaft(you.pos());</a>
+<a name="ln553">    }</a>
+<a name="ln554"> </a>
+<a name="ln555">    // Maybe perform the entry sequence (we check that they have enough runes</a>
+<a name="ln556">    // in main.cc: _can_take_stairs())</a>
+<a name="ln557">    for (branch_iterator it; it; ++it)</a>
+<a name="ln558">    {</a>
+<a name="ln559">        if (how != it-&gt;entry_stairs)</a>
+<a name="ln560">            continue;</a>
+<a name="ln561"> </a>
+<a name="ln562">        if (!you.level_visited(level_id(it-&gt;id, 1))</a>
+<a name="ln563">            &amp;&amp; runes_for_branch(it-&gt;id) &gt; 0)</a>
+<a name="ln564">        {</a>
+<a name="ln565">            _rune_effect(how);</a>
+<a name="ln566">        }</a>
+<a name="ln567"> </a>
+<a name="ln568">        break;</a>
+<a name="ln569">    }</a>
+<a name="ln570"> </a>
+<a name="ln571">    // Markers might be deleted when removing portals.</a>
+<a name="ln572">    const string dst = env.markers.property_at(you.pos(), MAT_ANY, &quot;dst&quot;);</a>
+<a name="ln573"> </a>
+<a name="ln574">    if (shaft)</a>
+<a name="ln575">        return shaft_dest;</a>
+<a name="ln576">    else</a>
+<a name="ln577">        return stair_destination(how, dst, true);</a>
+<a name="ln578">}</a>
+<a name="ln579"> </a>
+<a name="ln580">/**</a>
+<a name="ln581"> * Check to see if transition will actually move the player.</a>
+<a name="ln582"> *</a>
+<a name="ln583"> * @param dest      The destination level (branch and depth).</a>
+<a name="ln584"> * @param feat      The dungeon feature the player is standing on.</a>
+<a name="ln585"> * @param going_up  True if the player is trying to go up stairs.</a>
+<a name="ln586"> * @return          True if the level transition should happen.</a>
+<a name="ln587"> */</a>
+<a name="ln588">static bool _level_transition_moves_player(level_id dest,</a>
+<a name="ln589">                                           dungeon_feature_type feat,</a>
+<a name="ln590">                                           bool going_up)</a>
+<a name="ln591">{</a>
+<a name="ln592">    bool trying_to_exit = feat == DNGN_EXIT_DUNGEON &amp;&amp; going_up;</a>
+<a name="ln593"> </a>
+<a name="ln594">    // When exiting the dungeon, dest is not valid (depth = -1)</a>
+<a name="ln595">    // So the player can transition with an invalid dest ONLY when exiting.</a>
+<a name="ln596">    // Otherwise (i.e. not exiting) dest must be valid.</a>
+<a name="ln597">    return dest.is_valid() != trying_to_exit;</a>
+<a name="ln598">}</a>
+<a name="ln599"> </a>
+<a name="ln600">/**</a>
+<a name="ln601"> * Transition to a different level.</a>
+<a name="ln602"> *</a>
+<a name="ln603"> * @param how The type of stair/portal tile the player is being conveyed through</a>
+<a name="ln604"> * @param whence The tile the player was on at the beginning of the transition</a>
+<a name="ln605"> *               (likely the same as how, unless forced is true)</a>
+<a name="ln606"> * @param whither The destination level</a>
+<a name="ln607"> * @param shaft Is the player going down a shaft?</a>
+<a name="ln608"> */</a>
+<a name="ln609">void floor_transition(dungeon_feature_type how,</a>
+<a name="ln610">                      const dungeon_feature_type whence, level_id whither,</a>
+<a name="ln611">                      bool forced, bool going_up, bool shaft,</a>
+<a name="ln612">                      bool update_travel_cache)</a>
+<a name="ln613">{</a>
+<a name="ln614">    const level_id old_level = level_id::current();</a>
+<a name="ln615"> </a>
+<a name="ln616">    // Clean up fake blood.</a>
+<a name="ln617">    heal_flayed_effect(&amp;you, true, true);</a>
+<a name="ln618"> </a>
+<a name="ln619">    // Magical level changes (which currently only exist &quot;downwards&quot;) need this.</a>
+<a name="ln620">    clear_trapping_net();</a>
+<a name="ln621">    end_searing_ray();</a>
+<a name="ln622">    you.stop_constricting_all();</a>
+<a name="ln623">    you.stop_being_constricted();</a>
+<a name="ln624">    you.clear_beholders();</a>
+<a name="ln625">    you.clear_fearmongers();</a>
+<a name="ln626">    dec_frozen_ramparts(you.duration[DUR_FROZEN_RAMPARTS]);</a>
+<a name="ln627"> </a>
+<a name="ln628">    if (!forced)</a>
+<a name="ln629">    {</a>
+<a name="ln630">        // Break ice armour</a>
+<a name="ln631">        remove_ice_armour_movement();</a>
+<a name="ln632"> </a>
+<a name="ln633">        // Check for barbs and apply</a>
+<a name="ln634">        apply_barbs_damage();</a>
+<a name="ln635">    }</a>
+<a name="ln636"> </a>
+<a name="ln637">    // Fire level-leaving trigger.</a>
+<a name="ln638">    leaving_level_now(how);</a>
+<a name="ln639"> </a>
+<a name="ln640">    // Not entirely accurate - the player could die before</a>
+<a name="ln641">    // reaching the Abyss.</a>
+<a name="ln642">    if (!forced &amp;&amp; whence == DNGN_ENTER_ABYSS)</a>
+<a name="ln643">    {</a>
+<a name="ln644">        mark_milestone(&quot;abyss.enter&quot;, &quot;entered the Abyss!&quot;);</a>
+<a name="ln645">        take_note(Note(NOTE_MESSAGE, 0, 0, &quot;Voluntarily entered the Abyss.&quot;), true);</a>
+<a name="ln646">    }</a>
+<a name="ln647">    else if (!forced &amp;&amp; whence == DNGN_EXIT_THROUGH_ABYSS)</a>
+<a name="ln648">    {</a>
+<a name="ln649">        mark_milestone(&quot;abyss.enter&quot;, &quot;escaped (hah) into the Abyss!&quot;);</a>
+<a name="ln650">        take_note(Note(NOTE_MESSAGE, 0, 0, &quot;Took an exit into the Abyss.&quot;), true);</a>
+<a name="ln651">    }</a>
+<a name="ln652">    else if (how == DNGN_EXIT_ABYSS</a>
+<a name="ln653">             &amp;&amp; you.chapter != CHAPTER_POCKET_ABYSS)</a>
+<a name="ln654">    {</a>
+<a name="ln655">        mark_milestone(&quot;abyss.exit&quot;, &quot;escaped from the Abyss!&quot;);</a>
+<a name="ln656">        you.attribute[ATTR_BANISHMENT_IMMUNITY] = you.elapsed_time + 100</a>
+<a name="ln657">                                                  + random2(100);</a>
+<a name="ln658">        you.banished_by = &quot;&quot;;</a>
+<a name="ln659">        you.banished_power = 0;</a>
+<a name="ln660">    }</a>
+<a name="ln661"> </a>
+<a name="ln662">    // Interlevel travel data.</a>
+<a name="ln663">    const bool collect_travel_data = can_travel_interlevel();</a>
+<a name="ln664">    if (collect_travel_data)</a>
+<a name="ln665">    {</a>
+<a name="ln666">        LevelInfo &amp;old_level_info = travel_cache.get_level_info(old_level);</a>
+<a name="ln667">        old_level_info.update();</a>
+<a name="ln668">    }</a>
+<a name="ln669"> </a>
+<a name="ln670">    const coord_def stair_pos = you.pos();</a>
+<a name="ln671"> </a>
+<a name="ln672">    if (how == DNGN_EXIT_DUNGEON)</a>
+<a name="ln673">    {</a>
+<a name="ln674">        you.depth = 0;</a>
+<a name="ln675">        mpr(&quot;You have escaped!&quot;);</a>
+<a name="ln676"> </a>
+<a name="ln677">        if (player_has_orb())</a>
+<a name="ln678">            ouch(INSTANT_DEATH, KILLED_BY_WINNING);</a>
+<a name="ln679"> </a>
+<a name="ln680">        ouch(INSTANT_DEATH, KILLED_BY_LEAVING);</a>
+<a name="ln681">    }</a>
+<a name="ln682"> </a>
+<a name="ln683">    if (how == DNGN_ENTER_ZIGGURAT)</a>
+<a name="ln684">        dungeon_terrain_changed(you.pos(), DNGN_STONE_ARCH);</a>
+<a name="ln685"> </a>
+<a name="ln686">    if (how == DNGN_ENTER_PANDEMONIUM</a>
+<a name="ln687">        || how == DNGN_ENTER_ABYSS</a>
+<a name="ln688">        || feat_is_portal_entrance(how))</a>
+<a name="ln689">    {</a>
+<a name="ln690">        you.level_stack.push_back(level_pos::current());</a>
+<a name="ln691">    }</a>
+<a name="ln692"> </a>
+<a name="ln693">    // Actually change the player's branch and depth, along with some cleanup.</a>
+<a name="ln694">    _player_change_level_reset();</a>
+<a name="ln695">    _player_change_level(whither);</a>
+<a name="ln696"> </a>
+<a name="ln697">    // Some branch specific messages.</a>
+<a name="ln698">    if (old_level.branch == BRANCH_VESTIBULE</a>
+<a name="ln699">        &amp;&amp; !is_hell_subbranch(you.where_are_you))</a>
+<a name="ln700">    {</a>
+<a name="ln701">        mpr(&quot;Thank you for visiting Hell. Please come again soon.&quot;);</a>
+<a name="ln702">    }</a>
+<a name="ln703"> </a>
+<a name="ln704">    if (how == DNGN_EXIT_ABYSS</a>
+<a name="ln705">        || how == DNGN_EXIT_PANDEMONIUM</a>
+<a name="ln706">        || how == DNGN_EXIT_THROUGH_ABYSS)</a>
+<a name="ln707">    {</a>
+<a name="ln708">        mpr(&quot;You pass through the gate.&quot;);</a>
+<a name="ln709">        take_note(Note(NOTE_MESSAGE, 0, 0,</a>
+<a name="ln710">            how == DNGN_EXIT_ABYSS ? &quot;Escaped the Abyss&quot; :</a>
+<a name="ln711">            how == DNGN_EXIT_PANDEMONIUM ? &quot;Escaped Pandemonium&quot; :</a>
+<a name="ln712">            how == DNGN_EXIT_THROUGH_ABYSS ? &quot;Escaped into the Abyss&quot; :</a>
+<a name="ln713">            &quot;Buggered into bugdom&quot;), true);</a>
+<a name="ln714"> </a>
+<a name="ln715">        if (!you.wizard || !crawl_state.is_replaying_keys())</a>
+<a name="ln716">            more();</a>
+<a name="ln717">    }</a>
+<a name="ln718"> </a>
+<a name="ln719">    // Fixup exits from the Hell branches.</a>
+<a name="ln720">    if (player_in_branch(BRANCH_VESTIBULE)</a>
+<a name="ln721">        &amp;&amp; is_hell_subbranch(old_level.branch))</a>
+<a name="ln722">    {</a>
+<a name="ln723">        how = branches[old_level.branch].entry_stairs;</a>
+<a name="ln724">    }</a>
+<a name="ln725"> </a>
+<a name="ln726">    // Check for falling down the stairs or portal.</a>
+<a name="ln727">    if (!going_up &amp;&amp; !shaft &amp;&amp; !forced)</a>
+<a name="ln728">        _check_fall_down_stairs(how, false);</a>
+<a name="ln729"> </a>
+<a name="ln730">    if (shaft)</a>
+<a name="ln731">        how = DNGN_TRAP_SHAFT;</a>
+<a name="ln732"> </a>
+<a name="ln733">    switch (you.where_are_you)</a>
+<a name="ln734">    {</a>
+<a name="ln735">    case BRANCH_ABYSS:</a>
+<a name="ln736">        // There are no abyssal stairs that go up, so this whole case is only</a>
+<a name="ln737">        // when going down.</a>
+<a name="ln738">        if (old_level.branch == BRANCH_ABYSS)</a>
+<a name="ln739">        {</a>
+<a name="ln740">            mprf(MSGCH_BANISHMENT, &quot;You plunge deeper into the Abyss.&quot;);</a>
+<a name="ln741">            if (!you.runes[RUNE_ABYSSAL] &amp;&amp; you.depth &gt;= ABYSSAL_RUNE_MIN_LEVEL)</a>
+<a name="ln742">                mpr(&quot;The abyssal rune of Zot can be found at this depth.&quot;);</a>
+<a name="ln743">            break;</a>
+<a name="ln744">        }</a>
+<a name="ln745">        if (!forced)</a>
+<a name="ln746">            mpr(&quot;You enter the Abyss!&quot;);</a>
+<a name="ln747"> </a>
+<a name="ln748">        mpr(&quot;To return, you must find a gate leading back.&quot;);</a>
+<a name="ln749">        mpr(&quot;Killing monsters will force the Abyss to allow you passage.&quot;);</a>
+<a name="ln750">        if (have_passive(passive_t::slow_abyss))</a>
+<a name="ln751">        {</a>
+<a name="ln752">            mprf(MSGCH_GOD, you.religion,</a>
+<a name="ln753">                 &quot;You feel %s slowing down the madness of this place.&quot;,</a>
+<a name="ln754">                 god_name(you.religion).c_str());</a>
+<a name="ln755">        }</a>
+<a name="ln756"> </a>
+<a name="ln757">        you.props[ABYSS_STAIR_XP_KEY] = EXIT_XP_COST;</a>
+<a name="ln758">        you.props.erase(ABYSS_SPAWNED_XP_EXIT_KEY);</a>
+<a name="ln759"> </a>
+<a name="ln760">        // Re-entering the Abyss halves accumulated speed.</a>
+<a name="ln761">        you.abyss_speed /= 2;</a>
+<a name="ln762">        learned_something_new(HINT_ABYSS);</a>
+<a name="ln763">        break;</a>
+<a name="ln764"> </a>
+<a name="ln765">    case BRANCH_PANDEMONIUM:</a>
+<a name="ln766">        if (old_level.branch == BRANCH_PANDEMONIUM)</a>
+<a name="ln767">            mpr(&quot;You pass into a different region of Pandemonium.&quot;);</a>
+<a name="ln768">        break;</a>
+<a name="ln769"> </a>
+<a name="ln770">    default:</a>
+<a name="ln771">        // This hits both cases.</a>
+<a name="ln772">        if (!shaft)</a>
+<a name="ln773">            _climb_message(how, going_up, old_level.branch);</a>
+<a name="ln774">        break;</a>
+<a name="ln775">    }</a>
+<a name="ln776"> </a>
+<a name="ln777">    // Did we enter a different branch?</a>
+<a name="ln778">    if (!player_in_branch(old_level.branch))</a>
+<a name="ln779">    {</a>
+<a name="ln780">        const branch_type branch = you.where_are_you;</a>
+<a name="ln781">        if (branch_entered(branch))</a>
+<a name="ln782">            mprf(&quot;Welcome back to %s!&quot;, branches[branch].longname);</a>
+<a name="ln783">        else if (how == branches[branch].entry_stairs)</a>
+<a name="ln784">        {</a>
+<a name="ln785">            if (branches[branch].entry_message)</a>
+<a name="ln786">                mpr(branches[branch].entry_message);</a>
+<a name="ln787">            else if (branch != BRANCH_ABYSS) // too many messages...</a>
+<a name="ln788">                mprf(&quot;Welcome to %s!&quot;, branches[branch].longname);</a>
+<a name="ln789">        }</a>
+<a name="ln790"> </a>
+<a name="ln791">        if (branch == BRANCH_GAUNTLET)</a>
+<a name="ln792">            _gauntlet_effect();</a>
+<a name="ln793"> </a>
+<a name="ln794">        const set&lt;branch_type&gt; boring_branch_exits = {</a>
+<a name="ln795">            BRANCH_TEMPLE,</a>
+<a name="ln796">            BRANCH_BAZAAR,</a>
+<a name="ln797">            BRANCH_TROVE</a>
+<a name="ln798">        };</a>
+<a name="ln799"> </a>
+<a name="ln800">        // Did we leave a notable branch for the first time?</a>
+<a name="ln801">        if (boring_branch_exits.count(old_level.branch) == 0</a>
+<a name="ln802">            &amp;&amp; !you.branches_left[old_level.branch])</a>
+<a name="ln803">        {</a>
+<a name="ln804">            string old_branch_string = branches[old_level.branch].longname;</a>
+<a name="ln805">            if (starts_with(old_branch_string, &quot;The &quot;))</a>
+<a name="ln806">                old_branch_string[0] = tolower_safe(old_branch_string[0]);</a>
+<a name="ln807">            mark_milestone(&quot;br.exit&quot;, &quot;left &quot; + old_branch_string + &quot;.&quot;,</a>
+<a name="ln808">                           old_level.describe());</a>
+<a name="ln809">            you.branches_left.set(old_level.branch);</a>
+<a name="ln810">        }</a>
+<a name="ln811">        if (how == branches[branch].entry_stairs)</a>
+<a name="ln812">        {</a>
+<a name="ln813">            const string noise_desc = branch_noise_desc(branch);</a>
+<a name="ln814">            if (!noise_desc.empty())</a>
+<a name="ln815">                mpr(noise_desc);</a>
+<a name="ln816"> </a>
+<a name="ln817">            const string rune_msg = branch_rune_desc(branch, true);</a>
+<a name="ln818">            if (!rune_msg.empty())</a>
+<a name="ln819">                mpr(rune_msg);</a>
+<a name="ln820">        }</a>
+<a name="ln821"> </a>
+<a name="ln822">        // Entered a branch from its parent.</a>
+<a name="ln823">        if (parent_branch(branch) == old_level.branch)</a>
+<a name="ln824">            enter_branch(branch, old_level);</a>
+<a name="ln825">    }</a>
+<a name="ln826"> </a>
+<a name="ln827">    // Warn Formicids if they cannot shaft here</a>
+<a name="ln828">    if (you.species == SP_FORMICID &amp;&amp; !is_valid_shaft_level())</a>
+<a name="ln829">        mpr(&quot;Beware, you cannot shaft yourself on this level.&quot;);</a>
+<a name="ln830"> </a>
+<a name="ln831">    const bool newlevel = load_level(how, LOAD_ENTER_LEVEL, old_level);</a>
+<a name="ln832"> </a>
+<a name="ln833">    if (newlevel)</a>
+<a name="ln834">    {</a>
+<a name="ln835">        _new_level_amuses_xom(how, whence, shaft,</a>
+<a name="ln836">                              (shaft ? whither.depth - old_level.depth : 1),</a>
+<a name="ln837">                              !forced);</a>
+<a name="ln838">    }</a>
+<a name="ln839"> </a>
+<a name="ln840">    // This should maybe go in load_level?</a>
+<a name="ln841">    if (you.where_are_you == BRANCH_ABYSS)</a>
+<a name="ln842">        generate_random_blood_spatter_on_level();</a>
+<a name="ln843"> </a>
+<a name="ln844">    you.turn_is_over = true;</a>
+<a name="ln845"> </a>
+<a name="ln846">    save_game_state();</a>
+<a name="ln847"> </a>
+<a name="ln848">    new_level();</a>
+<a name="ln849"> </a>
+<a name="ln850">    moveto_location_effects(whence);</a>
+<a name="ln851"> </a>
+<a name="ln852">    trackers_init_new_level();</a>
+<a name="ln853"> </a>
+<a name="ln854">    if (update_travel_cache &amp;&amp; !shaft)</a>
+<a name="ln855">        _update_travel_cache(old_level, stair_pos);</a>
+<a name="ln856"> </a>
+<a name="ln857">    // Preventing obvious finding of stairs at your position.</a>
+<a name="ln858">    env.map_seen.set(you.pos());</a>
+<a name="ln859"> </a>
+<a name="ln860">    viewwindow();</a>
+<a name="ln861"> </a>
+<a name="ln862">    // There's probably a reason for this. I don't know it.</a>
+<a name="ln863">    if (going_up)</a>
+<a name="ln864">        seen_monsters_react();</a>
+<a name="ln865">    else</a>
+<a name="ln866">        maybe_update_stashes();</a>
+<a name="ln867"> </a>
+<a name="ln868">    autotoggle_autopickup(false);</a>
+<a name="ln869">    request_autopickup();</a>
+<a name="ln870">}</a>
+<a name="ln871"> </a>
+<a name="ln872">/**</a>
+<a name="ln873"> * Try to go up or down stairs.</a>
+<a name="ln874"> *</a>
+<a name="ln875"> * @param force_stair         The type of stair/portal to take. By default,</a>
+<a name="ln876"> *      use whatever tile is under the player. But this can be overridden</a>
+<a name="ln877"> *      (e.g. passing DNGN_EXIT_ABYSS forces the player out of the abyss)</a>
+<a name="ln878"> * @param going_up            True if the player is going upstairs</a>
+<a name="ln879"> * @param force_known_shaft   True if player is shafting themselves via ability.</a>
+<a name="ln880"> * @param update_travel_cache True if travel cache should be updated.</a>
+<a name="ln881"> */</a>
+<a name="ln882">void take_stairs(dungeon_feature_type force_stair, bool going_up,</a>
+<a name="ln883">                 bool force_known_shaft, bool update_travel_cache)</a>
+<a name="ln884">{</a>
+<a name="ln885">    const dungeon_feature_type old_feat = orig_terrain(you.pos());</a>
+<a name="ln886">    dungeon_feature_type how = force_stair ? force_stair : old_feat;</a>
+<a name="ln887"> </a>
+<a name="ln888">    // Taking a shaft manually (stepping on a known shaft, or using shaft ability)</a>
+<a name="ln889">    const bool known_shaft = (!force_stair</a>
+<a name="ln890">                              &amp;&amp; get_trap_type(you.pos()) == TRAP_SHAFT)</a>
+<a name="ln891">                             || (force_stair == DNGN_TRAP_SHAFT</a>
+<a name="ln892">                                 &amp;&amp; force_known_shaft);</a>
+<a name="ln893">    // Latter case is falling down a shaft.</a>
+<a name="ln894">    const bool shaft = known_shaft || force_stair == DNGN_TRAP_SHAFT;</a>
+<a name="ln895"> </a>
+<a name="ln896">    level_id whither = _travel_destination(how, bool(force_stair), going_up,</a>
+<a name="ln897">                                           known_shaft);</a>
+<a name="ln898"> </a>
+<a name="ln899">    if (!_level_transition_moves_player(whither, old_feat, going_up))</a>
+<a name="ln900">        return;</a>
+<a name="ln901"> </a>
+<a name="ln902">    floor_transition(how, old_feat, whither,</a>
+<a name="ln903">                     bool(force_stair), going_up, shaft, update_travel_cache);</a>
+<a name="ln904">}</a>
+<a name="ln905"> </a>
+<a name="ln906">void up_stairs(dungeon_feature_type force_stair, bool update_travel_cache)</a>
+<a name="ln907">{</a>
+<a name="ln908">    take_stairs(force_stair, true, false, update_travel_cache);</a>
+<a name="ln909">}</a>
+<a name="ln910"> </a>
+<a name="ln911">// Find the other end of the stair or portal at location pos on the current</a>
+<a name="ln912">// level. for_real is true if we are actually traversing the feature rather</a>
+<a name="ln913">// than merely asking what is on the other side.</a>
+<a name="ln914">level_id stair_destination(coord_def pos, bool for_real)</a>
+<a name="ln915">{</a>
+<a name="ln916">    return stair_destination(orig_terrain(pos),</a>
+<a name="ln917">                             env.markers.property_at(pos, MAT_ANY, &quot;dst&quot;),</a>
+<a name="ln918">                             for_real);</a>
+<a name="ln919">}</a>
+<a name="ln920"> </a>
+<a name="ln921">// Find the other end of a stair or portal on the current level. feat is the</a>
+<a name="ln922">// type of feature (DNGN_EXIT_ABYSS, for example), dst is the target of a</a>
+<a name="ln923">// portal vault entrance (and is ignored for other types of features), and</a>
+<a name="ln924">// for_real is true if we are actually traversing the feature rather than</a>
+<a name="ln925">// merely asking what is on the other side.</a>
+<a name="ln926">level_id stair_destination(dungeon_feature_type feat, const string &amp;dst,</a>
+<a name="ln927">                           bool for_real)</a>
+<a name="ln928">{</a>
+<a name="ln929">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln930">    if (feat == DNGN_ESCAPE_HATCH_UP &amp;&amp; player_in_branch(BRANCH_LABYRINTH))</a>
+<a name="ln931">        feat = DNGN_EXIT_LABYRINTH;</a>
+<a name="ln932">#endif</a>
+<a name="ln933">    if (branches[you.where_are_you].exit_stairs == feat</a>
+<a name="ln934">        &amp;&amp; parent_branch(you.where_are_you) &lt; NUM_BRANCHES</a>
+<a name="ln935">        &amp;&amp; feat != DNGN_EXIT_ZIGGURAT)</a>
+<a name="ln936">    {</a>
+<a name="ln937">        level_id lev = brentry[you.where_are_you];</a>
+<a name="ln938">        if (!lev.is_valid())</a>
+<a name="ln939">        {</a>
+<a name="ln940">            // Wizmode, the branch wasn't generated this game.</a>
+<a name="ln941">            // Pick the middle of the range instead.</a>
+<a name="ln942">            lev = level_id(branches[you.where_are_you].parent_branch,</a>
+<a name="ln943">                           (branches[you.where_are_you].mindepth</a>
+<a name="ln944">                            + branches[you.where_are_you].maxdepth) / 2);</a>
+<a name="ln945">            ASSERT(lev.is_valid());</a>
+<a name="ln946">        }</a>
+<a name="ln947"> </a>
+<a name="ln948">        return lev;</a>
+<a name="ln949">    }</a>
+<a name="ln950"> </a>
+<a name="ln951">    if (feat_is_portal_exit(feat))</a>
+<a name="ln952">        feat = DNGN_EXIT_PANDEMONIUM;</a>
+<a name="ln953"> </a>
+<a name="ln954">    switch (feat)</a>
+<a name="ln955">    {</a>
+<a name="ln956">    case DNGN_ESCAPE_HATCH_UP:</a>
+<a name="ln957">    case DNGN_STONE_STAIRS_UP_I:</a>
+<a name="ln958">    case DNGN_STONE_STAIRS_UP_II:</a>
+<a name="ln959">    case DNGN_STONE_STAIRS_UP_III:</a>
+<a name="ln960">        if (you.depth &lt;= 1)</a>
+<a name="ln961">        {</a>
+<a name="ln962">            if (you.wizard &amp;&amp; !for_real)</a>
+<a name="ln963">                return level_id();</a>
+<a name="ln964">            die(&quot;upstairs from top of a branch&quot;);</a>
+<a name="ln965">        }</a>
+<a name="ln966">        return level_id(you.where_are_you, you.depth - 1);</a>
+<a name="ln967"> </a>
+<a name="ln968">    case DNGN_EXIT_HELL:</a>
+<a name="ln969">        // If set, it would be found as a branch exit.</a>
+<a name="ln970">        if (you.wizard)</a>
+<a name="ln971">        {</a>
+<a name="ln972">            if (for_real)</a>
+<a name="ln973">            {</a>
+<a name="ln974">                mprf(MSGCH_ERROR, &quot;Error: no Hell exit level, how in the &quot;</a>
+<a name="ln975">                                  &quot;Vestibule did you get here? Let's go to D:1.&quot;);</a>
+<a name="ln976">            }</a>
+<a name="ln977">            return level_id(BRANCH_DUNGEON, 1);</a>
+<a name="ln978">        }</a>
+<a name="ln979">        else</a>
+<a name="ln980">            die(&quot;hell exit without return destination&quot;);</a>
+<a name="ln981"> </a>
+<a name="ln982">    case DNGN_ABYSSAL_STAIR:</a>
+<a name="ln983">        ASSERT(player_in_branch(BRANCH_ABYSS));</a>
+<a name="ln984">        push_features_to_abyss();</a>
+<a name="ln985">    case DNGN_ESCAPE_HATCH_DOWN:</a>
+<a name="ln986">    case DNGN_STONE_STAIRS_DOWN_I:</a>
+<a name="ln987">    case DNGN_STONE_STAIRS_DOWN_II:</a>
+<a name="ln988">    case DNGN_STONE_STAIRS_DOWN_III:</a>
+<a name="ln989">    {</a>
+<a name="ln990">        ASSERT(!at_branch_bottom());</a>
+<a name="ln991">        level_id lev = level_id::current();</a>
+<a name="ln992">        lev.depth++;</a>
+<a name="ln993">        return lev;</a>
+<a name="ln994">    }</a>
+<a name="ln995"> </a>
+<a name="ln996">    case DNGN_TRANSIT_PANDEMONIUM:</a>
+<a name="ln997">        return level_id(BRANCH_PANDEMONIUM);</a>
+<a name="ln998"> </a>
+<a name="ln999">    case DNGN_EXIT_THROUGH_ABYSS:</a>
+<a name="ln1000">        return level_id(BRANCH_ABYSS);</a>
+<a name="ln1001"> </a>
+<a name="ln1002">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1003">    case DNGN_ENTER_PORTAL_VAULT:</a>
+<a name="ln1004">        if (dst.empty())</a>
+<a name="ln1005">        {</a>
+<a name="ln1006">            if (for_real)</a>
+<a name="ln1007">                die(&quot;portal without a destination&quot;);</a>
+<a name="ln1008">            else</a>
+<a name="ln1009">                return level_id();</a>
+<a name="ln1010">        }</a>
+<a name="ln1011">        try</a>
+<a name="ln1012">        {</a>
+<a name="ln1013">            return level_id::parse_level_id(dst);</a>
+<a name="ln1014">        }</a>
+<a name="ln1015">        catch (const bad_level_id &amp;err)</a>
+<a name="ln1016">        {</a>
+<a name="ln1017">            die(&quot;Invalid destination for portal: %s&quot;, err.what());</a>
+<a name="ln1018">        }</a>
+<a name="ln1019">#endif</a>
+<a name="ln1020"> </a>
+<a name="ln1021">    case DNGN_ENTER_HELL:</a>
+<a name="ln1022">        if (for_real &amp;&amp; !player_in_hell())</a>
+<a name="ln1023">            brentry[BRANCH_VESTIBULE] = level_id::current();</a>
+<a name="ln1024">        return level_id(BRANCH_VESTIBULE);</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    case DNGN_EXIT_ABYSS:</a>
+<a name="ln1027">        if (you.chapter == CHAPTER_POCKET_ABYSS)</a>
+<a name="ln1028">            return level_id(BRANCH_DUNGEON, 1);</a>
+<a name="ln1029">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1030">    case DNGN_EXIT_PORTAL_VAULT:</a>
+<a name="ln1031">#endif</a>
+<a name="ln1032">    case DNGN_EXIT_PANDEMONIUM:</a>
+<a name="ln1033">        if (you.level_stack.empty())</a>
+<a name="ln1034">        {</a>
+<a name="ln1035">            if (you.wizard)</a>
+<a name="ln1036">            {</a>
+<a name="ln1037">                if (for_real)</a>
+<a name="ln1038">                {</a>
+<a name="ln1039">                    mprf(MSGCH_ERROR, &quot;Error: no return path. You did create &quot;</a>
+<a name="ln1040">                         &quot;the exit manually, didn't you? Let's go to D:1.&quot;);</a>
+<a name="ln1041">                }</a>
+<a name="ln1042">                return level_id(BRANCH_DUNGEON, 1);</a>
+<a name="ln1043">            }</a>
+<a name="ln1044">            die(&quot;no return path from a portal (%s)&quot;,</a>
+<a name="ln1045">                level_id::current().describe().c_str());</a>
+<a name="ln1046">        }</a>
+<a name="ln1047">        return you.level_stack.back().id;</a>
+<a name="ln1048">    case DNGN_ENTER_ABYSS:</a>
+<a name="ln1049">        push_features_to_abyss();</a>
+<a name="ln1050">        break;</a>
+<a name="ln1051">    default:</a>
+<a name="ln1052">        break;</a>
+<a name="ln1053">    }</a>
+<a name="ln1054"> </a>
+<a name="ln1055">    // Try to find a branch stair.</a>
+<a name="ln1056">    for (branch_iterator it; it; ++it)</a>
+<a name="ln1057">    {</a>
+<a name="ln1058">        if (it-&gt;entry_stairs == feat)</a>
+<a name="ln1059">            return level_id(it-&gt;id);</a>
+<a name="ln1060">    }</a>
+<a name="ln1061"> </a>
+<a name="ln1062">    return level_id();</a>
+<a name="ln1063">}</a>
+<a name="ln1064"> </a>
+<a name="ln1065">// TODO(Zannick): Fully merge with up_stairs into take_stairs.</a>
+<a name="ln1066">void down_stairs(dungeon_feature_type force_stair, bool force_known_shaft, bool update_travel_cache)</a>
+<a name="ln1067">{</a>
+<a name="ln1068">    take_stairs(force_stair, false, force_known_shaft, update_travel_cache);</a>
+<a name="ln1069">}</a>
+<a name="ln1070"> </a>
+<a name="ln1071">static void _update_level_state()</a>
+<a name="ln1072">{</a>
+<a name="ln1073">    env.level_state = 0;</a>
+<a name="ln1074"> </a>
+<a name="ln1075">    vector&lt;coord_def&gt; golub = find_golubria_on_level();</a>
+<a name="ln1076">    if (!golub.empty())</a>
+<a name="ln1077">        env.level_state |= LSTATE_GOLUBRIA;</a>
+<a name="ln1078"> </a>
+<a name="ln1079">    for (monster_iterator mon_it; mon_it; ++mon_it)</a>
+<a name="ln1080">    {</a>
+<a name="ln1081">        if (mons_allows_beogh(**mon_it))</a>
+<a name="ln1082">            env.level_state |= LSTATE_BEOGH;</a>
+<a name="ln1083">        if (mon_it-&gt;has_ench(ENCH_STILL_WINDS))</a>
+<a name="ln1084">            env.level_state |= LSTATE_STILL_WINDS;</a>
+<a name="ln1085">        if (mon_it-&gt;has_ench(ENCH_AWAKEN_FOREST))</a>
+<a name="ln1086">        {</a>
+<a name="ln1087">            env.forest_awoken_until</a>
+<a name="ln1088">                = you.elapsed_time</a>
+<a name="ln1089">                  + mon_it-&gt;get_ench(ENCH_AWAKEN_FOREST).duration;</a>
+<a name="ln1090">        }</a>
+<a name="ln1091">    }</a>
+<a name="ln1092"> </a>
+<a name="ln1093">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1094">    const bool have_ramparts = you.duration[DUR_FROZEN_RAMPARTS];</a>
+<a name="ln1095">    const auto &amp;ramparts_pos = you.props[FROZEN_RAMPARTS_KEY].get_coord();</a>
+<a name="ln1096">#endif</a>
+<a name="ln1097">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln1098">    {</a>
+<a name="ln1099">        if (grd(*ri) == DNGN_SLIMY_WALL)</a>
+<a name="ln1100">            env.level_state |= LSTATE_SLIMY_WALL;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">        if (is_icecovered(*ri))</a>
+<a name="ln1103">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1104">        {</a>
+<a name="ln1105">            // Buggy versions of Frozen Ramparts didn't properly clear</a>
+<a name="ln1106">            // FPROP_ICY from walls in some cases, so we detect invalid walls</a>
+<a name="ln1107">            // and remove the flag.</a>
+<a name="ln1108">            if (have_ramparts</a>
+<a name="ln1109">                &amp;&amp; ramparts_pos.distance_from(*ri) &lt;= 3</a>
+<a name="ln1110">                &amp;&amp; cell_see_cell(*ri, ramparts_pos, LOS_NO_TRANS))</a>
+<a name="ln1111">            {</a>
+<a name="ln1112">#endif</a>
+<a name="ln1113">            env.level_state |= LSTATE_ICY_WALL;</a>
+<a name="ln1114">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1115">            }</a>
+<a name="ln1116">            else</a>
+<a name="ln1117">                env.pgrid(*ri) &amp;= ~FPROP_ICY;</a>
+<a name="ln1118">        }</a>
+<a name="ln1119">#endif</a>
+<a name="ln1120">    }</a>
+<a name="ln1121"> </a>
+<a name="ln1122">    env.orb_pos = coord_def();</a>
+<a name="ln1123">    if (item_def* orb = find_floor_item(OBJ_ORBS, ORB_ZOT))</a>
+<a name="ln1124">        env.orb_pos = orb-&gt;pos;</a>
+<a name="ln1125">    else if (player_has_orb())</a>
+<a name="ln1126">    {</a>
+<a name="ln1127">        env.orb_pos = you.pos();</a>
+<a name="ln1128">        invalidate_agrid(true);</a>
+<a name="ln1129">    }</a>
+<a name="ln1130">}</a>
+<a name="ln1131"> </a>
+<a name="ln1132">void new_level(bool restore)</a>
+<a name="ln1133">{</a>
+<a name="ln1134">    print_stats_level();</a>
+<a name="ln1135">#ifdef DGL_WHEREIS</a>
+<a name="ln1136">    whereis_record();</a>
+<a name="ln1137">#endif</a>
+<a name="ln1138"> </a>
+<a name="ln1139">    _update_level_state();</a>
+<a name="ln1140"> </a>
+<a name="ln1141">    if (restore)</a>
+<a name="ln1142">        return;</a>
+<a name="ln1143"> </a>
+<a name="ln1144">    cancel_tornado();</a>
+<a name="ln1145"> </a>
+<a name="ln1146">    if (player_in_branch(BRANCH_ZIGGURAT))</a>
+<a name="ln1147">        you.zig_max = max(you.zig_max, you.depth);</a>
+<a name="ln1148">}</a>
+
+</code></pre>
+<div class="balloon" rel="712"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'how == DNGN_EXIT_THROUGH_ABYSS' is always true.</p></div>
+<div class="balloon" rel="886"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'force_stair' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+<div class="balloon" rel="889"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'force_stair' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

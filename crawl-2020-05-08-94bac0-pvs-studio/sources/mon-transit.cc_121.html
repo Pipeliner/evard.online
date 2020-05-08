@@ -1,0 +1,533 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-transit.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Tracks monsters that are in suspended animation between levels.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-transit.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;artefact.h&quot;</a>
+<a name="ln13">#include &quot;coordit.h&quot;</a>
+<a name="ln14">#include &quot;dactions.h&quot;</a>
+<a name="ln15">#include &quot;dungeon.h&quot;</a>
+<a name="ln16">#include &quot;god-companions.h&quot;</a>
+<a name="ln17">#include &quot;god-passive.h&quot; // passive_t::convert_orcs</a>
+<a name="ln18">#include &quot;items.h&quot;</a>
+<a name="ln19">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln20">#include &quot;mon-place.h&quot;</a>
+<a name="ln21">#include &quot;religion.h&quot;</a>
+<a name="ln22">#include &quot;timed-effects.h&quot;</a>
+<a name="ln23"> </a>
+<a name="ln24">#define MAX_LOST 100</a>
+<a name="ln25"> </a>
+<a name="ln26">monsters_in_transit the_lost_ones;</a>
+<a name="ln27"> </a>
+<a name="ln28">static void _cull_lost_mons(m_transit_list &amp;mlist, int how_many)</a>
+<a name="ln29">{</a>
+<a name="ln30">    // First pass, drop non-uniques.</a>
+<a name="ln31">    for (auto i = mlist.begin(); i != mlist.end();)</a>
+<a name="ln32">    {</a>
+<a name="ln33">        auto finger = i++;</a>
+<a name="ln34">        if (!mons_is_unique(finger-&gt;mons.type))</a>
+<a name="ln35">        {</a>
+<a name="ln36">            mlist.erase(finger);</a>
+<a name="ln37"> </a>
+<a name="ln38">            if (--how_many &lt;= MAX_LOST)</a>
+<a name="ln39">                return;</a>
+<a name="ln40">        }</a>
+<a name="ln41">    }</a>
+<a name="ln42"> </a>
+<a name="ln43">    // If we're still over the limit (unlikely), just lose</a>
+<a name="ln44">    // the old ones.</a>
+<a name="ln45">    while (how_many-- &gt; MAX_LOST &amp;&amp; !mlist.empty())</a>
+<a name="ln46">        mlist.erase(mlist.begin());</a>
+<a name="ln47">}</a>
+<a name="ln48"> </a>
+<a name="ln49">/**</a>
+<a name="ln50"> * Get the monster transit list for the given level.</a>
+<a name="ln51"> * @param lid    The level.</a>
+<a name="ln52"> * @returns      The monster transit list.</a>
+<a name="ln53"> **/</a>
+<a name="ln54">m_transit_list *get_transit_list(const level_id &amp;lid)</a>
+<a name="ln55">{</a>
+<a name="ln56">    return map_find(the_lost_ones, lid);</a>
+<a name="ln57">}</a>
+<a name="ln58"> </a>
+<a name="ln59">/**</a>
+<a name="ln60"> * Add a monster to a level's transit list.</a>
+<a name="ln61"> * @param lid    The level.</a>
+<a name="ln62"> * @param m      The monster to add.</a>
+<a name="ln63"> **/</a>
+<a name="ln64">void add_monster_to_transit(const level_id &amp;lid, const monster&amp; m)</a>
+<a name="ln65">{</a>
+<a name="ln66">    ASSERT(m.alive());</a>
+<a name="ln67"> </a>
+<a name="ln68">    m_transit_list &amp;mlist = the_lost_ones[lid];</a>
+<a name="ln69">    mlist.emplace_back(m);</a>
+<a name="ln70">    mlist.back().transit_start_time = you.elapsed_time;</a>
+<a name="ln71"> </a>
+<a name="ln72">    dprf(&quot;Monster in transit to %s: %s&quot;, lid.describe().c_str(),</a>
+<a name="ln73">         m.name(DESC_PLAIN, true).c_str());</a>
+<a name="ln74"> </a>
+<a name="ln75">    if (m.is_divine_companion())</a>
+<a name="ln76">        move_companion_to(&amp;m, lid);</a>
+<a name="ln77"> </a>
+<a name="ln78">    const int how_many = mlist.size();</a>
+<a name="ln79">    if (how_many &gt; MAX_LOST)</a>
+<a name="ln80">        _cull_lost_mons(mlist, how_many);</a>
+<a name="ln81">}</a>
+<a name="ln82"> </a>
+<a name="ln83">/**</a>
+<a name="ln84"> * Remove a monster from a level's transit list.</a>
+<a name="ln85"> * @param lid    The level.</a>
+<a name="ln86"> * @param mid    The mid_t of the monster to remove.</a>
+<a name="ln87"> **/</a>
+<a name="ln88">void remove_monster_from_transit(const level_id &amp;lid, mid_t mid)</a>
+<a name="ln89">{</a>
+<a name="ln90">    m_transit_list &amp;mlist = the_lost_ones[lid];</a>
+<a name="ln91"> </a>
+<a name="ln92">    for (auto i = mlist.begin(); i != mlist.end(); ++i)</a>
+<a name="ln93">    {</a>
+<a name="ln94">        if (i-&gt;mons.mid == mid)</a>
+<a name="ln95">        {</a>
+<a name="ln96">            mlist.erase(i);</a>
+<a name="ln97">            return;</a>
+<a name="ln98">        }</a>
+<a name="ln99">    }</a>
+<a name="ln100">}</a>
+<a name="ln101"> </a>
+<a name="ln102">static void _level_place_followers(m_transit_list &amp;m)</a>
+<a name="ln103">{</a>
+<a name="ln104">    for (auto i = m.begin(); i != m.end();)</a>
+<a name="ln105">    {</a>
+<a name="ln106">        auto mon = i++;</a>
+<a name="ln107">        if ((mon-&gt;mons.flags &amp; MF_TAKING_STAIRS) &amp;&amp; mon-&gt;place(true))</a>
+<a name="ln108">        {</a>
+<a name="ln109">            if (mon-&gt;mons.is_divine_companion())</a>
+<a name="ln110">            {</a>
+<a name="ln111">                move_companion_to(monster_by_mid(mon-&gt;mons.mid),</a>
+<a name="ln112">                                                 level_id::current());</a>
+<a name="ln113">            }</a>
+<a name="ln114"> </a>
+<a name="ln115">            // Now that the monster is onlevel, we can safely apply traps to it.</a>
+<a name="ln116">            if (monster* new_mon = monster_by_mid(mon-&gt;mons.mid))</a>
+<a name="ln117">                // old loc isn't really meaningful</a>
+<a name="ln118">                new_mon-&gt;apply_location_effects(new_mon-&gt;pos());</a>
+<a name="ln119">            m.erase(mon);</a>
+<a name="ln120">        }</a>
+<a name="ln121">    }</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">static void _place_lost_ones(void (*placefn)(m_transit_list &amp;ml))</a>
+<a name="ln125">{</a>
+<a name="ln126">    level_id c = level_id::current();</a>
+<a name="ln127"> </a>
+<a name="ln128">    monsters_in_transit::iterator i = the_lost_ones.find(c);</a>
+<a name="ln129">    if (i == the_lost_ones.end())</a>
+<a name="ln130">        return;</a>
+<a name="ln131">    placefn(i-&gt;second);</a>
+<a name="ln132">    if (i-&gt;second.empty())</a>
+<a name="ln133">        the_lost_ones.erase(i);</a>
+<a name="ln134">}</a>
+<a name="ln135"> </a>
+<a name="ln136">/**</a>
+<a name="ln137"> * Place any followers transiting to this level.</a>
+<a name="ln138"> **/</a>
+<a name="ln139">void place_followers()</a>
+<a name="ln140">{</a>
+<a name="ln141">    _place_lost_ones(_level_place_followers);</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">static monster* _place_lost_monster(follower &amp;f)</a>
+<a name="ln145">{</a>
+<a name="ln146">    dprf(&quot;Placing lost one: %s&quot;, f.mons.name(DESC_PLAIN, true).c_str());</a>
+<a name="ln147">    if (monster* mons = f.place(false))</a>
+<a name="ln148">    {</a>
+<a name="ln149">        // Figure out how many turns we need to update the monster</a>
+<a name="ln150">        int turns = (you.elapsed_time - f.transit_start_time)/10;</a>
+<a name="ln151"> </a>
+<a name="ln152">        //Unflag as summoned or else monster will be ignored in update_monster</a>
+<a name="ln153">        mons-&gt;flags &amp;= ~MF_JUST_SUMMONED;</a>
+<a name="ln154">        return update_monster(*mons, turns);</a>
+<a name="ln155">    }</a>
+<a name="ln156">    else</a>
+<a name="ln157">        return nullptr;</a>
+<a name="ln158">}</a>
+<a name="ln159"> </a>
+<a name="ln160">static void _level_place_lost_monsters(m_transit_list &amp;m)</a>
+<a name="ln161">{</a>
+<a name="ln162">    for (auto i = m.begin(); i != m.end(); )</a>
+<a name="ln163">    {</a>
+<a name="ln164">        auto mon = i++;</a>
+<a name="ln165"> </a>
+<a name="ln166">        // Monsters transiting to the Abyss have a 50% chance of being</a>
+<a name="ln167">        // placed, otherwise a 100% chance.</a>
+<a name="ln168">        if (player_in_branch(BRANCH_ABYSS) &amp;&amp; coinflip())</a>
+<a name="ln169">            continue;</a>
+<a name="ln170"> </a>
+<a name="ln171">        if (monster* new_mon =_place_lost_monster(*mon))</a>
+<a name="ln172">        {</a>
+<a name="ln173">            // Now that the monster is on the level, we can safely apply traps</a>
+<a name="ln174">            // to it.</a>
+<a name="ln175">            new_mon-&gt;apply_location_effects(new_mon-&gt;pos());</a>
+<a name="ln176">            m.erase(mon);</a>
+<a name="ln177">        }</a>
+<a name="ln178">    }</a>
+<a name="ln179">}</a>
+<a name="ln180"> </a>
+<a name="ln181">/**</a>
+<a name="ln182"> * Place any monsters in transit to this level.</a>
+<a name="ln183"> **/</a>
+<a name="ln184">void place_transiting_monsters()</a>
+<a name="ln185">{</a>
+<a name="ln186">    _place_lost_ones(_level_place_lost_monsters);</a>
+<a name="ln187">}</a>
+<a name="ln188"> </a>
+<a name="ln189">void apply_daction_to_transit(daction_type act)</a>
+<a name="ln190">{</a>
+<a name="ln191">    for (auto &amp;entry : the_lost_ones)</a>
+<a name="ln192">    {</a>
+<a name="ln193">        m_transit_list* m = &amp;entry.second;</a>
+<a name="ln194">        for (auto j = m-&gt;begin(); j != m-&gt;end(); ++j)</a>
+<a name="ln195">        {</a>
+<a name="ln196">            monster* mon = &amp;j-&gt;mons;</a>
+<a name="ln197">            if (mons_matches_daction(mon, act))</a>
+<a name="ln198">                apply_daction_to_mons(mon, act, false, true);</a>
+<a name="ln199"> </a>
+<a name="ln200">            // If that killed the monster, remove it from transit.</a>
+<a name="ln201">            // Removing this monster invalidates the iterator that</a>
+<a name="ln202">            // points to it, so decrement the iterator first.</a>
+<a name="ln203">            if (!mon-&gt;alive())</a>
+<a name="ln204">                m-&gt;erase(j--);</a>
+<a name="ln205">        }</a>
+<a name="ln206">    }</a>
+<a name="ln207">}</a>
+<a name="ln208"> </a>
+<a name="ln209">int count_daction_in_transit(daction_type act)</a>
+<a name="ln210">{</a>
+<a name="ln211">    int count = 0;</a>
+<a name="ln212">    for (const auto &amp;entry : the_lost_ones)</a>
+<a name="ln213">    {</a>
+<a name="ln214">        for (const auto &amp;follower : entry.second)</a>
+<a name="ln215">            if (mons_matches_daction(&amp;follower.mons, act))</a>
+<a name="ln216">                count++;</a>
+<a name="ln217">    }</a>
+<a name="ln218"> </a>
+<a name="ln219">    return count;</a>
+<a name="ln220">}</a>
+<a name="ln221"> </a>
+<a name="ln222">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln223">// follower</a>
+<a name="ln224"> </a>
+<a name="ln225">follower::follower(const monster&amp; m) : mons(m), items()</a>
+<a name="ln226">{</a>
+<a name="ln227">    ASSERT(m.alive());</a>
+<a name="ln228">    load_mons_items();</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">void follower::load_mons_items()</a>
+<a name="ln232">{</a>
+<a name="ln233">    for (int i = 0; i &lt; NUM_MONSTER_SLOTS; ++i)</a>
+<a name="ln234">        if (mons.inv[i] != NON_ITEM)</a>
+<a name="ln235">            items[i] = mitm[ mons.inv[i] ];</a>
+<a name="ln236">        else</a>
+<a name="ln237">            items[i].clear();</a>
+<a name="ln238">}</a>
+<a name="ln239"> </a>
+<a name="ln240">monster* follower::place(bool near_player)</a>
+<a name="ln241">{</a>
+<a name="ln242">    ASSERT(mons.alive());</a>
+<a name="ln243"> </a>
+<a name="ln244">    monster *m = get_free_monster();</a>
+<a name="ln245">    if (!m)</a>
+<a name="ln246">        return nullptr;</a>
+<a name="ln247"> </a>
+<a name="ln248">    // Copy the saved data.</a>
+<a name="ln249">    *m = mons;</a>
+<a name="ln250"> </a>
+<a name="ln251">    // Shafts no longer retain the position, if anything else would</a>
+<a name="ln252">    // want to request a specific one, it should do so here if !near_player</a>
+<a name="ln253"> </a>
+<a name="ln254">    if (m-&gt;find_place_to_live(near_player))</a>
+<a name="ln255">    {</a>
+<a name="ln256">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln257">        // fix up some potential cloned monsters for beogh chars.</a>
+<a name="ln258">        // see comments on maybe_bad_priest monster and in tags.cc for details</a>
+<a name="ln259">        monster *dup_m = monster_by_mid(m-&gt;mid);</a>
+<a name="ln260">        if (dup_m &amp;&amp; maybe_bad_priest_monster(*dup_m))</a>
+<a name="ln261">            fixup_bad_priest_monster(*dup_m);</a>
+<a name="ln262">        // any clones not covered under maybe_bad_priest_monster will result</a>
+<a name="ln263">        // in duplicate mid errors.</a>
+<a name="ln264">#endif</a>
+<a name="ln265">        dprf(&quot;Placed follower: %s&quot;, m-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln266">        m-&gt;target.reset();</a>
+<a name="ln267"> </a>
+<a name="ln268">        m-&gt;flags &amp;= ~MF_TAKING_STAIRS &amp; ~MF_BANISHED;</a>
+<a name="ln269">        m-&gt;flags |= MF_JUST_SUMMONED;</a>
+<a name="ln270">        restore_mons_items(*m);</a>
+<a name="ln271">        env.mid_cache[m-&gt;mid] = m-&gt;mindex();</a>
+<a name="ln272">        return m;</a>
+<a name="ln273">    }</a>
+<a name="ln274"> </a>
+<a name="ln275">    m-&gt;reset();</a>
+<a name="ln276">    return nullptr;</a>
+<a name="ln277">}</a>
+<a name="ln278"> </a>
+<a name="ln279">void follower::restore_mons_items(monster&amp; m)</a>
+<a name="ln280">{</a>
+<a name="ln281">    for (int i = 0; i &lt; NUM_MONSTER_SLOTS; ++i)</a>
+<a name="ln282">    {</a>
+<a name="ln283">        if (items[i].base_type == OBJ_UNASSIGNED)</a>
+<a name="ln284">            m.inv[i] = NON_ITEM;</a>
+<a name="ln285">        else</a>
+<a name="ln286">        {</a>
+<a name="ln287">            const int islot = get_mitm_slot(0);</a>
+<a name="ln288">            m.inv[i] = islot;</a>
+<a name="ln289">            if (islot == NON_ITEM)</a>
+<a name="ln290">                continue;</a>
+<a name="ln291"> </a>
+<a name="ln292">            item_def &amp;it = mitm[islot];</a>
+<a name="ln293">            it = items[i];</a>
+<a name="ln294">            it.set_holding_monster(m);</a>
+<a name="ln295">        }</a>
+<a name="ln296">    }</a>
+<a name="ln297">}</a>
+<a name="ln298"> </a>
+<a name="ln299">static bool _is_religious_follower(const monster &amp;mon)</a>
+<a name="ln300">{</a>
+<a name="ln301">    return (you_worship(GOD_YREDELEMNUL)</a>
+<a name="ln302">            || will_have_passive(passive_t::convert_orcs)</a>
+<a name="ln303">            || you_worship(GOD_FEDHAS))</a>
+<a name="ln304">                &amp;&amp; is_follower(mon);</a>
+<a name="ln305">}</a>
+<a name="ln306"> </a>
+<a name="ln307">static bool _mons_can_follow_player_from(const monster &amp;mons,</a>
+<a name="ln308">                                         const coord_def from,</a>
+<a name="ln309">                                         bool within_level = false)</a>
+<a name="ln310">{</a>
+<a name="ln311">    if (!mons.alive()</a>
+<a name="ln312">        || mons.speed_increment &lt; 50</a>
+<a name="ln313">        || mons.incapacitated()</a>
+<a name="ln314">        || mons.is_stationary())</a>
+<a name="ln315">    {</a>
+<a name="ln316">        return false;</a>
+<a name="ln317">    }</a>
+<a name="ln318"> </a>
+<a name="ln319">    if (!monster_habitable_grid(&amp;mons, DNGN_FLOOR))</a>
+<a name="ln320">        return false;</a>
+<a name="ln321"> </a>
+<a name="ln322">    // Only non-wandering friendly monsters or those actively</a>
+<a name="ln323">    // seeking the player will follow up/down stairs.</a>
+<a name="ln324">    if (!mons.friendly()</a>
+<a name="ln325">          &amp;&amp; (!mons_is_seeking(mons) || mons.foe != MHITYOU)</a>
+<a name="ln326">        || mons.foe == MHITNOT)</a>
+<a name="ln327">    {</a>
+<a name="ln328">        return false;</a>
+<a name="ln329">    }</a>
+<a name="ln330"> </a>
+<a name="ln331">    // Unfriendly monsters must be directly adjacent to follow.</a>
+<a name="ln332">    if (!mons.friendly() &amp;&amp; (mons.pos() - from).rdist() &gt; 1)</a>
+<a name="ln333">        return false;</a>
+<a name="ln334"> </a>
+<a name="ln335">    // Monsters that can't use stairs can still be marked as followers</a>
+<a name="ln336">    // (though they'll be ignored for transit), so any adjacent real</a>
+<a name="ln337">    // follower can follow through. (jpeg)</a>
+<a name="ln338">    if (within_level &amp;&amp; !mons_class_can_use_transporter(mons.type)</a>
+<a name="ln339">        || !within_level &amp;&amp; !mons_can_use_stairs(mons, grd(from)))</a>
+<a name="ln340">    {</a>
+<a name="ln341">        if (_is_religious_follower(mons))</a>
+<a name="ln342">            return true;</a>
+<a name="ln343"> </a>
+<a name="ln344">        return false;</a>
+<a name="ln345">    }</a>
+<a name="ln346">    return true;</a>
+<a name="ln347">}</a>
+<a name="ln348"> </a>
+<a name="ln349">// Tag any monster following the player</a>
+<a name="ln350">static bool _tag_follower_at(const coord_def &amp;pos, const coord_def &amp;from,</a>
+<a name="ln351">                             bool &amp;real_follower)</a>
+<a name="ln352">{</a>
+<a name="ln353">    if (!in_bounds(pos) || pos == from)</a>
+<a name="ln354">        return false;</a>
+<a name="ln355"> </a>
+<a name="ln356">    monster* fol = monster_at(pos);</a>
+<a name="ln357">    if (fol == nullptr)</a>
+<a name="ln358">        return false;</a>
+<a name="ln359"> </a>
+<a name="ln360">    if (!_mons_can_follow_player_from(*fol, from))</a>
+<a name="ln361">        return false;</a>
+<a name="ln362"> </a>
+<a name="ln363">    real_follower = true;</a>
+<a name="ln364">    fol-&gt;flags |= MF_TAKING_STAIRS;</a>
+<a name="ln365"> </a>
+<a name="ln366">    // Clear patrolling/travel markers.</a>
+<a name="ln367">    fol-&gt;patrol_point.reset();</a>
+<a name="ln368">    fol-&gt;travel_path.clear();</a>
+<a name="ln369">    fol-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln370"> </a>
+<a name="ln371">    dprf(&quot;%s is marked for following.&quot;, fol-&gt;name(DESC_THE, true).c_str());</a>
+<a name="ln372">    return true;</a>
+<a name="ln373">}</a>
+<a name="ln374"> </a>
+<a name="ln375">static int _follower_tag_radius(const coord_def &amp;from)</a>
+<a name="ln376">{</a>
+<a name="ln377">    // If only friendlies are adjacent, we set a max radius of 5, otherwise</a>
+<a name="ln378">    // only adjacent friendlies may follow.</a>
+<a name="ln379">    for (adjacent_iterator ai(from); ai; ++ai)</a>
+<a name="ln380">    {</a>
+<a name="ln381">        if (const monster* mon = monster_at(*ai))</a>
+<a name="ln382">            if (!mon-&gt;friendly())</a>
+<a name="ln383">                return 1;</a>
+<a name="ln384">    }</a>
+<a name="ln385"> </a>
+<a name="ln386">    return 5;</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389">/**</a>
+<a name="ln390"> * Handle movement of adjacent player followers from a given location. This is</a>
+<a name="ln391"> * used when traveling through stairs or a transporter.</a>
+<a name="ln392"> *</a>
+<a name="ln393"> * @param from       The location from which the player moved.</a>
+<a name="ln394"> * @param handler    A handler function that does movement of the actor to the</a>
+<a name="ln395"> *                   destination, returning true if the actor was friendly. The</a>
+<a name="ln396"> *                   `real` argument tracks whether the actor was an actual</a>
+<a name="ln397"> *                   follower that counts towards the follower limit.</a>
+<a name="ln398"> **/</a>
+<a name="ln399">void handle_followers(const coord_def &amp;from,</a>
+<a name="ln400">                      bool (*handler)(const coord_def &amp;pos,</a>
+<a name="ln401">                                      const coord_def &amp;from, bool &amp;real))</a>
+<a name="ln402">{</a>
+<a name="ln403">    const int radius = _follower_tag_radius(from);</a>
+<a name="ln404">    int n_followers = 18;</a>
+<a name="ln405"> </a>
+<a name="ln406">    vector&lt;coord_def&gt; places[2];</a>
+<a name="ln407">    int place_set = 0;</a>
+<a name="ln408"> </a>
+<a name="ln409">    places[place_set].push_back(from);</a>
+<a name="ln410">    memset(travel_point_distance, 0, sizeof(travel_distance_grid_t));</a>
+<a name="ln411">    while (!places[place_set].empty())</a>
+<a name="ln412">    {</a>
+<a name="ln413">        for (const coord_def p : places[place_set])</a>
+<a name="ln414">        {</a>
+<a name="ln415">            for (adjacent_iterator ai(p); ai; ++ai)</a>
+<a name="ln416">            {</a>
+<a name="ln417">                if ((*ai - from).rdist() &gt; radius</a>
+<a name="ln418">                    || travel_point_distance[ai-&gt;x][ai-&gt;y])</a>
+<a name="ln419">                {</a>
+<a name="ln420">                    continue;</a>
+<a name="ln421">                }</a>
+<a name="ln422">                travel_point_distance[ai-&gt;x][ai-&gt;y] = 1;</a>
+<a name="ln423"> </a>
+<a name="ln424">                bool real_follower = false;</a>
+<a name="ln425">                if (handler(*ai, from, real_follower))</a>
+<a name="ln426">                {</a>
+<a name="ln427">                    // If we've run out of our follower allowance, bail.</a>
+<a name="ln428">                    if (real_follower &amp;&amp; --n_followers &lt;= 0)</a>
+<a name="ln429">                        return;</a>
+<a name="ln430">                    places[!place_set].push_back(*ai);</a>
+<a name="ln431">                }</a>
+<a name="ln432">            }</a>
+<a name="ln433">        }</a>
+<a name="ln434">        places[place_set].clear();</a>
+<a name="ln435">        place_set = !place_set;</a>
+<a name="ln436">    }</a>
+<a name="ln437">}</a>
+<a name="ln438"> </a>
+<a name="ln439">/**</a>
+<a name="ln440"> * Tag all followers at your position for level transit through stairs.</a>
+<a name="ln441"> **/</a>
+<a name="ln442">void tag_followers()</a>
+<a name="ln443">{</a>
+<a name="ln444">    handle_followers(you.pos(), _tag_follower_at);</a>
+<a name="ln445">}</a>
+<a name="ln446"> </a>
+<a name="ln447">/**</a>
+<a name="ln448"> * Untag all followers at your position for level transit through stairs.</a>
+<a name="ln449"> **/</a>
+<a name="ln450">void untag_followers()</a>
+<a name="ln451">{</a>
+<a name="ln452">    for (auto &amp;mons : menv_real)</a>
+<a name="ln453">        mons.flags &amp;= ~MF_TAKING_STAIRS;</a>
+<a name="ln454">}</a>
+<a name="ln455"> </a>
+<a name="ln456">static bool _transport_follower_at(const coord_def &amp;pos, const coord_def &amp;from,</a>
+<a name="ln457">                                   bool &amp;real_follower)</a>
+<a name="ln458">{</a>
+<a name="ln459">    if (!in_bounds(pos) || pos == from)</a>
+<a name="ln460">        return false;</a>
+<a name="ln461"> </a>
+<a name="ln462">    monster* fol = monster_at(pos);</a>
+<a name="ln463">    if (fol == nullptr)</a>
+<a name="ln464">        return false;</a>
+<a name="ln465"> </a>
+<a name="ln466">    if (!_mons_can_follow_player_from(*fol, from, true))</a>
+<a name="ln467">        return false;</a>
+<a name="ln468"> </a>
+<a name="ln469">    if (fol-&gt;find_place_to_live(true))</a>
+<a name="ln470">    {</a>
+<a name="ln471">        real_follower = true;</a>
+<a name="ln472">        env.map_knowledge(pos).clear_monster();</a>
+<a name="ln473">        dprf(&quot;%s is transported.&quot;, fol-&gt;name(DESC_THE, true).c_str());</a>
+<a name="ln474">    }</a>
+<a name="ln475"> </a>
+<a name="ln476">    return true;</a>
+<a name="ln477">}</a>
+<a name="ln478"> </a>
+<a name="ln479">/**</a>
+<a name="ln480"> * Transport all followers from a position to a position near your current one.</a>
+<a name="ln481"> *</a>
+<a name="ln482"> * @param from    The position from where you transported.</a>
+<a name="ln483"> **/</a>
+<a name="ln484">void transport_followers_from(const coord_def &amp;from)</a>
+<a name="ln485">{</a>
+<a name="ln486">    handle_followers(from, _transport_follower_at);</a>
+<a name="ln487">}</a>
+
+</code></pre>
+<div class="balloon" rel="225"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> It is possible that not all members of a class are initialized inside the constructor. Consider inspecting: transit_start_time.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

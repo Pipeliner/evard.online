@@ -1,0 +1,1977 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>l-dgn.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*** Dungeon builder interface (dlua only).</a>
+<a name="ln2"> * @module dgn</a>
+<a name="ln3"> */</a>
+<a name="ln4">#include &quot;AppHdr.h&quot;</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;l-libs.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &lt;cmath&gt;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;branch.h&quot;</a>
+<a name="ln11">#include &quot;cloud.h&quot;</a>
+<a name="ln12">#include &quot;cluautil.h&quot;</a>
+<a name="ln13">#include &quot;colour.h&quot;</a>
+<a name="ln14">#include &quot;coord.h&quot;</a>
+<a name="ln15">#include &quot;coordit.h&quot;</a>
+<a name="ln16">#include &quot;dgn-shoals.h&quot;</a>
+<a name="ln17">#include &quot;directn.h&quot;</a>
+<a name="ln18">#include &quot;dungeon.h&quot;</a>
+<a name="ln19">#include &quot;flood-find.h&quot;</a>
+<a name="ln20">#include &quot;l-defs.h&quot;</a>
+<a name="ln21">#include &quot;libutil.h&quot;</a>
+<a name="ln22">#include &quot;mapmark.h&quot;</a>
+<a name="ln23">#include &quot;maps.h&quot;</a>
+<a name="ln24">#include &quot;shout.h&quot;</a>
+<a name="ln25">#include &quot;spl-util.h&quot;</a>
+<a name="ln26">#include &quot;state.h&quot;</a>
+<a name="ln27">#include &quot;stringutil.h&quot;</a>
+<a name="ln28">#include &quot;rltiles/tiledef-dngn.h&quot;</a>
+<a name="ln29">#include &quot;tileview.h&quot;</a>
+<a name="ln30">#include &quot;view.h&quot;</a>
+<a name="ln31"> </a>
+<a name="ln32">static const char *VAULT_PLACEMENT_METATABLE = &quot;crawl.vault-placement&quot;;</a>
+<a name="ln33"> </a>
+<a name="ln34">static inline bool _lua_boolean(lua_State *ls, int ndx, bool defval)</a>
+<a name="ln35">{</a>
+<a name="ln36">    return lua_isnone(ls, ndx)? defval : lua_toboolean(ls, ndx);</a>
+<a name="ln37">}</a>
+<a name="ln38"> </a>
+<a name="ln39">void dgn_reset_default_depth()</a>
+<a name="ln40">{</a>
+<a name="ln41">    lc_default_depths.clear();</a>
+<a name="ln42">}</a>
+<a name="ln43"> </a>
+<a name="ln44">string dgn_set_default_depth(const string &amp;s)</a>
+<a name="ln45">{</a>
+<a name="ln46">    try</a>
+<a name="ln47">    {</a>
+<a name="ln48">        lc_default_depths = depth_ranges::parse_depth_ranges(s);</a>
+<a name="ln49">    }</a>
+<a name="ln50">    catch (const bad_level_id &amp;err)</a>
+<a name="ln51">    {</a>
+<a name="ln52">        return err.what();</a>
+<a name="ln53">    }</a>
+<a name="ln54">    return &quot;&quot;;</a>
+<a name="ln55">}</a>
+<a name="ln56"> </a>
+<a name="ln57">static void dgn_add_depths(depth_ranges &amp;drs, lua_State *ls, int s, int e)</a>
+<a name="ln58">{</a>
+<a name="ln59">    for (int i = s; i &lt;= e; ++i)</a>
+<a name="ln60">    {</a>
+<a name="ln61">        const char *depth = luaL_checkstring(ls, i);</a>
+<a name="ln62">        try</a>
+<a name="ln63">        {</a>
+<a name="ln64">            drs.add_depths(depth_ranges::parse_depth_ranges(depth));</a>
+<a name="ln65">        }</a>
+<a name="ln66">        catch (const bad_level_id &amp;err)</a>
+<a name="ln67">        {</a>
+<a name="ln68">            luaL_error(ls, err.what());</a>
+<a name="ln69">        }</a>
+<a name="ln70">    }</a>
+<a name="ln71">}</a>
+<a name="ln72"> </a>
+<a name="ln73">static int dgn_depth_proc(lua_State *ls, depth_ranges &amp;dr, int s)</a>
+<a name="ln74">{</a>
+<a name="ln75">    if (lua_gettop(ls) &lt; s)</a>
+<a name="ln76">        PLUARET(string, dr.describe().c_str());</a>
+<a name="ln77"> </a>
+<a name="ln78">    if (lua_isnil(ls, s))</a>
+<a name="ln79">    {</a>
+<a name="ln80">        dr.clear();</a>
+<a name="ln81">        return 0;</a>
+<a name="ln82">    }</a>
+<a name="ln83"> </a>
+<a name="ln84">    dgn_add_depths(dr, ls, s, lua_gettop(ls));</a>
+<a name="ln85">    return 0;</a>
+<a name="ln86">}</a>
+<a name="ln87"> </a>
+<a name="ln88">static int dgn_depth(lua_State *ls)</a>
+<a name="ln89">{</a>
+<a name="ln90">    MAP(ls, 1, map);</a>
+<a name="ln91">    return dgn_depth_proc(ls, map-&gt;depths, 2);</a>
+<a name="ln92">}</a>
+<a name="ln93"> </a>
+<a name="ln94">static int dgn_place(lua_State *ls)</a>
+<a name="ln95">{</a>
+<a name="ln96">    MAP(ls, 1, map);</a>
+<a name="ln97">    if (lua_gettop(ls) &gt; 1)</a>
+<a name="ln98">    {</a>
+<a name="ln99">        if (lua_isnil(ls, 2))</a>
+<a name="ln100">            map-&gt;place.clear();</a>
+<a name="ln101">        else</a>
+<a name="ln102">        {</a>
+<a name="ln103">            try</a>
+<a name="ln104">            {</a>
+<a name="ln105">                map-&gt;place = depth_ranges::parse_depth_ranges(luaL_checkstring(ls, 2));</a>
+<a name="ln106">            }</a>
+<a name="ln107">            catch (const bad_level_id &amp;err)</a>
+<a name="ln108">            {</a>
+<a name="ln109">                luaL_error(ls, err.what());</a>
+<a name="ln110">            }</a>
+<a name="ln111">        }</a>
+<a name="ln112">    }</a>
+<a name="ln113">    PLUARET(string, map-&gt;place.describe().c_str());</a>
+<a name="ln114">}</a>
+<a name="ln115"> </a>
+<a name="ln116">static int dgn_desc(lua_State *ls)</a>
+<a name="ln117">{</a>
+<a name="ln118">    MAP(ls, 1, map);</a>
+<a name="ln119">    if (lua_gettop(ls) &gt; 1)</a>
+<a name="ln120">    {</a>
+<a name="ln121">        if (lua_isnil(ls, 2))</a>
+<a name="ln122">            map-&gt;description.clear();</a>
+<a name="ln123">        else</a>
+<a name="ln124">            map-&gt;description = trimmed_string(luaL_checkstring(ls, 2));</a>
+<a name="ln125">    }</a>
+<a name="ln126">    PLUARET(string, map-&gt;description.c_str());</a>
+<a name="ln127">}</a>
+<a name="ln128"> </a>
+<a name="ln129">static int dgn_order(lua_State *ls)</a>
+<a name="ln130">{</a>
+<a name="ln131">    MAP(ls, 1, map);</a>
+<a name="ln132">    map-&gt;order = luaL_safe_checkint(ls, 2);</a>
+<a name="ln133">    PLUARET(number, map-&gt;order);</a>
+<a name="ln134">}</a>
+<a name="ln135"> </a>
+<a name="ln136">static int dgn_tags(lua_State *ls)</a>
+<a name="ln137">{</a>
+<a name="ln138">    MAP(ls, 1, map);</a>
+<a name="ln139">    if (lua_gettop(ls) &gt; 1)</a>
+<a name="ln140">    {</a>
+<a name="ln141">        if (lua_isnil(ls, 2))</a>
+<a name="ln142">            map-&gt;clear_tags();</a>
+<a name="ln143">        else</a>
+<a name="ln144">        {</a>
+<a name="ln145">            const char *s = luaL_checkstring(ls, 2);</a>
+<a name="ln146">            map-&gt;add_tags(s);</a>
+<a name="ln147">        }</a>
+<a name="ln148">    }</a>
+<a name="ln149">    PLUARET(string, map-&gt;tags_string().c_str());</a>
+<a name="ln150">}</a>
+<a name="ln151"> </a>
+<a name="ln152">static int dgn_has_tag(lua_State *ls)</a>
+<a name="ln153">{</a>
+<a name="ln154">    MAP(ls, 1, map);</a>
+<a name="ln155">    PLUARET(boolean, map-&gt;has_tag(luaL_checkstring(ls, 2)));</a>
+<a name="ln156">}</a>
+<a name="ln157"> </a>
+<a name="ln158">static int dgn_tags_remove(lua_State *ls)</a>
+<a name="ln159">{</a>
+<a name="ln160">    MAP(ls, 1, map);</a>
+<a name="ln161"> </a>
+<a name="ln162">    const int top = lua_gettop(ls);</a>
+<a name="ln163">    for (int i = 2; i &lt;= top; ++i)</a>
+<a name="ln164">    {</a>
+<a name="ln165">        const string axee = luaL_checkstring(ls, i);</a>
+<a name="ln166">        map-&gt;remove_tags(axee);</a>
+<a name="ln167">    }</a>
+<a name="ln168">    PLUARET(string, map-&gt;tags_string().c_str());</a>
+<a name="ln169">}</a>
+<a name="ln170"> </a>
+<a name="ln171">static void _chance_magnitude_check(lua_State *ls, int which_par, int chance)</a>
+<a name="ln172">{</a>
+<a name="ln173">    if (chance &lt; 0 || chance &gt; CHANCE_ROLL)</a>
+<a name="ln174">    {</a>
+<a name="ln175">        luaL_argerror(ls, which_par,</a>
+<a name="ln176">                      make_stringf(&quot;Chance must be in the range [0,%d]&quot;,</a>
+<a name="ln177">                                   CHANCE_ROLL).c_str());</a>
+<a name="ln178">    }</a>
+<a name="ln179">}</a>
+<a name="ln180"> </a>
+<a name="ln181">static int dgn_chance(lua_State *ls)</a>
+<a name="ln182">{</a>
+<a name="ln183">    MAP(ls, 1, map);</a>
+<a name="ln184">    if (lua_isnumber(ls, 2))</a>
+<a name="ln185">    {</a>
+<a name="ln186">        const int chance = luaL_safe_checkint(ls, 2);</a>
+<a name="ln187">        _chance_magnitude_check(ls, 2, chance);</a>
+<a name="ln188">        map-&gt;_chance.set_default(map_chance(chance));</a>
+<a name="ln189">    }</a>
+<a name="ln190">    return 0;</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">static int dgn_depth_chance(lua_State *ls)</a>
+<a name="ln194">{</a>
+<a name="ln195">    MAP(ls, 1, map);</a>
+<a name="ln196">    const string depth(luaL_checkstring(ls, 2));</a>
+<a name="ln197">    const int chance = luaL_safe_checkint(ls, 3);</a>
+<a name="ln198">    _chance_magnitude_check(ls, 3, chance);</a>
+<a name="ln199">    try</a>
+<a name="ln200">    {</a>
+<a name="ln201">        map-&gt;_chance.add_range(depth, map_chance(chance));</a>
+<a name="ln202">    }</a>
+<a name="ln203">    catch (const bad_level_id &amp;error)</a>
+<a name="ln204">    {</a>
+<a name="ln205">        luaL_error(ls, error.what());</a>
+<a name="ln206">    }</a>
+<a name="ln207">    return 0;</a>
+<a name="ln208">}</a>
+<a name="ln209"> </a>
+<a name="ln210">#define WEIGHT(ls, n, weight) \</a>
+<a name="ln211">    const int weight = luaL_safe_checkint(ls, n); \</a>
+<a name="ln212">    if (weight &lt; 0)                          \</a>
+<a name="ln213">        luaL_error(ls, &quot;Bad weight: %d (must be &gt;= 0)&quot;, weight);</a>
+<a name="ln214"> </a>
+<a name="ln215">static int dgn_weight(lua_State *ls)</a>
+<a name="ln216">{</a>
+<a name="ln217">    MAP(ls, 1, map);</a>
+<a name="ln218">    if (!lua_isnil(ls, 2))</a>
+<a name="ln219">    {</a>
+<a name="ln220">        WEIGHT(ls, 2, weight);</a>
+<a name="ln221">        map-&gt;_weight.set_default(weight);</a>
+<a name="ln222">    }</a>
+<a name="ln223">    return 0;</a>
+<a name="ln224">}</a>
+<a name="ln225"> </a>
+<a name="ln226">static int dgn_depth_weight(lua_State *ls)</a>
+<a name="ln227">{</a>
+<a name="ln228">    MAP(ls, 1, map);</a>
+<a name="ln229">    const string depth(luaL_checkstring(ls, 2));</a>
+<a name="ln230">    WEIGHT(ls, 3, weight);</a>
+<a name="ln231">    map-&gt;_weight.add_range(depth, weight);</a>
+<a name="ln232">    return 0;</a>
+<a name="ln233">}</a>
+<a name="ln234"> </a>
+<a name="ln235">static int dgn_orient(lua_State *ls)</a>
+<a name="ln236">{</a>
+<a name="ln237">    MAP(ls, 1, map);</a>
+<a name="ln238">    if (lua_gettop(ls) &gt; 1)</a>
+<a name="ln239">    {</a>
+<a name="ln240">        if (lua_isnil(ls, 2))</a>
+<a name="ln241">            map-&gt;orient = MAP_NONE;</a>
+<a name="ln242">        else</a>
+<a name="ln243">        {</a>
+<a name="ln244">            const string orient = luaL_checkstring(ls, 2);</a>
+<a name="ln245">            bool found = false;</a>
+<a name="ln246">            // Note: Empty string is intentionally mapped to MAP_NONE!</a>
+<a name="ln247">            for (int i = MAP_NONE; i &lt; MAP_NUM_SECTION_TYPES; ++i)</a>
+<a name="ln248">            {</a>
+<a name="ln249">                if (orient == map_section_name(i))</a>
+<a name="ln250">                {</a>
+<a name="ln251">                    map-&gt;orient = static_cast&lt;map_section_type&gt;(i);</a>
+<a name="ln252">                    found = true;</a>
+<a name="ln253">                    break;</a>
+<a name="ln254">                }</a>
+<a name="ln255">            }</a>
+<a name="ln256">            if (!found)</a>
+<a name="ln257">                luaL_error(ls, (&quot;Bad orient: &quot; + orient).c_str());</a>
+<a name="ln258">        }</a>
+<a name="ln259">    }</a>
+<a name="ln260">    PLUARET(string, map_section_name(map-&gt;orient));</a>
+<a name="ln261">}</a>
+<a name="ln262"> </a>
+<a name="ln263">int dgn_map_add_transform(lua_State *ls,</a>
+<a name="ln264">                          string (map_lines::*add)(const string &amp;s))</a>
+<a name="ln265">{</a>
+<a name="ln266">    MAP(ls, 1, map);</a>
+<a name="ln267">    if (lua_gettop(ls) == 1)</a>
+<a name="ln268">        luaL_error(ls, &quot;Expected args, got none.&quot;);</a>
+<a name="ln269"> </a>
+<a name="ln270">    for (int i = 2, size = lua_gettop(ls); i &lt;= size; ++i)</a>
+<a name="ln271">    {</a>
+<a name="ln272">        if (lua_isnil(ls, i))</a>
+<a name="ln273">            luaL_error(ls, &quot;Unexpected nil.&quot;);</a>
+<a name="ln274">        else</a>
+<a name="ln275">        {</a>
+<a name="ln276">            string err = (map-&gt;map.*add)(luaL_checkstring(ls, i));</a>
+<a name="ln277">            if (!err.empty())</a>
+<a name="ln278">                luaL_error(ls, err.c_str());</a>
+<a name="ln279">        }</a>
+<a name="ln280">    }</a>
+<a name="ln281"> </a>
+<a name="ln282">    return 0;</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">static int dgn_shuffle(lua_State *ls)</a>
+<a name="ln286">{</a>
+<a name="ln287">    return dgn_map_add_transform(ls, &amp;map_lines::add_shuffle);</a>
+<a name="ln288">}</a>
+<a name="ln289"> </a>
+<a name="ln290">static int dgn_clear(lua_State *ls)</a>
+<a name="ln291">{</a>
+<a name="ln292">    return dgn_map_add_transform(ls, &amp;map_lines::add_clear);</a>
+<a name="ln293">}</a>
+<a name="ln294"> </a>
+<a name="ln295">static int dgn_subst(lua_State *ls)</a>
+<a name="ln296">{</a>
+<a name="ln297">    return dgn_map_add_transform(ls, &amp;map_lines::add_subst);</a>
+<a name="ln298">}</a>
+<a name="ln299"> </a>
+<a name="ln300">static int dgn_nsubst(lua_State *ls)</a>
+<a name="ln301">{</a>
+<a name="ln302">    return dgn_map_add_transform(ls, &amp;map_lines::add_nsubst);</a>
+<a name="ln303">}</a>
+<a name="ln304"> </a>
+<a name="ln305">static int dgn_colour(lua_State *ls)</a>
+<a name="ln306">{</a>
+<a name="ln307">    return dgn_map_add_transform(ls, &amp;map_lines::add_colour);</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">static int dgn_normalise(lua_State *ls)</a>
+<a name="ln311">{</a>
+<a name="ln312">    MAP(ls, 1, map);</a>
+<a name="ln313">    map-&gt;map.normalise();</a>
+<a name="ln314">    return 0;</a>
+<a name="ln315">}</a>
+<a name="ln316"> </a>
+<a name="ln317">static int dgn_map(lua_State *ls)</a>
+<a name="ln318">{</a>
+<a name="ln319">    MAP(ls, 1, map);</a>
+<a name="ln320">    if (lua_gettop(ls) == 1)</a>
+<a name="ln321">        return clua_stringtable(ls, map-&gt;map.get_lines());</a>
+<a name="ln322"> </a>
+<a name="ln323">    if (lua_isnil(ls, 2))</a>
+<a name="ln324">    {</a>
+<a name="ln325">        map-&gt;map.clear();</a>
+<a name="ln326">        return 0;</a>
+<a name="ln327">    }</a>
+<a name="ln328"> </a>
+<a name="ln329">    // map(&lt;map&gt;, x, y) = glyph at (x,y), subject to map being</a>
+<a name="ln330">    // resolved and normalised.</a>
+<a name="ln331">    if (lua_gettop(ls) == 3 &amp;&amp; lua_isnumber(ls, 2) &amp;&amp; lua_isnumber(ls, 3))</a>
+<a name="ln332">    {</a>
+<a name="ln333">        const int gly = map-&gt;map.glyph(luaL_safe_checkint(ls, 2),</a>
+<a name="ln334">                                       luaL_safe_checkint(ls, 3));</a>
+<a name="ln335">        char buf[2] = &quot;&quot;;</a>
+<a name="ln336">        buf[0] = gly;</a>
+<a name="ln337">        lua_pushstring(ls, buf);</a>
+<a name="ln338">        return 1;</a>
+<a name="ln339">    }</a>
+<a name="ln340"> </a>
+<a name="ln341">    if (lua_isstring(ls, 2))</a>
+<a name="ln342">    {</a>
+<a name="ln343">        map-&gt;map.add_line(luaL_checkstring(ls, 2));</a>
+<a name="ln344">        return 0;</a>
+<a name="ln345">    }</a>
+<a name="ln346"> </a>
+<a name="ln347">    vector&lt;string&gt; &amp;lines = map-&gt;map.get_lines();</a>
+<a name="ln348">    int which_line = luaL_safe_checkint(ls, 2);</a>
+<a name="ln349">    if (which_line &lt; 0)</a>
+<a name="ln350">        which_line += (int) lines.size();</a>
+<a name="ln351">    if (lua_gettop(ls) == 2)</a>
+<a name="ln352">    {</a>
+<a name="ln353">        if (which_line &lt; 0 || which_line &gt;= (int) lines.size())</a>
+<a name="ln354">        {</a>
+<a name="ln355">            luaL_error(ls,</a>
+<a name="ln356">                       lines.empty()? &quot;Map is empty&quot;</a>
+<a name="ln357">                       : make_stringf(&quot;Line %d out of range (0-%d)&quot;,</a>
+<a name="ln358">                                      which_line,</a>
+<a name="ln359">                                      (int)lines.size() - 1).c_str());</a>
+<a name="ln360">        }</a>
+<a name="ln361">        PLUARET(string, lines[which_line].c_str());</a>
+<a name="ln362">    }</a>
+<a name="ln363"> </a>
+<a name="ln364">    if (lua_isnil(ls, 3))</a>
+<a name="ln365">    {</a>
+<a name="ln366">        if (which_line &gt;= 0 &amp;&amp; which_line &lt; (int) lines.size())</a>
+<a name="ln367">        {</a>
+<a name="ln368">            lines.erase(lines.begin() + which_line);</a>
+<a name="ln369">            PLUARET(boolean, true);</a>
+<a name="ln370">        }</a>
+<a name="ln371">        return 0;</a>
+<a name="ln372">    }</a>
+<a name="ln373"> </a>
+<a name="ln374">    const string newline = luaL_checkstring(ls, 3);</a>
+<a name="ln375">    if (which_line &lt; 0)</a>
+<a name="ln376">    {</a>
+<a name="ln377">        luaL_error(ls,</a>
+<a name="ln378">                   make_stringf(&quot;Index %d out of range&quot;, which_line).c_str());</a>
+<a name="ln379">    }</a>
+<a name="ln380"> </a>
+<a name="ln381">    if (which_line &lt; (int) lines.size())</a>
+<a name="ln382">    {</a>
+<a name="ln383">        lines[which_line] = newline;</a>
+<a name="ln384">        return 0;</a>
+<a name="ln385">    }</a>
+<a name="ln386"> </a>
+<a name="ln387">    lines.reserve(which_line + 1);</a>
+<a name="ln388">    lines.resize(which_line + 1, &quot;&quot;);</a>
+<a name="ln389">    lines[which_line] = newline;</a>
+<a name="ln390">    return 0;</a>
+<a name="ln391">}</a>
+<a name="ln392"> </a>
+<a name="ln393">static int dgn_mons(lua_State *ls)</a>
+<a name="ln394">{</a>
+<a name="ln395">    MAP(ls, 1, map);</a>
+<a name="ln396">    if (lua_gettop(ls) == 1)</a>
+<a name="ln397">        return 0;</a>
+<a name="ln398"> </a>
+<a name="ln399">    if (lua_isnil(ls, 2))</a>
+<a name="ln400">    {</a>
+<a name="ln401">        map-&gt;mons.clear();</a>
+<a name="ln402">        return 0;</a>
+<a name="ln403">    }</a>
+<a name="ln404"> </a>
+<a name="ln405">    if (lua_isstring(ls, 2))</a>
+<a name="ln406">    {</a>
+<a name="ln407">        string err = map-&gt;mons.add_mons(luaL_checkstring(ls, 2));</a>
+<a name="ln408">        if (!err.empty())</a>
+<a name="ln409">            luaL_error(ls, err.c_str());</a>
+<a name="ln410">        return 0;</a>
+<a name="ln411">    }</a>
+<a name="ln412"> </a>
+<a name="ln413">    const int index = luaL_safe_checkint(ls, 2);</a>
+<a name="ln414">    string err = map-&gt;mons.set_mons(index, luaL_checkstring(ls, 3));</a>
+<a name="ln415">    if (!err.empty())</a>
+<a name="ln416">        luaL_error(ls, err.c_str());</a>
+<a name="ln417">    return 0;</a>
+<a name="ln418">}</a>
+<a name="ln419"> </a>
+<a name="ln420">static int dgn_item(lua_State *ls)</a>
+<a name="ln421">{</a>
+<a name="ln422">    MAP(ls, 1, map);</a>
+<a name="ln423">    if (lua_gettop(ls) == 1)</a>
+<a name="ln424">        return 0;</a>
+<a name="ln425"> </a>
+<a name="ln426">    if (lua_isnil(ls, 2))</a>
+<a name="ln427">    {</a>
+<a name="ln428">        map-&gt;items.clear();</a>
+<a name="ln429">        return 0;</a>
+<a name="ln430">    }</a>
+<a name="ln431"> </a>
+<a name="ln432">    if (lua_isstring(ls, 2))</a>
+<a name="ln433">    {</a>
+<a name="ln434">        string err = map-&gt;items.add_item(luaL_checkstring(ls, 2));</a>
+<a name="ln435">        if (!err.empty())</a>
+<a name="ln436">            luaL_error(ls, err.c_str());</a>
+<a name="ln437">        return 0;</a>
+<a name="ln438">    }</a>
+<a name="ln439"> </a>
+<a name="ln440">    const int index = luaL_safe_checkint(ls, 2);</a>
+<a name="ln441">    string err = map-&gt;items.set_item(index, luaL_checkstring(ls, 3));</a>
+<a name="ln442">    if (!err.empty())</a>
+<a name="ln443">        luaL_error(ls, err.c_str());</a>
+<a name="ln444">    return 0;</a>
+<a name="ln445">}</a>
+<a name="ln446"> </a>
+<a name="ln447">static int dgn_lua_marker(lua_State *ls)</a>
+<a name="ln448">{</a>
+<a name="ln449">    MAP(ls, 1, map);</a>
+<a name="ln450">    if (lua_gettop(ls) != 3 || !lua_isstring(ls, 2)</a>
+<a name="ln451">        || (!lua_isfunction(ls, 3) &amp;&amp; !lua_istable(ls, 3)))</a>
+<a name="ln452">    {</a>
+<a name="ln453">        luaL_error(ls, &quot;Expected marker key and marker function/table.&quot;);</a>
+<a name="ln454">    }</a>
+<a name="ln455"> </a>
+<a name="ln456">    CLua &amp;lvm(CLua::get_vm(ls));</a>
+<a name="ln457">    string key = lua_tostring(ls, 2);</a>
+<a name="ln458">    lua_datum function(lvm, 3, false);</a>
+<a name="ln459"> </a>
+<a name="ln460">    const string err = map-&gt;map.add_lua_marker(key, function);</a>
+<a name="ln461">    if (!err.empty())</a>
+<a name="ln462">        luaL_error(ls, err.c_str());</a>
+<a name="ln463"> </a>
+<a name="ln464">    return 0;</a>
+<a name="ln465">}</a>
+<a name="ln466"> </a>
+<a name="ln467">static int dgn_marker(lua_State *ls)</a>
+<a name="ln468">{</a>
+<a name="ln469">    MAP(ls, 1, map);</a>
+<a name="ln470">    if (lua_gettop(ls) == 1)</a>
+<a name="ln471">        return 0;</a>
+<a name="ln472">    if (lua_isnil(ls, 2))</a>
+<a name="ln473">    {</a>
+<a name="ln474">        map-&gt;map.clear_markers();</a>
+<a name="ln475">        return 0;</a>
+<a name="ln476">    }</a>
+<a name="ln477"> </a>
+<a name="ln478">    if (lua_isstring(ls, 2))</a>
+<a name="ln479">    {</a>
+<a name="ln480">        string err = map-&gt;map.add_feature_marker(luaL_checkstring(ls, 2));</a>
+<a name="ln481">        if (!err.empty())</a>
+<a name="ln482">            luaL_error(ls, err.c_str());</a>
+<a name="ln483">    }</a>
+<a name="ln484">    return 0;</a>
+<a name="ln485">}</a>
+<a name="ln486"> </a>
+<a name="ln487">static int dgn_kfeat(lua_State *ls)</a>
+<a name="ln488">{</a>
+<a name="ln489">    MAP(ls, 1, map);</a>
+<a name="ln490">    string err = map-&gt;map.add_key_feat(luaL_checkstring(ls, 2));</a>
+<a name="ln491">    if (!err.empty())</a>
+<a name="ln492">        luaL_error(ls, err.c_str());</a>
+<a name="ln493">    return 0;</a>
+<a name="ln494">}</a>
+<a name="ln495"> </a>
+<a name="ln496">static int dgn_kmons(lua_State *ls)</a>
+<a name="ln497">{</a>
+<a name="ln498">    MAP(ls, 1, map);</a>
+<a name="ln499">    string err = map-&gt;map.add_key_mons(luaL_checkstring(ls, 2));</a>
+<a name="ln500">    if (!err.empty())</a>
+<a name="ln501">        luaL_error(ls, err.c_str());</a>
+<a name="ln502">    return 0;</a>
+<a name="ln503">}</a>
+<a name="ln504"> </a>
+<a name="ln505">static int dgn_kitem(lua_State *ls)</a>
+<a name="ln506">{</a>
+<a name="ln507">    MAP(ls, 1, map);</a>
+<a name="ln508">    string err = map-&gt;map.add_key_item(luaL_checkstring(ls, 2));</a>
+<a name="ln509">    if (!err.empty())</a>
+<a name="ln510">        luaL_error(ls, err.c_str());</a>
+<a name="ln511">    return 0;</a>
+<a name="ln512">}</a>
+<a name="ln513"> </a>
+<a name="ln514">static int dgn_kmask(lua_State *ls)</a>
+<a name="ln515">{</a>
+<a name="ln516">    MAP(ls, 1, map);</a>
+<a name="ln517">    string err = map-&gt;map.add_key_mask(luaL_checkstring(ls, 2));</a>
+<a name="ln518">    if (!err.empty())</a>
+<a name="ln519">        luaL_error(ls, err.c_str());</a>
+<a name="ln520">    return 0;</a>
+<a name="ln521">}</a>
+<a name="ln522"> </a>
+<a name="ln523">static int dgn_kprop(lua_State *ls)</a>
+<a name="ln524">{</a>
+<a name="ln525">    return dgn_map_add_transform(ls, &amp;map_lines::add_fproperty);</a>
+<a name="ln526">}</a>
+<a name="ln527"> </a>
+<a name="ln528">static int dgn_fheight(lua_State *ls)</a>
+<a name="ln529">{</a>
+<a name="ln530">    return dgn_map_add_transform(ls, &amp;map_lines::add_fheight);</a>
+<a name="ln531">}</a>
+<a name="ln532"> </a>
+<a name="ln533">static int dgn_map_size(lua_State *ls)</a>
+<a name="ln534">{</a>
+<a name="ln535">    MAP(ls, 1, map);</a>
+<a name="ln536">    lua_pushnumber(ls, map-&gt;map.width());</a>
+<a name="ln537">    lua_pushnumber(ls, map-&gt;map.height());</a>
+<a name="ln538">    return 2;</a>
+<a name="ln539">}</a>
+<a name="ln540"> </a>
+<a name="ln541">static int dgn_subvault(lua_State *ls)</a>
+<a name="ln542">{</a>
+<a name="ln543">    MAP(ls, 1, map);</a>
+<a name="ln544">    if (lua_gettop(ls) == 1)</a>
+<a name="ln545">        luaL_error(ls, &quot;Expected args, got none.&quot;);</a>
+<a name="ln546"> </a>
+<a name="ln547">    for (int i = 2, size = lua_gettop(ls); i &lt;= size; ++i)</a>
+<a name="ln548">    {</a>
+<a name="ln549">        if (lua_isnil(ls, i))</a>
+<a name="ln550">            luaL_error(ls, &quot;Unexpected nil.&quot;);</a>
+<a name="ln551">        else</a>
+<a name="ln552">        {</a>
+<a name="ln553">            string err = map-&gt;subvault_from_tagstring(luaL_checkstring(ls, i));</a>
+<a name="ln554">            if (!err.empty())</a>
+<a name="ln555">                luaL_error(ls, err.c_str());</a>
+<a name="ln556">        }</a>
+<a name="ln557">    }</a>
+<a name="ln558"> </a>
+<a name="ln559">    return 0;</a>
+<a name="ln560">}</a>
+<a name="ln561"> </a>
+<a name="ln562">static int dgn_name(lua_State *ls)</a>
+<a name="ln563">{</a>
+<a name="ln564">    MAP(ls, 1, map);</a>
+<a name="ln565">    PLUARET(string, map-&gt;name.c_str());</a>
+<a name="ln566">}</a>
+<a name="ln567"> </a>
+<a name="ln568">typedef</a>
+<a name="ln569">    flood_find&lt;map_def::map_feature_finder, map_def::map_bounds_check&gt;</a>
+<a name="ln570">    map_flood_finder;</a>
+<a name="ln571"> </a>
+<a name="ln572">static int dgn_map_pathfind(lua_State *ls, int minargs,</a>
+<a name="ln573">                            bool (map_flood_finder::*f)(const coord_def &amp;))</a>
+<a name="ln574">{</a>
+<a name="ln575">    MAP(ls, 1, map);</a>
+<a name="ln576">    const int nargs = lua_gettop(ls);</a>
+<a name="ln577">    if (nargs &lt; minargs)</a>
+<a name="ln578">    {</a>
+<a name="ln579">        return luaL_error</a>
+<a name="ln580">        (ls,</a>
+<a name="ln581">         make_stringf(&quot;Not enough points to test connectedness &quot;</a>
+<a name="ln582">                      &quot;(need at least %d)&quot;, minargs / 2).c_str());</a>
+<a name="ln583">    }</a>
+<a name="ln584"> </a>
+<a name="ln585">    map_def::map_feature_finder feat_finder(*map);</a>
+<a name="ln586">    map_def::map_bounds_check bounds_checker(*map);</a>
+<a name="ln587">    map_flood_finder finder(feat_finder, bounds_checker);</a>
+<a name="ln588"> </a>
+<a name="ln589">    for (int i = 4; i &lt; nargs; i += 2)</a>
+<a name="ln590">    {</a>
+<a name="ln591">        const coord_def c(luaL_safe_checkint(ls, i),</a>
+<a name="ln592">                          luaL_safe_checkint(ls, i + 1));</a>
+<a name="ln593">        finder.add_point(c);</a>
+<a name="ln594">    }</a>
+<a name="ln595"> </a>
+<a name="ln596">    const coord_def pos(luaL_safe_checkint(ls, 2), luaL_safe_checkint(ls, 3));</a>
+<a name="ln597">    PLUARET(boolean, (finder.*f)(pos));</a>
+<a name="ln598">}</a>
+<a name="ln599"> </a>
+<a name="ln600">static int dgn_points_connected(lua_State *ls)</a>
+<a name="ln601">{</a>
+<a name="ln602">    return dgn_map_pathfind(ls, 5, &amp;map_flood_finder::points_connected_from);</a>
+<a name="ln603">}</a>
+<a name="ln604"> </a>
+<a name="ln605">static int dgn_any_point_connected(lua_State *ls)</a>
+<a name="ln606">{</a>
+<a name="ln607">    return dgn_map_pathfind(ls, 5, &amp;map_flood_finder::any_point_connected_from);</a>
+<a name="ln608">}</a>
+<a name="ln609"> </a>
+<a name="ln610">static int dgn_has_exit_from(lua_State *ls)</a>
+<a name="ln611">{</a>
+<a name="ln612">    return dgn_map_pathfind(ls, 3, &amp;map_flood_finder::has_exit_from);</a>
+<a name="ln613">}</a>
+<a name="ln614"> </a>
+<a name="ln615">static void dlua_push_coordinates(lua_State *ls, const coord_def &amp;c)</a>
+<a name="ln616">{</a>
+<a name="ln617">    lua_pushnumber(ls, c.x);</a>
+<a name="ln618">    lua_pushnumber(ls, c.y);</a>
+<a name="ln619">}</a>
+<a name="ln620"> </a>
+<a name="ln621">static int dgn_gly_point(lua_State *ls)</a>
+<a name="ln622">{</a>
+<a name="ln623">    MAP(ls, 1, map);</a>
+<a name="ln624">    coord_def c = map-&gt;find_first_glyph(*luaL_checkstring(ls, 2));</a>
+<a name="ln625">    if (c.x != -1 &amp;&amp; c.y != -1)</a>
+<a name="ln626">    {</a>
+<a name="ln627">        dlua_push_coordinates(ls, c);</a>
+<a name="ln628">        return 2;</a>
+<a name="ln629">    }</a>
+<a name="ln630">    return 0;</a>
+<a name="ln631">}</a>
+<a name="ln632"> </a>
+<a name="ln633">static int dgn_gly_points(lua_State *ls)</a>
+<a name="ln634">{</a>
+<a name="ln635">    MAP(ls, 1, map);</a>
+<a name="ln636">    vector&lt;coord_def&gt; cs = map-&gt;find_glyph(*luaL_checkstring(ls, 2));</a>
+<a name="ln637"> </a>
+<a name="ln638">    for (coord_def c : cs)</a>
+<a name="ln639">        dlua_push_coordinates(ls, c);</a>
+<a name="ln640">    return cs.size() * 2;</a>
+<a name="ln641">}</a>
+<a name="ln642"> </a>
+<a name="ln643">static int dgn_original_map(lua_State *ls)</a>
+<a name="ln644">{</a>
+<a name="ln645">    MAP(ls, 1, map);</a>
+<a name="ln646">    if (map-&gt;original)</a>
+<a name="ln647">        clua_push_map(ls, map-&gt;original);</a>
+<a name="ln648">    else</a>
+<a name="ln649">        lua_pushnil(ls);</a>
+<a name="ln650">    return 1;</a>
+<a name="ln651">}</a>
+<a name="ln652"> </a>
+<a name="ln653">static int dgn_load_des_file(lua_State *ls)</a>
+<a name="ln654">{</a>
+<a name="ln655">    const string &amp;file = luaL_checkstring(ls, 1);</a>
+<a name="ln656">    if (!file.empty())</a>
+<a name="ln657">        read_map(file);</a>
+<a name="ln658">    return 0;</a>
+<a name="ln659">}</a>
+<a name="ln660"> </a>
+<a name="ln661">static int dgn_lfloorcol(lua_State *ls)</a>
+<a name="ln662">{</a>
+<a name="ln663">    MAP(ls, 1, map);</a>
+<a name="ln664"> </a>
+<a name="ln665">    if (!lua_isnone(ls, 2))</a>
+<a name="ln666">    {</a>
+<a name="ln667">        const char *s = luaL_checkstring(ls, 2);</a>
+<a name="ln668">        int colour = str_to_colour(s, -1, false, true);</a>
+<a name="ln669"> </a>
+<a name="ln670">        if (colour &lt; 0 || colour == BLACK)</a>
+<a name="ln671">        {</a>
+<a name="ln672">            string error;</a>
+<a name="ln673"> </a>
+<a name="ln674">            if (colour == BLACK)</a>
+<a name="ln675">                error = &quot;Can't set floor to black.&quot;;</a>
+<a name="ln676">            else</a>
+<a name="ln677">            {</a>
+<a name="ln678">                error = &quot;No such colour as '&quot;;</a>
+<a name="ln679">                error += s;</a>
+<a name="ln680">                error += &quot;'&quot;;</a>
+<a name="ln681">            }</a>
+<a name="ln682"> </a>
+<a name="ln683">            luaL_argerror(ls, 2, error.c_str());</a>
+<a name="ln684"> </a>
+<a name="ln685">            return 0;</a>
+<a name="ln686">        }</a>
+<a name="ln687">        map-&gt;floor_colour = colour;</a>
+<a name="ln688">    }</a>
+<a name="ln689">    PLUARET(string, colour_to_str(map-&gt;floor_colour).c_str());</a>
+<a name="ln690">}</a>
+<a name="ln691"> </a>
+<a name="ln692">static int dgn_lrockcol(lua_State *ls)</a>
+<a name="ln693">{</a>
+<a name="ln694">    MAP(ls, 1, map);</a>
+<a name="ln695"> </a>
+<a name="ln696">    if (!lua_isnone(ls, 2))</a>
+<a name="ln697">    {</a>
+<a name="ln698">        const char *s = luaL_checkstring(ls, 2);</a>
+<a name="ln699">        int colour = str_to_colour(s, -1, false, true);</a>
+<a name="ln700"> </a>
+<a name="ln701">        if (colour &lt; 0 || colour == BLACK)</a>
+<a name="ln702">        {</a>
+<a name="ln703">            string error;</a>
+<a name="ln704"> </a>
+<a name="ln705">            if (colour == BLACK)</a>
+<a name="ln706">                error = &quot;Can't set rock to black.&quot;;</a>
+<a name="ln707">            else</a>
+<a name="ln708">            {</a>
+<a name="ln709">                error = &quot;No such colour as '&quot;;</a>
+<a name="ln710">                error += s;</a>
+<a name="ln711">                error += &quot;'&quot;;</a>
+<a name="ln712">            }</a>
+<a name="ln713"> </a>
+<a name="ln714">            luaL_argerror(ls, 2, error.c_str());</a>
+<a name="ln715"> </a>
+<a name="ln716">            return 0;</a>
+<a name="ln717">        }</a>
+<a name="ln718"> </a>
+<a name="ln719">        map-&gt;rock_colour = colour;</a>
+<a name="ln720">    }</a>
+<a name="ln721">    PLUARET(string, colour_to_str(map-&gt;rock_colour).c_str());</a>
+<a name="ln722">}</a>
+<a name="ln723"> </a>
+<a name="ln724">static int dgn_get_floor_colour(lua_State *ls)</a>
+<a name="ln725">{</a>
+<a name="ln726">    PLUARET(string, colour_to_str(env.floor_colour).c_str());</a>
+<a name="ln727">}</a>
+<a name="ln728"> </a>
+<a name="ln729">static int dgn_get_rock_colour(lua_State *ls)</a>
+<a name="ln730">{</a>
+<a name="ln731">    PLUARET(string, colour_to_str(env.rock_colour).c_str());</a>
+<a name="ln732">}</a>
+<a name="ln733"> </a>
+<a name="ln734">static int _lua_colour(lua_State *ls, int ndx,</a>
+<a name="ln735">                       int forbidden_colour = -1)</a>
+<a name="ln736">{</a>
+<a name="ln737">    if (lua_isnumber(ls, ndx))</a>
+<a name="ln738">        return luaL_safe_tointeger(ls, ndx);</a>
+<a name="ln739">    else if (const char *s = luaL_checkstring(ls, ndx))</a>
+<a name="ln740">    {</a>
+<a name="ln741">        const int colour = str_to_colour(s, -1, false, true);</a>
+<a name="ln742"> </a>
+<a name="ln743">        if (colour &lt; 0 || colour == forbidden_colour)</a>
+<a name="ln744">        {</a>
+<a name="ln745">            string error;</a>
+<a name="ln746">            if (colour == forbidden_colour)</a>
+<a name="ln747">                error = string(&quot;Can't set floor to &quot;) + s;</a>
+<a name="ln748">            else</a>
+<a name="ln749">                error = string(&quot;Unknown colour: '&quot;) + s + &quot;'&quot;;</a>
+<a name="ln750">            return luaL_argerror(ls, 1, error.c_str());</a>
+<a name="ln751">        }</a>
+<a name="ln752">        return colour;</a>
+<a name="ln753">    }</a>
+<a name="ln754">    return luaL_argerror(ls, ndx, &quot;Expected colour name or number&quot;);</a>
+<a name="ln755">}</a>
+<a name="ln756"> </a>
+<a name="ln757">static int dgn_change_floor_colour(lua_State *ls)</a>
+<a name="ln758">{</a>
+<a name="ln759">    const int colour = _lua_colour(ls, 1, BLACK);</a>
+<a name="ln760">    const bool update_now = _lua_boolean(ls, 2, false);</a>
+<a name="ln761"> </a>
+<a name="ln762">    env.floor_colour = colour;</a>
+<a name="ln763"> </a>
+<a name="ln764">    if (crawl_state.need_save &amp;&amp; update_now)</a>
+<a name="ln765">        viewwindow();</a>
+<a name="ln766">    return 0;</a>
+<a name="ln767">}</a>
+<a name="ln768"> </a>
+<a name="ln769">static int dgn_change_rock_colour(lua_State *ls)</a>
+<a name="ln770">{</a>
+<a name="ln771">    const int colour = _lua_colour(ls, 1, BLACK);</a>
+<a name="ln772">    const bool update_now = _lua_boolean(ls, 2, false);</a>
+<a name="ln773"> </a>
+<a name="ln774">    env.rock_colour = colour;</a>
+<a name="ln775"> </a>
+<a name="ln776">    if (crawl_state.need_save &amp;&amp; update_now)</a>
+<a name="ln777">        viewwindow();</a>
+<a name="ln778">    return 0;</a>
+<a name="ln779">}</a>
+<a name="ln780"> </a>
+<a name="ln781">static int dgn_reset_feature_name_for(lua_State *ls)</a>
+<a name="ln782">{</a>
+<a name="ln783">    COORDS(c, 1, 2);</a>
+<a name="ln784">    const int map_index = env.level_map_ids(c);</a>
+<a name="ln785">    if (map_index != INVALID_MAP_INDEX)</a>
+<a name="ln786">    {</a>
+<a name="ln787">        const string feat_name = lua_tostring(ls, 3);</a>
+<a name="ln788">        const dungeon_feature_type feat = dungeon_feature_by_name(feat_name);</a>
+<a name="ln789">        env.level_vaults[map_index]-&gt;map.feat_renames.erase(feat);</a>
+<a name="ln790">    }</a>
+<a name="ln791">    return 0;</a>
+<a name="ln792">}</a>
+<a name="ln793"> </a>
+<a name="ln794">static int dgn_colour_at(lua_State *ls)</a>
+<a name="ln795">{</a>
+<a name="ln796">    COORDS(c, 1, 2);</a>
+<a name="ln797">    if (!lua_isnone(ls, 3))</a>
+<a name="ln798">        env.grid_colours(c) = _lua_colour(ls, 3);</a>
+<a name="ln799">    PLUARET(string, colour_to_str(env.grid_colours(c)).c_str());</a>
+<a name="ln800">}</a>
+<a name="ln801"> </a>
+<a name="ln802">static int dgn_register_listener(lua_State *ls)</a>
+<a name="ln803">{</a>
+<a name="ln804">    unsigned mask = luaL_safe_checkint(ls, 1);</a>
+<a name="ln805">    MAPMARKER(ls, 2, mark);</a>
+<a name="ln806">    map_lua_marker *listener = dynamic_cast&lt;map_lua_marker*&gt;(mark);</a>
+<a name="ln807">    coord_def pos;</a>
+<a name="ln808">    // Was a position supplied?</a>
+<a name="ln809">    if (lua_gettop(ls) == 4)</a>
+<a name="ln810">    {</a>
+<a name="ln811">        pos.x = luaL_safe_checkint(ls, 3);</a>
+<a name="ln812">        pos.y = luaL_safe_checkint(ls, 4);</a>
+<a name="ln813">    }</a>
+<a name="ln814"> </a>
+<a name="ln815">    dungeon_events.register_listener(mask, listener, pos);</a>
+<a name="ln816">    return 0;</a>
+<a name="ln817">}</a>
+<a name="ln818"> </a>
+<a name="ln819">static int dgn_remove_listener(lua_State *ls)</a>
+<a name="ln820">{</a>
+<a name="ln821">    MAPMARKER(ls, 1, mark);</a>
+<a name="ln822">    map_lua_marker *listener = dynamic_cast&lt;map_lua_marker*&gt;(mark);</a>
+<a name="ln823">    coord_def pos;</a>
+<a name="ln824">    // Was a position supplied?</a>
+<a name="ln825">    if (lua_gettop(ls) == 3)</a>
+<a name="ln826">    {</a>
+<a name="ln827">        pos.x = luaL_safe_checkint(ls, 2);</a>
+<a name="ln828">        pos.y = luaL_safe_checkint(ls, 3);</a>
+<a name="ln829">    }</a>
+<a name="ln830">    dungeon_events.remove_listener(listener, pos);</a>
+<a name="ln831">    return 0;</a>
+<a name="ln832">}</a>
+<a name="ln833"> </a>
+<a name="ln834">static int dgn_remove_marker(lua_State *ls)</a>
+<a name="ln835">{</a>
+<a name="ln836">    MAPMARKER(ls, 1, mark);</a>
+<a name="ln837">    env.markers.remove(mark);</a>
+<a name="ln838">    return 0;</a>
+<a name="ln839">}</a>
+<a name="ln840"> </a>
+<a name="ln841">static int dgn_num_matching_markers(lua_State *ls)</a>
+<a name="ln842">{</a>
+<a name="ln843">    const char* key     = luaL_checkstring(ls, 1);</a>
+<a name="ln844">    const char* val_ptr = lua_tostring(ls, 2);</a>
+<a name="ln845">    const char* val;</a>
+<a name="ln846"> </a>
+<a name="ln847">    if (val_ptr == nullptr)</a>
+<a name="ln848">        val = &quot;&quot;;</a>
+<a name="ln849">    else</a>
+<a name="ln850">        val = val_ptr;</a>
+<a name="ln851"> </a>
+<a name="ln852">    vector&lt;map_marker*&gt; markers = env.markers.get_all(key, val);</a>
+<a name="ln853"> </a>
+<a name="ln854">    PLUARET(number, markers.size());</a>
+<a name="ln855">}</a>
+<a name="ln856"> </a>
+<a name="ln857">static int dgn_terrain_changed(lua_State *ls)</a>
+<a name="ln858">{</a>
+<a name="ln859">    dungeon_feature_type type = DNGN_UNSEEN;</a>
+<a name="ln860">    if (lua_isnumber(ls, 3))</a>
+<a name="ln861">        type = static_cast&lt;dungeon_feature_type&gt;(luaL_safe_checkint(ls, 3));</a>
+<a name="ln862">    else if (lua_isstring(ls, 3))</a>
+<a name="ln863">        type = dungeon_feature_by_name(lua_tostring(ls, 3));</a>
+<a name="ln864">    const bool preserve_features =</a>
+<a name="ln865">        lua_isboolean(ls, 4)? lua_toboolean(ls, 4) : true;</a>
+<a name="ln866">    const bool preserve_items =</a>
+<a name="ln867">        lua_isboolean(ls, 5)? lua_toboolean(ls, 5) : true;</a>
+<a name="ln868">    dungeon_terrain_changed(coord_def(luaL_safe_checkint(ls, 1),</a>
+<a name="ln869">                                       luaL_safe_checkint(ls, 2)),</a>
+<a name="ln870">                            type, preserve_features, preserve_items);</a>
+<a name="ln871">    return 0;</a>
+<a name="ln872">}</a>
+<a name="ln873"> </a>
+<a name="ln874">static int dgn_fprop_changed(lua_State *ls)</a>
+<a name="ln875">{</a>
+<a name="ln876">    feature_property_type prop = FPROP_NONE;</a>
+<a name="ln877"> </a>
+<a name="ln878">    if (lua_isnumber(ls, 3))</a>
+<a name="ln879">        prop = static_cast&lt;feature_property_type&gt;(luaL_safe_checkint(ls, 3));</a>
+<a name="ln880">    else if (lua_isstring(ls, 3))</a>
+<a name="ln881">        prop = str_to_fprop(lua_tostring(ls, 3));</a>
+<a name="ln882"> </a>
+<a name="ln883">    coord_def pos = coord_def(luaL_safe_checkint(ls, 1), luaL_safe_checkint(ls, 2));</a>
+<a name="ln884"> </a>
+<a name="ln885">    if (in_bounds(pos) &amp;&amp; prop != FPROP_NONE)</a>
+<a name="ln886">    {</a>
+<a name="ln887">        if (testbits(env.pgrid(pos), prop))</a>
+<a name="ln888">        {</a>
+<a name="ln889">            env.pgrid(pos) &amp;= ~prop;</a>
+<a name="ln890">            lua_pushboolean(ls, true);</a>
+<a name="ln891">        }</a>
+<a name="ln892">        else if (!testbits(env.pgrid(pos), prop))</a>
+<a name="ln893">        {</a>
+<a name="ln894">            env.pgrid(pos) |= prop;</a>
+<a name="ln895">            lua_pushboolean(ls, true);</a>
+<a name="ln896">        }</a>
+<a name="ln897">        else</a>
+<a name="ln898">            lua_pushboolean(ls, false);</a>
+<a name="ln899">    }</a>
+<a name="ln900">    else</a>
+<a name="ln901">        lua_pushboolean(ls, false);</a>
+<a name="ln902"> </a>
+<a name="ln903">    return 1;</a>
+<a name="ln904">}</a>
+<a name="ln905"> </a>
+<a name="ln906">static int dgn_fprop_at(lua_State *ls)</a>
+<a name="ln907">{</a>
+<a name="ln908">    feature_property_type prop = FPROP_NONE;</a>
+<a name="ln909"> </a>
+<a name="ln910">    if (lua_isnumber(ls, 3))</a>
+<a name="ln911">        prop = static_cast&lt;feature_property_type&gt;(luaL_safe_checkint(ls, 3));</a>
+<a name="ln912">    else if (lua_isstring(ls, 3))</a>
+<a name="ln913">        prop = str_to_fprop(lua_tostring(ls, 3));</a>
+<a name="ln914"> </a>
+<a name="ln915">    coord_def pos = coord_def(luaL_safe_checkint(ls, 1), luaL_safe_checkint(ls, 2));</a>
+<a name="ln916"> </a>
+<a name="ln917">    if (in_bounds(pos) &amp;&amp; prop != FPROP_NONE)</a>
+<a name="ln918">        lua_pushboolean(ls, testbits(env.pgrid(pos), prop));</a>
+<a name="ln919">    else</a>
+<a name="ln920">        lua_pushboolean(ls, false);</a>
+<a name="ln921"> </a>
+<a name="ln922">    return 1;</a>
+<a name="ln923">}</a>
+<a name="ln924"> </a>
+<a name="ln925">static int dgn_cloud_at(lua_State *ls)</a>
+<a name="ln926">{</a>
+<a name="ln927">    COORDS(c, 1, 2);</a>
+<a name="ln928"> </a>
+<a name="ln929">    if (!in_bounds(c))</a>
+<a name="ln930">        return 0;</a>
+<a name="ln931"> </a>
+<a name="ln932">    if (cloud_struct* cloud = cloud_at(c))</a>
+<a name="ln933">        lua_pushstring(ls, cloud-&gt;cloud_name(true).c_str());</a>
+<a name="ln934">    else</a>
+<a name="ln935">        lua_pushstring(ls, &quot;none&quot;);</a>
+<a name="ln936"> </a>
+<a name="ln937">    return 1;</a>
+<a name="ln938">}</a>
+<a name="ln939"> </a>
+<a name="ln940">static int lua_dgn_set_branch_epilogue(lua_State *ls)</a>
+<a name="ln941">{</a>
+<a name="ln942">    const char *branch_name = luaL_checkstring(ls, 1);</a>
+<a name="ln943"> </a>
+<a name="ln944">    if (!branch_name)</a>
+<a name="ln945">        return 0;</a>
+<a name="ln946"> </a>
+<a name="ln947">    branch_type br = branch_by_abbrevname(branch_name);</a>
+<a name="ln948">    if (br == NUM_BRANCHES)</a>
+<a name="ln949">    {</a>
+<a name="ln950">        luaL_error(ls, make_stringf(&quot;unknown branch: '%s'.&quot;, branch_name).c_str());</a>
+<a name="ln951">        return 0;</a>
+<a name="ln952">    }</a>
+<a name="ln953"> </a>
+<a name="ln954">    const char *func_name = luaL_optstring(ls, 2, &quot;&quot;);</a>
+<a name="ln955"> </a>
+<a name="ln956">    dgn_set_branch_epilogue(br, func_name);</a>
+<a name="ln957"> </a>
+<a name="ln958">    return 0;</a>
+<a name="ln959">}</a>
+<a name="ln960"> </a>
+<a name="ln961">// XXX: Currently, this is hacked so that map_def-&gt;border_fill_type is marshalled</a>
+<a name="ln962">//      when the maps are stored. This relies on the individual map Lua prelude</a>
+<a name="ln963">//      being executed whenever maps are loaded and verified, which means that</a>
+<a name="ln964">//      the next time the map is loaded, border_fill_type is already stored.</a>
+<a name="ln965">static int lua_dgn_set_border_fill_type(lua_State *ls)</a>
+<a name="ln966">{</a>
+<a name="ln967">    MAP(ls, 1, map);</a>
+<a name="ln968">    if (lua_gettop(ls) != 2)</a>
+<a name="ln969">        luaL_error(ls, &quot;set_border_fill_type requires a feature.&quot;);</a>
+<a name="ln970"> </a>
+<a name="ln971">    string fill_string = luaL_checkstring(ls, 2);</a>
+<a name="ln972">    dungeon_feature_type fill_type = dungeon_feature_by_name(fill_string);</a>
+<a name="ln973"> </a>
+<a name="ln974">    if (fill_type == DNGN_UNSEEN)</a>
+<a name="ln975">    {</a>
+<a name="ln976">        luaL_error(ls, (&quot;unknown feature '&quot; + fill_string + &quot;'.&quot;).c_str());</a>
+<a name="ln977">        return 0;</a>
+<a name="ln978">    }</a>
+<a name="ln979"> </a>
+<a name="ln980">    if (feat_is_valid_border(fill_type))</a>
+<a name="ln981">        map-&gt;border_fill_type = fill_type;</a>
+<a name="ln982">    else</a>
+<a name="ln983">        luaL_error(ls, (&quot;set_border_fill_type cannot be the feature '&quot; +</a>
+<a name="ln984">                         fill_string +&quot;'.&quot;).c_str());</a>
+<a name="ln985"> </a>
+<a name="ln986">    return 0;</a>
+<a name="ln987">}</a>
+<a name="ln988"> </a>
+<a name="ln989">static int lua_dgn_set_feature_name(lua_State *ls)</a>
+<a name="ln990">{</a>
+<a name="ln991">    MAP(ls, 1, map);</a>
+<a name="ln992">    if (lua_gettop(ls) != 3)</a>
+<a name="ln993">        luaL_error(ls, &quot;set_feature_name takes a feature and the new name.&quot;);</a>
+<a name="ln994"> </a>
+<a name="ln995">    string feat_string = luaL_checkstring(ls, 2);</a>
+<a name="ln996">    dungeon_feature_type feat_type = dungeon_feature_by_name(feat_string);</a>
+<a name="ln997"> </a>
+<a name="ln998">    if (feat_type == DNGN_UNSEEN)</a>
+<a name="ln999">    {</a>
+<a name="ln1000">        luaL_error(ls, (&quot;unknown feature '&quot; + feat_string + &quot;'.&quot;).c_str());</a>
+<a name="ln1001">        return 0;</a>
+<a name="ln1002">    }</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    map-&gt;feat_renames[feat_type] = luaL_checkstring(ls, 3);</a>
+<a name="ln1005"> </a>
+<a name="ln1006">    return 0;</a>
+<a name="ln1007">}</a>
+<a name="ln1008"> </a>
+<a name="ln1009">static int dgn_floor_halo(lua_State *ls)</a>
+<a name="ln1010">{</a>
+<a name="ln1011">    string error = &quot;&quot;;</a>
+<a name="ln1012"> </a>
+<a name="ln1013">    const char *s1 = luaL_checkstring(ls, 1);</a>
+<a name="ln1014">    const dungeon_feature_type target = dungeon_feature_by_name(s1);</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    if (target == DNGN_UNSEEN)</a>
+<a name="ln1017">    {</a>
+<a name="ln1018">        error += &quot;No such dungeon feature as '&quot;;</a>
+<a name="ln1019">        error += s1;</a>
+<a name="ln1020">        error += &quot;'.  &quot;;</a>
+<a name="ln1021">    }</a>
+<a name="ln1022"> </a>
+<a name="ln1023">    const char *s2 = luaL_checkstring(ls, 2);</a>
+<a name="ln1024">    short colour = str_to_colour(s2, -1, false, true);</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    if (colour == -1)</a>
+<a name="ln1027">    {</a>
+<a name="ln1028">        error += &quot;No such colour as '&quot;;</a>
+<a name="ln1029">        error += s2;</a>
+<a name="ln1030">        error += &quot;'.&quot;;</a>
+<a name="ln1031">    }</a>
+<a name="ln1032">    else if (colour == BLACK)</a>
+<a name="ln1033">        error += &quot;Can't set floor colour to black.&quot;;</a>
+<a name="ln1034"> </a>
+<a name="ln1035">    if (!error.empty())</a>
+<a name="ln1036">    {</a>
+<a name="ln1037">        luaL_argerror(ls, 2, error.c_str());</a>
+<a name="ln1038">        return 0;</a>
+<a name="ln1039">    }</a>
+<a name="ln1040"> </a>
+<a name="ln1041">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln1042">    {</a>
+<a name="ln1043">        if (grd(*ri) == target)</a>
+<a name="ln1044">        {</a>
+<a name="ln1045">            for (adjacent_iterator ai(*ri, false); ai; ++ai)</a>
+<a name="ln1046">            {</a>
+<a name="ln1047">                if (!map_bounds(*ai))</a>
+<a name="ln1048">                    continue;</a>
+<a name="ln1049"> </a>
+<a name="ln1050">                const dungeon_feature_type feat2 = grd(*ai);</a>
+<a name="ln1051"> </a>
+<a name="ln1052">                if (feat2 == DNGN_FLOOR)</a>
+<a name="ln1053">                    env.grid_colours(*ai) = colour;</a>
+<a name="ln1054">            }</a>
+<a name="ln1055">        }</a>
+<a name="ln1056">    }</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    unsigned int tile = get_tile_idx(ls, 3);</a>
+<a name="ln1059">    if (!tile)</a>
+<a name="ln1060">        return 0;</a>
+<a name="ln1061">    if (tile_dngn_count(tile) != 9)</a>
+<a name="ln1062">    {</a>
+<a name="ln1063">        error += &quot;'&quot;;</a>
+<a name="ln1064">        error += luaL_checkstring(ls, 3);</a>
+<a name="ln1065">        error += &quot;' is not a valid halo tile. It has &quot;;</a>
+<a name="ln1066">        error += tile_dngn_count(tile);</a>
+<a name="ln1067">        error += &quot; variations, but needs exactly 9.&quot;;</a>
+<a name="ln1068">        luaL_argerror(ls, 3, error.c_str());</a>
+<a name="ln1069">        return 0;</a>
+<a name="ln1070">    }</a>
+<a name="ln1071"> </a>
+<a name="ln1072">    tile_floor_halo(target, tile);</a>
+<a name="ln1073"> </a>
+<a name="ln1074">    return 0;</a>
+<a name="ln1075">}</a>
+<a name="ln1076"> </a>
+<a name="ln1077">static int dgn_random_walk(lua_State *ls)</a>
+<a name="ln1078">{</a>
+<a name="ln1079">    const int x     = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1080">    const int y     = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1081">    const int dist = luaL_safe_checkint(ls, 3);</a>
+<a name="ln1082"> </a>
+<a name="ln1083">    if (!in_bounds(x, y))</a>
+<a name="ln1084">    {</a>
+<a name="ln1085">        char buf[80];</a>
+<a name="ln1086">        sprintf(buf, &quot;Point (%d,%d) isn't in bounds.&quot;, x, y);</a>
+<a name="ln1087">        luaL_argerror(ls, 1, buf);</a>
+<a name="ln1088">        return 0;</a>
+<a name="ln1089">    }</a>
+<a name="ln1090">    if (dist &lt; 1)</a>
+<a name="ln1091">    {</a>
+<a name="ln1092">        luaL_argerror(ls, 3, &quot;Distance must be positive.&quot;);</a>
+<a name="ln1093">        return 0;</a>
+<a name="ln1094">    }</a>
+<a name="ln1095"> </a>
+<a name="ln1096">    dlua_push_coordinates(ls, random_walk(coord_def(x, y), dist));</a>
+<a name="ln1097">    return 2;</a>
+<a name="ln1098">}</a>
+<a name="ln1099"> </a>
+<a name="ln1100">static kill_category dgn_kill_name_to_category(string name)</a>
+<a name="ln1101">{</a>
+<a name="ln1102">    if (name.empty())</a>
+<a name="ln1103">        return KC_OTHER;</a>
+<a name="ln1104"> </a>
+<a name="ln1105">    lowercase(name);</a>
+<a name="ln1106"> </a>
+<a name="ln1107">    if (name == &quot;you&quot;)</a>
+<a name="ln1108">        return KC_YOU;</a>
+<a name="ln1109">    else if (name == &quot;friendly&quot;)</a>
+<a name="ln1110">        return KC_FRIENDLY;</a>
+<a name="ln1111">    else if (name == &quot;other&quot;)</a>
+<a name="ln1112">        return KC_OTHER;</a>
+<a name="ln1113">    else</a>
+<a name="ln1114">        return KC_NCATEGORIES;</a>
+<a name="ln1115">}</a>
+<a name="ln1116"> </a>
+<a name="ln1117">static int dgn_apply_area_cloud(lua_State *ls)</a>
+<a name="ln1118">{</a>
+<a name="ln1119">    const int x         = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1120">    const int y         = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1121">    const int pow_min   = luaL_safe_checkint(ls, 3);</a>
+<a name="ln1122">    const int pow_max   = luaL_safe_checkint(ls, 4);</a>
+<a name="ln1123">    const int pow_rolls = luaL_safe_checkint(ls, 5);</a>
+<a name="ln1124">    const int size      = luaL_safe_checkint(ls, 6);</a>
+<a name="ln1125"> </a>
+<a name="ln1126">    const cloud_type ctype = cloud_name_to_type(luaL_checkstring(ls, 7));</a>
+<a name="ln1127">    const char*      kname = lua_isstring(ls, 8) ? luaL_checkstring(ls, 8)</a>
+<a name="ln1128">    : &quot;&quot;;</a>
+<a name="ln1129">    const kill_category kc = dgn_kill_name_to_category(kname);</a>
+<a name="ln1130"> </a>
+<a name="ln1131">    const int spread_rate = lua_isnumber(ls, 9) ? luaL_safe_checkint(ls, 9) : -1;</a>
+<a name="ln1132">    const int excl_rad = lua_isnumber(ls, 10) ? luaL_safe_checkint(ls, 10) : -1;</a>
+<a name="ln1133"> </a>
+<a name="ln1134">    if (!in_bounds(x, y))</a>
+<a name="ln1135">    {</a>
+<a name="ln1136">        char buf[80];</a>
+<a name="ln1137">        sprintf(buf, &quot;Point (%d,%d) isn't in bounds.&quot;, x, y);</a>
+<a name="ln1138">        luaL_argerror(ls, 1, buf);</a>
+<a name="ln1139">        return 0;</a>
+<a name="ln1140">    }</a>
+<a name="ln1141"> </a>
+<a name="ln1142">    if (pow_min &lt; 0)</a>
+<a name="ln1143">    {</a>
+<a name="ln1144">        luaL_argerror(ls, 4, &quot;pow_min must be non-negative&quot;);</a>
+<a name="ln1145">        return 0;</a>
+<a name="ln1146">    }</a>
+<a name="ln1147"> </a>
+<a name="ln1148">    if (pow_max &lt; pow_min)</a>
+<a name="ln1149">    {</a>
+<a name="ln1150">        luaL_argerror(ls, 5, &quot;pow_max must not be less than pow_min&quot;);</a>
+<a name="ln1151">        return 0;</a>
+<a name="ln1152">    }</a>
+<a name="ln1153"> </a>
+<a name="ln1154">    if (pow_max == 0)</a>
+<a name="ln1155">    {</a>
+<a name="ln1156">        luaL_argerror(ls, 5, &quot;pow_max must be positive&quot;);</a>
+<a name="ln1157">        return 0;</a>
+<a name="ln1158">    }</a>
+<a name="ln1159"> </a>
+<a name="ln1160">    if (pow_rolls &lt;= 0)</a>
+<a name="ln1161">    {</a>
+<a name="ln1162">        luaL_argerror(ls, 6, &quot;pow_rolls must be positive&quot;);</a>
+<a name="ln1163">        return 0;</a>
+<a name="ln1164">    }</a>
+<a name="ln1165"> </a>
+<a name="ln1166">    if (size &lt; 1)</a>
+<a name="ln1167">    {</a>
+<a name="ln1168">        luaL_argerror(ls, 4, &quot;size must be positive.&quot;);</a>
+<a name="ln1169">        return 0;</a>
+<a name="ln1170">    }</a>
+<a name="ln1171"> </a>
+<a name="ln1172">    if (ctype == CLOUD_NONE)</a>
+<a name="ln1173">    {</a>
+<a name="ln1174">        string error = &quot;Invalid cloud type '&quot;;</a>
+<a name="ln1175">        error += luaL_checkstring(ls, 7);</a>
+<a name="ln1176">        error += &quot;'&quot;;</a>
+<a name="ln1177">        luaL_argerror(ls, 7, error.c_str());</a>
+<a name="ln1178">        return 0;</a>
+<a name="ln1179">    }</a>
+<a name="ln1180"> </a>
+<a name="ln1181">    if (kc != KC_OTHER)</a>
+<a name="ln1182">    {</a>
+<a name="ln1183">        string error = &quot;Invalid kill category '&quot;;</a>
+<a name="ln1184">        error += kname;</a>
+<a name="ln1185">        error += &quot;'&quot;;</a>
+<a name="ln1186">        luaL_argerror(ls, 8, error.c_str());</a>
+<a name="ln1187">        return 0;</a>
+<a name="ln1188">    }</a>
+<a name="ln1189"> </a>
+<a name="ln1190">    if (spread_rate &lt; -1 || spread_rate &gt; 100)</a>
+<a name="ln1191">    {</a>
+<a name="ln1192">        luaL_argerror(ls, 9, &quot;spread_rate must be between -1 and 100,&quot;</a>
+<a name="ln1193">                      &quot;inclusive&quot;);</a>
+<a name="ln1194">        return 0;</a>
+<a name="ln1195">    }</a>
+<a name="ln1196"> </a>
+<a name="ln1197">    apply_area_cloud(</a>
+<a name="ln1198">        [pow_min, pow_max, pow_rolls](coord_def where, int /*pow*/,</a>
+<a name="ln1199">                                      int spreadrate, cloud_type type,</a>
+<a name="ln1200">                                      const actor* agent, int exclrad)</a>
+<a name="ln1201">        {</a>
+<a name="ln1202">            const int pow = random_range(pow_min, pow_max, pow_rolls);</a>
+<a name="ln1203">            place_cloud(type, where, pow, agent, spreadrate, exclrad);</a>
+<a name="ln1204">            return 1;</a>
+<a name="ln1205">        }, coord_def(x, y), 0, size, ctype, 0, spread_rate, excl_rad);</a>
+<a name="ln1206"> </a>
+<a name="ln1207">    return 0;</a>
+<a name="ln1208">}</a>
+<a name="ln1209"> </a>
+<a name="ln1210">static int dgn_delete_cloud(lua_State *ls)</a>
+<a name="ln1211">{</a>
+<a name="ln1212">    COORDS(c, 1, 2);</a>
+<a name="ln1213"> </a>
+<a name="ln1214">    if (in_bounds(c))</a>
+<a name="ln1215">        delete_cloud(c);</a>
+<a name="ln1216"> </a>
+<a name="ln1217">    return 0;</a>
+<a name="ln1218">}</a>
+<a name="ln1219"> </a>
+<a name="ln1220">static int dgn_place_cloud(lua_State *ls)</a>
+<a name="ln1221">{</a>
+<a name="ln1222">    const int x         = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1223">    const int y         = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1224">    const cloud_type ctype = cloud_name_to_type(luaL_checkstring(ls, 3));</a>
+<a name="ln1225">    const int cl_range      = luaL_safe_checkint(ls, 4);</a>
+<a name="ln1226">    const char*      kname = lua_isstring(ls, 5) ? luaL_checkstring(ls, 5)</a>
+<a name="ln1227">    : &quot;&quot;;</a>
+<a name="ln1228">    const kill_category kc = dgn_kill_name_to_category(kname);</a>
+<a name="ln1229"> </a>
+<a name="ln1230">    const int spread_rate = lua_isnumber(ls, 6) ? luaL_safe_checkint(ls, 6) : -1;</a>
+<a name="ln1231"> </a>
+<a name="ln1232">    const int excl_rad = lua_isnumber(ls, 7) ? luaL_safe_checkint(ls, 7) : -1;</a>
+<a name="ln1233"> </a>
+<a name="ln1234">    if (!in_bounds(x, y))</a>
+<a name="ln1235">    {</a>
+<a name="ln1236">        char buf[80];</a>
+<a name="ln1237">        sprintf(buf, &quot;Point (%d,%d) isn't in bounds.&quot;, x, y);</a>
+<a name="ln1238">        luaL_argerror(ls, 1, buf);</a>
+<a name="ln1239">        return 0;</a>
+<a name="ln1240">    }</a>
+<a name="ln1241"> </a>
+<a name="ln1242">    if (ctype == CLOUD_NONE)</a>
+<a name="ln1243">    {</a>
+<a name="ln1244">        string error = &quot;Invalid cloud type '&quot;;</a>
+<a name="ln1245">        error += luaL_checkstring(ls, 3);</a>
+<a name="ln1246">        error += &quot;'&quot;;</a>
+<a name="ln1247">        luaL_argerror(ls, 3, error.c_str());</a>
+<a name="ln1248">        return 0;</a>
+<a name="ln1249">    }</a>
+<a name="ln1250"> </a>
+<a name="ln1251">    if (kc == KC_NCATEGORIES || kc != KC_OTHER)</a>
+<a name="ln1252">    {</a>
+<a name="ln1253">        string error = &quot;Invalid kill category '&quot;;</a>
+<a name="ln1254">        error += kname;</a>
+<a name="ln1255">        error += &quot;'&quot;;</a>
+<a name="ln1256">        luaL_argerror(ls, 5, error.c_str());</a>
+<a name="ln1257">        return 0;</a>
+<a name="ln1258">    }</a>
+<a name="ln1259"> </a>
+<a name="ln1260">    if (spread_rate &lt; -1 || spread_rate &gt; 100)</a>
+<a name="ln1261">    {</a>
+<a name="ln1262">        luaL_argerror(ls, 6, &quot;spread_rate must be between -1 and 100,&quot;</a>
+<a name="ln1263">                      &quot;inclusive&quot;);</a>
+<a name="ln1264">        return 0;</a>
+<a name="ln1265">    }</a>
+<a name="ln1266"> </a>
+<a name="ln1267">    place_cloud(ctype, coord_def(x, y), cl_range, 0, spread_rate, excl_rad);</a>
+<a name="ln1268"> </a>
+<a name="ln1269">    return 0;</a>
+<a name="ln1270">}</a>
+<a name="ln1271"> </a>
+<a name="ln1272">// XXX: Doesn't allow for messages or specifying the noise source.</a>
+<a name="ln1273">LUAFN(dgn_noisy)</a>
+<a name="ln1274">{</a>
+<a name="ln1275">    const int loudness = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1276">    COORDS(pos, 2, 3);</a>
+<a name="ln1277"> </a>
+<a name="ln1278">    noisy(loudness, pos);</a>
+<a name="ln1279"> </a>
+<a name="ln1280">    return 0;</a>
+<a name="ln1281">}</a>
+<a name="ln1282"> </a>
+<a name="ln1283">static int _dgn_place_transporter(lua_State *ls)</a>
+<a name="ln1284">{</a>
+<a name="ln1285">    const coord_def trans_pos = coord_def(luaL_safe_checkint(ls, 1),</a>
+<a name="ln1286">                                         luaL_safe_checkint(ls, 2));</a>
+<a name="ln1287">    const coord_def dest_pos = coord_def(luaL_safe_checkint(ls, 3),</a>
+<a name="ln1288">                                        luaL_safe_checkint(ls, 4));</a>
+<a name="ln1289"> </a>
+<a name="ln1290">    dgn_place_transporter(trans_pos, dest_pos);</a>
+<a name="ln1291">    return 0;</a>
+<a name="ln1292">}</a>
+<a name="ln1293"> </a>
+<a name="ln1294">static int _dgn_is_passable(lua_State *ls)</a>
+<a name="ln1295">{</a>
+<a name="ln1296">    COORDS(c, 1, 2);</a>
+<a name="ln1297">    lua_pushboolean(ls, dgn_square_travel_ok(c));</a>
+<a name="ln1298">    return 1;</a>
+<a name="ln1299">}</a>
+<a name="ln1300"> </a>
+<a name="ln1301">static int dgn_register_feature_marker(lua_State *ls)</a>
+<a name="ln1302">{</a>
+<a name="ln1303">    COORDS(c, 1, 2);</a>
+<a name="ln1304">    FEAT(feat, 3);</a>
+<a name="ln1305">    env.markers.add(new map_feature_marker(c, feat));</a>
+<a name="ln1306">    return 0;</a>
+<a name="ln1307">}</a>
+<a name="ln1308"> </a>
+<a name="ln1309">static int _dgn_map_register_flag(lua_State *ls)</a>
+<a name="ln1310">{</a>
+<a name="ln1311">    map_register_flag(luaL_checkstring(ls, 1));</a>
+<a name="ln1312">    return 0;</a>
+<a name="ln1313">}</a>
+<a name="ln1314"> </a>
+<a name="ln1315">static int dgn_register_lua_marker(lua_State *ls)</a>
+<a name="ln1316">{</a>
+<a name="ln1317">    COORDS(c, 1, 2);</a>
+<a name="ln1318">    if (!lua_istable(ls, 3) &amp;&amp; !lua_isfunction(ls, 3))</a>
+<a name="ln1319">        return luaL_argerror(ls, 3, &quot;Expected marker table or function&quot;);</a>
+<a name="ln1320"> </a>
+<a name="ln1321">    lua_datum table(CLua::get_vm(ls), 3, false);</a>
+<a name="ln1322">    map_marker *marker = new map_lua_marker(table);</a>
+<a name="ln1323">    marker-&gt;pos = c;</a>
+<a name="ln1324">    env.markers.add(marker);</a>
+<a name="ln1325">    return 0;</a>
+<a name="ln1326">}</a>
+<a name="ln1327"> </a>
+<a name="ln1328">static unique_ptr&lt;lua_datum&gt; _dgn_map_safe_bounds_fn;</a>
+<a name="ln1329"> </a>
+<a name="ln1330">static bool _lua_map_place_valid(const map_def &amp;map,</a>
+<a name="ln1331">                                 const coord_def &amp;c,</a>
+<a name="ln1332">                                 const coord_def &amp;size)</a>
+<a name="ln1333">{</a>
+<a name="ln1334">    dprf(&quot;lua_map_place_invalid: (%d,%d) (%d,%d)&quot;,</a>
+<a name="ln1335">         c.x, c.y, size.x, size.y);</a>
+<a name="ln1336"> </a>
+<a name="ln1337">    lua_stack_cleaner clean(_dgn_map_safe_bounds_fn-&gt;lua);</a>
+<a name="ln1338"> </a>
+<a name="ln1339">    // Push the Lua function onto the stack.</a>
+<a name="ln1340">    _dgn_map_safe_bounds_fn-&gt;push();</a>
+<a name="ln1341"> </a>
+<a name="ln1342">    lua_State *ls = _dgn_map_safe_bounds_fn-&gt;lua;</a>
+<a name="ln1343"> </a>
+<a name="ln1344">    // Push map, pos.x, pos.y, size.x, size.y</a>
+<a name="ln1345">    clua_push_map(ls, const_cast&lt;map_def*&gt;(&amp;map));</a>
+<a name="ln1346">    dlua_push_coordinates(ls, c);</a>
+<a name="ln1347">    dlua_push_coordinates(ls, size);</a>
+<a name="ln1348"> </a>
+<a name="ln1349">    const int err = lua_pcall(ls, 5, 1, 0);</a>
+<a name="ln1350"> </a>
+<a name="ln1351">    // Lua error invalidates place.</a>
+<a name="ln1352">    if (err)</a>
+<a name="ln1353">    {</a>
+<a name="ln1354">        mprf(MSGCH_ERROR, &quot;Lua error: %s&quot;, lua_tostring(ls, -1));</a>
+<a name="ln1355">        return true;</a>
+<a name="ln1356">    }</a>
+<a name="ln1357"> </a>
+<a name="ln1358">    return lua_toboolean(ls, -1);</a>
+<a name="ln1359">}</a>
+<a name="ln1360"> </a>
+<a name="ln1361">LUAFN(dgn_with_map_bounds_fn)</a>
+<a name="ln1362">{</a>
+<a name="ln1363">    CLua &amp;vm(CLua::get_vm(ls));</a>
+<a name="ln1364">    if (lua_gettop(ls) != 2 || !lua_isfunction(ls, 1) || !lua_isfunction(ls, 2))</a>
+<a name="ln1365">        luaL_error(ls, &quot;Expected map-bounds check fn and action fn.&quot;);</a>
+<a name="ln1366"> </a>
+<a name="ln1367">    _dgn_map_safe_bounds_fn.reset(new lua_datum(vm, 1, false));</a>
+<a name="ln1368"> </a>
+<a name="ln1369">    int err = 0;</a>
+<a name="ln1370">    {</a>
+<a name="ln1371">        unwind_var&lt;map_place_check_t&gt; mpc(map_place_valid,</a>
+<a name="ln1372">                                          _lua_map_place_valid);</a>
+<a name="ln1373"> </a>
+<a name="ln1374">        // All set, call our friend, the second function.</a>
+<a name="ln1375">        ASSERT(lua_isfunction(ls, -1));</a>
+<a name="ln1376"> </a>
+<a name="ln1377">        // Copy the function since pcall will pop it off.</a>
+<a name="ln1378">        lua_pushvalue(ls, -1);</a>
+<a name="ln1379"> </a>
+<a name="ln1380">        // Use pcall to catch the error here, else unwind_var won't</a>
+<a name="ln1381">        // happen when lua_call does its longjmp.</a>
+<a name="ln1382">        err = lua_pcall(ls, 0, 1, 0);</a>
+<a name="ln1383"> </a>
+<a name="ln1384">        _dgn_map_safe_bounds_fn.reset(nullptr);</a>
+<a name="ln1385">    }</a>
+<a name="ln1386"> </a>
+<a name="ln1387">    if (err)</a>
+<a name="ln1388">        lua_error(ls);</a>
+<a name="ln1389"> </a>
+<a name="ln1390">    return 1;</a>
+<a name="ln1391">}</a>
+<a name="ln1392"> </a>
+<a name="ln1393">// Accepts any number of point coordinates and a function, binds the</a>
+<a name="ln1394">// points as anchors that floating vaults must match and calls the</a>
+<a name="ln1395">// function, returning the return value of the function.</a>
+<a name="ln1396">LUAFN(dgn_with_map_anchors)</a>
+<a name="ln1397">{</a>
+<a name="ln1398">    const int top = lua_gettop(ls);</a>
+<a name="ln1399">    int err = 0;</a>
+<a name="ln1400">    {</a>
+<a name="ln1401">        unwind_var&lt;point_vector&gt; uanchor(map_anchor_points);</a>
+<a name="ln1402"> </a>
+<a name="ln1403">        map_anchor_points.clear();</a>
+<a name="ln1404"> </a>
+<a name="ln1405">        for (int i = 1; i &lt; top; i += 2)</a>
+<a name="ln1406">        {</a>
+<a name="ln1407">            if (lua_isnumber(ls, i) &amp;&amp; lua_isnumber(ls, i + 1))</a>
+<a name="ln1408">            {</a>
+<a name="ln1409">                map_anchor_points.emplace_back(luaL_safe_tointeger(ls, i),</a>
+<a name="ln1410">                                               luaL_safe_tointeger(ls, i + 1));</a>
+<a name="ln1411">            }</a>
+<a name="ln1412">        }</a>
+<a name="ln1413"> </a>
+<a name="ln1414">        ASSERT(lua_isfunction(ls, -1));</a>
+<a name="ln1415"> </a>
+<a name="ln1416">        lua_pushvalue(ls, -1);</a>
+<a name="ln1417">        err = lua_pcall(ls, 0, 1, 0);</a>
+<a name="ln1418">    }</a>
+<a name="ln1419">    if (err)</a>
+<a name="ln1420">        lua_error(ls);</a>
+<a name="ln1421">    return 1;</a>
+<a name="ln1422">}</a>
+<a name="ln1423"> </a>
+<a name="ln1424">static int _lua_push_map(lua_State *ls, const map_def *map)</a>
+<a name="ln1425">{</a>
+<a name="ln1426">    if (map)</a>
+<a name="ln1427">        clua_push_map(ls, const_cast&lt;map_def*&gt;(map));</a>
+<a name="ln1428">    else</a>
+<a name="ln1429">        lua_pushnil(ls);</a>
+<a name="ln1430">    return 1;</a>
+<a name="ln1431">}</a>
+<a name="ln1432"> </a>
+<a name="ln1433">LUAFN(dgn_map_by_tag)</a>
+<a name="ln1434">{</a>
+<a name="ln1435">    if (const char *tag = luaL_checkstring(ls, 1))</a>
+<a name="ln1436">    {</a>
+<a name="ln1437">        const bool check_depth = _lua_boolean(ls, 3, true);</a>
+<a name="ln1438">        return _lua_push_map(ls, random_map_for_tag(tag, check_depth));</a>
+<a name="ln1439">    }</a>
+<a name="ln1440">    return 0;</a>
+<a name="ln1441">}</a>
+<a name="ln1442"> </a>
+<a name="ln1443">LUAFN(dgn_map_by_name)</a>
+<a name="ln1444">{</a>
+<a name="ln1445">    if (const char *name = luaL_checkstring(ls, 1))</a>
+<a name="ln1446">        return _lua_push_map(ls, find_map_by_name(name));</a>
+<a name="ln1447"> </a>
+<a name="ln1448">    return 0;</a>
+<a name="ln1449">}</a>
+<a name="ln1450"> </a>
+<a name="ln1451">LUAFN(dgn_map_in_depth)</a>
+<a name="ln1452">{</a>
+<a name="ln1453">    const level_id lid = dlua_level_id(ls, 1);</a>
+<a name="ln1454">    const bool mini = _lua_boolean(ls, 2, true);</a>
+<a name="ln1455">    return _lua_push_map(ls, random_map_in_depth(lid, mini));</a>
+<a name="ln1456">}</a>
+<a name="ln1457"> </a>
+<a name="ln1458">LUAFN(dgn_map_by_place)</a>
+<a name="ln1459">{</a>
+<a name="ln1460">    const level_id lid = dlua_level_id(ls, 1);</a>
+<a name="ln1461">    const bool mini = _lua_boolean(ls, 2, false);</a>
+<a name="ln1462">    return _lua_push_map(ls, random_map_for_place(lid, mini));</a>
+<a name="ln1463">}</a>
+<a name="ln1464"> </a>
+<a name="ln1465">LUAFN(_dgn_place_map)</a>
+<a name="ln1466">{</a>
+<a name="ln1467">    MAP(ls, 1, map);</a>
+<a name="ln1468">    const bool check_collision = _lua_boolean(ls, 2, true);</a>
+<a name="ln1469">    const bool no_exits = _lua_boolean(ls, 3, false);</a>
+<a name="ln1470">    coord_def where(-1, -1);</a>
+<a name="ln1471">    if (lua_isnumber(ls, 4) &amp;&amp; lua_isnumber(ls, 5))</a>
+<a name="ln1472">    {</a>
+<a name="ln1473">        COORDS(c, 4, 5);</a>
+<a name="ln1474">        where = c;</a>
+<a name="ln1475">    }</a>
+<a name="ln1476">    {</a>
+<a name="ln1477">        dgn_map_parameters mp(lua_gettop(ls) &gt;= 6</a>
+<a name="ln1478">                              ? luaL_checkstring(ls, 6)</a>
+<a name="ln1479">                              : &quot;&quot;);</a>
+<a name="ln1480">        try</a>
+<a name="ln1481">        {</a>
+<a name="ln1482">            if (dgn_place_map(map, check_collision, no_exits, where)</a>
+<a name="ln1483">                &amp;&amp; !env.level_vaults.empty())</a>
+<a name="ln1484">            {</a>
+<a name="ln1485">                lua_pushlightuserdata(ls, env.level_vaults.back().get());</a>
+<a name="ln1486">                return 1;</a>
+<a name="ln1487">            }</a>
+<a name="ln1488">        }</a>
+<a name="ln1489">        catch (dgn_veto_exception&amp; e)</a>
+<a name="ln1490">        {</a>
+<a name="ln1491">            // letting this exception go back across lua code can apparently</a>
+<a name="ln1492">            // do very bad things for the lua stack, if it isn't compiled with</a>
+<a name="ln1493">            // c++ mode. (Which we don't do by default.)</a>
+<a name="ln1494">            // Won't necessarily veto the level, but we want to report it still.</a>
+<a name="ln1495">            dprf(DIAG_DNGN, &quot;&lt;white&gt;veto in dgn.place_maps&lt;/white&gt;: %s: %s&quot;,</a>
+<a name="ln1496">                 level_id::current().describe().c_str(), e.what());</a>
+<a name="ln1497">        }</a>
+<a name="ln1498">    }</a>
+<a name="ln1499">    lua_pushnil(ls);</a>
+<a name="ln1500">    return 0;</a>
+<a name="ln1501">}</a>
+<a name="ln1502"> </a>
+<a name="ln1503">LUAFN(_dgn_in_vault)</a>
+<a name="ln1504">{</a>
+<a name="ln1505">    GETCOORD(c, 1, 2, map_bounds);</a>
+<a name="ln1506">    const int mask = lua_isnone(ls, 3) ? int{MMT_VAULT}</a>
+<a name="ln1507">                                       : luaL_safe_tointeger(ls, 3);</a>
+<a name="ln1508">    lua_pushboolean(ls, env.level_map_mask(c) &amp; mask);</a>
+<a name="ln1509">    return 1;</a>
+<a name="ln1510">}</a>
+<a name="ln1511"> </a>
+<a name="ln1512">LUAFN(_dgn_set_map_mask)</a>
+<a name="ln1513">{</a>
+<a name="ln1514">    GETCOORD(c, 1, 2, map_bounds);</a>
+<a name="ln1515">    const int mask = lua_isnone(ls, 3) ? int{MMT_VAULT}</a>
+<a name="ln1516">                                       : luaL_safe_tointeger(ls, 3);</a>
+<a name="ln1517">    env.level_map_mask(c) |= mask;</a>
+<a name="ln1518">    return 1;</a>
+<a name="ln1519">}</a>
+<a name="ln1520"> </a>
+<a name="ln1521">LUAFN(_dgn_unset_map_mask)</a>
+<a name="ln1522">{</a>
+<a name="ln1523">    GETCOORD(c, 1, 2, map_bounds);</a>
+<a name="ln1524">    const int mask = lua_isnone(ls, 3) ? int{MMT_VAULT}</a>
+<a name="ln1525">                                       : luaL_safe_tointeger(ls, 3);</a>
+<a name="ln1526">    env.level_map_mask(c) &amp;= ~mask;</a>
+<a name="ln1527">    return 1;</a>
+<a name="ln1528">}</a>
+<a name="ln1529"> </a>
+<a name="ln1530">LUAFN(_dgn_map_parameters)</a>
+<a name="ln1531">{</a>
+<a name="ln1532">    return clua_stringtable(ls, map_parameters);</a>
+<a name="ln1533">}</a>
+<a name="ln1534"> </a>
+<a name="ln1535">static int _dgn_push_vault_placement(lua_State *ls, const vault_placement *vp)</a>
+<a name="ln1536">{</a>
+<a name="ln1537">    return dlua_push_object_type(ls, VAULT_PLACEMENT_METATABLE, *vp);</a>
+<a name="ln1538">}</a>
+<a name="ln1539"> </a>
+<a name="ln1540">static int _dgn_push_vault_placement_uptr(lua_State *ls,</a>
+<a name="ln1541">                                          const unique_ptr&lt;vault_placement&gt; &amp;vp)</a>
+<a name="ln1542">{</a>
+<a name="ln1543">    return _dgn_push_vault_placement(ls, vp.get());</a>
+<a name="ln1544">}</a>
+<a name="ln1545"> </a>
+<a name="ln1546">LUAFN(_dgn_maps_used_here)</a>
+<a name="ln1547">{</a>
+<a name="ln1548">    return clua_gentable(ls, env.level_vaults, _dgn_push_vault_placement_uptr);</a>
+<a name="ln1549">}</a>
+<a name="ln1550"> </a>
+<a name="ln1551">LUAFN(_dgn_vault_at)</a>
+<a name="ln1552">{</a>
+<a name="ln1553">    GETCOORD(c, 1, 2, map_bounds);</a>
+<a name="ln1554">    vault_placement *place = dgn_vault_at(c);</a>
+<a name="ln1555">    if (place)</a>
+<a name="ln1556">        _dgn_push_vault_placement(ls, place);</a>
+<a name="ln1557">    else</a>
+<a name="ln1558">        lua_pushnil(ls);</a>
+<a name="ln1559"> </a>
+<a name="ln1560">    return 1;</a>
+<a name="ln1561">}</a>
+<a name="ln1562"> </a>
+<a name="ln1563">LUAFN(_dgn_find_marker_position_by_prop)</a>
+<a name="ln1564">{</a>
+<a name="ln1565">    const char *prop = luaL_checkstring(ls, 1);</a>
+<a name="ln1566">    const string value(lua_gettop(ls) &gt;= 2 ? luaL_checkstring(ls, 2) : &quot;&quot;);</a>
+<a name="ln1567">    const coord_def place = find_marker_position_by_prop(prop, value);</a>
+<a name="ln1568">    if (map_bounds(place))</a>
+<a name="ln1569">        dlua_push_coordinates(ls, place);</a>
+<a name="ln1570">    else</a>
+<a name="ln1571">    {</a>
+<a name="ln1572">        lua_pushnil(ls);</a>
+<a name="ln1573">        lua_pushnil(ls);</a>
+<a name="ln1574">    }</a>
+<a name="ln1575">    return 2;</a>
+<a name="ln1576">}</a>
+<a name="ln1577"> </a>
+<a name="ln1578">LUAFN(_dgn_find_marker_positions_by_prop)</a>
+<a name="ln1579">{</a>
+<a name="ln1580">    const char *prop = luaL_checkstring(ls, 1);</a>
+<a name="ln1581">    const string value(lua_gettop(ls) &gt;= 2 ? luaL_checkstring(ls, 2) : &quot;&quot;);</a>
+<a name="ln1582">    const unsigned limit(lua_gettop(ls) &gt;= 3 ? luaL_safe_checkint(ls, 3) : 0);</a>
+<a name="ln1583">    const vector&lt;coord_def&gt; places = find_marker_positions_by_prop(prop, value,</a>
+<a name="ln1584">                                                                   limit);</a>
+<a name="ln1585">    clua_gentable(ls, places, clua_pushpoint);</a>
+<a name="ln1586">    return 1;</a>
+<a name="ln1587">}</a>
+<a name="ln1588"> </a>
+<a name="ln1589">static int _push_mapmarker(lua_State *ls, map_marker *marker)</a>
+<a name="ln1590">{</a>
+<a name="ln1591">    dlua_push_userdata(ls, marker, MAPMARK_METATABLE);</a>
+<a name="ln1592">    return 1;</a>
+<a name="ln1593">}</a>
+<a name="ln1594"> </a>
+<a name="ln1595">LUAFN(_dgn_find_markers_by_prop)</a>
+<a name="ln1596">{</a>
+<a name="ln1597">    const char *prop = luaL_checkstring(ls, 1);</a>
+<a name="ln1598">    const string value(lua_gettop(ls) &gt;= 2 ? luaL_checkstring(ls, 2) : &quot;&quot;);</a>
+<a name="ln1599">    const unsigned limit(lua_gettop(ls) &gt;= 3 ? luaL_safe_checkint(ls, 3) : 0);</a>
+<a name="ln1600">    const vector&lt;map_marker*&gt; places = find_markers_by_prop(prop, value, limit);</a>
+<a name="ln1601">    clua_gentable(ls, places, _push_mapmarker);</a>
+<a name="ln1602">    return 1;</a>
+<a name="ln1603">}</a>
+<a name="ln1604"> </a>
+<a name="ln1605">LUAFN(_dgn_marker_at_pos)</a>
+<a name="ln1606">{</a>
+<a name="ln1607">    const int x = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1608">    const int y = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1609"> </a>
+<a name="ln1610">    coord_def p(x, y);</a>
+<a name="ln1611"> </a>
+<a name="ln1612">    map_marker* marker = env.markers.find(p);</a>
+<a name="ln1613"> </a>
+<a name="ln1614">    if (marker == nullptr)</a>
+<a name="ln1615">        lua_pushnil(ls);</a>
+<a name="ln1616">    else</a>
+<a name="ln1617">        _push_mapmarker(ls, marker);</a>
+<a name="ln1618"> </a>
+<a name="ln1619">    return 1;</a>
+<a name="ln1620">}</a>
+<a name="ln1621"> </a>
+<a name="ln1622">LUAFN(dgn_is_validating)</a>
+<a name="ln1623">{</a>
+<a name="ln1624">    MAP(ls, 1, map);</a>
+<a name="ln1625">    lua_pushboolean(ls, map-&gt;is_validating());</a>
+<a name="ln1626">    return 1;</a>
+<a name="ln1627">}</a>
+<a name="ln1628"> </a>
+<a name="ln1629">LUAFN(_dgn_resolve_map)</a>
+<a name="ln1630">{</a>
+<a name="ln1631">    if (lua_isnil(ls, 1))</a>
+<a name="ln1632">    {</a>
+<a name="ln1633">        lua_pushnil(ls);</a>
+<a name="ln1634">        return 1;</a>
+<a name="ln1635">    }</a>
+<a name="ln1636"> </a>
+<a name="ln1637">    MAP(ls, 1, map);</a>
+<a name="ln1638">    const bool check_collisions = _lua_boolean(ls, 2, true);</a>
+<a name="ln1639"> </a>
+<a name="ln1640">    // Save the vault_placement into Temp_Vaults because the map_def</a>
+<a name="ln1641">    // will need to be alive through to the end of dungeon gen.</a>
+<a name="ln1642">    Temp_Vaults.emplace_back();</a>
+<a name="ln1643">    vault_placement &amp;place(Temp_Vaults.back());</a>
+<a name="ln1644"> </a>
+<a name="ln1645">    if (vault_main(place, map, check_collisions) != MAP_NONE)</a>
+<a name="ln1646">    {</a>
+<a name="ln1647">        clua_push_map(ls, &amp;place.map);</a>
+<a name="ln1648">        lua_pushlightuserdata(ls, &amp;place);</a>
+<a name="ln1649">    }</a>
+<a name="ln1650">    else</a>
+<a name="ln1651">    {</a>
+<a name="ln1652">        lua_pushnil(ls);</a>
+<a name="ln1653">        lua_pushnil(ls);</a>
+<a name="ln1654">    }</a>
+<a name="ln1655">    return 2;</a>
+<a name="ln1656">}</a>
+<a name="ln1657"> </a>
+<a name="ln1658">LUAFN(_dgn_reuse_map)</a>
+<a name="ln1659">{</a>
+<a name="ln1660">    if (!lua_isuserdata(ls, 1))</a>
+<a name="ln1661">        luaL_argerror(ls, 1, &quot;Expected vault_placement&quot;);</a>
+<a name="ln1662"> </a>
+<a name="ln1663">    vault_placement &amp;vp(*static_cast&lt;vault_placement*&gt;(lua_touserdata(ls, 1)));</a>
+<a name="ln1664"> </a>
+<a name="ln1665">    COORDS(place, 2, 3);</a>
+<a name="ln1666"> </a>
+<a name="ln1667">    const bool flip_horiz = _lua_boolean(ls, 4, false);</a>
+<a name="ln1668">    const bool flip_vert = _lua_boolean(ls, 5, false);</a>
+<a name="ln1669"> </a>
+<a name="ln1670">    // 1 for clockwise, -1 for anticlockwise, 0 for no rotation.</a>
+<a name="ln1671">    const int rotate_dir = lua_isnone(ls, 6) ? 0 : luaL_safe_checkint(ls, 6);</a>
+<a name="ln1672"> </a>
+<a name="ln1673">    const bool register_place = _lua_boolean(ls, 7, true);</a>
+<a name="ln1674">    const bool register_vault = register_place &amp;&amp; _lua_boolean(ls, 8, false);</a>
+<a name="ln1675"> </a>
+<a name="ln1676">    if (flip_horiz)</a>
+<a name="ln1677">        vp.map.hmirror();</a>
+<a name="ln1678">    if (flip_vert)</a>
+<a name="ln1679">        vp.map.vmirror();</a>
+<a name="ln1680">    if (rotate_dir)</a>
+<a name="ln1681">        vp.map.rotate(rotate_dir == 1);</a>
+<a name="ln1682"> </a>
+<a name="ln1683">    vp.size = vp.map.map.size();</a>
+<a name="ln1684"> </a>
+<a name="ln1685">    // draw_at changes vault_placement.</a>
+<a name="ln1686">    vp.draw_at(place);</a>
+<a name="ln1687"> </a>
+<a name="ln1688">    if (register_place)</a>
+<a name="ln1689">        dgn_register_place(vp, register_vault);</a>
+<a name="ln1690"> </a>
+<a name="ln1691">    return 0;</a>
+<a name="ln1692">}</a>
+<a name="ln1693"> </a>
+<a name="ln1694">// dgn.inspect_map(vplace,x,y)</a>
+<a name="ln1695">//</a>
+<a name="ln1696">// You must first have resolved a map to get the vault_placement, using</a>
+<a name="ln1697">// dgn.resolve_map(..). This function will then inspect a coord on that map</a>
+<a name="ln1698">// where &lt;0,0&gt; is the top-left cell and tell you the feature type. This will</a>
+<a name="ln1699">// respect all KFEAT and other map directives; and SUBST and other</a>
+<a name="ln1700">// transformations will have already taken place during resolve_map.</a>
+<a name="ln1701">LUAFN(_dgn_inspect_map)</a>
+<a name="ln1702">{</a>
+<a name="ln1703">    if (!lua_isuserdata(ls, 1))</a>
+<a name="ln1704">        luaL_argerror(ls, 1, &quot;Expected vault_placement&quot;);</a>
+<a name="ln1705"> </a>
+<a name="ln1706">    vault_placement &amp;vp(*static_cast&lt;vault_placement*&gt;(lua_touserdata(ls, 1)));</a>
+<a name="ln1707"> </a>
+<a name="ln1708">    // Not using the COORDS macro because it checks against in_bounds which will fail 0,0 (!)</a>
+<a name="ln1709">    coord_def c;</a>
+<a name="ln1710">    c.x = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1711">    c.y = luaL_safe_checkint(ls, 3);</a>
+<a name="ln1712"> </a>
+<a name="ln1713">    lua_pushnumber(ls, vp.feature_at(c));</a>
+<a name="ln1714">    lua_pushboolean(ls, vp.is_exit(c));</a>
+<a name="ln1715">    lua_pushboolean(ls, vp.is_space(c));</a>
+<a name="ln1716">    return 3;</a>
+<a name="ln1717">}</a>
+<a name="ln1718"> </a>
+<a name="ln1719">LUAWRAP(_dgn_reset_level, dgn_reset_level())</a>
+<a name="ln1720"> </a>
+<a name="ln1721">LUAFN(dgn_fill_grd_area)</a>
+<a name="ln1722">{</a>
+<a name="ln1723">    int x1 = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1724">    int y1 = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1725">    int x2 = luaL_safe_checkint(ls, 3);</a>
+<a name="ln1726">    int y2 = luaL_safe_checkint(ls, 4);</a>
+<a name="ln1727">    dungeon_feature_type feat = check_lua_feature(ls, 5);</a>
+<a name="ln1728"> </a>
+<a name="ln1729">    x1 = min(max(x1, X_BOUND_1+1), X_BOUND_2-1);</a>
+<a name="ln1730">    y1 = min(max(y1, Y_BOUND_1+1), Y_BOUND_2-1);</a>
+<a name="ln1731">    x2 = min(max(x2, X_BOUND_1+1), X_BOUND_2-1);</a>
+<a name="ln1732">    y2 = min(max(y2, Y_BOUND_1+1), Y_BOUND_2-1);</a>
+<a name="ln1733"> </a>
+<a name="ln1734">    if (x2 &lt; x1)</a>
+<a name="ln1735">        swap(x1, x2);</a>
+<a name="ln1736">    if (y2 &lt; y1)</a>
+<a name="ln1737">        swap(y1, y2);</a>
+<a name="ln1738"> </a>
+<a name="ln1739">    for (int y = y1; y &lt;= y2; y++)</a>
+<a name="ln1740">        for (int x = x1; x &lt;= x2; x++)</a>
+<a name="ln1741">            grd[x][y] = feat;</a>
+<a name="ln1742"> </a>
+<a name="ln1743">    return 0;</a>
+<a name="ln1744">}</a>
+<a name="ln1745"> </a>
+<a name="ln1746">LUAWRAP(dgn_apply_tide, shoals_apply_tides(0, true))</a>
+<a name="ln1747"> </a>
+<a name="ln1748">const struct luaL_reg dgn_dlib[] =</a>
+<a name="ln1749">{</a>
+<a name="ln1750">{ &quot;reset_level&quot;, _dgn_reset_level },</a>
+<a name="ln1751"> </a>
+<a name="ln1752">{ &quot;name&quot;, dgn_name },</a>
+<a name="ln1753">{ &quot;depth&quot;, dgn_depth },</a>
+<a name="ln1754">{ &quot;place&quot;, dgn_place },</a>
+<a name="ln1755">{ &quot;desc&quot;, dgn_desc },</a>
+<a name="ln1756">{ &quot;order&quot;, dgn_order },</a>
+<a name="ln1757">{ &quot;tags&quot;,  dgn_tags },</a>
+<a name="ln1758">{ &quot;has_tag&quot;, dgn_has_tag },</a>
+<a name="ln1759">{ &quot;tags_remove&quot;, dgn_tags_remove },</a>
+<a name="ln1760">{ &quot;chance&quot;, dgn_chance },</a>
+<a name="ln1761">{ &quot;depth_chance&quot;, dgn_depth_chance },</a>
+<a name="ln1762">{ &quot;weight&quot;, dgn_weight },</a>
+<a name="ln1763">{ &quot;depth_weight&quot;, dgn_depth_weight },</a>
+<a name="ln1764">{ &quot;orient&quot;, dgn_orient },</a>
+<a name="ln1765">{ &quot;shuffle&quot;, dgn_shuffle },</a>
+<a name="ln1766">{ &quot;clear&quot;, dgn_clear },</a>
+<a name="ln1767">{ &quot;subst&quot;, dgn_subst },</a>
+<a name="ln1768">{ &quot;nsubst&quot;, dgn_nsubst },</a>
+<a name="ln1769">{ &quot;colour&quot;, dgn_colour },</a>
+<a name="ln1770">{ &quot;lfloorcol&quot;, dgn_lfloorcol},</a>
+<a name="ln1771">{ &quot;lrockcol&quot;, dgn_lrockcol},</a>
+<a name="ln1772">{ &quot;normalise&quot;, dgn_normalise },</a>
+<a name="ln1773">{ &quot;map&quot;, dgn_map },</a>
+<a name="ln1774">{ &quot;mons&quot;, dgn_mons },</a>
+<a name="ln1775">{ &quot;item&quot;, dgn_item },</a>
+<a name="ln1776">{ &quot;marker&quot;, dgn_marker },</a>
+<a name="ln1777">{ &quot;lua_marker&quot;, dgn_lua_marker },</a>
+<a name="ln1778">{ &quot;kfeat&quot;, dgn_kfeat },</a>
+<a name="ln1779">{ &quot;kitem&quot;, dgn_kitem },</a>
+<a name="ln1780">{ &quot;kmons&quot;, dgn_kmons },</a>
+<a name="ln1781">{ &quot;kprop&quot;, dgn_kprop },</a>
+<a name="ln1782">{ &quot;kmask&quot;, dgn_kmask },</a>
+<a name="ln1783">{ &quot;mapsize&quot;, dgn_map_size },</a>
+<a name="ln1784">{ &quot;subvault&quot;, dgn_subvault },</a>
+<a name="ln1785">{ &quot;fheight&quot;, dgn_fheight },</a>
+<a name="ln1786"> </a>
+<a name="ln1787">{ &quot;colour_at&quot;, dgn_colour_at },</a>
+<a name="ln1788">{ &quot;fprop_at&quot;, dgn_fprop_at },</a>
+<a name="ln1789">{ &quot;cloud_at&quot;, dgn_cloud_at },</a>
+<a name="ln1790"> </a>
+<a name="ln1791">{ &quot;terrain_changed&quot;, dgn_terrain_changed },</a>
+<a name="ln1792">{ &quot;fprop_changed&quot;, dgn_fprop_changed },</a>
+<a name="ln1793">{ &quot;points_connected&quot;, dgn_points_connected },</a>
+<a name="ln1794">{ &quot;any_point_connected&quot;, dgn_any_point_connected },</a>
+<a name="ln1795">{ &quot;has_exit_from&quot;, dgn_has_exit_from },</a>
+<a name="ln1796">{ &quot;gly_point&quot;, dgn_gly_point },</a>
+<a name="ln1797">{ &quot;gly_points&quot;, dgn_gly_points },</a>
+<a name="ln1798">{ &quot;original_map&quot;, dgn_original_map },</a>
+<a name="ln1799">{ &quot;load_des_file&quot;, dgn_load_des_file },</a>
+<a name="ln1800">{ &quot;register_listener&quot;, dgn_register_listener },</a>
+<a name="ln1801">{ &quot;remove_listener&quot;, dgn_remove_listener },</a>
+<a name="ln1802">{ &quot;remove_marker&quot;, dgn_remove_marker },</a>
+<a name="ln1803">{ &quot;num_matching_markers&quot;, dgn_num_matching_markers },</a>
+<a name="ln1804">{ &quot;get_floor_colour&quot;, dgn_get_floor_colour },</a>
+<a name="ln1805">{ &quot;get_rock_colour&quot;,  dgn_get_rock_colour },</a>
+<a name="ln1806">{ &quot;change_floor_colour&quot;, dgn_change_floor_colour },</a>
+<a name="ln1807">{ &quot;change_rock_colour&quot;,  dgn_change_rock_colour },</a>
+<a name="ln1808">{ &quot;set_branch_epilogue&quot;, lua_dgn_set_branch_epilogue },</a>
+<a name="ln1809">{ &quot;set_border_fill_type&quot;, lua_dgn_set_border_fill_type },</a>
+<a name="ln1810">{ &quot;set_feature_name&quot;, lua_dgn_set_feature_name },</a>
+<a name="ln1811">{ &quot;floor_halo&quot;, dgn_floor_halo },</a>
+<a name="ln1812">{ &quot;random_walk&quot;, dgn_random_walk },</a>
+<a name="ln1813">{ &quot;apply_area_cloud&quot;, dgn_apply_area_cloud },</a>
+<a name="ln1814">{ &quot;delete_cloud&quot;, dgn_delete_cloud },</a>
+<a name="ln1815">{ &quot;place_cloud&quot;, dgn_place_cloud },</a>
+<a name="ln1816">{ &quot;noisy&quot;, dgn_noisy },</a>
+<a name="ln1817">{ &quot;reset_feature_name_for&quot;, dgn_reset_feature_name_for },</a>
+<a name="ln1818">{ &quot;place_transporter&quot;, _dgn_place_transporter},</a>
+<a name="ln1819"> </a>
+<a name="ln1820">{ &quot;is_passable&quot;, _dgn_is_passable },</a>
+<a name="ln1821"> </a>
+<a name="ln1822">{ &quot;map_register_flag&quot;, _dgn_map_register_flag },</a>
+<a name="ln1823">{ &quot;register_feature_marker&quot;, dgn_register_feature_marker },</a>
+<a name="ln1824">{ &quot;register_lua_marker&quot;, dgn_register_lua_marker },</a>
+<a name="ln1825"> </a>
+<a name="ln1826">{ &quot;with_map_bounds_fn&quot;, dgn_with_map_bounds_fn },</a>
+<a name="ln1827">{ &quot;with_map_anchors&quot;, dgn_with_map_anchors },</a>
+<a name="ln1828"> </a>
+<a name="ln1829">{ &quot;map_by_tag&quot;, dgn_map_by_tag },</a>
+<a name="ln1830">{ &quot;map_by_name&quot;, dgn_map_by_name },</a>
+<a name="ln1831">{ &quot;map_in_depth&quot;, dgn_map_in_depth },</a>
+<a name="ln1832">{ &quot;map_by_place&quot;, dgn_map_by_place },</a>
+<a name="ln1833">{ &quot;place_map&quot;, _dgn_place_map },</a>
+<a name="ln1834">{ &quot;reuse_map&quot;, _dgn_reuse_map },</a>
+<a name="ln1835">{ &quot;resolve_map&quot;, _dgn_resolve_map },</a>
+<a name="ln1836">{ &quot;inspect_map&quot;, _dgn_inspect_map },</a>
+<a name="ln1837">{ &quot;in_vault&quot;, _dgn_in_vault },</a>
+<a name="ln1838">{ &quot;set_map_mask&quot;, _dgn_set_map_mask },</a>
+<a name="ln1839">{ &quot;unset_map_mask&quot;, _dgn_unset_map_mask },</a>
+<a name="ln1840"> </a>
+<a name="ln1841">{ &quot;map_parameters&quot;, _dgn_map_parameters },</a>
+<a name="ln1842"> </a>
+<a name="ln1843">{ &quot;maps_used_here&quot;, _dgn_maps_used_here },</a>
+<a name="ln1844">{ &quot;vault_at&quot;, _dgn_vault_at },</a>
+<a name="ln1845"> </a>
+<a name="ln1846">{ &quot;find_marker_position_by_prop&quot;, _dgn_find_marker_position_by_prop },</a>
+<a name="ln1847">{ &quot;find_marker_positions_by_prop&quot;, _dgn_find_marker_positions_by_prop },</a>
+<a name="ln1848">{ &quot;find_markers_by_prop&quot;, _dgn_find_markers_by_prop },</a>
+<a name="ln1849"> </a>
+<a name="ln1850">{ &quot;marker_at_pos&quot;, _dgn_marker_at_pos },</a>
+<a name="ln1851"> </a>
+<a name="ln1852">{ &quot;is_validating&quot;, dgn_is_validating },</a>
+<a name="ln1853"> </a>
+<a name="ln1854">{ &quot;fill_grd_area&quot;, dgn_fill_grd_area },</a>
+<a name="ln1855"> </a>
+<a name="ln1856">{ &quot;apply_tide&quot;, dgn_apply_tide },</a>
+<a name="ln1857"> </a>
+<a name="ln1858">{ nullptr, nullptr }</a>
+<a name="ln1859">};</a>
+<a name="ln1860"> </a>
+<a name="ln1861">#define VP(name) \</a>
+<a name="ln1862">    vault_placement **name = \</a>
+<a name="ln1863">        clua_get_userdata&lt;vault_placement*&gt;(ls, VAULT_PLACEMENT_METATABLE); \</a>
+<a name="ln1864">    if (!name || !*name) \</a>
+<a name="ln1865">        return 0</a>
+<a name="ln1866"> </a>
+<a name="ln1867">LUAFN(_vp_pos)</a>
+<a name="ln1868">{</a>
+<a name="ln1869">    VP(vp);</a>
+<a name="ln1870">    clua_pushpoint(ls, (*vp)-&gt;pos);</a>
+<a name="ln1871">    return 1;</a>
+<a name="ln1872">}</a>
+<a name="ln1873"> </a>
+<a name="ln1874">LUAFN(_vp_size)</a>
+<a name="ln1875">{</a>
+<a name="ln1876">    VP(vp);</a>
+<a name="ln1877">    clua_pushpoint(ls, (*vp)-&gt;size);</a>
+<a name="ln1878">    return 1;</a>
+<a name="ln1879">}</a>
+<a name="ln1880"> </a>
+<a name="ln1881">LUAFN(_vp_orient)</a>
+<a name="ln1882">{</a>
+<a name="ln1883">    VP(vp);</a>
+<a name="ln1884">    PLUARET(number, (*vp)-&gt;orient);</a>
+<a name="ln1885">}</a>
+<a name="ln1886"> </a>
+<a name="ln1887">LUAFN(_vp_map)</a>
+<a name="ln1888">{</a>
+<a name="ln1889">    VP(vp);</a>
+<a name="ln1890">    clua_push_map(ls, &amp;(*vp)-&gt;map);</a>
+<a name="ln1891">    return 1;</a>
+<a name="ln1892">}</a>
+<a name="ln1893"> </a>
+<a name="ln1894">LUAFN(_vp_exits)</a>
+<a name="ln1895">{</a>
+<a name="ln1896">    VP(vp);</a>
+<a name="ln1897">    return clua_gentable(ls, (*vp)-&gt;exits, clua_pushpoint);</a>
+<a name="ln1898">}</a>
+<a name="ln1899"> </a>
+<a name="ln1900">static const luaL_reg dgn_vaultplacement_ops[] =</a>
+<a name="ln1901">{</a>
+<a name="ln1902">    { &quot;pos&quot;, _vp_pos },</a>
+<a name="ln1903">    { &quot;size&quot;, _vp_size },</a>
+<a name="ln1904">    { &quot;orient&quot;, _vp_orient },</a>
+<a name="ln1905">    { &quot;map&quot;, _vp_map },</a>
+<a name="ln1906">    { &quot;exits&quot;, _vp_exits },</a>
+<a name="ln1907">    { nullptr, nullptr }</a>
+<a name="ln1908">};</a>
+<a name="ln1909"> </a>
+<a name="ln1910">static void _dgn_register_metatables(lua_State *ls)</a>
+<a name="ln1911">{</a>
+<a name="ln1912">    clua_register_metatable(ls,</a>
+<a name="ln1913">                            VAULT_PLACEMENT_METATABLE,</a>
+<a name="ln1914">                            dgn_vaultplacement_ops,</a>
+<a name="ln1915">                            lua_object_gc&lt;vault_placement&gt;);</a>
+<a name="ln1916">}</a>
+<a name="ln1917"> </a>
+<a name="ln1918">void dluaopen_dgn(lua_State *ls)</a>
+<a name="ln1919">{</a>
+<a name="ln1920">    _dgn_register_metatables(ls);</a>
+<a name="ln1921"> </a>
+<a name="ln1922">    luaL_openlib(ls, &quot;dgn&quot;, dgn_dlib, 0);</a>
+<a name="ln1923">    luaL_openlib(ls, &quot;dgn&quot;, dgn_build_dlib, 0);</a>
+<a name="ln1924">    luaL_openlib(ls, &quot;dgn&quot;, dgn_event_dlib, 0);</a>
+<a name="ln1925">    luaL_openlib(ls, &quot;dgn&quot;, dgn_grid_dlib, 0);</a>
+<a name="ln1926">    luaL_openlib(ls, &quot;dgn&quot;, dgn_item_dlib, 0);</a>
+<a name="ln1927">    luaL_openlib(ls, &quot;dgn&quot;, dgn_level_dlib, 0);</a>
+<a name="ln1928">    luaL_openlib(ls, &quot;dgn&quot;, dgn_mons_dlib, 0);</a>
+<a name="ln1929">    luaL_openlib(ls, &quot;dgn&quot;, dgn_subvault_dlib, 0);</a>
+<a name="ln1930">    luaL_openlib(ls, &quot;dgn&quot;, dgn_tile_dlib, 0);</a>
+<a name="ln1931">}</a>
+
+</code></pre>
+<div class="balloon" rel="1251"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v590/" target="_blank">V590</a> Consider inspecting the 'kc == KC_NCATEGORIES || kc != KC_OTHER' expression. The expression is excessive or contains a misprint.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

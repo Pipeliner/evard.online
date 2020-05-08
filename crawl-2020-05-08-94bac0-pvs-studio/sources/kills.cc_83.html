@@ -1,0 +1,1051 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>kills.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Player kill tracking</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;kills.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;clua.h&quot;</a>
+<a name="ln13">#include &quot;describe.h&quot;</a>
+<a name="ln14">#include &quot;english.h&quot;</a>
+<a name="ln15">#include &quot;files.h&quot;</a>
+<a name="ln16">#include &quot;ghost.h&quot;</a>
+<a name="ln17">#include &quot;libutil.h&quot;</a>
+<a name="ln18">#include &quot;l-libs.h&quot;</a>
+<a name="ln19">#include &quot;mon-death.h&quot;</a>
+<a name="ln20">#include &quot;mon-info.h&quot;</a>
+<a name="ln21">#include &quot;monster.h&quot;</a>
+<a name="ln22">#include &quot;options.h&quot;</a>
+<a name="ln23">#include &quot;stringutil.h&quot;</a>
+<a name="ln24">#include &quot;tags.h&quot;</a>
+<a name="ln25">#include &quot;travel.h&quot;</a>
+<a name="ln26">#include &quot;unwind.h&quot;</a>
+<a name="ln27">#include &quot;viewchar.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29">#define KILLS_MAJOR_VERSION 4</a>
+<a name="ln30">#define KILLS_MINOR_VERSION 1</a>
+<a name="ln31"> </a>
+<a name="ln32">#ifdef CLUA_BINDINGS</a>
+<a name="ln33">static void kill_lua_filltable(vector&lt;kill_exp&gt; &amp;v);</a>
+<a name="ln34">#endif</a>
+<a name="ln35"> </a>
+<a name="ln36">///////////////////////////////////////////////////////////////////////////</a>
+<a name="ln37">// KillMaster</a>
+<a name="ln38">//</a>
+<a name="ln39"> </a>
+<a name="ln40">static const char *kill_category_names[] =</a>
+<a name="ln41">{</a>
+<a name="ln42">    &quot;you&quot;,</a>
+<a name="ln43">    &quot;collateral kills&quot;,</a>
+<a name="ln44">    &quot;others&quot;,</a>
+<a name="ln45">};</a>
+<a name="ln46"> </a>
+<a name="ln47">const char *KillMaster::category_name(kill_category kc) const</a>
+<a name="ln48">{</a>
+<a name="ln49">    if (kc &gt;= KC_YOU &amp;&amp; kc &lt; KC_NCATEGORIES)</a>
+<a name="ln50">        return kill_category_names[kc];</a>
+<a name="ln51">    return nullptr;</a>
+<a name="ln52">}</a>
+<a name="ln53"> </a>
+<a name="ln54">bool KillMaster::empty() const</a>
+<a name="ln55">{</a>
+<a name="ln56">    for (int i = 0; i &lt; KC_NCATEGORIES; ++i)</a>
+<a name="ln57">        if (!categorized_kills[i].empty())</a>
+<a name="ln58">            return false;</a>
+<a name="ln59">    return true;</a>
+<a name="ln60">}</a>
+<a name="ln61"> </a>
+<a name="ln62">void KillMaster::save(writer&amp; outf) const</a>
+<a name="ln63">{</a>
+<a name="ln64">    const auto version = save_version(KILLS_MAJOR_VERSION, KILLS_MINOR_VERSION);</a>
+<a name="ln65">    write_save_version(outf, version);</a>
+<a name="ln66"> </a>
+<a name="ln67">    for (int i = 0; i &lt; KC_NCATEGORIES; ++i)</a>
+<a name="ln68">        categorized_kills[i].save(outf);</a>
+<a name="ln69">}</a>
+<a name="ln70"> </a>
+<a name="ln71">void KillMaster::load(reader&amp; inf)</a>
+<a name="ln72">{</a>
+<a name="ln73">    const auto version = get_save_version(inf);</a>
+<a name="ln74">    const auto major = version.major, minor = version.minor;</a>
+<a name="ln75"> </a>
+<a name="ln76">    if (major != KILLS_MAJOR_VERSION</a>
+<a name="ln77">        || (minor != KILLS_MINOR_VERSION &amp;&amp; minor &gt; 0))</a>
+<a name="ln78">    {</a>
+<a name="ln79">        return;</a>
+<a name="ln80">    }</a>
+<a name="ln81"> </a>
+<a name="ln82">    for (int i = 0; i &lt; KC_NCATEGORIES; ++i)</a>
+<a name="ln83">    {</a>
+<a name="ln84">        categorized_kills[i].load(inf);</a>
+<a name="ln85">        if (!minor)</a>
+<a name="ln86">            break;</a>
+<a name="ln87">    }</a>
+<a name="ln88">}</a>
+<a name="ln89"> </a>
+<a name="ln90">void KillMaster::record_kill(const monster* mon, int killer, bool ispet)</a>
+<a name="ln91">{</a>
+<a name="ln92">    const kill_category kc =</a>
+<a name="ln93">        YOU_KILL(killer) ? KC_YOU :</a>
+<a name="ln94">        ispet            ? KC_FRIENDLY :</a>
+<a name="ln95">                           KC_OTHER;</a>
+<a name="ln96">    categorized_kills[kc].record_kill(mon);</a>
+<a name="ln97">}</a>
+<a name="ln98"> </a>
+<a name="ln99">int KillMaster::total_kills() const</a>
+<a name="ln100">{</a>
+<a name="ln101">    int grandtotal = 0;</a>
+<a name="ln102">    for (int i = KC_YOU; i &lt; KC_NCATEGORIES; ++i)</a>
+<a name="ln103">    {</a>
+<a name="ln104">        if (categorized_kills[i].empty())</a>
+<a name="ln105">            continue;</a>
+<a name="ln106"> </a>
+<a name="ln107">        vector&lt;kill_exp&gt; kills;</a>
+<a name="ln108">        int count = categorized_kills[i].get_kills(kills);</a>
+<a name="ln109">        grandtotal += count;</a>
+<a name="ln110">    }</a>
+<a name="ln111">    return grandtotal;</a>
+<a name="ln112">}</a>
+<a name="ln113"> </a>
+<a name="ln114">string KillMaster::kill_info() const</a>
+<a name="ln115">{</a>
+<a name="ln116">    if (empty())</a>
+<a name="ln117">        return &quot;&quot;;</a>
+<a name="ln118"> </a>
+<a name="ln119">    string killtext;</a>
+<a name="ln120"> </a>
+<a name="ln121">    bool needseparator = false;</a>
+<a name="ln122">    int categories = 0;</a>
+<a name="ln123">    int grandtotal = 0;</a>
+<a name="ln124"> </a>
+<a name="ln125">    Kills catkills[KC_NCATEGORIES];</a>
+<a name="ln126">    for (int i = 0; i &lt; KC_NCATEGORIES; ++i)</a>
+<a name="ln127">    {</a>
+<a name="ln128">        int targ = Options.kill_map[i];</a>
+<a name="ln129">        catkills[targ].merge(categorized_kills[i]);</a>
+<a name="ln130">    }</a>
+<a name="ln131"> </a>
+<a name="ln132">    for (int i = KC_YOU; i &lt; KC_NCATEGORIES; ++i)</a>
+<a name="ln133">    {</a>
+<a name="ln134">        if (catkills[i].empty())</a>
+<a name="ln135">            continue;</a>
+<a name="ln136"> </a>
+<a name="ln137">        categories++;</a>
+<a name="ln138">        vector&lt;kill_exp&gt; kills;</a>
+<a name="ln139">        int count = catkills[i].get_kills(kills);</a>
+<a name="ln140">        grandtotal += count;</a>
+<a name="ln141"> </a>
+<a name="ln142">        add_kill_info(killtext,</a>
+<a name="ln143">                       kills,</a>
+<a name="ln144">                       count,</a>
+<a name="ln145">                       i == KC_YOU ? nullptr</a>
+<a name="ln146">                                   : category_name((kill_category) i),</a>
+<a name="ln147">                       needseparator);</a>
+<a name="ln148">        needseparator = true;</a>
+<a name="ln149">    }</a>
+<a name="ln150"> </a>
+<a name="ln151">    string grandt;</a>
+<a name="ln152">    if (categories &gt; 1)</a>
+<a name="ln153">    {</a>
+<a name="ln154">        char buf[200];</a>
+<a name="ln155">        snprintf(buf, sizeof buf,</a>
+<a name="ln156">                &quot;Grand Total: %d creatures vanquished&quot;,</a>
+<a name="ln157">                grandtotal);</a>
+<a name="ln158">        grandt = buf;</a>
+<a name="ln159">    }</a>
+<a name="ln160"> </a>
+<a name="ln161">#ifdef CLUA_BINDINGS</a>
+<a name="ln162">    bool custom = false;</a>
+<a name="ln163">    unwind_var&lt;int&gt; lthrottle(clua.throttle_unit_lines, 500000);</a>
+<a name="ln164">    // Call the kill dump Lua function with null a, to tell it we're done.</a>
+<a name="ln165">    if (!clua.callfn(&quot;c_kill_list&quot;, &quot;ss&gt;b&quot;, nullptr, grandt.c_str(), &amp;custom)</a>
+<a name="ln166">        || !custom)</a>
+<a name="ln167">#endif</a>
+<a name="ln168">    {</a>
+<a name="ln169">        // We can sum up ourselves, if Lua doesn't want to.</a>
+<a name="ln170">        if (categories &gt; 1)</a>
+<a name="ln171">        {</a>
+<a name="ln172">            // Give ourselves a newline first</a>
+<a name="ln173">            killtext += &quot;\n&quot;;</a>
+<a name="ln174">            killtext += grandt + &quot;\n&quot;;</a>
+<a name="ln175">        }</a>
+<a name="ln176">    }</a>
+<a name="ln177"> </a>
+<a name="ln178">    return killtext;</a>
+<a name="ln179">}</a>
+<a name="ln180"> </a>
+<a name="ln181">void KillMaster::add_kill_info(string &amp;killtext,</a>
+<a name="ln182">                               vector&lt;kill_exp&gt; &amp;kills,</a>
+<a name="ln183">                               int count,</a>
+<a name="ln184">                               const char *category,</a>
+<a name="ln185">                               bool separator) const</a>
+<a name="ln186">{</a>
+<a name="ln187">#ifdef CLUA_BINDINGS</a>
+<a name="ln188">    // Set a pointer to killtext as a Lua global</a>
+<a name="ln189">    lua_pushlightuserdata(clua.state(), &amp;killtext);</a>
+<a name="ln190">    clua.setregistry(&quot;cr_skill&quot;);</a>
+<a name="ln191"> </a>
+<a name="ln192">    // Populate a Lua table with kill_exp structs, in the default order,</a>
+<a name="ln193">    // and leave the table on the top of the Lua stack.</a>
+<a name="ln194">    kill_lua_filltable(kills);</a>
+<a name="ln195"> </a>
+<a name="ln196">    if (category)</a>
+<a name="ln197">        lua_pushstring(clua, category);</a>
+<a name="ln198">    else</a>
+<a name="ln199">        lua_pushnil(clua);</a>
+<a name="ln200"> </a>
+<a name="ln201">    lua_pushboolean(clua, separator);</a>
+<a name="ln202"> </a>
+<a name="ln203">    unwind_var&lt;int&gt; lthrottle(clua.throttle_unit_lines, 500000);</a>
+<a name="ln204">    if (!clua.callfn(&quot;c_kill_list&quot;, 3, 1)</a>
+<a name="ln205">        || !lua_isboolean(clua, -1) || !lua_toboolean(clua, -1))</a>
+<a name="ln206">#endif</a>
+<a name="ln207">    {</a>
+<a name="ln208">#ifdef CLUA_BINDINGS</a>
+<a name="ln209">        if (!clua.error.empty())</a>
+<a name="ln210">        {</a>
+<a name="ln211">            killtext += &quot;Lua error:\n&quot;;</a>
+<a name="ln212">            killtext += clua.error + &quot;\n\n&quot;;</a>
+<a name="ln213">        }</a>
+<a name="ln214">#endif</a>
+<a name="ln215">        if (separator)</a>
+<a name="ln216">            killtext += &quot;\n&quot;;</a>
+<a name="ln217"> </a>
+<a name="ln218">        killtext += &quot;Vanquished Creatures&quot;;</a>
+<a name="ln219">        if (category)</a>
+<a name="ln220">            killtext += string(&quot; (&quot;) + category + &quot;)&quot;;</a>
+<a name="ln221"> </a>
+<a name="ln222">        killtext += &quot;\n&quot;;</a>
+<a name="ln223"> </a>
+<a name="ln224">        for (const kill_exp &amp;kill : kills)</a>
+<a name="ln225">            killtext += &quot;  &quot; + kill.desc + &quot;\n&quot;;</a>
+<a name="ln226"> </a>
+<a name="ln227">        killtext += make_stringf(&quot;%d creature%s vanquished.\n&quot;,</a>
+<a name="ln228">                                 count, count == 1 ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln229">    }</a>
+<a name="ln230">#ifdef CLUA_BINDINGS</a>
+<a name="ln231">    lua_pop(clua, 1);</a>
+<a name="ln232">#endif</a>
+<a name="ln233">}</a>
+<a name="ln234"> </a>
+<a name="ln235">int KillMaster::num_kills(const monster* mon, kill_category cat) const</a>
+<a name="ln236">{</a>
+<a name="ln237">    return categorized_kills[cat].num_kills(mon);</a>
+<a name="ln238">}</a>
+<a name="ln239"> </a>
+<a name="ln240">int KillMaster::num_kills(const monster_info&amp; mon, kill_category cat) const</a>
+<a name="ln241">{</a>
+<a name="ln242">    return categorized_kills[cat].num_kills(mon);</a>
+<a name="ln243">}</a>
+<a name="ln244"> </a>
+<a name="ln245">int KillMaster::num_kills(const monster* mon) const</a>
+<a name="ln246">{</a>
+<a name="ln247">    int total = 0;</a>
+<a name="ln248">    for (int cat = 0; cat &lt; KC_NCATEGORIES; cat++)</a>
+<a name="ln249">        total += categorized_kills[cat].num_kills(mon);</a>
+<a name="ln250"> </a>
+<a name="ln251">    return total;</a>
+<a name="ln252">}</a>
+<a name="ln253"> </a>
+<a name="ln254">int KillMaster::num_kills(const monster_info&amp; mon) const</a>
+<a name="ln255">{</a>
+<a name="ln256">    int total = 0;</a>
+<a name="ln257">    for (int cat = 0; cat &lt; KC_NCATEGORIES; cat++)</a>
+<a name="ln258">        total += categorized_kills[cat].num_kills(mon);</a>
+<a name="ln259"> </a>
+<a name="ln260">    return total;</a>
+<a name="ln261">}</a>
+<a name="ln262"> </a>
+<a name="ln263">///////////////////////////////////////////////////////////////////////////</a>
+<a name="ln264"> </a>
+<a name="ln265">bool Kills::empty() const</a>
+<a name="ln266">{</a>
+<a name="ln267">    return kills.empty() &amp;&amp; ghosts.empty();</a>
+<a name="ln268">}</a>
+<a name="ln269"> </a>
+<a name="ln270">void Kills::merge(const Kills &amp;k)</a>
+<a name="ln271">{</a>
+<a name="ln272">    ghosts.insert(ghosts.end(), k.ghosts.begin(), k.ghosts.end());</a>
+<a name="ln273"> </a>
+<a name="ln274">    // Regular kills are messier to merge.</a>
+<a name="ln275">    for (const auto &amp;entry : k.kills)</a>
+<a name="ln276">    {</a>
+<a name="ln277">        const kill_monster_desc &amp;kmd = entry.first;</a>
+<a name="ln278">        kill_def &amp;ki = kills[kmd];</a>
+<a name="ln279">        const kill_def &amp;ko = entry.second;</a>
+<a name="ln280">        bool uniq = mons_is_unique(kmd.monnum);</a>
+<a name="ln281">        ki.merge(ko, uniq);</a>
+<a name="ln282">    }</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">void Kills::record_kill(const monster* mon)</a>
+<a name="ln286">{</a>
+<a name="ln287">    // Handle player ghosts separately, but don't handle summoned</a>
+<a name="ln288">    // ghosts at all. {due}</a>
+<a name="ln289">    if (mon-&gt;type == MONS_PLAYER_GHOST &amp;&amp; !mon-&gt;is_summoned())</a>
+<a name="ln290">    {</a>
+<a name="ln291">        record_ghost_kill(mon);</a>
+<a name="ln292">        return ;</a>
+<a name="ln293">    }</a>
+<a name="ln294"> </a>
+<a name="ln295">    // Normal monsters</a>
+<a name="ln296">    // Create a descriptor</a>
+<a name="ln297">    kill_monster_desc descriptor = mon;</a>
+<a name="ln298"> </a>
+<a name="ln299">    kill_def &amp;k = kills[descriptor];</a>
+<a name="ln300">    if (k.kills)</a>
+<a name="ln301">        k.add_kill(mon, level_id::current());</a>
+<a name="ln302">    else</a>
+<a name="ln303">        k = kill_def(mon);</a>
+<a name="ln304">}</a>
+<a name="ln305"> </a>
+<a name="ln306">int Kills::get_kills(vector&lt;kill_exp&gt; &amp;all_kills) const</a>
+<a name="ln307">{</a>
+<a name="ln308">    int count = 0;</a>
+<a name="ln309">    for (const auto &amp;entry : kills)</a>
+<a name="ln310">    {</a>
+<a name="ln311">        const kill_monster_desc &amp;md = entry.first;</a>
+<a name="ln312">        const kill_def &amp;k = entry.second;</a>
+<a name="ln313">        all_kills.emplace_back(k, md);</a>
+<a name="ln314">        count += k.kills;</a>
+<a name="ln315">    }</a>
+<a name="ln316"> </a>
+<a name="ln317">    for (const kill_ghost &amp;gh : ghosts)</a>
+<a name="ln318">        all_kills.emplace_back(gh);</a>
+<a name="ln319">    count += ghosts.size();</a>
+<a name="ln320"> </a>
+<a name="ln321">    sort(all_kills.begin(), all_kills.end());</a>
+<a name="ln322">    return count;</a>
+<a name="ln323">}</a>
+<a name="ln324"> </a>
+<a name="ln325">void Kills::save(writer&amp; outf) const</a>
+<a name="ln326">{</a>
+<a name="ln327">    // How many kill records do we have?</a>
+<a name="ln328">    marshallInt(outf, kills.size());</a>
+<a name="ln329"> </a>
+<a name="ln330">    for (const auto &amp;entry : kills)</a>
+<a name="ln331">    {</a>
+<a name="ln332">        entry.first.save(outf);</a>
+<a name="ln333">        entry.second.save(outf);</a>
+<a name="ln334">    }</a>
+<a name="ln335"> </a>
+<a name="ln336">    // How many ghosts do we have?</a>
+<a name="ln337">    marshallShort(outf, ghosts.size());</a>
+<a name="ln338">    for (const auto &amp;ghost : ghosts)</a>
+<a name="ln339">        ghost.save(outf);</a>
+<a name="ln340">}</a>
+<a name="ln341"> </a>
+<a name="ln342">void Kills::load(reader&amp; inf)</a>
+<a name="ln343">{</a>
+<a name="ln344">    // How many kill records?</a>
+<a name="ln345">    int kill_count = unmarshallInt(inf);</a>
+<a name="ln346">    kills.clear();</a>
+<a name="ln347">    for (int i = 0; i &lt; kill_count; ++i)</a>
+<a name="ln348">    {</a>
+<a name="ln349">        kill_monster_desc md;</a>
+<a name="ln350">        md.load(inf);</a>
+<a name="ln351">        kills[md].load(inf);</a>
+<a name="ln352">    }</a>
+<a name="ln353"> </a>
+<a name="ln354">    short ghost_count = unmarshallShort(inf);</a>
+<a name="ln355">    ghosts.clear();</a>
+<a name="ln356">    for (short i = 0; i &lt; ghost_count; ++i)</a>
+<a name="ln357">    {</a>
+<a name="ln358">        kill_ghost kg;</a>
+<a name="ln359">        kg.load(inf);</a>
+<a name="ln360">        ghosts.push_back(kg);</a>
+<a name="ln361">    }</a>
+<a name="ln362">}</a>
+<a name="ln363"> </a>
+<a name="ln364">void Kills::record_ghost_kill(const monster* mon)</a>
+<a name="ln365">{</a>
+<a name="ln366">    // We should never get to this point, but just in case... {due}</a>
+<a name="ln367">    if (mon-&gt;is_summoned())</a>
+<a name="ln368">        return;</a>
+<a name="ln369">    ghosts.emplace_back(mon);</a>
+<a name="ln370">}</a>
+<a name="ln371"> </a>
+<a name="ln372">int Kills::num_kills(const monster* mon) const</a>
+<a name="ln373">{</a>
+<a name="ln374">    kill_monster_desc desc(mon);</a>
+<a name="ln375">    return num_kills(desc);</a>
+<a name="ln376">}</a>
+<a name="ln377"> </a>
+<a name="ln378">int Kills::num_kills(const monster_info&amp; mon) const</a>
+<a name="ln379">{</a>
+<a name="ln380">    kill_monster_desc desc(mon);</a>
+<a name="ln381">    return num_kills(desc);</a>
+<a name="ln382">}</a>
+<a name="ln383"> </a>
+<a name="ln384">int Kills::num_kills(kill_monster_desc desc) const</a>
+<a name="ln385">{</a>
+<a name="ln386">    auto iter = kills.find(desc);</a>
+<a name="ln387">    int total = (iter == kills.end() ? 0 : iter-&gt;second.kills);</a>
+<a name="ln388"> </a>
+<a name="ln389">    if (desc.modifier == kill_monster_desc::M_SHAPESHIFTER)</a>
+<a name="ln390">    {</a>
+<a name="ln391">        desc.modifier = kill_monster_desc::M_NORMAL;</a>
+<a name="ln392">        iter = kills.find(desc);</a>
+<a name="ln393">        total += (iter == kills.end() ? 0 : iter-&gt;second.kills);</a>
+<a name="ln394">    }</a>
+<a name="ln395"> </a>
+<a name="ln396">    return total;</a>
+<a name="ln397">}</a>
+<a name="ln398"> </a>
+<a name="ln399">kill_def::kill_def(const monster* mon) : kills(0), exp(0)</a>
+<a name="ln400">{</a>
+<a name="ln401">    exp = exper_value(*mon);</a>
+<a name="ln402">    add_kill(mon, level_id::current());</a>
+<a name="ln403">}</a>
+<a name="ln404"> </a>
+<a name="ln405">// For a non-unique monster, prefixes a suitable article if we have only one</a>
+<a name="ln406">// kill, else prefixes a kill count and pluralises the monster name.</a>
+<a name="ln407">static string n_names(const string &amp;name, int n)</a>
+<a name="ln408">{</a>
+<a name="ln409">    if (n &gt; 1)</a>
+<a name="ln410">    {</a>
+<a name="ln411">        char buf[20];</a>
+<a name="ln412">        snprintf(buf, sizeof buf, &quot;%d &quot;, n);</a>
+<a name="ln413">        return buf + pluralise_monster(name);</a>
+<a name="ln414">    }</a>
+<a name="ln415">    else</a>
+<a name="ln416">        return article_a(name, false);</a>
+<a name="ln417">}</a>
+<a name="ln418"> </a>
+<a name="ln419">// Returns a string describing the number of times a unique has been killed.</a>
+<a name="ln420">// Currently required only for Boris.</a>
+<a name="ln421">//</a>
+<a name="ln422">static string kill_times(int kills)</a>
+<a name="ln423">{</a>
+<a name="ln424">    char buf[50];</a>
+<a name="ln425">    switch (kills)</a>
+<a name="ln426">    {</a>
+<a name="ln427">    case 1:</a>
+<a name="ln428">        strcpy(buf, &quot; (once)&quot;);</a>
+<a name="ln429">        break;</a>
+<a name="ln430">    case 2:</a>
+<a name="ln431">        strcpy(buf, &quot; (twice)&quot;);</a>
+<a name="ln432">        break;</a>
+<a name="ln433">    case 3:</a>
+<a name="ln434">        strcpy(buf, &quot; (thrice)&quot;);</a>
+<a name="ln435">        break;</a>
+<a name="ln436">    default:</a>
+<a name="ln437">        snprintf(buf, sizeof buf, &quot; (%d times)&quot;, kills);</a>
+<a name="ln438">        break;</a>
+<a name="ln439">    }</a>
+<a name="ln440">    return string(buf);</a>
+<a name="ln441">}</a>
+<a name="ln442"> </a>
+<a name="ln443">void kill_def::merge(const kill_def &amp;k, bool uniq)</a>
+<a name="ln444">{</a>
+<a name="ln445">    if (!kills)</a>
+<a name="ln446">        *this = k;</a>
+<a name="ln447">    else</a>
+<a name="ln448">    {</a>
+<a name="ln449">        kills += k.kills;</a>
+<a name="ln450">        for (level_id lvl : k.places)</a>
+<a name="ln451">            add_place(lvl, uniq);</a>
+<a name="ln452">    }</a>
+<a name="ln453">}</a>
+<a name="ln454"> </a>
+<a name="ln455">void kill_def::add_kill(const monster* mon, level_id place)</a>
+<a name="ln456">{</a>
+<a name="ln457">    kills++;</a>
+<a name="ln458">    // They're only unique if they aren't summoned.</a>
+<a name="ln459">    add_place(place, mons_is_unique(mon-&gt;type) &amp;&amp; !mon-&gt;is_summoned());</a>
+<a name="ln460">}</a>
+<a name="ln461"> </a>
+<a name="ln462">void kill_def::add_place(level_id place, bool force)</a>
+<a name="ln463">{</a>
+<a name="ln464">    if (find(begin(places), end(places), place) != end(places))</a>
+<a name="ln465">        return; // Already there</a>
+<a name="ln466"> </a>
+<a name="ln467">    if (force || places.size() &lt; PLACE_LIMIT)</a>
+<a name="ln468">        places.push_back(place);</a>
+<a name="ln469">}</a>
+<a name="ln470"> </a>
+<a name="ln471">string kill_def::base_name(const kill_monster_desc &amp;md) const</a>
+<a name="ln472">{</a>
+<a name="ln473">    string name;</a>
+<a name="ln474">    if (md.monnum == MONS_PANDEMONIUM_LORD)</a>
+<a name="ln475">        name = &quot;pandemonium lord&quot;;</a>
+<a name="ln476">    else</a>
+<a name="ln477">        name = mons_type_name(md.monnum, DESC_PLAIN);</a>
+<a name="ln478"> </a>
+<a name="ln479">    switch (md.modifier)</a>
+<a name="ln480">    {</a>
+<a name="ln481">    case kill_monster_desc::M_ZOMBIE:</a>
+<a name="ln482">        name += &quot; zombie&quot;;</a>
+<a name="ln483">        break;</a>
+<a name="ln484">    case kill_monster_desc::M_SKELETON:</a>
+<a name="ln485">        name += &quot; skeleton&quot;;</a>
+<a name="ln486">        break;</a>
+<a name="ln487">    case kill_monster_desc::M_SIMULACRUM:</a>
+<a name="ln488">        name += &quot; simulacrum&quot;;</a>
+<a name="ln489">        break;</a>
+<a name="ln490">    case kill_monster_desc::M_SPECTRE:</a>
+<a name="ln491">        name = &quot;spectral &quot; + name;</a>
+<a name="ln492">        break;</a>
+<a name="ln493">    default:</a>
+<a name="ln494">        // Silence compiler warning about not handling M_NORMAL and</a>
+<a name="ln495">        // M_SHAPESHIFTER</a>
+<a name="ln496">        break;</a>
+<a name="ln497">    }</a>
+<a name="ln498"> </a>
+<a name="ln499">    return name;</a>
+<a name="ln500">}</a>
+<a name="ln501"> </a>
+<a name="ln502">string kill_def::info(const kill_monster_desc &amp;md) const</a>
+<a name="ln503">{</a>
+<a name="ln504">    string name = base_name(md);</a>
+<a name="ln505"> </a>
+<a name="ln506">    if (!mons_is_unique(md.monnum))</a>
+<a name="ln507">    {</a>
+<a name="ln508">        // Pluralise as needed.</a>
+<a name="ln509">        name = n_names(name, kills);</a>
+<a name="ln510"> </a>
+<a name="ln511">        // We brand shapeshifters with the (shapeshifter) qualifier.</a>
+<a name="ln512">        // This has to be done after doing pluralise(), else we get very</a>
+<a name="ln513">        // odd plurals :)</a>
+<a name="ln514">        if (md.modifier == kill_monster_desc::M_SHAPESHIFTER</a>
+<a name="ln515">            &amp;&amp; md.monnum != MONS_SHAPESHIFTER</a>
+<a name="ln516">            &amp;&amp; md.monnum != MONS_GLOWING_SHAPESHIFTER)</a>
+<a name="ln517">        {</a>
+<a name="ln518">            name += &quot; (shapeshifter)&quot;;</a>
+<a name="ln519">        }</a>
+<a name="ln520">    }</a>
+<a name="ln521">    else if (kills &gt; 1)</a>
+<a name="ln522">    {</a>
+<a name="ln523">        // Aha! A resurrected unique</a>
+<a name="ln524">        name += kill_times(kills);</a>
+<a name="ln525">    }</a>
+<a name="ln526"> </a>
+<a name="ln527">    // What places we killed this type of monster</a>
+<a name="ln528">    return append_places(md, name);</a>
+<a name="ln529">}</a>
+<a name="ln530"> </a>
+<a name="ln531">string kill_def::append_places(const kill_monster_desc &amp;md,</a>
+<a name="ln532">                               const string &amp;name) const</a>
+<a name="ln533">{</a>
+<a name="ln534">    if (Options.dump_kill_places == KDO_NO_PLACES) return name;</a>
+<a name="ln535"> </a>
+<a name="ln536">    size_t nplaces = places.size();</a>
+<a name="ln537">    if (nplaces == 1 || mons_is_unique(md.monnum)</a>
+<a name="ln538">            || Options.dump_kill_places == KDO_ALL_PLACES)</a>
+<a name="ln539">    {</a>
+<a name="ln540">        string augmented = name;</a>
+<a name="ln541">        augmented += &quot; (&quot;;</a>
+<a name="ln542">        for (auto iter = places.begin(); iter != places.end(); ++iter)</a>
+<a name="ln543">        {</a>
+<a name="ln544">            if (iter != places.begin())</a>
+<a name="ln545">                augmented += &quot; &quot;;</a>
+<a name="ln546">            augmented += iter-&gt;describe();</a>
+<a name="ln547">        }</a>
+<a name="ln548">        augmented += &quot;)&quot;;</a>
+<a name="ln549">        return augmented;</a>
+<a name="ln550">    }</a>
+<a name="ln551">    return name;</a>
+<a name="ln552">}</a>
+<a name="ln553"> </a>
+<a name="ln554">void kill_def::save(writer&amp; outf) const</a>
+<a name="ln555">{</a>
+<a name="ln556">    marshallShort(outf, kills);</a>
+<a name="ln557">    marshallShort(outf, exp);</a>
+<a name="ln558"> </a>
+<a name="ln559">    marshallShort(outf, places.size());</a>
+<a name="ln560">    for (auto lvl : places)</a>
+<a name="ln561">        lvl.save(outf);</a>
+<a name="ln562">}</a>
+<a name="ln563"> </a>
+<a name="ln564">void kill_def::load(reader&amp; inf)</a>
+<a name="ln565">{</a>
+<a name="ln566">    kills = (unsigned short) unmarshallShort(inf);</a>
+<a name="ln567">    exp   = unmarshallShort(inf);</a>
+<a name="ln568"> </a>
+<a name="ln569">    places.clear();</a>
+<a name="ln570">    short place_count = unmarshallShort(inf);</a>
+<a name="ln571">    for (short i = 0; i &lt; place_count; ++i)</a>
+<a name="ln572">    {</a>
+<a name="ln573">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln574">        if (inf.getMinorVersion() &lt; TAG_MINOR_PLACE_UNPACK)</a>
+<a name="ln575">        {</a>
+<a name="ln576">            places.push_back(level_id::from_packed_place(</a>
+<a name="ln577">                                (unsigned short) unmarshallShort(inf)));</a>
+<a name="ln578">        }</a>
+<a name="ln579">        else</a>
+<a name="ln580">        {</a>
+<a name="ln581">#endif</a>
+<a name="ln582">        level_id tmp;</a>
+<a name="ln583">        tmp.load(inf);</a>
+<a name="ln584">        places.push_back(tmp);</a>
+<a name="ln585">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln586">        }</a>
+<a name="ln587">#endif</a>
+<a name="ln588">    }</a>
+<a name="ln589">}</a>
+<a name="ln590"> </a>
+<a name="ln591">kill_ghost::kill_ghost(const monster* mon)</a>
+<a name="ln592">{</a>
+<a name="ln593">    exp = exper_value(*mon);</a>
+<a name="ln594">    place = level_id::current();</a>
+<a name="ln595">    ghost_name = mon-&gt;ghost-&gt;name;</a>
+<a name="ln596"> </a>
+<a name="ln597">    // Check whether this is really a ghost, since we also have to handle</a>
+<a name="ln598">    // the Pandemonic demons.</a>
+<a name="ln599">    if (mon-&gt;type == MONS_PLAYER_GHOST &amp;&amp; !mon-&gt;is_summoned())</a>
+<a name="ln600">    {</a>
+<a name="ln601">        monster_info mi(mon);</a>
+<a name="ln602">        ghost_name = &quot;The ghost of &quot; + get_ghost_description(mi, true);</a>
+<a name="ln603">    }</a>
+<a name="ln604">}</a>
+<a name="ln605"> </a>
+<a name="ln606">string kill_ghost::info() const</a>
+<a name="ln607">{</a>
+<a name="ln608">    return ghost_name</a>
+<a name="ln609">           + (Options.dump_kill_places != KDO_NO_PLACES ?</a>
+<a name="ln610">                &quot; (&quot; + place.describe() + &quot;)&quot; :</a>
+<a name="ln611">                string(&quot;&quot;));</a>
+<a name="ln612">}</a>
+<a name="ln613"> </a>
+<a name="ln614">void kill_ghost::save(writer&amp; outf) const</a>
+<a name="ln615">{</a>
+<a name="ln616">    marshallString4(outf, ghost_name);</a>
+<a name="ln617">    marshallShort(outf, (unsigned short) exp);</a>
+<a name="ln618">    place.save(outf);</a>
+<a name="ln619">}</a>
+<a name="ln620"> </a>
+<a name="ln621">void kill_ghost::load(reader&amp; inf)</a>
+<a name="ln622">{</a>
+<a name="ln623">    unmarshallString4(inf, ghost_name);</a>
+<a name="ln624">    exp = unmarshallShort(inf);</a>
+<a name="ln625">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln626">    if (inf.getMinorVersion() &lt; TAG_MINOR_PLACE_UNPACK)</a>
+<a name="ln627">        place = level_id::from_packed_place((unsigned short) unmarshallShort(inf));</a>
+<a name="ln628">    else</a>
+<a name="ln629">#endif</a>
+<a name="ln630">    place.load(inf);</a>
+<a name="ln631">}</a>
+<a name="ln632"> </a>
+<a name="ln633">kill_monster_desc::kill_monster_desc(const monster* mon)</a>
+<a name="ln634">{</a>
+<a name="ln635">    monnum = mon-&gt;type;</a>
+<a name="ln636">    modifier = M_NORMAL;</a>
+<a name="ln637">    switch (mon-&gt;type)</a>
+<a name="ln638">    {</a>
+<a name="ln639">        case MONS_ZOMBIE:</a>
+<a name="ln640">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln641">        case MONS_ZOMBIE_LARGE: case MONS_ZOMBIE_SMALL:</a>
+<a name="ln642">#endif</a>
+<a name="ln643">            modifier = M_ZOMBIE;</a>
+<a name="ln644">            break;</a>
+<a name="ln645">        case MONS_SKELETON:</a>
+<a name="ln646">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln647">        case MONS_SKELETON_LARGE: case MONS_SKELETON_SMALL:</a>
+<a name="ln648">#endif</a>
+<a name="ln649">            modifier = M_SKELETON;</a>
+<a name="ln650">            break;</a>
+<a name="ln651">        case MONS_SIMULACRUM:</a>
+<a name="ln652">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln653">        case MONS_SIMULACRUM_LARGE: case MONS_SIMULACRUM_SMALL:</a>
+<a name="ln654">#endif</a>
+<a name="ln655">            modifier = M_SIMULACRUM;</a>
+<a name="ln656">            break;</a>
+<a name="ln657">        case MONS_SPECTRAL_THING:</a>
+<a name="ln658">            modifier = M_SPECTRE;</a>
+<a name="ln659">            break;</a>
+<a name="ln660">        default: break;</a>
+<a name="ln661">    }</a>
+<a name="ln662">    if (modifier != M_NORMAL)</a>
+<a name="ln663">        monnum = mons_species(mon-&gt;base_monster);</a>
+<a name="ln664"> </a>
+<a name="ln665">    if (mon-&gt;is_shapeshifter())</a>
+<a name="ln666">        modifier = M_SHAPESHIFTER;</a>
+<a name="ln667">}</a>
+<a name="ln668"> </a>
+<a name="ln669">kill_monster_desc::kill_monster_desc(const monster_info&amp; mon)</a>
+<a name="ln670">{</a>
+<a name="ln671">    monnum = mon.type;</a>
+<a name="ln672">    modifier = M_NORMAL;</a>
+<a name="ln673">    switch (mon.type)</a>
+<a name="ln674">    {</a>
+<a name="ln675">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln676">        case MONS_ZOMBIE_LARGE: case MONS_ZOMBIE_SMALL:</a>
+<a name="ln677">#endif</a>
+<a name="ln678">            modifier = M_ZOMBIE;</a>
+<a name="ln679">            break;</a>
+<a name="ln680">        case MONS_SKELETON:</a>
+<a name="ln681">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln682">        case MONS_SKELETON_LARGE: case MONS_SKELETON_SMALL:</a>
+<a name="ln683">#endif</a>
+<a name="ln684">            modifier = M_SKELETON;</a>
+<a name="ln685">            break;</a>
+<a name="ln686">        case MONS_SIMULACRUM:</a>
+<a name="ln687">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln688">        case MONS_SIMULACRUM_LARGE: case MONS_SIMULACRUM_SMALL:</a>
+<a name="ln689">#endif</a>
+<a name="ln690">            modifier = M_SIMULACRUM;</a>
+<a name="ln691">            break;</a>
+<a name="ln692">        case MONS_SPECTRAL_THING:</a>
+<a name="ln693">            modifier = M_SPECTRE;</a>
+<a name="ln694">            break;</a>
+<a name="ln695">        default: break;</a>
+<a name="ln696">    }</a>
+<a name="ln697">    if (modifier != M_NORMAL)</a>
+<a name="ln698">        monnum = mon.base_type;</a>
+<a name="ln699"> </a>
+<a name="ln700">    if (mon.is(MB_SHAPESHIFTER))</a>
+<a name="ln701">        modifier = M_SHAPESHIFTER;</a>
+<a name="ln702">}</a>
+<a name="ln703"> </a>
+<a name="ln704">void kill_monster_desc::save(writer&amp; outf) const</a>
+<a name="ln705">{</a>
+<a name="ln706">    marshallShort(outf, (short) monnum);</a>
+<a name="ln707">    marshallShort(outf, (short) modifier);</a>
+<a name="ln708">}</a>
+<a name="ln709"> </a>
+<a name="ln710">void kill_monster_desc::load(reader&amp; inf)</a>
+<a name="ln711">{</a>
+<a name="ln712">    monnum = static_cast&lt;monster_type&gt;(unmarshallShort(inf));</a>
+<a name="ln713">    modifier = (name_modifier) unmarshallShort(inf);</a>
+<a name="ln714">}</a>
+<a name="ln715"> </a>
+<a name="ln716">///////////////////////////////////////////////////////////////////////////</a>
+<a name="ln717">// Kill Lua interface</a>
+<a name="ln718">//</a>
+<a name="ln719"> </a>
+<a name="ln720">#define KILLEXP_ACCESS(name, type, field) \</a>
+<a name="ln721">    static int kill_lualc_##name(lua_State *ls) \</a>
+<a name="ln722">    { \</a>
+<a name="ln723">        if (!lua_islightuserdata(ls, 1)) \</a>
+<a name="ln724">        { \</a>
+<a name="ln725">            luaL_argerror(ls, 1, &quot;Unexpected argument type&quot;); \</a>
+<a name="ln726">            return 0; \</a>
+<a name="ln727">        } \</a>
+<a name="ln728">          \</a>
+<a name="ln729">        kill_exp *ke = static_cast&lt;kill_exp*&gt;(lua_touserdata(ls, 1)); \</a>
+<a name="ln730">        if (ke) \</a>
+<a name="ln731">        { \</a>
+<a name="ln732">            lua_push##type(ls, ke-&gt;field); \</a>
+<a name="ln733">            return 1; \</a>
+<a name="ln734">        } \</a>
+<a name="ln735">        return 0; \</a>
+<a name="ln736">    }</a>
+<a name="ln737"> </a>
+<a name="ln738">KILLEXP_ACCESS(nkills, number, nkills)</a>
+<a name="ln739">KILLEXP_ACCESS(exp, number, exp)</a>
+<a name="ln740">KILLEXP_ACCESS(base_name, string, base_name.c_str())</a>
+<a name="ln741">KILLEXP_ACCESS(desc, string, desc.c_str())</a>
+<a name="ln742">KILLEXP_ACCESS(monnum, number, monnum)</a>
+<a name="ln743">KILLEXP_ACCESS(isghost, boolean, monnum == MONS_PLAYER_GHOST)</a>
+<a name="ln744">KILLEXP_ACCESS(ispandemon, boolean, monnum == MONS_PANDEMONIUM_LORD)</a>
+<a name="ln745"> </a>
+<a name="ln746">static int kill_lualc_modifier(lua_State *ls)</a>
+<a name="ln747">{</a>
+<a name="ln748">    if (!lua_islightuserdata(ls, 1))</a>
+<a name="ln749">    {</a>
+<a name="ln750">        luaL_argerror(ls, 1, &quot;Unexpected argument type&quot;);</a>
+<a name="ln751">        return 0;</a>
+<a name="ln752">    }</a>
+<a name="ln753"> </a>
+<a name="ln754">    kill_exp *ke = static_cast&lt;kill_exp*&gt;(lua_touserdata(ls, 1));</a>
+<a name="ln755">    if (ke)</a>
+<a name="ln756">    {</a>
+<a name="ln757">        const char *modifier;</a>
+<a name="ln758">        switch (ke-&gt;modifier)</a>
+<a name="ln759">        {</a>
+<a name="ln760">        case kill_monster_desc::M_ZOMBIE:</a>
+<a name="ln761">            modifier = &quot;zombie&quot;;</a>
+<a name="ln762">            break;</a>
+<a name="ln763">        case kill_monster_desc::M_SKELETON:</a>
+<a name="ln764">            modifier = &quot;skeleton&quot;;</a>
+<a name="ln765">            break;</a>
+<a name="ln766">        case kill_monster_desc::M_SIMULACRUM:</a>
+<a name="ln767">            modifier = &quot;simulacrum&quot;;</a>
+<a name="ln768">            break;</a>
+<a name="ln769">        case kill_monster_desc::M_SPECTRE:</a>
+<a name="ln770">            modifier = &quot;spectre&quot;;</a>
+<a name="ln771">            break;</a>
+<a name="ln772">        case kill_monster_desc::M_SHAPESHIFTER:</a>
+<a name="ln773">            modifier = &quot;shapeshifter&quot;;</a>
+<a name="ln774">            break;</a>
+<a name="ln775">        default:</a>
+<a name="ln776">            modifier = &quot;&quot;;</a>
+<a name="ln777">            break;</a>
+<a name="ln778">        }</a>
+<a name="ln779">        lua_pushstring(ls, modifier);</a>
+<a name="ln780">        return 1;</a>
+<a name="ln781">    }</a>
+<a name="ln782">    return 0;</a>
+<a name="ln783">}</a>
+<a name="ln784"> </a>
+<a name="ln785">static int kill_lualc_isunique(lua_State *ls)</a>
+<a name="ln786">{</a>
+<a name="ln787">    if (!lua_islightuserdata(ls, 1))</a>
+<a name="ln788">    {</a>
+<a name="ln789">        luaL_argerror(ls, 1, &quot;Unexpected argument type&quot;);</a>
+<a name="ln790">        return 0;</a>
+<a name="ln791">    }</a>
+<a name="ln792"> </a>
+<a name="ln793">    kill_exp *ke = static_cast&lt;kill_exp*&gt;(lua_touserdata(ls, 1));</a>
+<a name="ln794">    if (ke)</a>
+<a name="ln795">    {</a>
+<a name="ln796">        lua_pushboolean(ls, mons_is_unique(ke-&gt;monnum));</a>
+<a name="ln797">        return 1;</a>
+<a name="ln798">    }</a>
+<a name="ln799">    return 0;</a>
+<a name="ln800">}</a>
+<a name="ln801"> </a>
+<a name="ln802">static int kill_lualc_holiness(lua_State *ls)</a>
+<a name="ln803">{</a>
+<a name="ln804">    if (!lua_islightuserdata(ls, 1))</a>
+<a name="ln805">    {</a>
+<a name="ln806">        luaL_argerror(ls, 1, &quot;Unexpected argument type&quot;);</a>
+<a name="ln807">        return 0;</a>
+<a name="ln808">    }</a>
+<a name="ln809"> </a>
+<a name="ln810">    kill_exp *ke = static_cast&lt;kill_exp*&gt;(lua_touserdata(ls, 1));</a>
+<a name="ln811">    if (ke)</a>
+<a name="ln812">    {</a>
+<a name="ln813">        const char *verdict = &quot;strange&quot;;</a>
+<a name="ln814">        mon_holy_type holi = mons_class_holiness(ke-&gt;monnum);</a>
+<a name="ln815">        if (holi &amp; MH_HOLY)</a>
+<a name="ln816">            verdict = &quot;holy&quot;;</a>
+<a name="ln817">        else if (holi &amp; MH_NATURAL)</a>
+<a name="ln818">            verdict = &quot;natural&quot;;</a>
+<a name="ln819">        else if (holi &amp; MH_UNDEAD)</a>
+<a name="ln820">            verdict = &quot;undead&quot;;</a>
+<a name="ln821">        else if (holi &amp; MH_DEMONIC)</a>
+<a name="ln822">            verdict = &quot;demonic&quot;;</a>
+<a name="ln823">        else if (holi &amp; MH_NONLIVING)</a>
+<a name="ln824">            verdict = &quot;nonliving&quot;;</a>
+<a name="ln825">        else if (holi &amp; MH_PLANT)</a>
+<a name="ln826">            verdict = &quot;plant&quot;;</a>
+<a name="ln827">        if (ke-&gt;modifier != kill_monster_desc::M_NORMAL</a>
+<a name="ln828">            &amp;&amp; ke-&gt;modifier != kill_monster_desc::M_SHAPESHIFTER)</a>
+<a name="ln829">        {</a>
+<a name="ln830">            verdict = &quot;undead&quot;;</a>
+<a name="ln831">        }</a>
+<a name="ln832">        lua_pushstring(ls, verdict);</a>
+<a name="ln833">        return 1;</a>
+<a name="ln834">    }</a>
+<a name="ln835">    return 0;</a>
+<a name="ln836">}</a>
+<a name="ln837"> </a>
+<a name="ln838">static int kill_lualc_symbol(lua_State *ls)</a>
+<a name="ln839">{</a>
+<a name="ln840">    if (!lua_islightuserdata(ls, 1))</a>
+<a name="ln841">    {</a>
+<a name="ln842">        luaL_argerror(ls, 1, &quot;Unexpected argument type&quot;);</a>
+<a name="ln843">        return 0;</a>
+<a name="ln844">    }</a>
+<a name="ln845"> </a>
+<a name="ln846">    kill_exp *ke = static_cast&lt;kill_exp*&gt;(lua_touserdata(ls, 1));</a>
+<a name="ln847">    if (ke)</a>
+<a name="ln848">    {</a>
+<a name="ln849">        char32_t ch = mons_char(ke-&gt;monnum);</a>
+<a name="ln850"> </a>
+<a name="ln851">        if (ke-&gt;monnum == MONS_PROGRAM_BUG)</a>
+<a name="ln852">            ch = ' ';</a>
+<a name="ln853"> </a>
+<a name="ln854">        switch (ke-&gt;modifier)</a>
+<a name="ln855">        {</a>
+<a name="ln856">        case kill_monster_desc::M_ZOMBIE:</a>
+<a name="ln857">        case kill_monster_desc::M_SKELETON:</a>
+<a name="ln858">            ch = mons_char(mons_zombie_size(ke-&gt;monnum) == Z_SMALL ?</a>
+<a name="ln859">                           MONS_ZOMBIE_SMALL : MONS_ZOMBIE_LARGE);</a>
+<a name="ln860">            break;</a>
+<a name="ln861">        case kill_monster_desc::M_SIMULACRUM:</a>
+<a name="ln862">            ch = mons_char(mons_zombie_size(ke-&gt;monnum) == Z_SMALL ?</a>
+<a name="ln863">                           MONS_SIMULACRUM_SMALL : MONS_SIMULACRUM_LARGE);</a>
+<a name="ln864">            break;</a>
+<a name="ln865">        case kill_monster_desc::M_SPECTRE:</a>
+<a name="ln866">            ch = mons_char(MONS_SPECTRAL_THING);</a>
+<a name="ln867">            break;</a>
+<a name="ln868">        default:</a>
+<a name="ln869">            break;</a>
+<a name="ln870">        }</a>
+<a name="ln871"> </a>
+<a name="ln872">        lua_pushstring(ls, stringize_glyph(ch).c_str());</a>
+<a name="ln873">        return 1;</a>
+<a name="ln874">    }</a>
+<a name="ln875">    return 0;</a>
+<a name="ln876">}</a>
+<a name="ln877"> </a>
+<a name="ln878">static int kill_lualc_rawwrite(lua_State *ls)</a>
+<a name="ln879">{</a>
+<a name="ln880">    const char *s = luaL_checkstring(ls, 1);</a>
+<a name="ln881">    lua_pushstring(ls, &quot;cr_skill&quot;);</a>
+<a name="ln882">    lua_gettable(ls, LUA_REGISTRYINDEX);</a>
+<a name="ln883">    if (!lua_islightuserdata(ls, -1))</a>
+<a name="ln884">    {</a>
+<a name="ln885">        lua_settop(ls, -2);</a>
+<a name="ln886">        fprintf(stderr, &quot;Can't find kill string?\n&quot;);</a>
+<a name="ln887">        return 0;</a>
+<a name="ln888">    }</a>
+<a name="ln889"> </a>
+<a name="ln890">    string *skill = static_cast&lt;string *&gt;(lua_touserdata(ls, -1));</a>
+<a name="ln891">    // Pop the userdata off the stack.</a>
+<a name="ln892">    lua_settop(ls, -2);</a>
+<a name="ln893"> </a>
+<a name="ln894">    *skill += s;</a>
+<a name="ln895">    *skill += &quot;\n&quot;;</a>
+<a name="ln896"> </a>
+<a name="ln897">    return 0;</a>
+<a name="ln898">}</a>
+<a name="ln899"> </a>
+<a name="ln900">static int kill_lualc_write(lua_State *ls)</a>
+<a name="ln901">{</a>
+<a name="ln902">    if (!lua_islightuserdata(ls, 1))</a>
+<a name="ln903">    {</a>
+<a name="ln904">        luaL_argerror(ls, 1, &quot;Unexpected argument type&quot;);</a>
+<a name="ln905">        return 0;</a>
+<a name="ln906">    }</a>
+<a name="ln907"> </a>
+<a name="ln908">    kill_exp *ke = static_cast&lt;kill_exp*&gt;(lua_touserdata(ls, 1));</a>
+<a name="ln909">    if (ke)</a>
+<a name="ln910">    {</a>
+<a name="ln911">        lua_pushstring(ls, &quot;cr_skill&quot;);</a>
+<a name="ln912">        lua_gettable(ls, LUA_REGISTRYINDEX);</a>
+<a name="ln913">        if (!lua_islightuserdata(ls, -1))</a>
+<a name="ln914">        {</a>
+<a name="ln915">            lua_settop(ls,-2);</a>
+<a name="ln916">            fprintf(stderr, &quot;Can't find kill string?\n&quot;);</a>
+<a name="ln917">            return 0;</a>
+<a name="ln918">        }</a>
+<a name="ln919"> </a>
+<a name="ln920">        string *skill = static_cast&lt;string *&gt;(lua_touserdata(ls, -1));</a>
+<a name="ln921">        // Pop the userdata off the stack.</a>
+<a name="ln922">        lua_settop(ls, -2);</a>
+<a name="ln923"> </a>
+<a name="ln924">        // Write kill description and a newline.</a>
+<a name="ln925">        *skill += ke-&gt;desc + &quot;\n&quot;;</a>
+<a name="ln926">    }</a>
+<a name="ln927">    return 0;</a>
+<a name="ln928">}</a>
+<a name="ln929"> </a>
+<a name="ln930">static int kill_lualc_summary(lua_State *ls)</a>
+<a name="ln931">{</a>
+<a name="ln932">    if (!lua_istable(ls, 1))</a>
+<a name="ln933">    {</a>
+<a name="ln934">        luaL_argerror(ls, 1, &quot;Unexpected argument type, wanted table&quot;);</a>
+<a name="ln935">        return 0;</a>
+<a name="ln936">    }</a>
+<a name="ln937"> </a>
+<a name="ln938">    unsigned int count = 0;</a>
+<a name="ln939">    for (int i = 1; ; ++i)</a>
+<a name="ln940">    {</a>
+<a name="ln941">        lua_rawgeti(ls, 1, i);</a>
+<a name="ln942">        if (lua_isnil(ls, -1))</a>
+<a name="ln943">        {</a>
+<a name="ln944">            lua_settop(ls, -2);</a>
+<a name="ln945">            break;</a>
+<a name="ln946">        }</a>
+<a name="ln947"> </a>
+<a name="ln948">        if (!lua_islightuserdata(ls, -1))</a>
+<a name="ln949">        {</a>
+<a name="ln950">            luaL_argerror(ls, 1, &quot;Unexpected argument type&quot;);</a>
+<a name="ln951">            return 0;</a>
+<a name="ln952">        }</a>
+<a name="ln953"> </a>
+<a name="ln954">        kill_exp *ke = static_cast&lt;kill_exp*&gt;(lua_touserdata(ls, -1));</a>
+<a name="ln955">        lua_settop(ls, -2);</a>
+<a name="ln956">        if (ke)</a>
+<a name="ln957">            count += ke-&gt;nkills;</a>
+<a name="ln958">    }</a>
+<a name="ln959">    char buf[120];</a>
+<a name="ln960">    *buf = 0;</a>
+<a name="ln961">    if (count)</a>
+<a name="ln962">    {</a>
+<a name="ln963">        snprintf(buf, sizeof buf, &quot;%u creature%s vanquished.&quot;,</a>
+<a name="ln964">                count, count &gt; 1? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln965">    }</a>
+<a name="ln966">    lua_pushstring(ls, buf);</a>
+<a name="ln967">    return 1;</a>
+<a name="ln968">}</a>
+<a name="ln969"> </a>
+<a name="ln970">static const struct luaL_reg kill_lib[] =</a>
+<a name="ln971">{</a>
+<a name="ln972">    { &quot;nkills&quot;,     kill_lualc_nkills },</a>
+<a name="ln973">    { &quot;exp&quot;   ,     kill_lualc_exp },</a>
+<a name="ln974">    { &quot;base_name&quot;,  kill_lualc_base_name },</a>
+<a name="ln975">    { &quot;desc&quot;,       kill_lualc_desc },</a>
+<a name="ln976">    { &quot;monnum&quot;,     kill_lualc_monnum },</a>
+<a name="ln977">    { &quot;modifier&quot;,   kill_lualc_modifier },</a>
+<a name="ln978">    { &quot;holiness&quot;,   kill_lualc_holiness },</a>
+<a name="ln979">    { &quot;symbol&quot;,     kill_lualc_symbol },</a>
+<a name="ln980">    { &quot;isghost&quot;,    kill_lualc_isghost },</a>
+<a name="ln981">    { &quot;ispandemon&quot;, kill_lualc_ispandemon },</a>
+<a name="ln982">    { &quot;isunique&quot;,   kill_lualc_isunique },</a>
+<a name="ln983">    { &quot;rawwrite&quot;,   kill_lualc_rawwrite },</a>
+<a name="ln984">    { &quot;write&quot;,      kill_lualc_write },</a>
+<a name="ln985">    { &quot;summary&quot;,    kill_lualc_summary },</a>
+<a name="ln986">    { nullptr, nullptr }</a>
+<a name="ln987">};</a>
+<a name="ln988"> </a>
+<a name="ln989">void cluaopen_kills(lua_State *ls)</a>
+<a name="ln990">{</a>
+<a name="ln991">    luaL_openlib(ls, &quot;kills&quot;, kill_lib, 0);</a>
+<a name="ln992">}</a>
+<a name="ln993"> </a>
+<a name="ln994">#ifdef CLUA_BINDINGS</a>
+<a name="ln995">static void kill_lua_filltable(vector&lt;kill_exp&gt; &amp;v)</a>
+<a name="ln996">{</a>
+<a name="ln997">    lua_State *ls = clua.state();</a>
+<a name="ln998">    lua_newtable(ls);</a>
+<a name="ln999">    for (int i = 0, count = v.size(); i &lt; count; ++i)</a>
+<a name="ln1000">    {</a>
+<a name="ln1001">        lua_pushlightuserdata(ls, &amp;v[i]);</a>
+<a name="ln1002">        lua_rawseti(ls, -2, i + 1);</a>
+<a name="ln1003">    }</a>
+<a name="ln1004">}</a>
+<a name="ln1005">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="49"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1016/" target="_blank">V1016</a> Expression 'kc >= KC_YOU' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

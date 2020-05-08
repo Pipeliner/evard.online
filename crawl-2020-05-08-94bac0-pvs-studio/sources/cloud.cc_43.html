@@ -1,0 +1,1951 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>cloud.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions related to clouds.</a>
+<a name="ln4"> *</a>
+<a name="ln5"> * Creating a cloud module so all the cloud stuff can be isolated.</a>
+<a name="ln6">**/</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;AppHdr.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;cloud.h&quot;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &lt;algorithm&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;areas.h&quot;</a>
+<a name="ln15">#include &quot;art-enum.h&quot;</a>
+<a name="ln16">#include &quot;colour.h&quot;</a>
+<a name="ln17">#include &quot;coordit.h&quot;</a>
+<a name="ln18">#include &quot;dungeon.h&quot;</a>
+<a name="ln19">#include &quot;english.h&quot;</a>
+<a name="ln20">#include &quot;god-conduct.h&quot;</a>
+<a name="ln21">#include &quot;god-passive.h&quot;</a>
+<a name="ln22">#include &quot;level-state-type.h&quot;</a>
+<a name="ln23">#include &quot;libutil.h&quot; // testbits</a>
+<a name="ln24">#include &quot;los.h&quot;</a>
+<a name="ln25">#include &quot;mapmark.h&quot;</a>
+<a name="ln26">#include &quot;map-knowledge.h&quot;</a>
+<a name="ln27">#include &quot;melee-attack.h&quot;</a>
+<a name="ln28">#include &quot;message.h&quot;</a>
+<a name="ln29">#include &quot;mon-behv.h&quot;</a>
+<a name="ln30">#include &quot;mon-death.h&quot;</a>
+<a name="ln31">#include &quot;mon-place.h&quot;</a>
+<a name="ln32">#include &quot;nearby-danger.h&quot; // Compass (for random_walk, CloudGenerator)</a>
+<a name="ln33">#include &quot;religion.h&quot;</a>
+<a name="ln34">#include &quot;shout.h&quot;</a>
+<a name="ln35">#include &quot;spl-util.h&quot;</a>
+<a name="ln36">#include &quot;state.h&quot;</a>
+<a name="ln37">#include &quot;stringutil.h&quot;</a>
+<a name="ln38">#include &quot;terrain.h&quot;</a>
+<a name="ln39">#include &quot;rltiles/tiledef-main.h&quot;</a>
+<a name="ln40">#include &quot;unwind.h&quot;</a>
+<a name="ln41"> </a>
+<a name="ln42">cloud_struct* cloud_at(coord_def pos)</a>
+<a name="ln43">{</a>
+<a name="ln44">    return map_find(env.cloud, pos);</a>
+<a name="ln45">}</a>
+<a name="ln46"> </a>
+<a name="ln47">/// damage = base + random2avg(random, random/15 + 1)</a>
+<a name="ln48">struct cloud_damage</a>
+<a name="ln49">{</a>
+<a name="ln50">    int base; ///&lt; Flat damage on every hit, pre-defenses.</a>
+<a name="ln51">    int random; ///&lt; Damage rolled on hit.</a>
+<a name="ln52">    bool extra_player_dam; //&lt; HACK: does 4+random2(8) extra damage to players.</a>
+<a name="ln53">    // Yes, we really hate players, damn their guts.</a>
+<a name="ln54">};</a>
+<a name="ln55"> </a>
+<a name="ln56">/// Damage for most damaging clouds.</a>
+<a name="ln57">static const cloud_damage NORMAL_CLOUD_DAM = { 6, 16, true };</a>
+<a name="ln58">// 6+r2a(16,2) for monsters, 10+r2a(23,2) for players</a>
+<a name="ln59"> </a>
+<a name="ln60">/// A portrait of a cloud_type.</a>
+<a name="ln61">struct cloud_data</a>
+<a name="ln62">{</a>
+<a name="ln63">    /// A (relatively) short name for the cloud. May be referenced from lua.</a>
+<a name="ln64">    const char* terse_name;</a>
+<a name="ln65">    /// Another name for the cloud. If nullptr, defaults to terse name.</a>
+<a name="ln66">    const char* verbose_name;</a>
+<a name="ln67">    /// The colour of the cloud in console.</a>
+<a name="ln68">    colour_t colour;</a>
+<a name="ln69">    /// Info for calculating cloud tiles.</a>
+<a name="ln70">    cloud_tile_info tile_info;</a>
+<a name="ln71">    /// The associated &quot;beam&quot; (effect) for this cloud type.</a>
+<a name="ln72">    beam_type beam_effect;</a>
+<a name="ln73">    /// How much damage the cloud does before defenses &amp; resists.</a>
+<a name="ln74">    cloud_damage damage;</a>
+<a name="ln75">    /// Do multiple squares of this cloud block LOS?</a>
+<a name="ln76">    bool opaque;</a>
+<a name="ln77">};</a>
+<a name="ln78"> </a>
+<a name="ln79">/// A map from cloud_type to cloud_data.</a>
+<a name="ln80">static const cloud_data clouds[] = {</a>
+<a name="ln81">    // CLOUD_NONE,</a>
+<a name="ln82">    { &quot;?&quot;, &quot;?&quot;,                                 // terse, verbose name</a>
+<a name="ln83">    },</a>
+<a name="ln84">    // CLOUD_FIRE,</a>
+<a name="ln85">    { &quot;flame&quot;, &quot;blazing flames&quot;,                // terse, verbose name</a>
+<a name="ln86">       COLOUR_UNDEF,                            // colour</a>
+<a name="ln87">       { TILE_CLOUD_FIRE, CTVARY_DUR },         // tile</a>
+<a name="ln88">       BEAM_FIRE,                               // beam_effect</a>
+<a name="ln89">       NORMAL_CLOUD_DAM,                        // base, random damage</a>
+<a name="ln90">    },</a>
+<a name="ln91">    // CLOUD_MEPHITIC,</a>
+<a name="ln92">    { &quot;noxious fumes&quot;, nullptr,                 // terse, verbose name</a>
+<a name="ln93">      GREEN,                                    // colour</a>
+<a name="ln94">      { TILE_CLOUD_MEPHITIC, CTVARY_DUR },      // tile</a>
+<a name="ln95">      BEAM_MEPHITIC,                            // beam_effect</a>
+<a name="ln96">      {0, 3},                                   // base, random damage</a>
+<a name="ln97">    },</a>
+<a name="ln98">    // CLOUD_COLD,</a>
+<a name="ln99">    { &quot;freezing vapour&quot;, &quot;freezing vapours&quot;,    // terse, verbose name</a>
+<a name="ln100">      COLOUR_UNDEF,                             // colour</a>
+<a name="ln101">      { TILE_CLOUD_COLD, CTVARY_DUR },          // tile</a>
+<a name="ln102">      BEAM_COLD,                                // beam_effect</a>
+<a name="ln103">      NORMAL_CLOUD_DAM,                         // base, random damage</a>
+<a name="ln104">    },</a>
+<a name="ln105">    // CLOUD_POISON,</a>
+<a name="ln106">    { &quot;poison gas&quot;, nullptr,                    // terse, verbose name</a>
+<a name="ln107">      LIGHTGREEN,                               // colour</a>
+<a name="ln108">      { TILE_CLOUD_POISON, CTVARY_DUR },        // tile</a>
+<a name="ln109">      BEAM_POISON,                              // beam_effect</a>
+<a name="ln110">      {0, 10},                                  // base, random damage</a>
+<a name="ln111">    },</a>
+<a name="ln112">    // CLOUD_BLACK_SMOKE,</a>
+<a name="ln113">    { &quot;black smoke&quot;,  nullptr,                  // terse, verbose name</a>
+<a name="ln114">      DARKGREY,                                 // colour</a>
+<a name="ln115">      { TILE_CLOUD_BLACK_SMOKE, CTVARY_NONE },  // tile</a>
+<a name="ln116">      BEAM_NONE, {},                            // beam &amp; damage</a>
+<a name="ln117">      true,                                     // opacity</a>
+<a name="ln118">    },</a>
+<a name="ln119">    // CLOUD_GREY_SMOKE,</a>
+<a name="ln120">    { &quot;grey smoke&quot;,  nullptr,                   // terse, verbose name</a>
+<a name="ln121">      LIGHTGREY,                                // colour</a>
+<a name="ln122">      { TILE_CLOUD_GREY_SMOKE, CTVARY_NONE },   // tile</a>
+<a name="ln123">      BEAM_NONE, {},                            // beam &amp; damage</a>
+<a name="ln124">      true,                                     // opacity</a>
+<a name="ln125">    },</a>
+<a name="ln126">    // CLOUD_BLUE_SMOKE,</a>
+<a name="ln127">    { &quot;blue smoke&quot;,  nullptr,                   // terse, verbose name</a>
+<a name="ln128">      LIGHTBLUE,                                // colour</a>
+<a name="ln129">      { TILE_CLOUD_BLUE_SMOKE, CTVARY_NONE },   // tile</a>
+<a name="ln130">      BEAM_NONE, {},                            // beam &amp; damage</a>
+<a name="ln131">      true,                                     // opacity</a>
+<a name="ln132">    },</a>
+<a name="ln133">    // CLOUD_PURPLE_SMOKE,</a>
+<a name="ln134">    { &quot;purple smoke&quot;,  nullptr,                 // terse, verbose name</a>
+<a name="ln135">      MAGENTA,                                  // colour</a>
+<a name="ln136">      { TILE_CLOUD_TLOC_ENERGY, CTVARY_NONE },  // tile</a>
+<a name="ln137">      BEAM_NONE, {},                            // beam &amp; damage</a>
+<a name="ln138">      true,                                     // opacity</a>
+<a name="ln139">    },</a>
+<a name="ln140">    // CLOUD_TLOC_ENERGY,</a>
+<a name="ln141">    { &quot;translocational energy&quot;,  nullptr,       // terse, verbose name</a>
+<a name="ln142">      MAGENTA,                                  // colour</a>
+<a name="ln143">      { TILE_CLOUD_TLOC_ENERGY, CTVARY_NONE },  // tile</a>
+<a name="ln144">      BEAM_NONE, {},                            // beam &amp; damage</a>
+<a name="ln145">      true,                                     // opacity</a>
+<a name="ln146">    },</a>
+<a name="ln147">    // CLOUD_FOREST_FIRE,</a>
+<a name="ln148">    { &quot;spreading flames&quot;, &quot;a forest fire&quot;,      // terse, verbose name</a>
+<a name="ln149">      COLOUR_UNDEF,                             // colour</a>
+<a name="ln150">      { TILE_CLOUD_FOREST_FIRE },               // tile</a>
+<a name="ln151">      BEAM_FIRE,                                // beam_effect</a>
+<a name="ln152">      NORMAL_CLOUD_DAM,                         // base, random damage</a>
+<a name="ln153">    },</a>
+<a name="ln154">    // CLOUD_STEAM,</a>
+<a name="ln155">    { &quot;steam&quot;, &quot;a cloud of scalding steam&quot;,     // terse, verbose name</a>
+<a name="ln156">      LIGHTGREY,                                // colour</a>
+<a name="ln157">      { TILE_CLOUD_GREY_SMOKE, CTVARY_NONE },   // tile</a>
+<a name="ln158">      BEAM_STEAM,                               // beam_effect</a>
+<a name="ln159">      {0, 16},                                  // base, random damage</a>
+<a name="ln160">      true,                                     // opacity</a>
+<a name="ln161">    },</a>
+<a name="ln162">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln163">    // CLOUD_GLOOM,</a>
+<a name="ln164">    { &quot;gloom&quot;, &quot;thick gloom&quot;,                   // terse, verbose name</a>
+<a name="ln165">      MAGENTA,                                  // colour</a>
+<a name="ln166">      { TILE_CLOUD_GLOOM },                     // tile</a>
+<a name="ln167">    },</a>
+<a name="ln168">#endif</a>
+<a name="ln169">    // CLOUD_INK,</a>
+<a name="ln170">    { &quot;ink&quot;,  nullptr,                          // terse, verbose name</a>
+<a name="ln171">      DARKGREY,                                 // colour</a>
+<a name="ln172">      { TILE_CLOUD_INK },                       // tile</a>
+<a name="ln173">      BEAM_NONE, {},                            // beam_effect &amp; damage</a>
+<a name="ln174">      true,                                     // opacity</a>
+<a name="ln175">    },</a>
+<a name="ln176">    // CLOUD_PETRIFY,</a>
+<a name="ln177">    { &quot;calcifying dust&quot;,  nullptr,              // terse, verbose name</a>
+<a name="ln178">      WHITE,                                    // colour</a>
+<a name="ln179">      { TILE_CLOUD_PETRIFY, CTVARY_RANDOM },    // tile</a>
+<a name="ln180">      BEAM_PETRIFYING_CLOUD, {},                // beam_effect &amp; damage</a>
+<a name="ln181">      true,                                     // opacity</a>
+<a name="ln182">    },</a>
+<a name="ln183">    // CLOUD_HOLY,</a>
+<a name="ln184">    { &quot;blessed fire&quot;, nullptr,                  // terse, verbose name</a>
+<a name="ln185">      ETC_HOLY,                                 // colour</a>
+<a name="ln186">      { TILE_CLOUD_YELLOW_SMOKE },              // tile</a>
+<a name="ln187">      BEAM_HOLY,                                // beam_effect</a>
+<a name="ln188">      {4, 12, true},                            // base, random damage</a>
+<a name="ln189">      true,                                     // opacity</a>
+<a name="ln190">    },</a>
+<a name="ln191">    // CLOUD_MIASMA,</a>
+<a name="ln192">    { &quot;foul pestilence&quot;, &quot;dark miasma&quot;,         // terse, verbose name</a>
+<a name="ln193">      DARKGREY,                                 // colour</a>
+<a name="ln194">      { TILE_CLOUD_MIASMA, CTVARY_DUR },        // tile</a>
+<a name="ln195">      BEAM_MIASMA,                              // beam_effect</a>
+<a name="ln196">      { 0, 12 },                                // base, random damage</a>
+<a name="ln197">    },</a>
+<a name="ln198">    // CLOUD_MIST,</a>
+<a name="ln199">    { &quot;thin mist&quot;, nullptr,                     // terse, verbose name</a>
+<a name="ln200">      ETC_MIST,                                 // colour</a>
+<a name="ln201">      { TILE_CLOUD_MIST, CTVARY_NONE },         // tile</a>
+<a name="ln202">    },</a>
+<a name="ln203">    // CLOUD_CHAOS,</a>
+<a name="ln204">    { &quot;seething chaos&quot;, nullptr,                // terse, verbose name</a>
+<a name="ln205">      ETC_RANDOM,                               // colour</a>
+<a name="ln206">      { TILE_CLOUD_CHAOS, CTVARY_RANDOM },      // tile</a>
+<a name="ln207">      BEAM_CHAOS,                               // beam_effect</a>
+<a name="ln208">    },</a>
+<a name="ln209">    // CLOUD_RAIN,</a>
+<a name="ln210">    { &quot;rain&quot;, &quot;the rain&quot;,                       // terse, verbose name</a>
+<a name="ln211">      ETC_MIST,                                 // colour</a>
+<a name="ln212">      { TILE_CLOUD_RAIN, CTVARY_RANDOM },       // tile</a>
+<a name="ln213">      BEAM_NONE,                                // unused</a>
+<a name="ln214">      { 0, 9 },                                 // base, random damage</a>
+<a name="ln215">                                                // but only for fiery mons</a>
+<a name="ln216">    },</a>
+<a name="ln217">    // CLOUD_MUTAGENIC,</a>
+<a name="ln218">    { &quot;mutagenic fog&quot;,  nullptr,                // terse, verbose name</a>
+<a name="ln219">      ETC_MUTAGENIC,                            // colour</a>
+<a name="ln220">      { TILE_ERROR, CTVARY_NONE },              // tile</a>
+<a name="ln221">    },</a>
+<a name="ln222">    // CLOUD_MAGIC_TRAIL,</a>
+<a name="ln223">    { &quot;magical condensation&quot;, nullptr,          // terse, verbose name</a>
+<a name="ln224">      ETC_MAGIC,                                // colour</a>
+<a name="ln225">      { TILE_CLOUD_MAGIC_TRAIL, CTVARY_DUR },   // tile</a>
+<a name="ln226">    },</a>
+<a name="ln227">    // CLOUD_TORNADO,</a>
+<a name="ln228">    { &quot;raging winds&quot;, nullptr,                  // terse, verbose name</a>
+<a name="ln229">      ETC_TORNADO,                              // colour</a>
+<a name="ln230">      { TILE_ERROR },                           // tile</a>
+<a name="ln231">    },</a>
+<a name="ln232">    // CLOUD_DUST,</a>
+<a name="ln233">    { &quot;sparse dust&quot;,  nullptr,                  // terse, verbose name</a>
+<a name="ln234">      ETC_EARTH,                                // colour</a>
+<a name="ln235">      { TILE_CLOUD_DUST, CTVARY_DUR },          // tile</a>
+<a name="ln236">    },</a>
+<a name="ln237">    // CLOUD_SPECTRAL,</a>
+<a name="ln238">    { &quot;spectral mist&quot;, nullptr,                 // terse, verbose name</a>
+<a name="ln239">      ETC_ELECTRICITY,                          // colour</a>
+<a name="ln240">      { TILE_CLOUD_SPECTRAL, CTVARY_DUR },      // tile</a>
+<a name="ln241">      BEAM_NONE,                                // beam_effect</a>
+<a name="ln242">      { 4, 15 },                                // base, random damage</a>
+<a name="ln243">    },</a>
+<a name="ln244">    // CLOUD_ACID,</a>
+<a name="ln245">    { &quot;acidic fog&quot;, nullptr,                    // terse, verbose name</a>
+<a name="ln246">      YELLOW,                                   // colour</a>
+<a name="ln247">      { TILE_CLOUD_ACID, CTVARY_DUR },          // dur</a>
+<a name="ln248">      BEAM_ACID,                                // beam_effect</a>
+<a name="ln249">      NORMAL_CLOUD_DAM,                         // base, random damage</a>
+<a name="ln250">    },</a>
+<a name="ln251">    // CLOUD_STORM,</a>
+<a name="ln252">    { &quot;thunder&quot;, &quot;a thunderstorm&quot;,              // terse, verbose name</a>
+<a name="ln253">      ETC_DARK,                                 // colour</a>
+<a name="ln254">      { TILE_CLOUD_STORM, CTVARY_RANDOM },      // tile</a>
+<a name="ln255">      BEAM_ELECTRICITY,                         // beam_effect</a>
+<a name="ln256">      {12, 12},         // fake damage - used only for monster pathing</a>
+<a name="ln257">    },</a>
+<a name="ln258">    // CLOUD_NEGATIVE_ENERGY,</a>
+<a name="ln259">    { &quot;negative energy&quot;, nullptr,               // terse, verbose name</a>
+<a name="ln260">      ETC_INCARNADINE,                          // colour</a>
+<a name="ln261">      { TILE_CLOUD_NEG, CTVARY_DUR },           // tile</a>
+<a name="ln262">      BEAM_NEG,                                 // beam_effect</a>
+<a name="ln263">      NORMAL_CLOUD_DAM,                         // base, random damage</a>
+<a name="ln264">    },</a>
+<a name="ln265">    // CLOUD_FLUFFY,</a>
+<a name="ln266">    { &quot;white fluffiness&quot;,  nullptr,             // terse, verbose name</a>
+<a name="ln267">      WHITE,                                    // colour</a>
+<a name="ln268">      { TILE_CLOUD_WHITE_SMOKE, CTVARY_NONE },  // tile</a>
+<a name="ln269">      BEAM_NONE, {},                            // beam &amp; damage</a>
+<a name="ln270">      true,                                     // opacity</a>
+<a name="ln271">    },</a>
+<a name="ln272">    // CLOUD_XOM_TRAIL,</a>
+<a name="ln273">    { &quot;magical condensation&quot;, nullptr,          // terse, verbose name</a>
+<a name="ln274">      ETC_RANDOM,                               // colour</a>
+<a name="ln275">      { TILE_CLOUD_MAGIC_TRAIL, CTVARY_DUR },   // tile</a>
+<a name="ln276">      // TODO: another tile?</a>
+<a name="ln277">    },</a>
+<a name="ln278">    // CLOUD_SALT,</a>
+<a name="ln279">    { &quot;salt&quot;,  nullptr,                           // terse, verbose name</a>
+<a name="ln280">      ETC_AIR,                                    // colour</a>
+<a name="ln281">      { TILE_CLOUD_WHITE_SMOKE, CTVARY_NONE },    // tile</a>
+<a name="ln282">      BEAM_NONE, {},                              // beam &amp; damage</a>
+<a name="ln283">      true,                                       // opacity</a>
+<a name="ln284">    },</a>
+<a name="ln285">    // CLOUD_GOLD_DUST,</a>
+<a name="ln286">    { &quot;golden dust&quot;,  nullptr,                    // terse, verbose name</a>
+<a name="ln287">      ETC_HOLY,                                   // colour</a>
+<a name="ln288">      { TILE_CLOUD_GOLD_DUST, CTVARY_DUR },       // tile</a>
+<a name="ln289">      BEAM_NONE, {},                              // beam &amp; damage</a>
+<a name="ln290">      true,                                       // opacity</a>
+<a name="ln291">    },</a>
+<a name="ln292">    // CLOUD_EMBERS,</a>
+<a name="ln293">    { &quot;smoldering embers&quot;, &quot;embers&quot;,</a>
+<a name="ln294">        ETC_SMOKE,</a>
+<a name="ln295">        { TILE_CLOUD_BLACK_SMOKE, CTVARY_NONE },</a>
+<a name="ln296">    },</a>
+<a name="ln297">    // CLOUD_FLAME,</a>
+<a name="ln298">    { &quot;wisps of flame&quot;, nullptr,          // terse, verbose name</a>
+<a name="ln299">      ETC_FIRE,                                // colour</a>
+<a name="ln300">      { TILE_CLOUD_FLAME, CTVARY_RANDOM },   // tile</a>
+<a name="ln301">    },</a>
+<a name="ln302">};</a>
+<a name="ln303">COMPILE_CHECK(ARRAYSZ(clouds) == NUM_CLOUD_TYPES);</a>
+<a name="ln304"> </a>
+<a name="ln305">static int _actor_cloud_damage(const actor *act, const cloud_struct &amp;cloud,</a>
+<a name="ln306">                               bool maximum_damage);</a>
+<a name="ln307"> </a>
+<a name="ln308">static int _actual_spread_rate(cloud_type type, int spread_rate)</a>
+<a name="ln309">{</a>
+<a name="ln310">    if (spread_rate &gt;= 0)</a>
+<a name="ln311">        return spread_rate;</a>
+<a name="ln312"> </a>
+<a name="ln313">    switch (type)</a>
+<a name="ln314">    {</a>
+<a name="ln315">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln316">    case CLOUD_GLOOM:</a>
+<a name="ln317">        return 50;</a>
+<a name="ln318">#endif</a>
+<a name="ln319">    case CLOUD_STEAM:</a>
+<a name="ln320">    case CLOUD_GREY_SMOKE:</a>
+<a name="ln321">    case CLOUD_BLACK_SMOKE:</a>
+<a name="ln322">    case CLOUD_PURPLE_SMOKE:</a>
+<a name="ln323">    case CLOUD_BLUE_SMOKE:</a>
+<a name="ln324">    case CLOUD_FLUFFY:</a>
+<a name="ln325">        return 22;</a>
+<a name="ln326">    case CLOUD_RAIN:</a>
+<a name="ln327">    case CLOUD_INK:</a>
+<a name="ln328">        return 11;</a>
+<a name="ln329">    default:</a>
+<a name="ln330">        return 0;</a>
+<a name="ln331">    }</a>
+<a name="ln332">}</a>
+<a name="ln333"> </a>
+<a name="ln334">static beam_type _cloud2beam(cloud_type flavour)</a>
+<a name="ln335">{</a>
+<a name="ln336">    if (flavour == CLOUD_RANDOM)</a>
+<a name="ln337">        return BEAM_RANDOM;</a>
+<a name="ln338">    return clouds[flavour].beam_effect;</a>
+<a name="ln339">}</a>
+<a name="ln340"> </a>
+<a name="ln341">#ifdef ASSERTS</a>
+<a name="ln342">static bool _killer_whose_match(kill_category whose, killer_type killer)</a>
+<a name="ln343">{</a>
+<a name="ln344">    switch (whose)</a>
+<a name="ln345">    {</a>
+<a name="ln346">        case KC_YOU:</a>
+<a name="ln347">            return killer == KILL_YOU_MISSILE || killer == KILL_YOU_CONF;</a>
+<a name="ln348"> </a>
+<a name="ln349">        case KC_FRIENDLY:</a>
+<a name="ln350">            return killer == KILL_MON_MISSILE || killer == KILL_YOU_CONF</a>
+<a name="ln351">                   || killer == KILL_MON;</a>
+<a name="ln352"> </a>
+<a name="ln353">        case KC_OTHER:</a>
+<a name="ln354">            return killer == KILL_MON_MISSILE || killer == KILL_MISCAST</a>
+<a name="ln355">                   || killer == KILL_MISC || killer == KILL_MON;</a>
+<a name="ln356"> </a>
+<a name="ln357">        case KC_NCATEGORIES:</a>
+<a name="ln358">            die(&quot;kill category not matching killer type&quot;);</a>
+<a name="ln359">    }</a>
+<a name="ln360">    return false;</a>
+<a name="ln361">}</a>
+<a name="ln362">#endif</a>
+<a name="ln363"> </a>
+<a name="ln364">/*</a>
+<a name="ln365"> * The LOS may have changed based on cloud changes at position `p`.</a>
+<a name="ln366"> *</a>
+<a name="ln367"> * @param p   The position that may have changed.</a>
+<a name="ln368"> * @param t   The cloud type now there; CLOUD_NONE if there is no cloud there now.</a>
+<a name="ln369"> * @param old The cloud type that was there; CLOUD_NONE if the was none.</a>
+<a name="ln370"> */</a>
+<a name="ln371">static void _los_cloud_changed(const coord_def&amp; p, const cloud_type t, const cloud_type old)</a>
+<a name="ln372">{</a>
+<a name="ln373">    if (is_opaque_cloud(t) || is_opaque_cloud(old))</a>
+<a name="ln374">        los_terrain_changed(p);</a>
+<a name="ln375">}</a>
+<a name="ln376"> </a>
+<a name="ln377">cloud_struct::cloud_struct(coord_def p, cloud_type c, int d, int spread,</a>
+<a name="ln378">                           kill_category kc, killer_type kt, mid_t src,</a>
+<a name="ln379">                           int excl)</a>
+<a name="ln380">    : pos(p), type(c), decay(d), spread_rate(spread), whose(kc), killer(kt),</a>
+<a name="ln381">      source(src), excl_rad(excl)</a>
+<a name="ln382">{</a>
+<a name="ln383">    ASSERT(_killer_whose_match(whose, killer));</a>
+<a name="ln384"> </a>
+<a name="ln385">    if (type == CLOUD_RANDOM_SMOKE)</a>
+<a name="ln386">        type = random_smoke_type();</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389">static int _spread_cloud(const cloud_struct &amp;cloud)</a>
+<a name="ln390">{</a>
+<a name="ln391">    const int spreadch = cloud.decay &gt; 30 ? 80 :</a>
+<a name="ln392">                         cloud.decay &gt; 20 ? 50 :</a>
+<a name="ln393">                                            30;</a>
+<a name="ln394">    int extra_decay = 0;</a>
+<a name="ln395">    for (adjacent_iterator ai(cloud.pos); ai; ++ai)</a>
+<a name="ln396">    {</a>
+<a name="ln397">        if (random2(100) &gt;= spreadch)</a>
+<a name="ln398">            continue;</a>
+<a name="ln399"> </a>
+<a name="ln400">        if (!in_bounds(*ai)</a>
+<a name="ln401">            || cloud_at(*ai)</a>
+<a name="ln402">            || cell_is_solid(*ai)</a>
+<a name="ln403">            || is_sanctuary(*ai) &amp;&amp; !is_harmless_cloud(cloud.type))</a>
+<a name="ln404">        {</a>
+<a name="ln405">            continue;</a>
+<a name="ln406">        }</a>
+<a name="ln407"> </a>
+<a name="ln408">        if (cloud.type == CLOUD_INK &amp;&amp; !feat_is_watery(grd(*ai)))</a>
+<a name="ln409">            continue;</a>
+<a name="ln410"> </a>
+<a name="ln411">        int newdecay = cloud.decay / 2 + 1;</a>
+<a name="ln412">        if (newdecay &gt;= cloud.decay)</a>
+<a name="ln413">            newdecay = cloud.decay - 1;</a>
+<a name="ln414"> </a>
+<a name="ln415">        env.cloud[*ai] = cloud;</a>
+<a name="ln416">        env.cloud[*ai].pos = *ai;</a>
+<a name="ln417">        env.cloud[*ai].decay = newdecay;</a>
+<a name="ln418">        _los_cloud_changed(env.cloud[*ai].pos, env.cloud[*ai].type, CLOUD_NONE);</a>
+<a name="ln419"> </a>
+<a name="ln420">        extra_decay += 8;</a>
+<a name="ln421">    }</a>
+<a name="ln422"> </a>
+<a name="ln423">    return extra_decay;</a>
+<a name="ln424">}</a>
+<a name="ln425"> </a>
+<a name="ln426">static void _spread_fire(const cloud_struct &amp;cloud)</a>
+<a name="ln427">{</a>
+<a name="ln428">    int make_flames = one_chance_in(5);</a>
+<a name="ln429"> </a>
+<a name="ln430">    for (adjacent_iterator ai(cloud.pos); ai; ++ai)</a>
+<a name="ln431">    {</a>
+<a name="ln432">        if (!in_bounds(*ai)</a>
+<a name="ln433">            || cloud_at(*ai)</a>
+<a name="ln434">            || is_sanctuary(*ai))</a>
+<a name="ln435">        {</a>
+<a name="ln436">            continue;</a>
+<a name="ln437">        }</a>
+<a name="ln438"> </a>
+<a name="ln439">        // burning trees produce flames all around</a>
+<a name="ln440">        if (!cell_is_solid(*ai) &amp;&amp; make_flames)</a>
+<a name="ln441">        {</a>
+<a name="ln442">            env.cloud[*ai] = cloud;</a>
+<a name="ln443">            env.cloud[*ai].type = CLOUD_FIRE;</a>
+<a name="ln444">            env.cloud[*ai].pos = *ai;</a>
+<a name="ln445">            env.cloud[*ai].decay = cloud.decay / 2 + 1;</a>
+<a name="ln446">        }</a>
+<a name="ln447"> </a>
+<a name="ln448">        // forest fire doesn't spread in all directions at once,</a>
+<a name="ln449">        // every neighbouring square gets a separate roll</a>
+<a name="ln450">        if (!feat_is_tree(grd(*ai)) || is_temp_terrain(*ai)</a>
+<a name="ln451">            || x_chance_in_y(19, 20))</a>
+<a name="ln452">        {</a>
+<a name="ln453">            continue;</a>
+<a name="ln454">        }</a>
+<a name="ln455"> </a>
+<a name="ln456">        if (env.markers.property_at(*ai, MAT_ANY, &quot;veto_fire&quot;) == &quot;veto&quot;)</a>
+<a name="ln457">            continue;</a>
+<a name="ln458"> </a>
+<a name="ln459">        if (you.see_cell(*ai))</a>
+<a name="ln460">            mpr(&quot;The forest fire spreads!&quot;);</a>
+<a name="ln461">        destroy_wall(*ai);</a>
+<a name="ln462">        env.cloud[*ai] = cloud;</a>
+<a name="ln463">        env.cloud[*ai].pos = *ai;</a>
+<a name="ln464">        env.cloud[*ai].decay = random2(30) + 25;</a>
+<a name="ln465">        if (cloud.whose == KC_YOU)</a>
+<a name="ln466">            did_god_conduct(DID_KILL_PLANT, 1);</a>
+<a name="ln467">        else if (cloud.whose == KC_FRIENDLY &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln468">            did_god_conduct(DID_KILL_PLANT, 1);</a>
+<a name="ln469"> </a>
+<a name="ln470">    }</a>
+<a name="ln471">}</a>
+<a name="ln472"> </a>
+<a name="ln473">static void _cloud_interacts_with_terrain(const cloud_struct &amp;cloud)</a>
+<a name="ln474">{</a>
+<a name="ln475">    if (cloud.type != CLOUD_FIRE &amp;&amp; cloud.type != CLOUD_FOREST_FIRE)</a>
+<a name="ln476">        return;</a>
+<a name="ln477"> </a>
+<a name="ln478">    for (adjacent_iterator ai(cloud.pos); ai; ++ai)</a>
+<a name="ln479">    {</a>
+<a name="ln480">        const coord_def p(*ai);</a>
+<a name="ln481">        if (in_bounds(p)</a>
+<a name="ln482">            &amp;&amp; feat_is_watery(grd(p))</a>
+<a name="ln483">            &amp;&amp; !cell_is_solid(p)</a>
+<a name="ln484">            &amp;&amp; !cloud_at(p)</a>
+<a name="ln485">            &amp;&amp; one_chance_in(14))</a>
+<a name="ln486">        {</a>
+<a name="ln487">            const cloud_type old = cloud_type_at(p);</a>
+<a name="ln488">            env.cloud[p] = cloud_struct(p, CLOUD_STEAM, 2 + random2(5),</a>
+<a name="ln489">                                        11, cloud.whose, cloud.killer,</a>
+<a name="ln490">                                        cloud.source, -1);</a>
+<a name="ln491">            _los_cloud_changed(p, env.cloud[p].type, old);</a>
+<a name="ln492">        }</a>
+<a name="ln493">    }</a>
+<a name="ln494">}</a>
+<a name="ln495"> </a>
+<a name="ln496">/**</a>
+<a name="ln497"> * Convert timing out embers to conjured flames.</a>
+<a name="ln498"> *</a>
+<a name="ln499"> * @param cloud     The cloud in question.</a>
+<a name="ln500"> * @return          Whether a flame cloud has been created.</a>
+<a name="ln501"> */</a>
+<a name="ln502">static bool _handle_conjure_flame(const cloud_struct &amp;cloud)</a>
+<a name="ln503">{</a>
+<a name="ln504">    if (cloud.type != CLOUD_EMBERS)</a>
+<a name="ln505">        return false;</a>
+<a name="ln506"> </a>
+<a name="ln507">    if (you.pos() == cloud.pos)</a>
+<a name="ln508">    {</a>
+<a name="ln509">        mpr(&quot;You smother the flame.&quot;);</a>
+<a name="ln510">        return false;</a>
+<a name="ln511">    }</a>
+<a name="ln512">    else if (monster_at(cloud.pos))</a>
+<a name="ln513">    {</a>
+<a name="ln514">        mprf(&quot;%s smothers the flame.&quot;,</a>
+<a name="ln515">             monster_at(cloud.pos)-&gt;name(DESC_THE).c_str());</a>
+<a name="ln516">        return false;</a>
+<a name="ln517">    }</a>
+<a name="ln518">    else</a>
+<a name="ln519">    {</a>
+<a name="ln520">        mpr(&quot;The fire ignites!&quot;);</a>
+<a name="ln521">        place_cloud(CLOUD_FIRE, cloud.pos, you.props[&quot;cflame_dur&quot;], &amp;you);</a>
+<a name="ln522">        return true;</a>
+<a name="ln523">    }</a>
+<a name="ln524">}</a>
+<a name="ln525"> </a>
+<a name="ln526">/**</a>
+<a name="ln527"> * How fast should a given cloud fade away this turn?</a>
+<a name="ln528"> *</a>
+<a name="ln529"> * @param cloud_idx     The cloud in question.</a>
+<a name="ln530"> * @return              The rate at which the cloud's &quot;decay&quot; should decrease</a>
+<a name="ln531"> *                      this turn.</a>
+<a name="ln532"> */</a>
+<a name="ln533">static int _cloud_dissipation_rate(const cloud_struct &amp;cloud)</a>
+<a name="ln534">{</a>
+<a name="ln535">    int dissipate = you.time_taken;</a>
+<a name="ln536"> </a>
+<a name="ln537">    // Player-created non-opaque clouds vanish instantly when outside LOS.</a>
+<a name="ln538">    // (Opaque clouds don't to prevent cloud suicide.)</a>
+<a name="ln539">    if ((cloud.source == MID_PLAYER || cloud.source == MID_YOU_FAULTLESS)</a>
+<a name="ln540">        &amp;&amp; !you.see_cell_no_trans(cloud.pos)</a>
+<a name="ln541">        &amp;&amp; !is_opaque_cloud(cloud.type))</a>
+<a name="ln542">    {</a>
+<a name="ln543">        return cloud.decay;</a>
+<a name="ln544">    }</a>
+<a name="ln545"> </a>
+<a name="ln546">    // Ink cloud shouldn't appear outside of water.</a>
+<a name="ln547">    if (cloud.type == CLOUD_INK &amp;&amp; !feat_is_watery(grd(cloud.pos)))</a>
+<a name="ln548">        return cloud.decay;</a>
+<a name="ln549"> </a>
+<a name="ln550">    return dissipate;</a>
+<a name="ln551">}</a>
+<a name="ln552"> </a>
+<a name="ln553">static void _dissipate_cloud(cloud_struct&amp; cloud)</a>
+<a name="ln554">{</a>
+<a name="ln555">    // Apply calculated rate to the actual cloud.</a>
+<a name="ln556">    cloud.decay -= _cloud_dissipation_rate(cloud);</a>
+<a name="ln557"> </a>
+<a name="ln558">    if (cloud.type == CLOUD_FOREST_FIRE)</a>
+<a name="ln559">        _spread_fire(cloud);</a>
+<a name="ln560">    else if (x_chance_in_y(cloud.spread_rate, 100))</a>
+<a name="ln561">    {</a>
+<a name="ln562">        cloud.spread_rate -= div_rand_round(cloud.spread_rate, 10);</a>
+<a name="ln563">        cloud.decay       -= _spread_cloud(cloud);</a>
+<a name="ln564">    }</a>
+<a name="ln565"> </a>
+<a name="ln566">    // Check for total dissipation and handle accordingly.</a>
+<a name="ln567">    if (cloud.decay &lt; 1 &amp;&amp; !_handle_conjure_flame(cloud))</a>
+<a name="ln568">        delete_cloud(cloud.pos);</a>
+<a name="ln569">}</a>
+<a name="ln570"> </a>
+<a name="ln571">static void _handle_spectral_cloud(const cloud_struct&amp; cloud)</a>
+<a name="ln572">{</a>
+<a name="ln573">    if (actor_at(cloud.pos) || !actor_by_mid(cloud.source))</a>
+<a name="ln574">        return;</a>
+<a name="ln575"> </a>
+<a name="ln576">    int countn = 0;</a>
+<a name="ln577">    for (distance_iterator di(cloud.pos, false, false, 2); di; ++di)</a>
+<a name="ln578">    {</a>
+<a name="ln579">        if (monster_at(*di) &amp;&amp; monster_at(*di)-&gt;type == MONS_SPECTRAL_THING)</a>
+<a name="ln580">            countn++;</a>
+<a name="ln581">    }</a>
+<a name="ln582"> </a>
+<a name="ln583">    int rate[5] = {650, 175, 45, 20, 0};</a>
+<a name="ln584">    int chance = rate[(min(4, countn))];</a>
+<a name="ln585"> </a>
+<a name="ln586">    if (!x_chance_in_y(chance, you.time_taken * 600))</a>
+<a name="ln587">        return;</a>
+<a name="ln588"> </a>
+<a name="ln589">    monster_type basetype =</a>
+<a name="ln590">        random_choose_weighted(4,   MONS_ANACONDA,</a>
+<a name="ln591">                               6,   MONS_HYDRA,</a>
+<a name="ln592">                               3,   MONS_SNAPPING_TURTLE,</a>
+<a name="ln593">                               2,   MONS_ALLIGATOR_SNAPPING_TURTLE,</a>
+<a name="ln594">                               100, RANDOM_MONSTER);</a>
+<a name="ln595"> </a>
+<a name="ln596">    monster* agent = monster_by_mid(cloud.source);</a>
+<a name="ln597">    create_monster(mgen_data(MONS_SPECTRAL_THING,</a>
+<a name="ln598">                             (cloud.whose == KC_OTHER ?</a>
+<a name="ln599">                                BEH_HOSTILE :</a>
+<a name="ln600">                                BEH_FRIENDLY), cloud.pos,</a>
+<a name="ln601">                             (agent ? agent-&gt;foe : short{MHITYOU}),</a>
+<a name="ln602">                             MG_FORCE_PLACE)</a>
+<a name="ln603">                    .set_base(basetype)</a>
+<a name="ln604">                    .set_summoned(actor_by_mid(cloud.source), 1,</a>
+<a name="ln605">                                  SPELL_SPECTRAL_CLOUD));</a>
+<a name="ln606">}</a>
+<a name="ln607"> </a>
+<a name="ln608">void manage_clouds()</a>
+<a name="ln609">{</a>
+<a name="ln610">    // We can't iterate over env.cloud directly because _dissipate_cloud</a>
+<a name="ln611">    // will remove this cloud and invalidate our iterator.</a>
+<a name="ln612">    vector&lt;cloud_struct *&gt; cloud_ptrs;</a>
+<a name="ln613">    for (auto&amp; entry : env.cloud)</a>
+<a name="ln614">        cloud_ptrs.push_back(&amp;entry.second);</a>
+<a name="ln615"> </a>
+<a name="ln616">    for (auto ptr : cloud_ptrs)</a>
+<a name="ln617">    {</a>
+<a name="ln618">        cloud_struct&amp; cloud = *ptr;</a>
+<a name="ln619"> </a>
+<a name="ln620">#ifdef ASSERTS</a>
+<a name="ln621">        if (cell_is_solid(cloud.pos))</a>
+<a name="ln622">        {</a>
+<a name="ln623">            die(&quot;cloud %s in %s at (%d,%d)&quot;, cloud_type_name(cloud.type).c_str(),</a>
+<a name="ln624">                dungeon_feature_name(grd(cloud.pos)), cloud.pos.x, cloud.pos.y);</a>
+<a name="ln625">        }</a>
+<a name="ln626">#endif</a>
+<a name="ln627"> </a>
+<a name="ln628">        // This was initially 40, but that was far too spammy.</a>
+<a name="ln629">        if (cloud.type == CLOUD_STORM</a>
+<a name="ln630">            &amp;&amp; x_chance_in_y(you.time_taken, 400) &amp;&amp; !actor_at(cloud.pos))</a>
+<a name="ln631">        {</a>
+<a name="ln632">            const bool you_see = you.see_cell(cloud.pos);</a>
+<a name="ln633">            if (you_see &amp;&amp; !you_worship(GOD_QAZLAL))</a>
+<a name="ln634">                mpr(&quot;Lightning arcs down from a storm cloud!&quot;);</a>
+<a name="ln635">            noisy(spell_effect_noise(SPELL_LIGHTNING_BOLT), cloud.pos,</a>
+<a name="ln636">                  you_see || you_worship(GOD_QAZLAL) ? nullptr</a>
+<a name="ln637">                  : &quot;You hear a mighty clap of thunder!&quot;);</a>
+<a name="ln638">        }</a>
+<a name="ln639">        else if (cloud.type == CLOUD_SPECTRAL)</a>
+<a name="ln640">            _handle_spectral_cloud(cloud);</a>
+<a name="ln641"> </a>
+<a name="ln642">        _cloud_interacts_with_terrain(cloud);</a>
+<a name="ln643"> </a>
+<a name="ln644">        _dissipate_cloud(cloud);</a>
+<a name="ln645">    }</a>
+<a name="ln646"> </a>
+<a name="ln647">    update_cloud_knowledge();</a>
+<a name="ln648">}</a>
+<a name="ln649"> </a>
+<a name="ln650">static void _maybe_leave_water(const coord_def pos)</a>
+<a name="ln651">{</a>
+<a name="ln652">    ASSERT_IN_BOUNDS(pos);</a>
+<a name="ln653"> </a>
+<a name="ln654">    // Rain clouds can occasionally leave shallow water or deepen it:</a>
+<a name="ln655">    // If we're near lava, chance of leaving water is lower;</a>
+<a name="ln656">    // if we're near deep water already, chance of leaving water</a>
+<a name="ln657">    // is slightly higher.</a>
+<a name="ln658">    if (!one_chance_in((5 + count_neighbours(pos, DNGN_LAVA)) -</a>
+<a name="ln659">                            count_neighbours(pos, DNGN_DEEP_WATER)))</a>
+<a name="ln660">    {</a>
+<a name="ln661">        return;</a>
+<a name="ln662">    }</a>
+<a name="ln663"> </a>
+<a name="ln664">    dungeon_feature_type feat = grd(pos);</a>
+<a name="ln665"> </a>
+<a name="ln666">    if (grd(pos) == DNGN_FLOOR)</a>
+<a name="ln667">        feat = DNGN_SHALLOW_WATER;</a>
+<a name="ln668">    else if (grd(pos) == DNGN_SHALLOW_WATER &amp;&amp; you.pos() != pos</a>
+<a name="ln669">             &amp;&amp; one_chance_in(3) &amp;&amp; !crawl_state.game_is_sprint())</a>
+<a name="ln670">    {</a>
+<a name="ln671">        // Don't drown the player!</a>
+<a name="ln672">        feat = DNGN_DEEP_WATER;</a>
+<a name="ln673">    }</a>
+<a name="ln674"> </a>
+<a name="ln675">    if (grd(pos) != feat)</a>
+<a name="ln676">    {</a>
+<a name="ln677">        if (you.pos() == pos &amp;&amp; you.ground_level())</a>
+<a name="ln678">            mpr(&quot;The rain has left you waist-deep in water!&quot;);</a>
+<a name="ln679">        temp_change_terrain(pos, feat, random_range(500, 1000),</a>
+<a name="ln680">                            TERRAIN_CHANGE_FLOOD);</a>
+<a name="ln681">    }</a>
+<a name="ln682">}</a>
+<a name="ln683"> </a>
+<a name="ln684">void delete_cloud(coord_def p)</a>
+<a name="ln685">{</a>
+<a name="ln686">    if (!cloud_at(p))</a>
+<a name="ln687">        return;</a>
+<a name="ln688">    const cloud_type type = cloud_at(p)-&gt;type;</a>
+<a name="ln689">    env.cloud.erase(p);</a>
+<a name="ln690">    if (type == CLOUD_RAIN)</a>
+<a name="ln691">        _maybe_leave_water(p);</a>
+<a name="ln692">    _los_cloud_changed(p, CLOUD_NONE, type);</a>
+<a name="ln693">}</a>
+<a name="ln694"> </a>
+<a name="ln695">void delete_all_clouds()</a>
+<a name="ln696">{</a>
+<a name="ln697">    // We can't iterate over env.cloud directly because delete_cloud</a>
+<a name="ln698">    // will remove this cloud and invalidate our iterator.</a>
+<a name="ln699">    vector&lt;coord_def&gt; cloud_locs;</a>
+<a name="ln700">    for (auto&amp; entry : env.cloud)</a>
+<a name="ln701">        cloud_locs.push_back(entry.first);</a>
+<a name="ln702"> </a>
+<a name="ln703">    for (auto pos : cloud_locs)</a>
+<a name="ln704">        delete_cloud(pos);</a>
+<a name="ln705">}</a>
+<a name="ln706"> </a>
+<a name="ln707">// The current use of this function is for shifting in the abyss, so</a>
+<a name="ln708">// that clouds get moved along with the rest of the map.</a>
+<a name="ln709">void move_cloud(coord_def src, coord_def newpos)</a>
+<a name="ln710">{</a>
+<a name="ln711">    if (!cloud_at(src))</a>
+<a name="ln712">        return;</a>
+<a name="ln713">    ASSERT(!cell_is_solid(newpos));</a>
+<a name="ln714"> </a>
+<a name="ln715">    const cloud_type old = cloud_type_at(newpos);</a>
+<a name="ln716"> </a>
+<a name="ln717">    env.cloud[newpos] = env.cloud[src];</a>
+<a name="ln718">    env.cloud.erase(src);</a>
+<a name="ln719">    env.cloud[newpos].pos = newpos;</a>
+<a name="ln720">    _los_cloud_changed(src, CLOUD_NONE, env.cloud[newpos].type);</a>
+<a name="ln721">    _los_cloud_changed(newpos, env.cloud[newpos].type, old);</a>
+<a name="ln722">}</a>
+<a name="ln723"> </a>
+<a name="ln724">void swap_clouds(coord_def p1, coord_def p2)</a>
+<a name="ln725">{</a>
+<a name="ln726">    if (p1 == p2)</a>
+<a name="ln727">        return;</a>
+<a name="ln728">    if (!cloud_at(p1))</a>
+<a name="ln729">    {</a>
+<a name="ln730">        move_cloud(p2, p1);</a>
+<a name="ln731">        return;</a>
+<a name="ln732">    }</a>
+<a name="ln733">    else if (!cloud_at(p2))</a>
+<a name="ln734">    {</a>
+<a name="ln735">        move_cloud(p1, p2);</a>
+<a name="ln736">        return;</a>
+<a name="ln737">    }</a>
+<a name="ln738"> </a>
+<a name="ln739">    cloud_struct temp = env.cloud[p1];</a>
+<a name="ln740">    env.cloud[p1] = env.cloud[p2];</a>
+<a name="ln741">    env.cloud[p2] = temp;</a>
+<a name="ln742">    env.cloud[p1].pos = p1;</a>
+<a name="ln743">    env.cloud[p2].pos = p2;</a>
+<a name="ln744">    _los_cloud_changed(p1, env.cloud[p1].type, env.cloud[p2].type);</a>
+<a name="ln745">    _los_cloud_changed(p2, env.cloud[p2].type, env.cloud[p1].type);</a>
+<a name="ln746">}</a>
+<a name="ln747"> </a>
+<a name="ln748">// Places a cloud with the given stats assuming one doesn't already</a>
+<a name="ln749">// exist at that point.</a>
+<a name="ln750">void check_place_cloud(cloud_type cl_type, const coord_def&amp; p, int lifetime,</a>
+<a name="ln751">                       const actor *agent, int spread_rate, int excl_rad)</a>
+<a name="ln752">{</a>
+<a name="ln753">    if (!in_bounds(p) || cloud_at(p))</a>
+<a name="ln754">        return;</a>
+<a name="ln755"> </a>
+<a name="ln756">    place_cloud(cl_type, p, lifetime, agent, spread_rate, excl_rad);</a>
+<a name="ln757">}</a>
+<a name="ln758"> </a>
+<a name="ln759">static bool _cloud_is_stronger(cloud_type ct, const cloud_struct&amp; cloud)</a>
+<a name="ln760">{</a>
+<a name="ln761">    return (is_harmless_cloud(cloud.type) &amp;&amp;</a>
+<a name="ln762">                (!is_opaque_cloud(cloud.type) || is_opaque_cloud(ct)))</a>
+<a name="ln763">           || cloud.type == CLOUD_STEAM</a>
+<a name="ln764">           || ct == CLOUD_TORNADO; // soon gone</a>
+<a name="ln765">}</a>
+<a name="ln766"> </a>
+<a name="ln767">/*</a>
+<a name="ln768"> * Places a cloud with the given stats. Will overwrite an old cloud under some</a>
+<a name="ln769"> * circumstances.</a>
+<a name="ln770"> *</a>
+<a name="ln771"> * @param cl_type     The type of cloud to place.</a>
+<a name="ln772"> * @param ctarget     The location of the cloud.</a>
+<a name="ln773"> * @param cl_range    How many turns the cloud will take to decay.</a>
+<a name="ln774"> * @param agent       Any agent that may have caused the cloud. If this is the</a>
+<a name="ln775"> *                    player, god conducts are applied.</a>
+<a name="ln776"> * @param spread_rate How quickly the cloud spreads.</a>
+<a name="ln777"> * @param excl_rad    How large of an exclusion radius to make around the</a>
+<a name="ln778"> *                    cloud.</a>
+<a name="ln779"> * @param do_conducts If true, apply any relevant god conducts for flame</a>
+<a name="ln780"> *                    placement.</a>
+<a name="ln781">*/</a>
+<a name="ln782">void place_cloud(cloud_type cl_type, const coord_def&amp; ctarget, int cl_range,</a>
+<a name="ln783">                 const actor *agent, int spread_rate, int excl_rad,</a>
+<a name="ln784">                 bool do_conducts)</a>
+<a name="ln785">{</a>
+<a name="ln786">    if (is_sanctuary(ctarget) &amp;&amp; !is_harmless_cloud(cl_type))</a>
+<a name="ln787">        return;</a>
+<a name="ln788"> </a>
+<a name="ln789">    if (cl_type == CLOUD_INK &amp;&amp; !feat_is_watery(grd(ctarget)))</a>
+<a name="ln790">        return;</a>
+<a name="ln791"> </a>
+<a name="ln792">    if (env.level_state &amp; LSTATE_STILL_WINDS</a>
+<a name="ln793">        &amp;&amp; cl_type != CLOUD_TORNADO</a>
+<a name="ln794">        &amp;&amp; cl_type != CLOUD_INK)</a>
+<a name="ln795">    {</a>
+<a name="ln796">        return;</a>
+<a name="ln797">    }</a>
+<a name="ln798"> </a>
+<a name="ln799">    const monster * const mons = monster_at(ctarget);</a>
+<a name="ln800"> </a>
+<a name="ln801">    // Fedhas protects plants from damaging clouds placed by the player.</a>
+<a name="ln802">    if (agent</a>
+<a name="ln803">        &amp;&amp; agent-&gt;deity() == GOD_FEDHAS</a>
+<a name="ln804">        &amp;&amp; fedhas_protects(mons)</a>
+<a name="ln805">        &amp;&amp; !actor_cloud_immune(*mons, cl_type))</a>
+<a name="ln806">    {</a>
+<a name="ln807">        return;</a>
+<a name="ln808">    }</a>
+<a name="ln809"> </a>
+<a name="ln810">    ASSERT(!cell_is_solid(ctarget));</a>
+<a name="ln811"> </a>
+<a name="ln812">    god_conduct_trigger conducts[3];</a>
+<a name="ln813">    kill_category whose = KC_OTHER;</a>
+<a name="ln814">    killer_type killer  = KILL_MISC;</a>
+<a name="ln815">    mid_t source        = MID_NOBODY;</a>
+<a name="ln816">    if (agent &amp;&amp; agent-&gt;is_player())</a>
+<a name="ln817">    {</a>
+<a name="ln818">        if (do_conducts</a>
+<a name="ln819">            &amp;&amp; mons &amp;&amp; mons-&gt;alive()</a>
+<a name="ln820">            &amp;&amp; !actor_cloud_immune(*mons, cl_type))</a>
+<a name="ln821">        {</a>
+<a name="ln822">            set_attack_conducts(conducts, *mons, you.can_see(*mons));</a>
+<a name="ln823">        }</a>
+<a name="ln824"> </a>
+<a name="ln825">        whose = KC_YOU;</a>
+<a name="ln826">        killer = KILL_YOU_MISSILE;</a>
+<a name="ln827">        source = MID_PLAYER;</a>
+<a name="ln828">    }</a>
+<a name="ln829">    else if (agent &amp;&amp; agent-&gt;is_monster())</a>
+<a name="ln830">    {</a>
+<a name="ln831">        if (agent-&gt;as_monster()-&gt;friendly())</a>
+<a name="ln832">            whose = KC_FRIENDLY;</a>
+<a name="ln833">        else</a>
+<a name="ln834">            whose = KC_OTHER;</a>
+<a name="ln835">        killer = KILL_MON_MISSILE;</a>
+<a name="ln836">        source = agent-&gt;mid;</a>
+<a name="ln837">    }</a>
+<a name="ln838"> </a>
+<a name="ln839">    // There's already a cloud here. See if we can overwrite it.</a>
+<a name="ln840">    const cloud_struct *cloud = cloud_at(ctarget);</a>
+<a name="ln841">    if (cloud &amp;&amp; !_cloud_is_stronger(cl_type, *cloud))</a>
+<a name="ln842">        return;</a>
+<a name="ln843"> </a>
+<a name="ln844">    // If the old cloud was opaque, may need to recalculate los. It *is*</a>
+<a name="ln845">    // possible to overwrite an opaque cloud with a non-opaque one; OOD will do</a>
+<a name="ln846">    // this.</a>
+<a name="ln847">    const cloud_type old = cloud ? cloud-&gt;type : CLOUD_NONE;</a>
+<a name="ln848">    env.cloud[ctarget] = cloud_struct(ctarget, cl_type, cl_range * 10,</a>
+<a name="ln849">            _actual_spread_rate(cl_type, spread_rate), whose, killer, source,</a>
+<a name="ln850">            excl_rad);</a>
+<a name="ln851">    _los_cloud_changed(ctarget, env.cloud[ctarget].type, old);</a>
+<a name="ln852">}</a>
+<a name="ln853"> </a>
+<a name="ln854">bool is_opaque_cloud(cloud_type ctype)</a>
+<a name="ln855">{</a>
+<a name="ln856">    return ctype &gt;= CLOUD_NONE &amp;&amp; ctype &lt; NUM_CLOUD_TYPES</a>
+<a name="ln857">           &amp;&amp; clouds[ctype].opaque;</a>
+<a name="ln858">}</a>
+<a name="ln859"> </a>
+<a name="ln860">cloud_type cloud_type_at(const coord_def &amp;c)</a>
+<a name="ln861">{</a>
+<a name="ln862">    return cloud_at(c) ? cloud_at(c)-&gt;type : CLOUD_NONE;</a>
+<a name="ln863">}</a>
+<a name="ln864"> </a>
+<a name="ln865">bool cloud_is_yours_at(const coord_def &amp;c)</a>
+<a name="ln866">{</a>
+<a name="ln867">    return cloud_at(c) ? YOU_KILL(cloud_at(c)-&gt;killer) : false;</a>
+<a name="ln868">}</a>
+<a name="ln869"> </a>
+<a name="ln870">cloud_type random_smoke_type()</a>
+<a name="ln871">{</a>
+<a name="ln872">    return random_choose(CLOUD_GREY_SMOKE, CLOUD_BLUE_SMOKE,</a>
+<a name="ln873">                         CLOUD_BLACK_SMOKE, CLOUD_PURPLE_SMOKE);</a>
+<a name="ln874">}</a>
+<a name="ln875">int max_cloud_damage(cloud_type cl_type, int power)</a>
+<a name="ln876">{</a>
+<a name="ln877">    cloud_struct cloud;</a>
+<a name="ln878">    cloud.type = cl_type;</a>
+<a name="ln879">    cloud.decay = power * 10;</a>
+<a name="ln880">    return _actor_cloud_damage(&amp;you, cloud, true);</a>
+<a name="ln881">}</a>
+<a name="ln882"> </a>
+<a name="ln883">// Returns true if the cloud type has negative side effects beyond</a>
+<a name="ln884">// plain damage and inventory destruction effects.</a>
+<a name="ln885">static bool _cloud_has_negative_side_effects(cloud_type cloud)</a>
+<a name="ln886">{</a>
+<a name="ln887">    switch (cloud)</a>
+<a name="ln888">    {</a>
+<a name="ln889">    case CLOUD_MEPHITIC:</a>
+<a name="ln890">    case CLOUD_MIASMA:</a>
+<a name="ln891">    case CLOUD_MUTAGENIC:</a>
+<a name="ln892">    case CLOUD_CHAOS:</a>
+<a name="ln893">    case CLOUD_PETRIFY:</a>
+<a name="ln894">    case CLOUD_ACID:</a>
+<a name="ln895">    case CLOUD_NEGATIVE_ENERGY:</a>
+<a name="ln896">        return true;</a>
+<a name="ln897">    default:</a>
+<a name="ln898">        return false;</a>
+<a name="ln899">    }</a>
+<a name="ln900">}</a>
+<a name="ln901"> </a>
+<a name="ln902">static int _cloud_damage_calc(int size, int n_average, int extra,</a>
+<a name="ln903">                              bool maximum_damage)</a>
+<a name="ln904">{</a>
+<a name="ln905">    return maximum_damage?</a>
+<a name="ln906">           extra + size - 1</a>
+<a name="ln907">           : random2avg(size, n_average) + extra;</a>
+<a name="ln908">}</a>
+<a name="ln909"> </a>
+<a name="ln910">// Calculates the base damage that the cloud does to an actor without</a>
+<a name="ln911">// considering resistances and time spent in the cloud.</a>
+<a name="ln912">static int _cloud_base_damage(const actor *act,</a>
+<a name="ln913">                              cloud_type flavour,</a>
+<a name="ln914">                              bool maximum_damage)</a>
+<a name="ln915">{</a>
+<a name="ln916">    const cloud_damage &amp;dam = clouds[flavour].damage;</a>
+<a name="ln917">    const bool extra_damage = dam.extra_player_dam &amp;&amp; act-&gt;is_player();</a>
+<a name="ln918">    const int random_dam = dam.random + (extra_damage ? 7 : 0);</a>
+<a name="ln919">    const int base_dam = dam.base + (extra_damage ? 4 : 0);</a>
+<a name="ln920">    const int trials = dam.random/15 + 1;</a>
+<a name="ln921"> </a>
+<a name="ln922">    return _cloud_damage_calc(random_dam, trials, base_dam, maximum_damage);</a>
+<a name="ln923"> </a>
+<a name="ln924">}</a>
+<a name="ln925"> </a>
+<a name="ln926">/**</a>
+<a name="ln927"> * Is the given actor immune to cloud damage and other negative side effects</a>
+<a name="ln928"> * (other than opaque clouds + invis) from all clouds of the given type?</a>
+<a name="ln929"> */</a>
+<a name="ln930">bool actor_cloud_immune(const actor &amp;act, cloud_type type)</a>
+<a name="ln931">{</a>
+<a name="ln932">    // Qazlalites and scarfwearers get immunity to clouds.</a>
+<a name="ln933">    // and the Cloud Mage too!</a>
+<a name="ln934">    if (is_harmless_cloud(type) || act.cloud_immune())</a>
+<a name="ln935">        return true;</a>
+<a name="ln936"> </a>
+<a name="ln937">    switch (type)</a>
+<a name="ln938">    {</a>
+<a name="ln939">        case CLOUD_FIRE:</a>
+<a name="ln940">        case CLOUD_FOREST_FIRE:</a>
+<a name="ln941">            if (!act.is_player())</a>
+<a name="ln942">                return act.res_fire() &gt;= 3;</a>
+<a name="ln943">            return you.duration[DUR_FIRE_SHIELD]</a>
+<a name="ln944">                || you.has_mutation(MUT_FLAME_CLOUD_IMMUNITY)</a>
+<a name="ln945">                || player_equip_unrand(UNRAND_FIRESTARTER);</a>
+<a name="ln946">        case CLOUD_HOLY:</a>
+<a name="ln947">            return act.res_holy_energy() &gt;= 3;</a>
+<a name="ln948">        case CLOUD_COLD:</a>
+<a name="ln949">            if (!act.is_player())</a>
+<a name="ln950">                return act.res_cold() &gt;= 3;</a>
+<a name="ln951">            return you.has_mutation(MUT_FREEZING_CLOUD_IMMUNITY)</a>
+<a name="ln952">                || player_equip_unrand(UNRAND_FROSTBITE);</a>
+<a name="ln953">        case CLOUD_MEPHITIC:</a>
+<a name="ln954">            return act.res_poison() &gt; 0 || act.is_unbreathing();</a>
+<a name="ln955">        case CLOUD_POISON:</a>
+<a name="ln956">            return act.res_poison() &gt; 0;</a>
+<a name="ln957">        case CLOUD_STEAM:</a>
+<a name="ln958">            return act.res_steam() &gt; 0;</a>
+<a name="ln959">        case CLOUD_MIASMA:</a>
+<a name="ln960">            return act.res_rotting() &gt; 0;</a>
+<a name="ln961">        case CLOUD_PETRIFY:</a>
+<a name="ln962">            return act.res_petrify();</a>
+<a name="ln963">        case CLOUD_SPECTRAL:</a>
+<a name="ln964">            return bool(act.holiness() &amp; MH_UNDEAD);</a>
+<a name="ln965">        case CLOUD_ACID:</a>
+<a name="ln966">            return act.res_acid() &gt; 0;</a>
+<a name="ln967">        case CLOUD_STORM:</a>
+<a name="ln968">            return act.res_elec() &gt;= 3;</a>
+<a name="ln969">        case CLOUD_NEGATIVE_ENERGY:</a>
+<a name="ln970">            return act.res_negative_energy() &gt;= 3;</a>
+<a name="ln971">        case CLOUD_TORNADO:</a>
+<a name="ln972">            return act.res_tornado();</a>
+<a name="ln973">        case CLOUD_RAIN:</a>
+<a name="ln974">            return !act.is_fiery();</a>
+<a name="ln975">        default:</a>
+<a name="ln976">            return false;</a>
+<a name="ln977">    }</a>
+<a name="ln978">}</a>
+<a name="ln979"> </a>
+<a name="ln980">// Returns true if the actor is immune to cloud damage and other negative</a>
+<a name="ln981">// side effects of the given cloud (other than opaque clouds + invis).</a>
+<a name="ln982">//</a>
+<a name="ln983">// Note that actor_cloud_immune may be false even if the actor will</a>
+<a name="ln984">// not be harmed by the cloud. The cloud may have positive</a>
+<a name="ln985">// side-effects on the actor.</a>
+<a name="ln986">bool actor_cloud_immune(const actor &amp;act, const cloud_struct &amp;cloud)</a>
+<a name="ln987">{</a>
+<a name="ln988">    if (actor_cloud_immune(act, cloud.type))</a>
+<a name="ln989">        return true;</a>
+<a name="ln990"> </a>
+<a name="ln991">    const bool player = act.is_player();</a>
+<a name="ln992"> </a>
+<a name="ln993">    if (!player</a>
+<a name="ln994">        &amp;&amp; (you_worship(GOD_FEDHAS)</a>
+<a name="ln995">            &amp;&amp; fedhas_protects(act.as_monster())</a>
+<a name="ln996">            || testbits(act.as_monster()-&gt;flags, MF_DEMONIC_GUARDIAN))</a>
+<a name="ln997">        &amp;&amp; (cloud.whose == KC_YOU || cloud.whose == KC_FRIENDLY)</a>
+<a name="ln998">        &amp;&amp; (act.as_monster()-&gt;friendly() || act.as_monster()-&gt;neutral()))</a>
+<a name="ln999">    {</a>
+<a name="ln1000">        return true;</a>
+<a name="ln1001">    }</a>
+<a name="ln1002"> </a>
+<a name="ln1003">    int summon_type = 0;</a>
+<a name="ln1004">    act.is_summoned(nullptr, &amp;summon_type);</a>
+<a name="ln1005">    if (!player &amp;&amp; have_passive(passive_t::cloud_immunity)</a>
+<a name="ln1006">        &amp;&amp; (act.as_monster()-&gt;friendly() &amp;&amp; summon_type == MON_SUMM_AID))</a>
+<a name="ln1007">    {</a>
+<a name="ln1008">        return true;</a>
+<a name="ln1009">    }</a>
+<a name="ln1010"> </a>
+<a name="ln1011">    return false;</a>
+<a name="ln1012">}</a>
+<a name="ln1013"> </a>
+<a name="ln1014">// Returns a numeric resistance value for the actor's resistance to</a>
+<a name="ln1015">// the cloud's effects. If the actor is immune to the cloud's damage,</a>
+<a name="ln1016">// returns MAG_IMMUNE.</a>
+<a name="ln1017">static int _actor_cloud_resist(const actor *act, const cloud_struct &amp;cloud)</a>
+<a name="ln1018">{</a>
+<a name="ln1019">    if (actor_cloud_immune(*act, cloud))</a>
+<a name="ln1020">        return MAG_IMMUNE;</a>
+<a name="ln1021">    switch (cloud.type)</a>
+<a name="ln1022">    {</a>
+<a name="ln1023">    case CLOUD_RAIN:</a>
+<a name="ln1024">        return act-&gt;is_fiery()? 0 : MAG_IMMUNE;</a>
+<a name="ln1025">    case CLOUD_FIRE:</a>
+<a name="ln1026">    case CLOUD_FOREST_FIRE:</a>
+<a name="ln1027">        return act-&gt;res_fire();</a>
+<a name="ln1028">    case CLOUD_HOLY:</a>
+<a name="ln1029">        return act-&gt;res_holy_energy();</a>
+<a name="ln1030">    case CLOUD_COLD:</a>
+<a name="ln1031">        return act-&gt;res_cold();</a>
+<a name="ln1032">    case CLOUD_PETRIFY:</a>
+<a name="ln1033">        return act-&gt;res_petrify();</a>
+<a name="ln1034">    case CLOUD_ACID:</a>
+<a name="ln1035">        return act-&gt;res_acid();</a>
+<a name="ln1036">    case CLOUD_STORM:</a>
+<a name="ln1037">        return act-&gt;res_elec();</a>
+<a name="ln1038">    case CLOUD_NEGATIVE_ENERGY:</a>
+<a name="ln1039">        return act-&gt;res_negative_energy();</a>
+<a name="ln1040"> </a>
+<a name="ln1041">    default:</a>
+<a name="ln1042">        return 0;</a>
+<a name="ln1043">    }</a>
+<a name="ln1044">}</a>
+<a name="ln1045"> </a>
+<a name="ln1046">static bool _mephitic_cloud_roll(const monster* mons)</a>
+<a name="ln1047">{</a>
+<a name="ln1048">    const int meph_hd_cap = 21;</a>
+<a name="ln1049">    return mons-&gt;get_hit_dice() &gt;= meph_hd_cap? one_chance_in(50)</a>
+<a name="ln1050">           : !x_chance_in_y(mons-&gt;get_hit_dice(), meph_hd_cap);</a>
+<a name="ln1051">}</a>
+<a name="ln1052"> </a>
+<a name="ln1053">// Applies cloud messages and side-effects and returns true if the</a>
+<a name="ln1054">// cloud had a side-effect. This function does not check for cloud immunity.</a>
+<a name="ln1055">// ... but it's only called if the actor isn't immune</a>
+<a name="ln1056">static bool _actor_apply_cloud_side_effects(actor *act,</a>
+<a name="ln1057">                                            const cloud_struct &amp;cloud,</a>
+<a name="ln1058">                                            int final_damage)</a>
+<a name="ln1059">{</a>
+<a name="ln1060">    ASSERT(act); // XXX: change to actor &amp;act</a>
+<a name="ln1061">    const bool player = act-&gt;is_player();</a>
+<a name="ln1062">    monster *mons = !player? act-&gt;as_monster() : nullptr;</a>
+<a name="ln1063">    switch (cloud.type)</a>
+<a name="ln1064">    {</a>
+<a name="ln1065">    case CLOUD_FIRE:</a>
+<a name="ln1066">    case CLOUD_STEAM:</a>
+<a name="ln1067">        if (player)</a>
+<a name="ln1068">            maybe_melt_player_enchantments(BEAM_FIRE, final_damage);</a>
+<a name="ln1069">    case CLOUD_RAIN:</a>
+<a name="ln1070">    case CLOUD_STORM:</a>
+<a name="ln1071">        if (act-&gt;is_fiery() &amp;&amp; final_damage &gt; 0)</a>
+<a name="ln1072">        {</a>
+<a name="ln1073">            if (you.can_see(*act))</a>
+<a name="ln1074">            {</a>
+<a name="ln1075">                mprf(&quot;%s %s in the rain.&quot;,</a>
+<a name="ln1076">                     act-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1077">                     act-&gt;conj_verb(silenced(act-&gt;pos())?</a>
+<a name="ln1078">                                    &quot;steam&quot; : &quot;sizzle&quot;).c_str());</a>
+<a name="ln1079">            }</a>
+<a name="ln1080">        }</a>
+<a name="ln1081">        break;</a>
+<a name="ln1082"> </a>
+<a name="ln1083">    case CLOUD_MEPHITIC:</a>
+<a name="ln1084">    {</a>
+<a name="ln1085">        if (player)</a>
+<a name="ln1086">        {</a>
+<a name="ln1087">            if (1 + random2(27) &gt;= you.experience_level)</a>
+<a name="ln1088">            {</a>
+<a name="ln1089">                mpr(&quot;You choke on the stench!&quot;);</a>
+<a name="ln1090">                // effectively one or two turns, since it will be</a>
+<a name="ln1091">                // decremented right away</a>
+<a name="ln1092">                confuse_player(random_range(2, 3));</a>
+<a name="ln1093">                return true;</a>
+<a name="ln1094">            }</a>
+<a name="ln1095">        }</a>
+<a name="ln1096">        else</a>
+<a name="ln1097">        {</a>
+<a name="ln1098">            bolt beam;</a>
+<a name="ln1099">            beam.flavour = BEAM_CONFUSION;</a>
+<a name="ln1100">            beam.thrower = cloud.killer;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">            if (cloud.whose == KC_FRIENDLY)</a>
+<a name="ln1103">                beam.source_id = MID_ANON_FRIEND;</a>
+<a name="ln1104"> </a>
+<a name="ln1105">            if (_mephitic_cloud_roll(mons))</a>
+<a name="ln1106">            {</a>
+<a name="ln1107">                beam.apply_enchantment_to_monster(mons);</a>
+<a name="ln1108">                return true;</a>
+<a name="ln1109">            }</a>
+<a name="ln1110">        }</a>
+<a name="ln1111">        break;</a>
+<a name="ln1112">    }</a>
+<a name="ln1113"> </a>
+<a name="ln1114">    case CLOUD_PETRIFY:</a>
+<a name="ln1115">    {</a>
+<a name="ln1116">        if (player)</a>
+<a name="ln1117">        {</a>
+<a name="ln1118">            if (random2(55) - 13 &gt;= you.experience_level)</a>
+<a name="ln1119">            {</a>
+<a name="ln1120">                you.petrify(act);</a>
+<a name="ln1121">                return true;</a>
+<a name="ln1122">            }</a>
+<a name="ln1123">        }</a>
+<a name="ln1124">        else</a>
+<a name="ln1125">        {</a>
+<a name="ln1126">            bolt beam;</a>
+<a name="ln1127">            beam.flavour = BEAM_PETRIFY;</a>
+<a name="ln1128">            beam.thrower = cloud.killer;</a>
+<a name="ln1129"> </a>
+<a name="ln1130">            if (cloud.whose == KC_FRIENDLY)</a>
+<a name="ln1131">                beam.source_id = MID_ANON_FRIEND;</a>
+<a name="ln1132"> </a>
+<a name="ln1133">            beam.apply_enchantment_to_monster(mons);</a>
+<a name="ln1134">            return true;</a>
+<a name="ln1135">        }</a>
+<a name="ln1136">        break;</a>
+<a name="ln1137">    }</a>
+<a name="ln1138"> </a>
+<a name="ln1139">    case CLOUD_POISON:</a>
+<a name="ln1140">        if (player)</a>
+<a name="ln1141">        {</a>
+<a name="ln1142">            const actor* agent = cloud.agent();</a>
+<a name="ln1143">            poison_player(5 + roll_dice(3, 8), agent ? agent-&gt;name(DESC_A) : &quot;&quot;,</a>
+<a name="ln1144">                          cloud.cloud_name());</a>
+<a name="ln1145">        }</a>
+<a name="ln1146">        else</a>
+<a name="ln1147">            poison_monster(mons, cloud.agent());</a>
+<a name="ln1148">        return true;</a>
+<a name="ln1149"> </a>
+<a name="ln1150">    case CLOUD_MIASMA:</a>
+<a name="ln1151">        if (player)</a>
+<a name="ln1152">            miasma_player(cloud.agent(), cloud.cloud_name());</a>
+<a name="ln1153">        else</a>
+<a name="ln1154">            miasma_monster(mons, cloud.agent());</a>
+<a name="ln1155">        break;</a>
+<a name="ln1156"> </a>
+<a name="ln1157">    case CLOUD_MUTAGENIC:</a>
+<a name="ln1158">        if (player)</a>
+<a name="ln1159">        {</a>
+<a name="ln1160">            mpr(&quot;The mutagenic energy flows into you.&quot;);</a>
+<a name="ln1161">            // It's possible that you got trampled into the mutagenic cloud</a>
+<a name="ln1162">            // and it's not your fault... so we'll say it's not intentional.</a>
+<a name="ln1163">            // (it's quite bad in any case, so players won't scum, probably.)</a>
+<a name="ln1164">            contaminate_player(1300 + random2(1250), false);</a>
+<a name="ln1165">            // min 2 turns to yellow, max 4</a>
+<a name="ln1166">            return true;</a>
+<a name="ln1167">        }</a>
+<a name="ln1168">        else if (coinflip() &amp;&amp; mons-&gt;malmutate(&quot;mutagenic cloud&quot;))</a>
+<a name="ln1169">        {</a>
+<a name="ln1170">            if (you_worship(GOD_ZIN) &amp;&amp; cloud.whose == KC_YOU)</a>
+<a name="ln1171">                did_god_conduct(DID_DELIBERATE_MUTATING, 5 + random2(3));</a>
+<a name="ln1172">            return true;</a>
+<a name="ln1173">        }</a>
+<a name="ln1174">        return false;</a>
+<a name="ln1175"> </a>
+<a name="ln1176">    case CLOUD_CHAOS:</a>
+<a name="ln1177">        if (coinflip())</a>
+<a name="ln1178">        {</a>
+<a name="ln1179">            // TODO: Not have this in melee_attack</a>
+<a name="ln1180">            melee_attack::chaos_affect_actor(act);</a>
+<a name="ln1181">            return true;</a>
+<a name="ln1182">        }</a>
+<a name="ln1183">        break;</a>
+<a name="ln1184"> </a>
+<a name="ln1185">    case CLOUD_ACID:</a>
+<a name="ln1186">    {</a>
+<a name="ln1187">        const actor* agent = cloud.agent();</a>
+<a name="ln1188">        act-&gt;splash_with_acid(agent, 5, true);</a>
+<a name="ln1189">        return true;</a>
+<a name="ln1190">    }</a>
+<a name="ln1191"> </a>
+<a name="ln1192">    case CLOUD_NEGATIVE_ENERGY:</a>
+<a name="ln1193">    {</a>
+<a name="ln1194">        actor* agent = cloud.agent();</a>
+<a name="ln1195">        if (act-&gt;drain_exp(agent))</a>
+<a name="ln1196">        {</a>
+<a name="ln1197">            if (cloud.whose == KC_YOU)</a>
+<a name="ln1198">                did_god_conduct(DID_EVIL, 5 + random2(3));</a>
+<a name="ln1199">            return true;</a>
+<a name="ln1200">        }</a>
+<a name="ln1201">        break;</a>
+<a name="ln1202">    }</a>
+<a name="ln1203"> </a>
+<a name="ln1204">    default:</a>
+<a name="ln1205">        break;</a>
+<a name="ln1206">    }</a>
+<a name="ln1207">    return false;</a>
+<a name="ln1208">}</a>
+<a name="ln1209"> </a>
+<a name="ln1210">static int _actor_cloud_base_damage(const actor *act,</a>
+<a name="ln1211">                                    const cloud_struct &amp;cloud,</a>
+<a name="ln1212">                                    int resist,</a>
+<a name="ln1213">                                    bool maximum_damage)</a>
+<a name="ln1214">{</a>
+<a name="ln1215">    if (actor_cloud_immune(*act, cloud))</a>
+<a name="ln1216">        return 0;</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    const int cloud_raw_base_damage =</a>
+<a name="ln1219">        _cloud_base_damage(act, cloud.type, maximum_damage);</a>
+<a name="ln1220">    const int cloud_base_damage = (resist == MAG_IMMUNE ?</a>
+<a name="ln1221">                                   0 : cloud_raw_base_damage);</a>
+<a name="ln1222">    return cloud_base_damage;</a>
+<a name="ln1223">}</a>
+<a name="ln1224"> </a>
+<a name="ln1225">static int _cloud_damage_output(const actor *actor,</a>
+<a name="ln1226">                                beam_type flavour,</a>
+<a name="ln1227">                                int base_damage,</a>
+<a name="ln1228">                                bool maximum_damage = false)</a>
+<a name="ln1229">{</a>
+<a name="ln1230">    if (maximum_damage)</a>
+<a name="ln1231">        return resist_adjust_damage(actor, flavour, base_damage);</a>
+<a name="ln1232"> </a>
+<a name="ln1233">    int dam = actor-&gt;apply_ac(base_damage);</a>
+<a name="ln1234">    dam = resist_adjust_damage(actor, flavour, dam);</a>
+<a name="ln1235">    return max(0, dam);</a>
+<a name="ln1236">}</a>
+<a name="ln1237"> </a>
+<a name="ln1238">/**</a>
+<a name="ln1239"> * How much damage will this cloud do to the given actor?</a>
+<a name="ln1240"> *</a>
+<a name="ln1241"> * @param act               The actor in question.</a>
+<a name="ln1242"> * @param cloud             The cloud in question.</a>
+<a name="ln1243"> * @param maximum_damage    Whether to return the maximum possible damage.</a>
+<a name="ln1244"> */</a>
+<a name="ln1245">static int _actor_cloud_damage(const actor *act,</a>
+<a name="ln1246">                               const cloud_struct &amp;cloud,</a>
+<a name="ln1247">                               bool maximum_damage)</a>
+<a name="ln1248">{</a>
+<a name="ln1249">    const int resist = _actor_cloud_resist(act, cloud);</a>
+<a name="ln1250">    const int cloud_base_damage = _actor_cloud_base_damage(act, cloud,</a>
+<a name="ln1251">                                                           resist,</a>
+<a name="ln1252">                                                           maximum_damage);</a>
+<a name="ln1253">    int final_damage = cloud_base_damage;</a>
+<a name="ln1254"> </a>
+<a name="ln1255">    switch (cloud.type)</a>
+<a name="ln1256">    {</a>
+<a name="ln1257">    case CLOUD_FIRE:</a>
+<a name="ln1258">    case CLOUD_FOREST_FIRE:</a>
+<a name="ln1259">    case CLOUD_HOLY:</a>
+<a name="ln1260">    case CLOUD_COLD:</a>
+<a name="ln1261">    case CLOUD_STEAM:</a>
+<a name="ln1262">    case CLOUD_SPECTRAL:</a>
+<a name="ln1263">    case CLOUD_ACID:</a>
+<a name="ln1264">    case CLOUD_NEGATIVE_ENERGY:</a>
+<a name="ln1265">        final_damage =</a>
+<a name="ln1266">            _cloud_damage_output(act, _cloud2beam(cloud.type),</a>
+<a name="ln1267">                                 cloud_base_damage,</a>
+<a name="ln1268">                                 maximum_damage);</a>
+<a name="ln1269">        break;</a>
+<a name="ln1270">    case CLOUD_STORM:</a>
+<a name="ln1271">    {</a>
+<a name="ln1272"> </a>
+<a name="ln1273">        // if we don't have thunder, there's always rain</a>
+<a name="ln1274">        cloud_struct raincloud = cloud;</a>
+<a name="ln1275">        raincloud.type = CLOUD_RAIN;</a>
+<a name="ln1276">        const int rain_damage = _actor_cloud_damage(act, raincloud,</a>
+<a name="ln1277">                                                    maximum_damage);</a>
+<a name="ln1278"> </a>
+<a name="ln1279">        // if this isn't just a test run, and no time passed, don't trigger</a>
+<a name="ln1280">        // lightning. (just rain.)</a>
+<a name="ln1281">        if (!maximum_damage &amp;&amp; !(you.turn_is_over &amp;&amp; you.time_taken &gt; 0))</a>
+<a name="ln1282">            return rain_damage;</a>
+<a name="ln1283"> </a>
+<a name="ln1284">        // only announce ourselves if this isn't a test run.</a>
+<a name="ln1285">        if (!maximum_damage)</a>
+<a name="ln1286">            cloud.announce_actor_engulfed(act);</a>
+<a name="ln1287"> </a>
+<a name="ln1288">        const int turns_per_lightning = 3;</a>
+<a name="ln1289">        const int aut_per_lightning = turns_per_lightning * BASELINE_DELAY;</a>
+<a name="ln1290"> </a>
+<a name="ln1291">        // if we fail our lightning roll, again, just rain.</a>
+<a name="ln1292">        if (!maximum_damage &amp;&amp; !x_chance_in_y(you.time_taken,</a>
+<a name="ln1293">                                              aut_per_lightning))</a>
+<a name="ln1294">        {</a>
+<a name="ln1295">            return rain_damage;</a>
+<a name="ln1296">        }</a>
+<a name="ln1297"> </a>
+<a name="ln1298">        const int lightning_dam = _cloud_damage_output(act,</a>
+<a name="ln1299">                                                       _cloud2beam(cloud.type),</a>
+<a name="ln1300">                                                       cloud_base_damage,</a>
+<a name="ln1301">                                                       maximum_damage);</a>
+<a name="ln1302"> </a>
+<a name="ln1303">        if (maximum_damage)</a>
+<a name="ln1304">        {</a>
+<a name="ln1305">            // Average maximum damage over time.</a>
+<a name="ln1306">            const int avg_dam = lightning_dam / turns_per_lightning;</a>
+<a name="ln1307">            if (avg_dam &gt; 0)</a>
+<a name="ln1308">                return avg_dam;</a>
+<a name="ln1309">            return rain_damage; // vs relec+++ or w/e</a>
+<a name="ln1310">        }</a>
+<a name="ln1311"> </a>
+<a name="ln1312">        if (act-&gt;is_player())</a>
+<a name="ln1313">            mpr(&quot;You are struck by lightning!&quot;);</a>
+<a name="ln1314">        else if (you.can_see(*act))</a>
+<a name="ln1315">        {</a>
+<a name="ln1316">            simple_monster_message(*act-&gt;as_monster(),</a>
+<a name="ln1317">                                   &quot; is struck by lightning.&quot;);</a>
+<a name="ln1318">        }</a>
+<a name="ln1319">        else if (you.see_cell(act-&gt;pos()))</a>
+<a name="ln1320">        {</a>
+<a name="ln1321">            mpr(&quot;Lightning from the thunderstorm strikes something you cannot &quot;</a>
+<a name="ln1322">                &quot;see.&quot;);</a>
+<a name="ln1323">        }</a>
+<a name="ln1324">        noisy(spell_effect_noise(SPELL_LIGHTNING_BOLT), act-&gt;pos(),</a>
+<a name="ln1325">              act-&gt;is_player() || you.see_cell(act-&gt;pos())</a>
+<a name="ln1326">              || you_worship(GOD_QAZLAL)</a>
+<a name="ln1327">                ? nullptr</a>
+<a name="ln1328">                : &quot;You hear a clap of thunder!&quot;);</a>
+<a name="ln1329"> </a>
+<a name="ln1330">        return lightning_dam;</a>
+<a name="ln1331"> </a>
+<a name="ln1332">    }</a>
+<a name="ln1333">    default:</a>
+<a name="ln1334">        break;</a>
+<a name="ln1335">    }</a>
+<a name="ln1336"> </a>
+<a name="ln1337">    return timescale_damage(act, final_damage);</a>
+<a name="ln1338">}</a>
+<a name="ln1339"> </a>
+<a name="ln1340">// Applies damage and side effects for an actor in a cloud and returns</a>
+<a name="ln1341">// the damage dealt.</a>
+<a name="ln1342">int actor_apply_cloud(actor *act)</a>
+<a name="ln1343">{</a>
+<a name="ln1344">    const cloud_struct* cl = cloud_at(act-&gt;pos());</a>
+<a name="ln1345">    if (!cl)</a>
+<a name="ln1346">        return 0;</a>
+<a name="ln1347"> </a>
+<a name="ln1348">    const cloud_struct &amp;cloud(*cl);</a>
+<a name="ln1349">    const bool player = act-&gt;is_player();</a>
+<a name="ln1350">    monster *mons = !player? act-&gt;as_monster() : nullptr;</a>
+<a name="ln1351">    const beam_type cloud_flavour = _cloud2beam(cloud.type);</a>
+<a name="ln1352"> </a>
+<a name="ln1353">    if (actor_cloud_immune(*act, cloud))</a>
+<a name="ln1354">        return 0;</a>
+<a name="ln1355"> </a>
+<a name="ln1356">    const int resist = _actor_cloud_resist(act, cloud);</a>
+<a name="ln1357">    const int cloud_max_base_damage =</a>
+<a name="ln1358">        _actor_cloud_base_damage(act, cloud, resist, true);</a>
+<a name="ln1359">    const int final_damage = _actor_cloud_damage(act, cloud, false);</a>
+<a name="ln1360"> </a>
+<a name="ln1361">    if ((player || final_damage &gt; 0</a>
+<a name="ln1362">         || _cloud_has_negative_side_effects(cloud.type))</a>
+<a name="ln1363">        &amp;&amp; cloud.type != CLOUD_STORM) // handled elsewhere</a>
+<a name="ln1364">    {</a>
+<a name="ln1365">        cloud.announce_actor_engulfed(act);</a>
+<a name="ln1366">    }</a>
+<a name="ln1367">    if (player &amp;&amp; cloud_max_base_damage &gt; 0 &amp;&amp; resist &gt; 0</a>
+<a name="ln1368">        &amp;&amp; (cloud.type != CLOUD_STORM || final_damage &gt; 0))</a>
+<a name="ln1369">    {</a>
+<a name="ln1370">        canned_msg(MSG_YOU_RESIST);</a>
+<a name="ln1371">    }</a>
+<a name="ln1372"> </a>
+<a name="ln1373">    if (cloud_flavour != BEAM_NONE)</a>
+<a name="ln1374">        act-&gt;expose_to_element(cloud_flavour, 7);</a>
+<a name="ln1375"> </a>
+<a name="ln1376">    const bool side_effects =</a>
+<a name="ln1377">        _actor_apply_cloud_side_effects(act, cloud, final_damage);</a>
+<a name="ln1378"> </a>
+<a name="ln1379">    if (!player &amp;&amp; (side_effects || final_damage &gt; 0))</a>
+<a name="ln1380">        behaviour_event(mons, ME_DISTURB, 0, act-&gt;pos());</a>
+<a name="ln1381"> </a>
+<a name="ln1382">    if (final_damage)</a>
+<a name="ln1383">    {</a>
+<a name="ln1384">        actor *oppressor = cloud.agent();</a>
+<a name="ln1385">        const string oppr_name =</a>
+<a name="ln1386">            oppressor ? &quot; &quot;+apostrophise(oppressor-&gt;name(DESC_THE))</a>
+<a name="ln1387">                      : &quot;&quot;;</a>
+<a name="ln1388">        dprf(&quot;%s %s %d damage from%s cloud: %s.&quot;,</a>
+<a name="ln1389">             act-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1390">             act-&gt;conj_verb(&quot;take&quot;).c_str(),</a>
+<a name="ln1391">             final_damage,</a>
+<a name="ln1392">             oppr_name.c_str(),</a>
+<a name="ln1393">             cloud.cloud_name().c_str());</a>
+<a name="ln1394"> </a>
+<a name="ln1395">        act-&gt;hurt(oppressor, final_damage, BEAM_MISSILE,</a>
+<a name="ln1396">                  KILLED_BY_CLOUD, &quot;&quot;, cloud.cloud_name(true));</a>
+<a name="ln1397">    }</a>
+<a name="ln1398"> </a>
+<a name="ln1399">    return final_damage;</a>
+<a name="ln1400">}</a>
+<a name="ln1401"> </a>
+<a name="ln1402">static bool _cloud_is_harmful(actor *act, cloud_struct &amp;cloud,</a>
+<a name="ln1403">                              int maximum_negligible_damage)</a>
+<a name="ln1404">{</a>
+<a name="ln1405">    return !actor_cloud_immune(*act, cloud)</a>
+<a name="ln1406">           &amp;&amp; (_cloud_has_negative_side_effects(cloud.type)</a>
+<a name="ln1407">               || (_actor_cloud_damage(act, cloud, true) &gt;</a>
+<a name="ln1408">                   maximum_negligible_damage));</a>
+<a name="ln1409">}</a>
+<a name="ln1410"> </a>
+<a name="ln1411">/**</a>
+<a name="ln1412"> * Is this cloud type dangerous to you?</a>
+<a name="ln1413"> *</a>
+<a name="ln1414"> * @param type the type of cloud to look at.</a>
+<a name="ln1415"> * @param accept_temp_resistances whether to look at resistances from your form</a>
+<a name="ln1416"> *        or durations; items and gods are used regardless of this parameter's value.</a>
+<a name="ln1417"> * @param yours whether to treat this cloud as being made by you.</a>
+<a name="ln1418"> */</a>
+<a name="ln1419">bool is_damaging_cloud(cloud_type type, bool accept_temp_resistances, bool yours)</a>
+<a name="ln1420">{</a>
+<a name="ln1421">    // If you're immune to clouds, then no clouds are damaging. Bing bong so simple!</a>
+<a name="ln1422">    if (you.cloud_immune())</a>
+<a name="ln1423">        return false;</a>
+<a name="ln1424"> </a>
+<a name="ln1425">    // A nasty hack; map_knowledge doesn't preserve whom the cloud belongs to.</a>
+<a name="ln1426">    if (type == CLOUD_TORNADO)</a>
+<a name="ln1427">        return !you.duration[DUR_TORNADO] &amp;&amp; !you.duration[DUR_TORNADO_COOLDOWN];</a>
+<a name="ln1428"> </a>
+<a name="ln1429">    if (accept_temp_resistances)</a>
+<a name="ln1430">    {</a>
+<a name="ln1431">        cloud_struct cloud;</a>
+<a name="ln1432">        cloud.type = type;</a>
+<a name="ln1433">        cloud.decay = 100;</a>
+<a name="ln1434">        if (yours)</a>
+<a name="ln1435">            cloud.set_killer(KILL_YOU);</a>
+<a name="ln1436">        return _cloud_is_harmful(&amp;you, cloud, 0);</a>
+<a name="ln1437">    }</a>
+<a name="ln1438">    else</a>
+<a name="ln1439">    {</a>
+<a name="ln1440">        // [ds] Yes, this is an ugly kludge: temporarily hide</a>
+<a name="ln1441">        // durations and transforms.</a>
+<a name="ln1442">        unwind_var&lt;durations_t&gt; old_durations(you.duration);</a>
+<a name="ln1443">        unwind_var&lt;transformation&gt; old_form(you.form, transformation::none);</a>
+<a name="ln1444">        you.duration.init(0);</a>
+<a name="ln1445">        return is_damaging_cloud(type, true, yours);</a>
+<a name="ln1446">    }</a>
+<a name="ln1447">}</a>
+<a name="ln1448"> </a>
+<a name="ln1449">/**</a>
+<a name="ln1450"> * Will the given monster refuse to walk into the given cloud?</a>
+<a name="ln1451"> *</a>
+<a name="ln1452"> * @param mons              The monster in question.</a>
+<a name="ln1453"> * @param cloud             The cloud in question.</a>
+<a name="ln1454"> * @param extra_careful     Whether the monster could suffer any harm from the</a>
+<a name="ln1455"> *                          cloud at all, even if it would normally be brave</a>
+<a name="ln1456"> *                          enough (based on e.g. hp) to enter the cloud.</a>
+<a name="ln1457"> * @return                  Whether the monster is NOT ok to enter the cloud.</a>
+<a name="ln1458"> */</a>
+<a name="ln1459">static bool _mons_avoids_cloud(const monster* mons, const cloud_struct&amp; cloud,</a>
+<a name="ln1460">                               bool extra_careful)</a>
+<a name="ln1461">{</a>
+<a name="ln1462">    // Friendlies avoid snuffing the player's conjured flames</a>
+<a name="ln1463">    if (mons-&gt;attitude == ATT_FRIENDLY &amp;&amp; cloud.type == CLOUD_EMBERS)</a>
+<a name="ln1464">        return true;</a>
+<a name="ln1465"> </a>
+<a name="ln1466">    // clouds you're immune to are inherently safe.</a>
+<a name="ln1467">    if (actor_cloud_immune(*mons, cloud))</a>
+<a name="ln1468">        return false;</a>
+<a name="ln1469"> </a>
+<a name="ln1470">    // harmless clouds, likewise.</a>
+<a name="ln1471">    if (is_harmless_cloud(cloud.type))</a>
+<a name="ln1472">        return false;</a>
+<a name="ln1473"> </a>
+<a name="ln1474">    // Berserk monsters are less careful and will blindly plow through any</a>
+<a name="ln1475">    // dangerous cloud, just to kill you. {due}</a>
+<a name="ln1476">    if (!extra_careful &amp;&amp; mons-&gt;berserk_or_insane())</a>
+<a name="ln1477">        return false;</a>
+<a name="ln1478"> </a>
+<a name="ln1479">    switch (cloud.type)</a>
+<a name="ln1480">    {</a>
+<a name="ln1481">    case CLOUD_MIASMA:</a>
+<a name="ln1482">        // Even the dumbest monsters will avoid miasma if they can.</a>
+<a name="ln1483">        return true;</a>
+<a name="ln1484"> </a>
+<a name="ln1485">    case CLOUD_RAIN:</a>
+<a name="ln1486">        // Fiery monsters dislike the rain.</a>
+<a name="ln1487">        if (mons-&gt;is_fiery() &amp;&amp; extra_careful)</a>
+<a name="ln1488">            return true;</a>
+<a name="ln1489"> </a>
+<a name="ln1490">        // We don't care about what's underneath the rain cloud if we can fly.</a>
+<a name="ln1491">        if (mons-&gt;airborne())</a>
+<a name="ln1492">            return false;</a>
+<a name="ln1493"> </a>
+<a name="ln1494">        // These don't care about deep water.</a>
+<a name="ln1495">        if (monster_habitable_grid(mons, DNGN_DEEP_WATER))</a>
+<a name="ln1496">            return false;</a>
+<a name="ln1497"> </a>
+<a name="ln1498">        // This position could become deep water, and they might drown.</a>
+<a name="ln1499">        if (grd(cloud.pos) == DNGN_SHALLOW_WATER</a>
+<a name="ln1500">            &amp;&amp; mons_intel(*mons) &gt; I_BRAINLESS)</a>
+<a name="ln1501">        {</a>
+<a name="ln1502">            return true;</a>
+<a name="ln1503">        }</a>
+<a name="ln1504">        break;</a>
+<a name="ln1505"> </a>
+<a name="ln1506">    default:</a>
+<a name="ln1507">    {</a>
+<a name="ln1508">        if (extra_careful)</a>
+<a name="ln1509">            return true;</a>
+<a name="ln1510"> </a>
+<a name="ln1511">        // calc damage here instead of using _cloud_base_damage() so we can</a>
+<a name="ln1512">        // set our own # of trials, to try to make the AI more consistent</a>
+<a name="ln1513">        // XXX: add a param instead?</a>
+<a name="ln1514">        const cloud_damage &amp;dam_info = clouds[cloud.type].damage;</a>
+<a name="ln1515">        const int base_damage = _cloud_damage_calc(dam_info.random,</a>
+<a name="ln1516">                                                   max(1, dam_info.random / 9),</a>
+<a name="ln1517">                                                   dam_info.base, false);</a>
+<a name="ln1518">        const int damage = resist_adjust_damage(mons,</a>
+<a name="ln1519">                                                clouds[cloud.type].beam_effect,</a>
+<a name="ln1520">                                                base_damage);</a>
+<a name="ln1521">        const int hp_threshold = damage * 3;</a>
+<a name="ln1522"> </a>
+<a name="ln1523">        // intelligent monsters want a larger margin of safety</a>
+<a name="ln1524">        const int safety_mult = (mons_intel(*mons) &gt; I_ANIMAL) ? 2 : 1;</a>
+<a name="ln1525">        // dare we risk the damage?</a>
+<a name="ln1526">        const bool hp_ok = mons-&gt;hit_points &gt; safety_mult * hp_threshold;</a>
+<a name="ln1527">        // dare we risk the status effects?</a>
+<a name="ln1528">        const bool sfx_ok = cloud.type != CLOUD_MEPHITIC</a>
+<a name="ln1529">                            || x_chance_in_y(mons-&gt;get_hit_dice() - 1, 5);</a>
+<a name="ln1530">        if (hp_ok &amp;&amp; sfx_ok)</a>
+<a name="ln1531">            return false;</a>
+<a name="ln1532">        break;</a>
+<a name="ln1533">    }</a>
+<a name="ln1534">    }</a>
+<a name="ln1535"> </a>
+<a name="ln1536">    // Exceedingly dumb creatures will wander into harmful clouds.</a>
+<a name="ln1537">    if (mons_intel(*mons) == I_BRAINLESS &amp;&amp; !extra_careful)</a>
+<a name="ln1538">        return false;</a>
+<a name="ln1539"> </a>
+<a name="ln1540">    // If we get here, the cloud is potentially harmful.</a>
+<a name="ln1541">    return true;</a>
+<a name="ln1542">}</a>
+<a name="ln1543"> </a>
+<a name="ln1544">// Like the above, but allow a monster to move from one damaging cloud</a>
+<a name="ln1545">// to another, even if they're of different types.</a>
+<a name="ln1546">bool mons_avoids_cloud(const monster* mons, coord_def pos, bool placement)</a>
+<a name="ln1547">{</a>
+<a name="ln1548">    if (!cloud_at(pos))</a>
+<a name="ln1549">        return false;</a>
+<a name="ln1550"> </a>
+<a name="ln1551">    // Is the target cloud okay?</a>
+<a name="ln1552">    if (!_mons_avoids_cloud(mons, *cloud_at(pos), placement))</a>
+<a name="ln1553">        return false;</a>
+<a name="ln1554"> </a>
+<a name="ln1555">    // If we're already in a cloud that we'd want to avoid then moving</a>
+<a name="ln1556">    // from one to the other is okay.</a>
+<a name="ln1557">    if (!in_bounds(mons-&gt;pos()) || mons-&gt;pos() == pos)</a>
+<a name="ln1558">        return true;</a>
+<a name="ln1559"> </a>
+<a name="ln1560">    if (!cloud_at(mons-&gt;pos()))</a>
+<a name="ln1561">        return true;</a>
+<a name="ln1562"> </a>
+<a name="ln1563">    return !_mons_avoids_cloud(mons, *cloud_at(mons-&gt;pos()), true);</a>
+<a name="ln1564">}</a>
+<a name="ln1565"> </a>
+<a name="ln1566">bool is_harmless_cloud(cloud_type type)</a>
+<a name="ln1567">{</a>
+<a name="ln1568">    return clouds[type].beam_effect == BEAM_NONE</a>
+<a name="ln1569">           &amp;&amp; clouds[type].damage.base == 0</a>
+<a name="ln1570">           &amp;&amp; clouds[type].damage.random == 0</a>
+<a name="ln1571">           &amp;&amp; !_cloud_has_negative_side_effects(type)</a>
+<a name="ln1572">           &amp;&amp; type != CLOUD_TORNADO;</a>
+<a name="ln1573">}</a>
+<a name="ln1574"> </a>
+<a name="ln1575">string cloud_type_name(cloud_type type, bool terse)</a>
+<a name="ln1576">{</a>
+<a name="ln1577">    if (type &lt;= CLOUD_NONE || type &gt;= NUM_CLOUD_TYPES)</a>
+<a name="ln1578">        return &quot;buggy goodness&quot;;</a>
+<a name="ln1579"> </a>
+<a name="ln1580">    ASSERT(clouds[type].terse_name);</a>
+<a name="ln1581">    if (terse || clouds[type].verbose_name == nullptr)</a>
+<a name="ln1582">        return clouds[type].terse_name;</a>
+<a name="ln1583">    return clouds[type].verbose_name;</a>
+<a name="ln1584">}</a>
+<a name="ln1585"> </a>
+<a name="ln1586">cloud_type cloud_name_to_type(const string &amp;name)</a>
+<a name="ln1587">{</a>
+<a name="ln1588">    const string lower_name = lowercase_string(name);</a>
+<a name="ln1589"> </a>
+<a name="ln1590">    if (lower_name == &quot;random&quot;)</a>
+<a name="ln1591">        return CLOUD_RANDOM;</a>
+<a name="ln1592">    else if (lower_name == &quot;debugging&quot;)</a>
+<a name="ln1593">        return CLOUD_DEBUGGING;</a>
+<a name="ln1594"> </a>
+<a name="ln1595">    for (int i = CLOUD_NONE; i &lt; CLOUD_RANDOM; i++)</a>
+<a name="ln1596">        if (cloud_type_name(static_cast&lt;cloud_type&gt;(i)) == lower_name)</a>
+<a name="ln1597">            return static_cast&lt;cloud_type&gt;(i);</a>
+<a name="ln1598"> </a>
+<a name="ln1599">    return CLOUD_NONE;</a>
+<a name="ln1600">}</a>
+<a name="ln1601"> </a>
+<a name="ln1602">coord_def random_walk(coord_def start, int dist)</a>
+<a name="ln1603">{</a>
+<a name="ln1604">    ASSERT(in_bounds(start));</a>
+<a name="ln1605">    ASSERT(dist &gt;= 1);</a>
+<a name="ln1606"> </a>
+<a name="ln1607">    int moves_left = dist;</a>
+<a name="ln1608">    coord_def pos = start;</a>
+<a name="ln1609">    while (moves_left-- &gt; 0)</a>
+<a name="ln1610">    {</a>
+<a name="ln1611">        int okay_dirs = 0;</a>
+<a name="ln1612">        int dir       = -1;</a>
+<a name="ln1613">        for (int j = 0; j &lt; 8; j++)</a>
+<a name="ln1614">        {</a>
+<a name="ln1615">            const coord_def new_pos   = pos + Compass[j];</a>
+<a name="ln1616"> </a>
+<a name="ln1617">            if (in_bounds(new_pos) &amp;&amp; !feat_is_solid(grd(new_pos))</a>
+<a name="ln1618">                &amp;&amp; one_chance_in(++okay_dirs))</a>
+<a name="ln1619">            {</a>
+<a name="ln1620">                dir = j;</a>
+<a name="ln1621">            }</a>
+<a name="ln1622">        }</a>
+<a name="ln1623"> </a>
+<a name="ln1624">        if (okay_dirs == 0)</a>
+<a name="ln1625">            break;</a>
+<a name="ln1626"> </a>
+<a name="ln1627">        if (one_chance_in(++okay_dirs))</a>
+<a name="ln1628">            continue;</a>
+<a name="ln1629"> </a>
+<a name="ln1630">        pos       += Compass[dir];</a>
+<a name="ln1631">    }</a>
+<a name="ln1632"> </a>
+<a name="ln1633">    return pos;</a>
+<a name="ln1634">}</a>
+<a name="ln1635"> </a>
+<a name="ln1636">////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1637">// cloud_struct</a>
+<a name="ln1638"> </a>
+<a name="ln1639">kill_category cloud_struct::killer_to_whose(killer_type _killer)</a>
+<a name="ln1640">{</a>
+<a name="ln1641">    switch (_killer)</a>
+<a name="ln1642">    {</a>
+<a name="ln1643">        case KILL_YOU:</a>
+<a name="ln1644">        case KILL_YOU_MISSILE:</a>
+<a name="ln1645">        case KILL_YOU_CONF:</a>
+<a name="ln1646">            return KC_YOU;</a>
+<a name="ln1647"> </a>
+<a name="ln1648">        case KILL_MON:</a>
+<a name="ln1649">        case KILL_MON_MISSILE:</a>
+<a name="ln1650">        case KILL_MISC:</a>
+<a name="ln1651">            return KC_OTHER;</a>
+<a name="ln1652"> </a>
+<a name="ln1653">        default:</a>
+<a name="ln1654">            die(&quot;invalid killer type&quot;);</a>
+<a name="ln1655">    }</a>
+<a name="ln1656">    return KC_OTHER;</a>
+<a name="ln1657">}</a>
+<a name="ln1658"> </a>
+<a name="ln1659">killer_type cloud_struct::whose_to_killer(kill_category _whose)</a>
+<a name="ln1660">{</a>
+<a name="ln1661">    switch (_whose)</a>
+<a name="ln1662">    {</a>
+<a name="ln1663">        case KC_YOU:         return KILL_YOU_MISSILE;</a>
+<a name="ln1664">        case KC_FRIENDLY:    return KILL_MON_MISSILE;</a>
+<a name="ln1665">        case KC_OTHER:       return KILL_MISC;</a>
+<a name="ln1666">        case KC_NCATEGORIES: die(&quot;invalid kill category&quot;);</a>
+<a name="ln1667">    }</a>
+<a name="ln1668">    return KILL_NONE;</a>
+<a name="ln1669">}</a>
+<a name="ln1670"> </a>
+<a name="ln1671">void cloud_struct::set_whose(kill_category _whose)</a>
+<a name="ln1672">{</a>
+<a name="ln1673">    whose  = _whose;</a>
+<a name="ln1674">    killer = whose_to_killer(whose);</a>
+<a name="ln1675">}</a>
+<a name="ln1676"> </a>
+<a name="ln1677">void cloud_struct::set_killer(killer_type _killer)</a>
+<a name="ln1678">{</a>
+<a name="ln1679">    killer = _killer;</a>
+<a name="ln1680">    whose  = killer_to_whose(killer);</a>
+<a name="ln1681"> </a>
+<a name="ln1682">    switch (killer)</a>
+<a name="ln1683">    {</a>
+<a name="ln1684">    case KILL_YOU:</a>
+<a name="ln1685">        killer = KILL_YOU_MISSILE;</a>
+<a name="ln1686">        break;</a>
+<a name="ln1687"> </a>
+<a name="ln1688">    case KILL_MON:</a>
+<a name="ln1689">        killer = KILL_MON_MISSILE;</a>
+<a name="ln1690">        break;</a>
+<a name="ln1691"> </a>
+<a name="ln1692">    default:</a>
+<a name="ln1693">        break;</a>
+<a name="ln1694">    }</a>
+<a name="ln1695">}</a>
+<a name="ln1696"> </a>
+<a name="ln1697">actor *cloud_struct::agent() const</a>
+<a name="ln1698">{</a>
+<a name="ln1699">    return find_agent(source, whose);</a>
+<a name="ln1700">}</a>
+<a name="ln1701"> </a>
+<a name="ln1702">string cloud_struct::cloud_name(bool terse) const</a>
+<a name="ln1703">{</a>
+<a name="ln1704">    return cloud_type_name(type, terse);</a>
+<a name="ln1705">}</a>
+<a name="ln1706"> </a>
+<a name="ln1707">void cloud_struct::announce_actor_engulfed(const actor *act,</a>
+<a name="ln1708">                                           bool beneficial) const</a>
+<a name="ln1709">{</a>
+<a name="ln1710">    ASSERT(act); // XXX: change to const actor &amp;act</a>
+<a name="ln1711">    if (!you.can_see(*act))</a>
+<a name="ln1712">        return;</a>
+<a name="ln1713"> </a>
+<a name="ln1714">    // Normal clouds. (Unmodified rain clouds have a different message.)</a>
+<a name="ln1715">    if (type != CLOUD_RAIN &amp;&amp; type != CLOUD_STORM)</a>
+<a name="ln1716">    {</a>
+<a name="ln1717">        mprf(&quot;%s %s in %s.&quot;,</a>
+<a name="ln1718">             act-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1719">             beneficial ? act-&gt;conj_verb(&quot;bask&quot;).c_str()</a>
+<a name="ln1720">                        : (act-&gt;conj_verb(&quot;are&quot;) + &quot; engulfed&quot;).c_str(),</a>
+<a name="ln1721">             cloud_name().c_str());</a>
+<a name="ln1722">        return;</a>
+<a name="ln1723">    }</a>
+<a name="ln1724"> </a>
+<a name="ln1725">    // Don't produce monster-in-rain messages in the interests</a>
+<a name="ln1726">    // of spam reduction.</a>
+<a name="ln1727">    if (act-&gt;is_player())</a>
+<a name="ln1728">    {</a>
+<a name="ln1729">        mprf(&quot;%s %s standing in %s.&quot;,</a>
+<a name="ln1730">             act-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1731">             act-&gt;conj_verb(&quot;are&quot;).c_str(),</a>
+<a name="ln1732">             type == CLOUD_STORM ? &quot;a thunderstorm&quot; : &quot;the rain&quot;);</a>
+<a name="ln1733">    }</a>
+<a name="ln1734">}</a>
+<a name="ln1735"> </a>
+<a name="ln1736">/**</a>
+<a name="ln1737"> * What colour is the given cloud?</a>
+<a name="ln1738"> *</a>
+<a name="ln1739"> * @param cloudno       The cloud in question.</a>
+<a name="ln1740"> * @return              An appropriate colour for the cloud.</a>
+<a name="ln1741"> *                      May vary from call to call (randomized for some cloud</a>
+<a name="ln1742"> *                      types).</a>
+<a name="ln1743"> */</a>
+<a name="ln1744">colour_t get_cloud_colour(const cloud_struct &amp;cloud)</a>
+<a name="ln1745">{</a>
+<a name="ln1746">    // if we have the colour in data, use that.</a>
+<a name="ln1747">    if (clouds[cloud.type].colour)</a>
+<a name="ln1748">        return clouds[cloud.type].colour;</a>
+<a name="ln1749"> </a>
+<a name="ln1750">    // weird clouds</a>
+<a name="ln1751">    switch (cloud.type)</a>
+<a name="ln1752">    {</a>
+<a name="ln1753">    case CLOUD_FIRE:</a>
+<a name="ln1754">    case CLOUD_FOREST_FIRE:</a>
+<a name="ln1755">        if (cloud.decay &lt;= 20)</a>
+<a name="ln1756">            return RED;</a>
+<a name="ln1757">        if (cloud.decay &lt;= 40)</a>
+<a name="ln1758">            return LIGHTRED;</a>
+<a name="ln1759"> </a>
+<a name="ln1760">        // total weight 16</a>
+<a name="ln1761">        return random_choose_weighted(9, YELLOW,</a>
+<a name="ln1762">                                      4, RED,</a>
+<a name="ln1763">                                      3, LIGHTRED);</a>
+<a name="ln1764"> </a>
+<a name="ln1765">    case CLOUD_COLD:</a>
+<a name="ln1766">        if (cloud.decay &lt;= 20)</a>
+<a name="ln1767">            return BLUE;</a>
+<a name="ln1768">        if (cloud.decay &lt;= 40)</a>
+<a name="ln1769">            return LIGHTBLUE;</a>
+<a name="ln1770"> </a>
+<a name="ln1771">        // total weight 16</a>
+<a name="ln1772">        return random_choose_weighted(9, WHITE,</a>
+<a name="ln1773">                                      4, BLUE,</a>
+<a name="ln1774">                                      3, LIGHTBLUE);</a>
+<a name="ln1775">        break;</a>
+<a name="ln1776"> </a>
+<a name="ln1777">    default:</a>
+<a name="ln1778">        return LIGHTGREY;</a>
+<a name="ln1779">    }</a>
+<a name="ln1780">}</a>
+<a name="ln1781"> </a>
+<a name="ln1782">coord_def get_cloud_originator(const coord_def&amp; pos)</a>
+<a name="ln1783">{</a>
+<a name="ln1784">    const cloud_struct* cloud = cloud_at(pos);</a>
+<a name="ln1785">    if (!cloud)</a>
+<a name="ln1786">        return coord_def();</a>
+<a name="ln1787">    const actor *agent = actor_by_mid(cloud-&gt;source);</a>
+<a name="ln1788">    if (!agent)</a>
+<a name="ln1789">        return coord_def();</a>
+<a name="ln1790">    return agent-&gt;pos();</a>
+<a name="ln1791">}</a>
+<a name="ln1792"> </a>
+<a name="ln1793">void remove_tornado_clouds(mid_t whose)</a>
+<a name="ln1794">{</a>
+<a name="ln1795">    // Needed to clean up after the end of tornado cooldown, so we can again</a>
+<a name="ln1796">    // assume all &quot;raging winds&quot; clouds are harmful. This is needed only</a>
+<a name="ln1797">    // because map_knowledge doesn't preserve the knowledge about whom the</a>
+<a name="ln1798">    // cloud belongs to. If this changes, please remove this function. For</a>
+<a name="ln1799">    // example, this approach doesn't work if we ever make Tornado a monster</a>
+<a name="ln1800">    // spell (excluding immobile and mindless casters).</a>
+<a name="ln1801"> </a>
+<a name="ln1802">    // We can't iterate over env.cloud directly because delete_cloud</a>
+<a name="ln1803">    // will remove this cloud and invalidate our iterator.</a>
+<a name="ln1804">    vector&lt;coord_def&gt; tornados;</a>
+<a name="ln1805">    for (auto&amp; entry : env.cloud)</a>
+<a name="ln1806">        if (entry.second.type == CLOUD_TORNADO &amp;&amp; entry.second.source == whose)</a>
+<a name="ln1807">            tornados.push_back(entry.first);</a>
+<a name="ln1808"> </a>
+<a name="ln1809">    for (auto pos : tornados)</a>
+<a name="ln1810">        delete_cloud(pos);</a>
+<a name="ln1811">}</a>
+<a name="ln1812"> </a>
+<a name="ln1813">static void _spread_cloud(coord_def pos, cloud_type type, int radius, int pow,</a>
+<a name="ln1814">                          int &amp;remaining, int ratio = 10,</a>
+<a name="ln1815">                          mid_t agent_mid = 0, kill_category kcat = KC_OTHER)</a>
+<a name="ln1816">{</a>
+<a name="ln1817">    bolt beam;</a>
+<a name="ln1818">    beam.target = pos;</a>
+<a name="ln1819">    beam.use_target_as_pos = true;</a>
+<a name="ln1820">    explosion_map exp_map;</a>
+<a name="ln1821">    exp_map.init(INT_MAX);</a>
+<a name="ln1822">    beam.determine_affected_cells(exp_map, coord_def(), 0,</a>
+<a name="ln1823">                                  radius, true, true);</a>
+<a name="ln1824"> </a>
+<a name="ln1825">    coord_def centre(9,9);</a>
+<a name="ln1826">    for (distance_iterator di(pos, true, false); di; ++di)</a>
+<a name="ln1827">    {</a>
+<a name="ln1828">        if (di.radius() &gt; radius)</a>
+<a name="ln1829">            return;</a>
+<a name="ln1830"> </a>
+<a name="ln1831">        if ((exp_map(*di - pos + centre) &lt; INT_MAX) &amp;&amp; !cloud_at(*di)</a>
+<a name="ln1832">            &amp;&amp; (di.radius() &lt; radius || x_chance_in_y(ratio, 100)))</a>
+<a name="ln1833">        {</a>
+<a name="ln1834">            place_cloud(type, *di, pow + random2(pow), nullptr);</a>
+<a name="ln1835">            --remaining;</a>
+<a name="ln1836"> </a>
+<a name="ln1837">            // Setting this way since the agent of the cloud may be dead before</a>
+<a name="ln1838">            // cloud is placed, so no agent exists to pass to place_cloud (though</a>
+<a name="ln1839">            // proper blame should still be assigned)</a>
+<a name="ln1840">            if (cloud_struct* cloud = cloud_at(*di))</a>
+<a name="ln1841">            {</a>
+<a name="ln1842">                cloud-&gt;source = agent_mid;</a>
+<a name="ln1843">                cloud-&gt;whose = kcat;</a>
+<a name="ln1844">            }</a>
+<a name="ln1845">        }</a>
+<a name="ln1846"> </a>
+<a name="ln1847">        // Placed all clouds for this spreader</a>
+<a name="ln1848">        if (remaining == 0)</a>
+<a name="ln1849">            return;</a>
+<a name="ln1850">    }</a>
+<a name="ln1851">}</a>
+<a name="ln1852"> </a>
+<a name="ln1853">void run_cloud_spreaders(int dur)</a>
+<a name="ln1854">{</a>
+<a name="ln1855">    if (!dur)</a>
+<a name="ln1856">        return;</a>
+<a name="ln1857"> </a>
+<a name="ln1858">    for (map_marker *marker : env.markers.get_all(MAT_CLOUD_SPREADER))</a>
+<a name="ln1859">    {</a>
+<a name="ln1860">        map_cloud_spreader_marker * const mark</a>
+<a name="ln1861">            = dynamic_cast&lt;map_cloud_spreader_marker*&gt;(marker);</a>
+<a name="ln1862"> </a>
+<a name="ln1863">        mark-&gt;speed_increment += dur;</a>
+<a name="ln1864">        int rad = min(mark-&gt;speed_increment / mark-&gt;speed, mark-&gt;max_rad - 1) + 1;</a>
+<a name="ln1865">        int ratio = (mark-&gt;speed_increment - ((rad - 1) * mark-&gt;speed))</a>
+<a name="ln1866">                    * 100 / mark-&gt;speed;</a>
+<a name="ln1867"> </a>
+<a name="ln1868">        if (ratio == 0)</a>
+<a name="ln1869">        {</a>
+<a name="ln1870">            rad--;</a>
+<a name="ln1871">            ratio = 100;</a>
+<a name="ln1872">        }</a>
+<a name="ln1873"> </a>
+<a name="ln1874">        _spread_cloud(mark-&gt;pos, mark-&gt;ctype, rad, mark-&gt;duration,</a>
+<a name="ln1875">                        mark-&gt;remaining, ratio, mark-&gt;agent_mid, mark-&gt;kcat);</a>
+<a name="ln1876">        if ((rad &gt;= mark-&gt;max_rad &amp;&amp; ratio &gt;= 100) || mark-&gt;remaining == 0)</a>
+<a name="ln1877">        {</a>
+<a name="ln1878">            env.markers.remove(mark);</a>
+<a name="ln1879">            break;</a>
+<a name="ln1880">        }</a>
+<a name="ln1881">    }</a>
+<a name="ln1882">}</a>
+<a name="ln1883"> </a>
+<a name="ln1884">const cloud_tile_info&amp; cloud_type_tile_info(cloud_type type)</a>
+<a name="ln1885">{</a>
+<a name="ln1886">    return clouds[type].tile_info;</a>
+<a name="ln1887">}</a>
+<a name="ln1888"> </a>
+<a name="ln1889">/// Knock out clouds &amp; set the still winds level flag; also message.</a>
+<a name="ln1890">void start_still_winds()</a>
+<a name="ln1891">{</a>
+<a name="ln1892">    delete_all_clouds();</a>
+<a name="ln1893">    env.level_state |= LSTATE_STILL_WINDS;</a>
+<a name="ln1894">    mprf(MSGCH_WARN, &quot;%s&quot;, &quot;The air becomes perfectly still.&quot;);</a>
+<a name="ln1895">}</a>
+<a name="ln1896"> </a>
+<a name="ln1897">void end_still_winds()</a>
+<a name="ln1898">{</a>
+<a name="ln1899">    env.level_state &amp;= ~LSTATE_STILL_WINDS;</a>
+<a name="ln1900">    mpr(&quot;The air resumes its normal movements.&quot;);</a>
+<a name="ln1901">}</a>
+
+</code></pre>
+<div class="balloon" rel="403"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="805"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'mons' pointer was utilized before it was verified against nullptr. Check lines: 805, 819.</p></div>
+<div class="balloon" rel="856"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1016/" target="_blank">V1016</a> Expression 'ctype >= CLOUD_NONE' is always true.</p></div>
+<div class="balloon" rel="1281"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'rain_damage' should be checked here.</p></div>
+<div class="balloon" rel="1863"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'mark'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

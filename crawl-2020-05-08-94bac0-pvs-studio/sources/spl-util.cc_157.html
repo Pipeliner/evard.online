@@ -1,0 +1,1658 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>spl-util.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief data handlers for player-available spell list</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;spl-util.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cctype&gt;</a>
+<a name="ln12">#include &lt;climits&gt;</a>
+<a name="ln13">#include &lt;cstdio&gt;</a>
+<a name="ln14">#include &lt;cstdlib&gt;</a>
+<a name="ln15">#include &lt;cstring&gt;</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &quot;areas.h&quot;</a>
+<a name="ln18">#include &quot;coordit.h&quot;</a>
+<a name="ln19">#include &quot;directn.h&quot;</a>
+<a name="ln20">#include &quot;env.h&quot;</a>
+<a name="ln21">#include &quot;god-passive.h&quot;</a>
+<a name="ln22">#include &quot;god-abil.h&quot;</a>
+<a name="ln23">#include &quot;item-prop.h&quot;</a>
+<a name="ln24">#include &quot;level-state-type.h&quot;</a>
+<a name="ln25">#include &quot;libutil.h&quot;</a>
+<a name="ln26">#include &quot;message.h&quot;</a>
+<a name="ln27">#include &quot;notes.h&quot;</a>
+<a name="ln28">#include &quot;options.h&quot;</a>
+<a name="ln29">#include &quot;orb.h&quot;</a>
+<a name="ln30">#include &quot;output.h&quot;</a>
+<a name="ln31">#include &quot;prompt.h&quot;</a>
+<a name="ln32">#include &quot;religion.h&quot;</a>
+<a name="ln33">#include &quot;spl-book.h&quot;</a>
+<a name="ln34">#include &quot;spl-damage.h&quot;</a>
+<a name="ln35">#include &quot;spl-summoning.h&quot;</a>
+<a name="ln36">#include &quot;spl-zap.h&quot;</a>
+<a name="ln37">#include &quot;stringutil.h&quot;</a>
+<a name="ln38">#include &quot;target.h&quot;</a>
+<a name="ln39">#include &quot;terrain.h&quot;</a>
+<a name="ln40">#include &quot;rltiles/tiledef-gui.h&quot;    // spell tiles</a>
+<a name="ln41">#include &quot;tiles-build-specific.h&quot;</a>
+<a name="ln42">#include &quot;transform.h&quot;</a>
+<a name="ln43"> </a>
+<a name="ln44">struct spell_desc</a>
+<a name="ln45">{</a>
+<a name="ln46">    spell_type id;</a>
+<a name="ln47">    const char  *title;</a>
+<a name="ln48">    spschools_type disciplines;</a>
+<a name="ln49">    spell_flags flags;       // bitfield</a>
+<a name="ln50">    unsigned int level;</a>
+<a name="ln51"> </a>
+<a name="ln52">    // Usually in the range 0..200 (0 means uncapped).</a>
+<a name="ln53">    // Note that some spells are also capped through zap_type.</a>
+<a name="ln54">    // See spell_power_cap below.</a>
+<a name="ln55">    int power_cap;</a>
+<a name="ln56"> </a>
+<a name="ln57">    // At power 0, you get min_range. At power power_cap, you get max_range.</a>
+<a name="ln58">    int min_range;</a>
+<a name="ln59">    int max_range;</a>
+<a name="ln60"> </a>
+<a name="ln61">    // Noise made directly by casting this spell.</a>
+<a name="ln62">    // Noise used to be based directly on spell level:</a>
+<a name="ln63">    //  * for conjurations: spell level</a>
+<a name="ln64">    //  * for non-conj pois/air: spell level / 2 (rounded up)</a>
+<a name="ln65">    //  * for others: spell level * 3/4 (rounded up)</a>
+<a name="ln66">    // These are probably good guidelines for new spells.</a>
+<a name="ln67">    int noise;</a>
+<a name="ln68"> </a>
+<a name="ln69">    // Some spells have a noise at their place of effect, in addition</a>
+<a name="ln70">    // to at the place of casting. effect_noise handles that, and is also</a>
+<a name="ln71">    // used even if the spell is not casted directly (by Xom, for instance).</a>
+<a name="ln72">    int effect_noise;</a>
+<a name="ln73"> </a>
+<a name="ln74">    /// Icon for the spell in e.g. spellbooks, casting menus, etc.</a>
+<a name="ln75">    tileidx_t tile;</a>
+<a name="ln76">};</a>
+<a name="ln77"> </a>
+<a name="ln78">#include &quot;spl-data.h&quot;</a>
+<a name="ln79"> </a>
+<a name="ln80">static int spell_list[NUM_SPELLS];</a>
+<a name="ln81"> </a>
+<a name="ln82">#define SPELLDATASIZE ARRAYSZ(spelldata)</a>
+<a name="ln83"> </a>
+<a name="ln84">static const struct spell_desc *_seekspell(spell_type spellid);</a>
+<a name="ln85"> </a>
+<a name="ln86">//</a>
+<a name="ln87">//             BEGIN PUBLIC FUNCTIONS</a>
+<a name="ln88">//</a>
+<a name="ln89"> </a>
+<a name="ln90">// All this does is merely refresh the internal spell list {dlb}:</a>
+<a name="ln91">void init_spell_descs()</a>
+<a name="ln92">{</a>
+<a name="ln93">    for (int i = 0; i &lt; NUM_SPELLS; i++)</a>
+<a name="ln94">        spell_list[i] = -1;</a>
+<a name="ln95"> </a>
+<a name="ln96">    for (unsigned int i = 0; i &lt; SPELLDATASIZE; i++)</a>
+<a name="ln97">    {</a>
+<a name="ln98">        const spell_desc &amp;data = spelldata[i];</a>
+<a name="ln99"> </a>
+<a name="ln100">        ASSERTM(data.id &gt;= SPELL_NO_SPELL &amp;&amp; data.id &lt; NUM_SPELLS,</a>
+<a name="ln101">                &quot;spell #%d has invalid id %d&quot;, i, data.id);</a>
+<a name="ln102"> </a>
+<a name="ln103">        ASSERTM(data.title != nullptr &amp;&amp; *data.title,</a>
+<a name="ln104">                &quot;spell #%d, id %d has no name&quot;, i, data.id);</a>
+<a name="ln105"> </a>
+<a name="ln106">        ASSERTM(data.level &gt;= 1 &amp;&amp; data.level &lt;= 9,</a>
+<a name="ln107">                &quot;spell '%s' has invalid level %d&quot;, data.title, data.level);</a>
+<a name="ln108"> </a>
+<a name="ln109">        ASSERTM(data.min_range &lt;= data.max_range,</a>
+<a name="ln110">                &quot;spell '%s' has min_range larger than max_range&quot;, data.title);</a>
+<a name="ln111"> </a>
+<a name="ln112">        ASSERTM(!(data.flags &amp; spflag::targeting_mask)</a>
+<a name="ln113">                || (data.min_range &gt;= 0 &amp;&amp; data.max_range &gt; 0),</a>
+<a name="ln114">                &quot;targeted/directed spell '%s' has invalid range&quot;, data.title);</a>
+<a name="ln115"> </a>
+<a name="ln116">        ASSERTM(!(data.flags &amp; spflag::monster &amp;&amp; is_player_spell(data.id)),</a>
+<a name="ln117">                &quot;spell '%s' is declared as a monster spell but is a player spell&quot;, data.title);</a>
+<a name="ln118"> </a>
+<a name="ln119">        spell_list[data.id] = i;</a>
+<a name="ln120">    }</a>
+<a name="ln121">}</a>
+<a name="ln122"> </a>
+<a name="ln123">typedef map&lt;string, spell_type&gt; spell_name_map;</a>
+<a name="ln124">static spell_name_map spell_name_cache;</a>
+<a name="ln125"> </a>
+<a name="ln126">void init_spell_name_cache()</a>
+<a name="ln127">{</a>
+<a name="ln128">    for (int i = 0; i &lt; NUM_SPELLS; i++)</a>
+<a name="ln129">    {</a>
+<a name="ln130">        spell_type type = static_cast&lt;spell_type&gt;(i);</a>
+<a name="ln131"> </a>
+<a name="ln132">        if (!is_valid_spell(type))</a>
+<a name="ln133">            continue;</a>
+<a name="ln134"> </a>
+<a name="ln135">        const char *sptitle = spell_title(type);</a>
+<a name="ln136">        ASSERT(sptitle);</a>
+<a name="ln137">        const string spell_name = lowercase_string(sptitle);</a>
+<a name="ln138">        spell_name_cache[spell_name] = type;</a>
+<a name="ln139">    }</a>
+<a name="ln140">}</a>
+<a name="ln141"> </a>
+<a name="ln142">spell_type spell_by_name(string name, bool partial_match)</a>
+<a name="ln143">{</a>
+<a name="ln144">    if (name.empty())</a>
+<a name="ln145">        return SPELL_NO_SPELL;</a>
+<a name="ln146"> </a>
+<a name="ln147">    lowercase(name);</a>
+<a name="ln148"> </a>
+<a name="ln149">    if (!partial_match)</a>
+<a name="ln150">        return lookup(spell_name_cache, name, SPELL_NO_SPELL);</a>
+<a name="ln151"> </a>
+<a name="ln152">    const spell_type sp = find_earliest_match(name, SPELL_NO_SPELL, NUM_SPELLS,</a>
+<a name="ln153">                                              is_valid_spell, spell_title);</a>
+<a name="ln154">    return sp == NUM_SPELLS ? SPELL_NO_SPELL : sp;</a>
+<a name="ln155">}</a>
+<a name="ln156"> </a>
+<a name="ln157">spschool school_by_name(string name)</a>
+<a name="ln158">{</a>
+<a name="ln159">    spschool short_match, long_match;</a>
+<a name="ln160">    int                short_matches, long_matches;</a>
+<a name="ln161"> </a>
+<a name="ln162">    short_match   = long_match   = spschool::none;</a>
+<a name="ln163">    short_matches = long_matches = 0;</a>
+<a name="ln164"> </a>
+<a name="ln165">    lowercase(name);</a>
+<a name="ln166"> </a>
+<a name="ln167">    for (int i = 0; i &lt;= (int)spschool::random; i++)</a>
+<a name="ln168">    {</a>
+<a name="ln169">        const auto type = spschools_type::exponent(i);</a>
+<a name="ln170"> </a>
+<a name="ln171">        string short_name = spelltype_short_name(type);</a>
+<a name="ln172">        string long_name  = spelltype_long_name(type);</a>
+<a name="ln173"> </a>
+<a name="ln174">        lowercase(short_name);</a>
+<a name="ln175">        lowercase(long_name);</a>
+<a name="ln176"> </a>
+<a name="ln177">        if (name == short_name)</a>
+<a name="ln178">            return type;</a>
+<a name="ln179">        if (name == long_name)</a>
+<a name="ln180">            return type;</a>
+<a name="ln181"> </a>
+<a name="ln182">        if (short_name.find(name) != string::npos)</a>
+<a name="ln183">        {</a>
+<a name="ln184">            short_match = type;</a>
+<a name="ln185">            short_matches++;</a>
+<a name="ln186">        }</a>
+<a name="ln187">        if (long_name.find(name) != string::npos)</a>
+<a name="ln188">        {</a>
+<a name="ln189">            long_match = type;</a>
+<a name="ln190">            long_matches++;</a>
+<a name="ln191">        }</a>
+<a name="ln192">    }</a>
+<a name="ln193"> </a>
+<a name="ln194">    if (short_matches != 1 &amp;&amp; long_matches != 1)</a>
+<a name="ln195">        return spschool::none;</a>
+<a name="ln196"> </a>
+<a name="ln197">    if (short_matches == 1 &amp;&amp; long_matches != 1)</a>
+<a name="ln198">        return short_match;</a>
+<a name="ln199">    if (short_matches != 1 &amp;&amp; long_matches == 1)</a>
+<a name="ln200">        return long_match;</a>
+<a name="ln201"> </a>
+<a name="ln202">    if (short_match == long_match)</a>
+<a name="ln203">        return short_match;</a>
+<a name="ln204"> </a>
+<a name="ln205">    return spschool::none;</a>
+<a name="ln206">}</a>
+<a name="ln207"> </a>
+<a name="ln208">int get_spell_slot_by_letter(char letter)</a>
+<a name="ln209">{</a>
+<a name="ln210">    ASSERT(isaalpha(letter));</a>
+<a name="ln211"> </a>
+<a name="ln212">    const int index = letter_to_index(letter);</a>
+<a name="ln213"> </a>
+<a name="ln214">    if (you.spell_letter_table[ index ] == -1)</a>
+<a name="ln215">        return -1;</a>
+<a name="ln216"> </a>
+<a name="ln217">    return you.spell_letter_table[index];</a>
+<a name="ln218">}</a>
+<a name="ln219"> </a>
+<a name="ln220">static int _get_spell_slot(spell_type spell)</a>
+<a name="ln221">{</a>
+<a name="ln222">    // you.spells is a FixedVector of spells in some arbitrary order. It</a>
+<a name="ln223">    // doesn't corespond to letters.</a>
+<a name="ln224">    auto i = find(begin(you.spells), end(you.spells), spell);</a>
+<a name="ln225">    return i == end(you.spells) ? -1 : i - begin(you.spells);</a>
+<a name="ln226">}</a>
+<a name="ln227"> </a>
+<a name="ln228">static int _get_spell_letter_from_slot(int slot)</a>
+<a name="ln229">{</a>
+<a name="ln230">    // you.spell_letter_table is a FixedVector that is basically a mapping</a>
+<a name="ln231">    // from alpha char indices to spell slots (e.g. indices in you.spells).</a>
+<a name="ln232">    auto letter = find(begin(you.spell_letter_table), end(you.spell_letter_table), slot);</a>
+<a name="ln233">    return letter == end(you.spell_letter_table) ? -1 : letter - begin(you.spell_letter_table);</a>
+<a name="ln234">}</a>
+<a name="ln235"> </a>
+<a name="ln236">int get_spell_letter(spell_type spell)</a>
+<a name="ln237">{</a>
+<a name="ln238">    int i = _get_spell_letter_from_slot(_get_spell_slot(spell));</a>
+<a name="ln239">    return (i == -1) ? -1 : index_to_letter(i);</a>
+<a name="ln240">}</a>
+<a name="ln241"> </a>
+<a name="ln242">spell_type get_spell_by_letter(char letter)</a>
+<a name="ln243">{</a>
+<a name="ln244">    ASSERT(isaalpha(letter));</a>
+<a name="ln245"> </a>
+<a name="ln246">    const int slot = get_spell_slot_by_letter(letter);</a>
+<a name="ln247"> </a>
+<a name="ln248">    return (slot == -1) ? SPELL_NO_SPELL : you.spells[slot];</a>
+<a name="ln249">}</a>
+<a name="ln250"> </a>
+<a name="ln251">bool add_spell_to_memory(spell_type spell)</a>
+<a name="ln252">{</a>
+<a name="ln253">    int slot_i;</a>
+<a name="ln254">    int letter_j = -1;</a>
+<a name="ln255">    string sname = spell_title(spell);</a>
+<a name="ln256">    lowercase(sname);</a>
+<a name="ln257">    // first we find a slot in our head:</a>
+<a name="ln258">    for (slot_i = 0; slot_i &lt; MAX_KNOWN_SPELLS; slot_i++)</a>
+<a name="ln259">    {</a>
+<a name="ln260">        if (you.spells[slot_i] == SPELL_NO_SPELL)</a>
+<a name="ln261">            break;</a>
+<a name="ln262">    }</a>
+<a name="ln263"> </a>
+<a name="ln264">    you.spells[slot_i] = spell;</a>
+<a name="ln265"> </a>
+<a name="ln266">    // now we find an available label:</a>
+<a name="ln267">    // first check to see whether we've chosen an automatic label:</a>
+<a name="ln268">    bool overwrite = false;</a>
+<a name="ln269">    for (const auto &amp;entry : Options.auto_spell_letters)</a>
+<a name="ln270">    {</a>
+<a name="ln271">        if (!entry.first.matches(sname))</a>
+<a name="ln272">            continue;</a>
+<a name="ln273">        for (char ch : entry.second)</a>
+<a name="ln274">        {</a>
+<a name="ln275">            if (ch == '+')</a>
+<a name="ln276">                overwrite = true;</a>
+<a name="ln277">            else if (ch == '-')</a>
+<a name="ln278">                overwrite = false;</a>
+<a name="ln279">            else if (isaalpha(ch))</a>
+<a name="ln280">            {</a>
+<a name="ln281">                const int new_letter = letter_to_index(ch);</a>
+<a name="ln282">                const int existing_slot = you.spell_letter_table[new_letter];</a>
+<a name="ln283">                if (existing_slot == -1)</a>
+<a name="ln284">                {</a>
+<a name="ln285">                    letter_j = new_letter;</a>
+<a name="ln286">                    break;</a>
+<a name="ln287">                }</a>
+<a name="ln288">                else if (overwrite)</a>
+<a name="ln289">                {</a>
+<a name="ln290">                    const string ename = lowercase_string(</a>
+<a name="ln291">                            spell_title(get_spell_by_letter(ch)));</a>
+<a name="ln292">                    // Don't overwrite a spell matched by the same rule.</a>
+<a name="ln293">                    if (!entry.first.matches(ename))</a>
+<a name="ln294">                    {</a>
+<a name="ln295">                        letter_j = new_letter;</a>
+<a name="ln296">                        break;</a>
+<a name="ln297">                    }</a>
+<a name="ln298">                }</a>
+<a name="ln299">                // Otherwise continue on to the next letter in this rule.</a>
+<a name="ln300">            }</a>
+<a name="ln301">        }</a>
+<a name="ln302">        if (letter_j != -1)</a>
+<a name="ln303">            break;</a>
+<a name="ln304">    }</a>
+<a name="ln305">    // If we didn't find a label above, choose the first available one.</a>
+<a name="ln306">    if (letter_j == -1)</a>
+<a name="ln307">        for (letter_j = 0; letter_j &lt; 52; letter_j++)</a>
+<a name="ln308">        {</a>
+<a name="ln309">            if (you.spell_letter_table[letter_j] == -1)</a>
+<a name="ln310">                break;</a>
+<a name="ln311">        }</a>
+<a name="ln312"> </a>
+<a name="ln313">    if (you.num_turns)</a>
+<a name="ln314">        mprf(&quot;Spell assigned to '%c'.&quot;, index_to_letter(letter_j));</a>
+<a name="ln315"> </a>
+<a name="ln316">    // Swapping with an existing spell.</a>
+<a name="ln317">    if (you.spell_letter_table[letter_j] != -1)</a>
+<a name="ln318">    {</a>
+<a name="ln319">        // Find a spot for the spell being moved. Assumes there will be one.</a>
+<a name="ln320">        for (int free_letter = 0; free_letter &lt; 52; free_letter++)</a>
+<a name="ln321">            if (you.spell_letter_table[free_letter] == -1)</a>
+<a name="ln322">            {</a>
+<a name="ln323">                you.spell_letter_table[free_letter] = you.spell_letter_table[letter_j];</a>
+<a name="ln324">                break;</a>
+<a name="ln325">            }</a>
+<a name="ln326">    }</a>
+<a name="ln327"> </a>
+<a name="ln328">    you.spell_letter_table[letter_j] = slot_i;</a>
+<a name="ln329"> </a>
+<a name="ln330">    you.spell_no++;</a>
+<a name="ln331"> </a>
+<a name="ln332">    take_note(Note(NOTE_LEARN_SPELL, spell));</a>
+<a name="ln333"> </a>
+<a name="ln334">    spell_skills(spell, you.start_train);</a>
+<a name="ln335"> </a>
+<a name="ln336">#ifdef USE_TILE_LOCAL</a>
+<a name="ln337">    tiles.layout_statcol();</a>
+<a name="ln338">    redraw_screen();</a>
+<a name="ln339">#endif</a>
+<a name="ln340"> </a>
+<a name="ln341">    return true;</a>
+<a name="ln342">}</a>
+<a name="ln343"> </a>
+<a name="ln344">bool del_spell_from_memory_by_slot(int slot)</a>
+<a name="ln345">{</a>
+<a name="ln346">    ASSERT_RANGE(slot, 0, MAX_KNOWN_SPELLS);</a>
+<a name="ln347"> </a>
+<a name="ln348">    if (you.last_cast_spell == you.spells[slot])</a>
+<a name="ln349">        you.last_cast_spell = SPELL_NO_SPELL;</a>
+<a name="ln350"> </a>
+<a name="ln351">    spell_skills(you.spells[slot], you.stop_train);</a>
+<a name="ln352"> </a>
+<a name="ln353">    mprf(&quot;Your memory of %s unravels.&quot;, spell_title(you.spells[slot]));</a>
+<a name="ln354"> </a>
+<a name="ln355">    you.spells[slot] = SPELL_NO_SPELL;</a>
+<a name="ln356"> </a>
+<a name="ln357">    for (int j = 0; j &lt; 52; j++)</a>
+<a name="ln358">        if (you.spell_letter_table[j] == slot)</a>
+<a name="ln359">            you.spell_letter_table[j] = -1;</a>
+<a name="ln360"> </a>
+<a name="ln361">    you.spell_no--;</a>
+<a name="ln362"> </a>
+<a name="ln363">#ifdef USE_TILE_LOCAL</a>
+<a name="ln364">    tiles.layout_statcol();</a>
+<a name="ln365">    redraw_screen();</a>
+<a name="ln366">#endif</a>
+<a name="ln367"> </a>
+<a name="ln368">    return true;</a>
+<a name="ln369">}</a>
+<a name="ln370"> </a>
+<a name="ln371">bool del_spell_from_memory(spell_type spell)</a>
+<a name="ln372">{</a>
+<a name="ln373">    int i = _get_spell_slot(spell);</a>
+<a name="ln374">    if (i == -1)</a>
+<a name="ln375">        return false;</a>
+<a name="ln376">    else</a>
+<a name="ln377">        return del_spell_from_memory_by_slot(i);</a>
+<a name="ln378">}</a>
+<a name="ln379"> </a>
+<a name="ln380">int spell_hunger(spell_type which_spell)</a>
+<a name="ln381">{</a>
+<a name="ln382">    if (hungerless_spells())</a>
+<a name="ln383">        return 0;</a>
+<a name="ln384"> </a>
+<a name="ln385">    const int level = spell_difficulty(which_spell);</a>
+<a name="ln386"> </a>
+<a name="ln387">    const int basehunger[] = { 50, 100, 150, 250, 400, 550, 700, 850, 1000 };</a>
+<a name="ln388"> </a>
+<a name="ln389">    int hunger;</a>
+<a name="ln390"> </a>
+<a name="ln391">    if (level &lt; 10 &amp;&amp; level &gt; 0)</a>
+<a name="ln392">        hunger = basehunger[level-1];</a>
+<a name="ln393">    else</a>
+<a name="ln394">        hunger = (basehunger[0] * level * level) / 4;</a>
+<a name="ln395"> </a>
+<a name="ln396">    hunger -= you.skill(SK_SPELLCASTING, you.intel());</a>
+<a name="ln397"> </a>
+<a name="ln398">    if (you.duration[DUR_BRILLIANCE] &gt; 0) {</a>
+<a name="ln399">        hunger /= 2;</a>
+<a name="ln400">    }</a>
+<a name="ln401"> </a>
+<a name="ln402">    if (hunger &lt; 0)</a>
+<a name="ln403">        hunger = 0;</a>
+<a name="ln404"> </a>
+<a name="ln405">    return hunger;</a>
+<a name="ln406">}</a>
+<a name="ln407"> </a>
+<a name="ln408">// Checks if the spell is an explosion that can be placed anywhere even without</a>
+<a name="ln409">// an unobstructed beam path, such as fire storm.</a>
+<a name="ln410">bool spell_is_direct_explosion(spell_type spell)</a>
+<a name="ln411">{</a>
+<a name="ln412">    return spell == SPELL_FIRE_STORM || spell == SPELL_CALL_DOWN_DAMNATION</a>
+<a name="ln413">           || spell == SPELL_GHOSTLY_SACRIFICE || spell == SPELL_UPHEAVAL;</a>
+<a name="ln414">}</a>
+<a name="ln415"> </a>
+<a name="ln416">bool spell_harms_target(spell_type spell)</a>
+<a name="ln417">{</a>
+<a name="ln418">    const spell_flags flags = _seekspell(spell)-&gt;flags;</a>
+<a name="ln419"> </a>
+<a name="ln420">    if (flags &amp; (spflag::helpful | spflag::neutral))</a>
+<a name="ln421">        return false;</a>
+<a name="ln422"> </a>
+<a name="ln423">    if (flags &amp; spflag::targeting_mask)</a>
+<a name="ln424">        return true;</a>
+<a name="ln425"> </a>
+<a name="ln426">    return false;</a>
+<a name="ln427">}</a>
+<a name="ln428"> </a>
+<a name="ln429">bool spell_harms_area(spell_type spell)</a>
+<a name="ln430">{</a>
+<a name="ln431">    const spell_flags flags = _seekspell(spell)-&gt;flags;</a>
+<a name="ln432"> </a>
+<a name="ln433">    if (flags &amp; (spflag::helpful | spflag::neutral))</a>
+<a name="ln434">        return false;</a>
+<a name="ln435"> </a>
+<a name="ln436">    if (flags &amp; spflag::area)</a>
+<a name="ln437">        return true;</a>
+<a name="ln438"> </a>
+<a name="ln439">    return false;</a>
+<a name="ln440">}</a>
+<a name="ln441"> </a>
+<a name="ln442">// applied to spell misfires (more power = worse) and triggers</a>
+<a name="ln443">// for Xom acting (more power = more likely to grab his attention) {dlb}</a>
+<a name="ln444">int spell_mana(spell_type which_spell)</a>
+<a name="ln445">{</a>
+<a name="ln446">    return _seekspell(which_spell)-&gt;level;</a>
+<a name="ln447">}</a>
+<a name="ln448"> </a>
+<a name="ln449">// applied in naughties (more difficult = higher level knowledge = worse)</a>
+<a name="ln450">// and triggers for Sif acting (same reasoning as above, just good) {dlb}</a>
+<a name="ln451">int spell_difficulty(spell_type which_spell)</a>
+<a name="ln452">{</a>
+<a name="ln453">    return _seekspell(which_spell)-&gt;level;</a>
+<a name="ln454">}</a>
+<a name="ln455"> </a>
+<a name="ln456">int spell_levels_required(spell_type which_spell)</a>
+<a name="ln457">{</a>
+<a name="ln458">    return spell_difficulty(which_spell);</a>
+<a name="ln459">}</a>
+<a name="ln460"> </a>
+<a name="ln461">spell_flags get_spell_flags(spell_type which_spell)</a>
+<a name="ln462">{</a>
+<a name="ln463">    return _seekspell(which_spell)-&gt;flags;</a>
+<a name="ln464">}</a>
+<a name="ln465"> </a>
+<a name="ln466">const char *get_spell_target_prompt(spell_type which_spell)</a>
+<a name="ln467">{</a>
+<a name="ln468">    switch (which_spell)</a>
+<a name="ln469">    {</a>
+<a name="ln470">    case SPELL_APPORTATION:</a>
+<a name="ln471">        return &quot;Apport&quot;;</a>
+<a name="ln472">    case SPELL_SMITING:</a>
+<a name="ln473">        return &quot;Smite&quot;;</a>
+<a name="ln474">    case SPELL_LRD:</a>
+<a name="ln475">        return &quot;Fragment what (e.g. wall or brittle monster)?&quot;;</a>
+<a name="ln476">    default:</a>
+<a name="ln477">        return nullptr;</a>
+<a name="ln478">    }</a>
+<a name="ln479">}</a>
+<a name="ln480"> </a>
+<a name="ln481">/// What's the icon for the given spell?</a>
+<a name="ln482">tileidx_t get_spell_tile(spell_type which_spell)</a>
+<a name="ln483">{</a>
+<a name="ln484">    return _seekspell(which_spell)-&gt;tile;</a>
+<a name="ln485">}</a>
+<a name="ln486"> </a>
+<a name="ln487">bool spell_typematch(spell_type which_spell, spschool which_disc)</a>
+<a name="ln488">{</a>
+<a name="ln489">    return bool(get_spell_disciplines(which_spell) &amp; which_disc);</a>
+<a name="ln490">}</a>
+<a name="ln491"> </a>
+<a name="ln492">//jmf: next two for simple bit handling</a>
+<a name="ln493">spschools_type get_spell_disciplines(spell_type spell)</a>
+<a name="ln494">{</a>
+<a name="ln495">    return _seekspell(spell)-&gt;disciplines;</a>
+<a name="ln496">}</a>
+<a name="ln497"> </a>
+<a name="ln498">int count_bits(uint64_t bits)</a>
+<a name="ln499">{</a>
+<a name="ln500">    uint64_t n;</a>
+<a name="ln501">    int c = 0;</a>
+<a name="ln502"> </a>
+<a name="ln503">    for (n = 1; n; n &lt;&lt;= 1)</a>
+<a name="ln504">        if (n &amp; bits)</a>
+<a name="ln505">            c++;</a>
+<a name="ln506"> </a>
+<a name="ln507">    return c;</a>
+<a name="ln508">}</a>
+<a name="ln509"> </a>
+<a name="ln510">const char *spell_title(spell_type spell)</a>
+<a name="ln511">{</a>
+<a name="ln512">    return _seekspell(spell)-&gt;title;</a>
+<a name="ln513">}</a>
+<a name="ln514"> </a>
+<a name="ln515">// FUNCTION APPLICATORS: Idea from Juho Snellman &lt;jsnell@lyseo.edu.ouka.fi&gt;</a>
+<a name="ln516">//                       on the Roguelike News pages, Development section.</a>
+<a name="ln517">//                       &lt;URL:http://www.skoardy.demon.co.uk/rlnews/&gt;</a>
+<a name="ln518">// Here are some function applicators: sort of like brain-dead,</a>
+<a name="ln519">// home-grown iterators for the container &quot;dungeon&quot;.</a>
+<a name="ln520"> </a>
+<a name="ln521">// Apply a function-pointer to all visible squares</a>
+<a name="ln522">// Returns summation of return values from passed in function.</a>
+<a name="ln523">int apply_area_visible(cell_func cf, const coord_def &amp;where)</a>
+<a name="ln524">{</a>
+<a name="ln525">    int rv = 0;</a>
+<a name="ln526"> </a>
+<a name="ln527">    for (radius_iterator ri(where, LOS_NO_TRANS); ri; ++ri)</a>
+<a name="ln528">        rv += cf(*ri);</a>
+<a name="ln529"> </a>
+<a name="ln530">    return rv;</a>
+<a name="ln531">}</a>
+<a name="ln532"> </a>
+<a name="ln533">// Applies the effect to all nine squares around/including the target.</a>
+<a name="ln534">// Returns summation of return values from passed in function.</a>
+<a name="ln535">static int _apply_area_square(cell_func cf, const coord_def&amp; where)</a>
+<a name="ln536">{</a>
+<a name="ln537">    int rv = 0;</a>
+<a name="ln538"> </a>
+<a name="ln539">    for (adjacent_iterator ai(where, false); ai; ++ai)</a>
+<a name="ln540">        rv += cf(*ai);</a>
+<a name="ln541"> </a>
+<a name="ln542">    return rv;</a>
+<a name="ln543">}</a>
+<a name="ln544"> </a>
+<a name="ln545">// Applies the effect to the eight squares beside the target.</a>
+<a name="ln546">// Returns summation of return values from passed in function.</a>
+<a name="ln547">static int _apply_area_around_square(cell_func cf, const coord_def&amp; where)</a>
+<a name="ln548">{</a>
+<a name="ln549">    int rv = 0;</a>
+<a name="ln550"> </a>
+<a name="ln551">    for (adjacent_iterator ai(where, true); ai; ++ai)</a>
+<a name="ln552">        rv += cf(*ai);</a>
+<a name="ln553"> </a>
+<a name="ln554">    return rv;</a>
+<a name="ln555">}</a>
+<a name="ln556"> </a>
+<a name="ln557">// Affect up to max_targs monsters around a point, chosen randomly.</a>
+<a name="ln558">// Return varies with the function called; return values will be added up.</a>
+<a name="ln559">int apply_random_around_square(cell_func cf, const coord_def&amp; where,</a>
+<a name="ln560">                               bool exclude_center, int max_targs)</a>
+<a name="ln561">{</a>
+<a name="ln562">    int rv = 0;</a>
+<a name="ln563"> </a>
+<a name="ln564">    if (max_targs &lt;= 0)</a>
+<a name="ln565">        return 0;</a>
+<a name="ln566"> </a>
+<a name="ln567">    if (max_targs &gt;= 9 &amp;&amp; !exclude_center)</a>
+<a name="ln568">        return _apply_area_square(cf, where);</a>
+<a name="ln569"> </a>
+<a name="ln570">    if (max_targs &gt;= 8 &amp;&amp; exclude_center)</a>
+<a name="ln571">        return _apply_area_around_square(cf, where);</a>
+<a name="ln572"> </a>
+<a name="ln573">    coord_def targs[8];</a>
+<a name="ln574"> </a>
+<a name="ln575">    int count = 0;</a>
+<a name="ln576"> </a>
+<a name="ln577">    for (adjacent_iterator ai(where, exclude_center); ai; ++ai)</a>
+<a name="ln578">    {</a>
+<a name="ln579">        if (monster_at(*ai) == nullptr &amp;&amp; *ai != you.pos())</a>
+<a name="ln580">            continue;</a>
+<a name="ln581"> </a>
+<a name="ln582">        // Found target</a>
+<a name="ln583">        count++;</a>
+<a name="ln584"> </a>
+<a name="ln585">        // Slight difference here over the basic algorithm...</a>
+<a name="ln586">        //</a>
+<a name="ln587">        // For cases where the number of choices &lt;= max_targs it's</a>
+<a name="ln588">        // obvious (all available choices will be selected).</a>
+<a name="ln589">        //</a>
+<a name="ln590">        // For choices &gt; max_targs, here's a brief proof:</a>
+<a name="ln591">        //</a>
+<a name="ln592">        // Let m = max_targs, k = choices - max_targs, k &gt; 0.</a>
+<a name="ln593">        //</a>
+<a name="ln594">        // Proof, by induction (over k):</a>
+<a name="ln595">        //</a>
+<a name="ln596">        // 1) Show n = m + 1 (k = 1) gives uniform distribution,</a>
+<a name="ln597">        //    P(new one not chosen) = 1 / (m + 1).</a>
+<a name="ln598">        //                                         m     1     1</a>
+<a name="ln599">        //    P(specific previous one replaced) = --- * --- = ---</a>
+<a name="ln600">        //                                        m+1    m    m+1</a>
+<a name="ln601">        //</a>
+<a name="ln602">        //    So the probablity is uniform (ie. any element has</a>
+<a name="ln603">        //    a 1/(m+1) chance of being in the unchosen slot).</a>
+<a name="ln604">        //</a>
+<a name="ln605">        // 2) Assume the distribution is uniform at n = m+k.</a>
+<a name="ln606">        //    (ie. the probablity that any of the found elements</a>
+<a name="ln607">        //     was chosen = m / (m+k) (the slots are symmetric,</a>
+<a name="ln608">        //     so it's the sum of the probabilities of being in</a>
+<a name="ln609">        //     any of them)).</a>
+<a name="ln610">        //</a>
+<a name="ln611">        // 3) Show n = m + k + 1 gives a uniform distribution.</a>
+<a name="ln612">        //    P(new one chosen) = m / (m + k + 1)</a>
+<a name="ln613">        //    P(any specific previous choice remaining chosen)</a>
+<a name="ln614">        //    = [1 - P(swapped into m+k+1 position)] * P(prev. chosen)</a>
+<a name="ln615">        //              m      1       m</a>
+<a name="ln616">        //    = [ 1 - ----- * --- ] * ---</a>
+<a name="ln617">        //            m+k+1    m      m+k</a>
+<a name="ln618">        //</a>
+<a name="ln619">        //       m+k     m       m</a>
+<a name="ln620">        //    = ----- * ---  = -----</a>
+<a name="ln621">        //      m+k+1   m+k    m+k+1</a>
+<a name="ln622">        //</a>
+<a name="ln623">        // Therefore, it's uniform for n = m + k + 1. QED</a>
+<a name="ln624">        //</a>
+<a name="ln625">        // The important thing to note in calculating the last</a>
+<a name="ln626">        // probability is that the chosen elements have already</a>
+<a name="ln627">        // passed tests which verify that they *don't* belong</a>
+<a name="ln628">        // in slots m+1...m+k, so the only positions an already</a>
+<a name="ln629">        // chosen element can end up in are its original</a>
+<a name="ln630">        // position (in one of the chosen slots), or in the</a>
+<a name="ln631">        // new slot.</a>
+<a name="ln632">        //</a>
+<a name="ln633">        // The new item can, of course, be placed in any slot,</a>
+<a name="ln634">        // swapping the value there into the new slot... we</a>
+<a name="ln635">        // just don't care about the non-chosen slots enough</a>
+<a name="ln636">        // to store them, so it might look like the item</a>
+<a name="ln637">        // automatically takes the new slot when not chosen</a>
+<a name="ln638">        // (although, by symmetry all the non-chosen slots are</a>
+<a name="ln639">        // the same... and similarly, by symmetry, all chosen</a>
+<a name="ln640">        // slots are the same).</a>
+<a name="ln641">        //</a>
+<a name="ln642">        // Yes, that's a long comment for a short piece of</a>
+<a name="ln643">        // code, but I want people to have an understanding</a>
+<a name="ln644">        // of why this works (or at least make them wary about</a>
+<a name="ln645">        // changing it without proof and breaking this code). -- bwr</a>
+<a name="ln646"> </a>
+<a name="ln647">        // Accept the first max_targs choices, then when</a>
+<a name="ln648">        // new choices come up, replace one of the choices</a>
+<a name="ln649">        // at random, max_targs/count of the time (the rest</a>
+<a name="ln650">        // of the time it replaces an element in an unchosen</a>
+<a name="ln651">        // slot -- but we don't care about them).</a>
+<a name="ln652">        if (count &lt;= max_targs)</a>
+<a name="ln653">            targs[count - 1] = *ai;</a>
+<a name="ln654">        else if (x_chance_in_y(max_targs, count))</a>
+<a name="ln655">        {</a>
+<a name="ln656">            const int pick = random2(max_targs);</a>
+<a name="ln657">            targs[ pick ] = *ai;</a>
+<a name="ln658">        }</a>
+<a name="ln659">    }</a>
+<a name="ln660"> </a>
+<a name="ln661">    const int targs_found = min(count, max_targs);</a>
+<a name="ln662"> </a>
+<a name="ln663">    if (targs_found)</a>
+<a name="ln664">    {</a>
+<a name="ln665">        // Used to divide the power up among the targets here, but</a>
+<a name="ln666">        // it's probably better to allow the full power through and</a>
+<a name="ln667">        // balance the called function. -- bwr</a>
+<a name="ln668">        for (int i = 0; i &lt; targs_found; i++)</a>
+<a name="ln669">        {</a>
+<a name="ln670">            ASSERT(!targs[i].origin());</a>
+<a name="ln671">            rv += cf(targs[i]);</a>
+<a name="ln672">        }</a>
+<a name="ln673">    }</a>
+<a name="ln674"> </a>
+<a name="ln675">    return rv;</a>
+<a name="ln676">}</a>
+<a name="ln677"> </a>
+<a name="ln678">/*</a>
+<a name="ln679"> * Place clouds over an area with a function.</a>
+<a name="ln680"> *</a>
+<a name="ln681"> * @param func        A function called to place each cloud.</a>
+<a name="ln682"> * @param where       The starting location of the cloud. A targeter_cloud</a>
+<a name="ln683"> *                    with aim set to this location is used to determine the</a>
+<a name="ln684"> *                    affected locations.</a>
+<a name="ln685"> * @param pow         The spellpower of the spell placing the clouds, which</a>
+<a name="ln686"> *                    determines how long the cloud will last.</a>
+<a name="ln687"> * @param number      How many clouds to place in total. Only this number will</a>
+<a name="ln688"> *                    be placed regardless</a>
+<a name="ln689"> * @param ctype       The type of cloud to place.</a>
+<a name="ln690"> * @param agent       Any agent that may have caused the cloud. If this is the</a>
+<a name="ln691"> *                    player, god conducts are applied.</a>
+<a name="ln692"> * @param spread_rate How quickly the cloud spreads.</a>
+<a name="ln693"> * @param excl_rad    How large of an exclusion radius to make around the</a>
+<a name="ln694"> *                    cloud.</a>
+<a name="ln695">*/</a>
+<a name="ln696">void apply_area_cloud(cloud_func func, const coord_def&amp; where,</a>
+<a name="ln697">                       int pow, int number, cloud_type ctype,</a>
+<a name="ln698">                       const actor *agent, int spread_rate, int excl_rad)</a>
+<a name="ln699">{</a>
+<a name="ln700">    if (number &lt;= 0)</a>
+<a name="ln701">        return;</a>
+<a name="ln702"> </a>
+<a name="ln703">    targeter_cloud place(agent, GDM, number, number);</a>
+<a name="ln704">    if (!place.set_aim(where))</a>
+<a name="ln705">        return;</a>
+<a name="ln706">    unsigned int dist = 0;</a>
+<a name="ln707">    while (number &gt; 0)</a>
+<a name="ln708">    {</a>
+<a name="ln709">        while (place.queue[dist].empty())</a>
+<a name="ln710">            if (++dist &gt;= place.queue.size())</a>
+<a name="ln711">                return;</a>
+<a name="ln712">        vector&lt;coord_def&gt; &amp;q = place.queue[dist];</a>
+<a name="ln713">        int el = random2(q.size());</a>
+<a name="ln714">        coord_def c = q[el];</a>
+<a name="ln715">        q[el] = q[q.size() - 1];</a>
+<a name="ln716">        q.pop_back();</a>
+<a name="ln717"> </a>
+<a name="ln718">        if (place.seen[c] &lt;= 0 || cell_is_solid(c))</a>
+<a name="ln719">            continue;</a>
+<a name="ln720">        func(c, pow, spread_rate, ctype, agent, excl_rad);</a>
+<a name="ln721">        number--;</a>
+<a name="ln722">    }</a>
+<a name="ln723">}</a>
+<a name="ln724"> </a>
+<a name="ln725">/**</a>
+<a name="ln726"> * Select a spell target and fill dist and pbolt appropriately.</a>
+<a name="ln727"> *</a>
+<a name="ln728"> * @param[out] spelld    the output of the direction() call.</a>
+<a name="ln729"> * @param[in, out] pbolt a beam; its range is used if none is set in args, and</a>
+<a name="ln730"> *                       its source and target are set if the direction() call</a>
+<a name="ln731"> *                       succeeds.</a>
+<a name="ln732"> * @param[in] args       The arguments for the direction() call. May be null,</a>
+<a name="ln733"> *                       which case a default is used.</a>
+<a name="ln734"> * @return false if the user cancelled, true otherwise.</a>
+<a name="ln735"> */</a>
+<a name="ln736">bool spell_direction(dist &amp;spelld, bolt &amp;pbolt, direction_chooser_args *args)</a>
+<a name="ln737">{</a>
+<a name="ln738">    direction_chooser_args newargs;</a>
+<a name="ln739">    // This should be before the overwrite, so callers can specify a different</a>
+<a name="ln740">    // mode if they want.</a>
+<a name="ln741">    newargs.mode = TARG_HOSTILE;</a>
+<a name="ln742">    if (args)</a>
+<a name="ln743">        newargs = *args;</a>
+<a name="ln744">    if (newargs.range &lt; 1)</a>
+<a name="ln745">        newargs.range = (pbolt.range &lt; 1) ? you.current_vision : pbolt.range;</a>
+<a name="ln746"> </a>
+<a name="ln747">    direction(spelld, newargs);</a>
+<a name="ln748"> </a>
+<a name="ln749">    if (!spelld.isValid)</a>
+<a name="ln750">    {</a>
+<a name="ln751">        // Check for user cancel.</a>
+<a name="ln752">        canned_msg(MSG_OK);</a>
+<a name="ln753">        return false;</a>
+<a name="ln754">    }</a>
+<a name="ln755"> </a>
+<a name="ln756">    pbolt.set_target(spelld);</a>
+<a name="ln757">    pbolt.source = you.pos();</a>
+<a name="ln758"> </a>
+<a name="ln759">    return true;</a>
+<a name="ln760">}</a>
+<a name="ln761"> </a>
+<a name="ln762">const char* spelltype_short_name(spschool which_spelltype)</a>
+<a name="ln763">{</a>
+<a name="ln764">    switch (which_spelltype)</a>
+<a name="ln765">    {</a>
+<a name="ln766">    case spschool::conjuration:</a>
+<a name="ln767">        return &quot;Conj&quot;;</a>
+<a name="ln768">    case spschool::hexes:</a>
+<a name="ln769">        return &quot;Hex&quot;;</a>
+<a name="ln770">    case spschool::charms:</a>
+<a name="ln771">        return &quot;Chrm&quot;;</a>
+<a name="ln772">    case spschool::fire:</a>
+<a name="ln773">        return &quot;Fire&quot;;</a>
+<a name="ln774">    case spschool::ice:</a>
+<a name="ln775">        return &quot;Ice&quot;;</a>
+<a name="ln776">    case spschool::transmutation:</a>
+<a name="ln777">        return &quot;Tmut&quot;;</a>
+<a name="ln778">    case spschool::necromancy:</a>
+<a name="ln779">        return &quot;Necr&quot;;</a>
+<a name="ln780">    case spschool::summoning:</a>
+<a name="ln781">        return &quot;Summ&quot;;</a>
+<a name="ln782">    case spschool::translocation:</a>
+<a name="ln783">        return &quot;Tloc&quot;;</a>
+<a name="ln784">    case spschool::poison:</a>
+<a name="ln785">        return &quot;Pois&quot;;</a>
+<a name="ln786">    case spschool::earth:</a>
+<a name="ln787">        return &quot;Erth&quot;;</a>
+<a name="ln788">    case spschool::air:</a>
+<a name="ln789">        return &quot;Air&quot;;</a>
+<a name="ln790">    case spschool::random:</a>
+<a name="ln791">        return &quot;Rndm&quot;;</a>
+<a name="ln792">    default:</a>
+<a name="ln793">        return &quot;Bug&quot;;</a>
+<a name="ln794">    }</a>
+<a name="ln795">}</a>
+<a name="ln796"> </a>
+<a name="ln797">const char* spelltype_long_name(spschool which_spelltype)</a>
+<a name="ln798">{</a>
+<a name="ln799">    switch (which_spelltype)</a>
+<a name="ln800">    {</a>
+<a name="ln801">    case spschool::conjuration:</a>
+<a name="ln802">        return &quot;Conjuration&quot;;</a>
+<a name="ln803">    case spschool::hexes:</a>
+<a name="ln804">        return &quot;Hexes&quot;;</a>
+<a name="ln805">    case spschool::charms:</a>
+<a name="ln806">        return &quot;Charms&quot;;</a>
+<a name="ln807">    case spschool::fire:</a>
+<a name="ln808">        return &quot;Fire&quot;;</a>
+<a name="ln809">    case spschool::ice:</a>
+<a name="ln810">        return &quot;Ice&quot;;</a>
+<a name="ln811">    case spschool::transmutation:</a>
+<a name="ln812">        return &quot;Transmutation&quot;;</a>
+<a name="ln813">    case spschool::necromancy:</a>
+<a name="ln814">        return &quot;Necromancy&quot;;</a>
+<a name="ln815">    case spschool::summoning:</a>
+<a name="ln816">        return &quot;Summoning&quot;;</a>
+<a name="ln817">    case spschool::translocation:</a>
+<a name="ln818">        return &quot;Translocation&quot;;</a>
+<a name="ln819">    case spschool::poison:</a>
+<a name="ln820">        return &quot;Poison&quot;;</a>
+<a name="ln821">    case spschool::earth:</a>
+<a name="ln822">        return &quot;Earth&quot;;</a>
+<a name="ln823">    case spschool::air:</a>
+<a name="ln824">        return &quot;Air&quot;;</a>
+<a name="ln825">    case spschool::random:</a>
+<a name="ln826">        return &quot;Random&quot;;</a>
+<a name="ln827">    default:</a>
+<a name="ln828">        return &quot;Bug&quot;;</a>
+<a name="ln829">    }</a>
+<a name="ln830">}</a>
+<a name="ln831"> </a>
+<a name="ln832">skill_type spell_type2skill(spschool spelltype)</a>
+<a name="ln833">{</a>
+<a name="ln834">    switch (spelltype)</a>
+<a name="ln835">    {</a>
+<a name="ln836">    case spschool::conjuration:    return SK_CONJURATIONS;</a>
+<a name="ln837">    case spschool::hexes:          return SK_HEXES;</a>
+<a name="ln838">    case spschool::charms:         return SK_CHARMS;</a>
+<a name="ln839">    case spschool::fire:           return SK_FIRE_MAGIC;</a>
+<a name="ln840">    case spschool::ice:            return SK_ICE_MAGIC;</a>
+<a name="ln841">    case spschool::transmutation:  return SK_TRANSMUTATIONS;</a>
+<a name="ln842">    case spschool::necromancy:     return SK_NECROMANCY;</a>
+<a name="ln843">    case spschool::summoning:      return SK_SUMMONINGS;</a>
+<a name="ln844">    case spschool::translocation:  return SK_TRANSLOCATIONS;</a>
+<a name="ln845">    case spschool::poison:         return SK_POISON_MAGIC;</a>
+<a name="ln846">    case spschool::earth:          return SK_EARTH_MAGIC;</a>
+<a name="ln847">    case spschool::air:            return SK_AIR_MAGIC;</a>
+<a name="ln848"> </a>
+<a name="ln849">    default:</a>
+<a name="ln850">        dprf(&quot;spell_type2skill: called with unmapped spell school %u&quot;</a>
+<a name="ln851">             &quot; (name '%s')&quot;, static_cast&lt;unsigned int&gt;(spelltype),</a>
+<a name="ln852">             spelltype_long_name(spelltype));</a>
+<a name="ln853">        return SK_NONE;</a>
+<a name="ln854">    }</a>
+<a name="ln855">}</a>
+<a name="ln856"> </a>
+<a name="ln857">spschool skill2spell_type(skill_type spell_skill)</a>
+<a name="ln858">{</a>
+<a name="ln859">    switch (spell_skill)</a>
+<a name="ln860">    {</a>
+<a name="ln861">    case SK_CONJURATIONS:    return spschool::conjuration;</a>
+<a name="ln862">    case SK_HEXES:           return spschool::hexes;</a>
+<a name="ln863">    case SK_CHARMS:          return spschool::charms;</a>
+<a name="ln864">    case SK_FIRE_MAGIC:      return spschool::fire;</a>
+<a name="ln865">    case SK_ICE_MAGIC:       return spschool::ice;</a>
+<a name="ln866">    case SK_TRANSMUTATIONS:  return spschool::transmutation;</a>
+<a name="ln867">    case SK_NECROMANCY:      return spschool::necromancy;</a>
+<a name="ln868">    case SK_SUMMONINGS:      return spschool::summoning;</a>
+<a name="ln869">    case SK_TRANSLOCATIONS:  return spschool::translocation;</a>
+<a name="ln870">    case SK_POISON_MAGIC:    return spschool::poison;</a>
+<a name="ln871">    case SK_EARTH_MAGIC:     return spschool::earth;</a>
+<a name="ln872">    case SK_AIR_MAGIC:       return spschool::air;</a>
+<a name="ln873"> </a>
+<a name="ln874">    default:</a>
+<a name="ln875">        return spschool::none;</a>
+<a name="ln876">    }</a>
+<a name="ln877">}</a>
+<a name="ln878"> </a>
+<a name="ln879">/*</a>
+<a name="ln880"> **************************************************</a>
+<a name="ln881"> *                                                *</a>
+<a name="ln882"> *              END PUBLIC FUNCTIONS              *</a>
+<a name="ln883"> *                                                *</a>
+<a name="ln884"> **************************************************</a>
+<a name="ln885"> */</a>
+<a name="ln886"> </a>
+<a name="ln887">//jmf: Simplified; moved init code to top function, init_spell_descs().</a>
+<a name="ln888">static const spell_desc *_seekspell(spell_type spell)</a>
+<a name="ln889">{</a>
+<a name="ln890">    ASSERT_RANGE(spell, 0, NUM_SPELLS);</a>
+<a name="ln891">    const int index = spell_list[spell];</a>
+<a name="ln892">    ASSERT(index != -1);</a>
+<a name="ln893"> </a>
+<a name="ln894">    return &amp;spelldata[index];</a>
+<a name="ln895">}</a>
+<a name="ln896"> </a>
+<a name="ln897">bool is_valid_spell(spell_type spell)</a>
+<a name="ln898">{</a>
+<a name="ln899">    return spell &gt; SPELL_NO_SPELL &amp;&amp; spell &lt; NUM_SPELLS</a>
+<a name="ln900">           &amp;&amp; spell_list[spell] != -1;</a>
+<a name="ln901">}</a>
+<a name="ln902"> </a>
+<a name="ln903">static bool _spell_range_varies(spell_type spell)</a>
+<a name="ln904">{</a>
+<a name="ln905">    int minrange = _seekspell(spell)-&gt;min_range;</a>
+<a name="ln906">    int maxrange = _seekspell(spell)-&gt;max_range;</a>
+<a name="ln907"> </a>
+<a name="ln908">    return minrange &lt; maxrange;</a>
+<a name="ln909">}</a>
+<a name="ln910"> </a>
+<a name="ln911">int spell_power_cap(spell_type spell)</a>
+<a name="ln912">{</a>
+<a name="ln913">    const int scap = _seekspell(spell)-&gt;power_cap;</a>
+<a name="ln914">    const int zcap = spell_zap_power_cap(spell);</a>
+<a name="ln915"> </a>
+<a name="ln916">    if (scap == 0)</a>
+<a name="ln917">        return zcap;</a>
+<a name="ln918">    else if (zcap == 0)</a>
+<a name="ln919">        return scap;</a>
+<a name="ln920">    else</a>
+<a name="ln921">    {</a>
+<a name="ln922">        // Two separate power caps; pre-zapping spell power</a>
+<a name="ln923">        // goes into range.</a>
+<a name="ln924">        if (scap &lt;= zcap || _spell_range_varies(spell))</a>
+<a name="ln925">            return scap;</a>
+<a name="ln926">        else</a>
+<a name="ln927">            return zcap;</a>
+<a name="ln928">    }</a>
+<a name="ln929">}</a>
+<a name="ln930"> </a>
+<a name="ln931">int spell_range(spell_type spell, int pow, bool allow_bonus)</a>
+<a name="ln932">{</a>
+<a name="ln933">    int minrange = _seekspell(spell)-&gt;min_range;</a>
+<a name="ln934">    int maxrange = _seekspell(spell)-&gt;max_range;</a>
+<a name="ln935">    ASSERT(maxrange &gt;= minrange);</a>
+<a name="ln936"> </a>
+<a name="ln937">    // spells with no range have maxrange == minrange == -1</a>
+<a name="ln938">    if (maxrange &lt; 0)</a>
+<a name="ln939">        return maxrange;</a>
+<a name="ln940"> </a>
+<a name="ln941">    if (allow_bonus</a>
+<a name="ln942">        &amp;&amp; vehumet_supports_spell(spell)</a>
+<a name="ln943">        &amp;&amp; have_passive(passive_t::spells_range)</a>
+<a name="ln944">        &amp;&amp; maxrange &gt; 1</a>
+<a name="ln945">        &amp;&amp; spell != SPELL_THUNDERBOLT) // lightning rod only</a>
+<a name="ln946">    {</a>
+<a name="ln947">        maxrange++;</a>
+<a name="ln948">        minrange++;</a>
+<a name="ln949">    }</a>
+<a name="ln950"> </a>
+<a name="ln951">    if (minrange == maxrange)</a>
+<a name="ln952">        return min(minrange, (int)you.current_vision);</a>
+<a name="ln953"> </a>
+<a name="ln954">    const int powercap = spell_power_cap(spell);</a>
+<a name="ln955"> </a>
+<a name="ln956">    if (powercap &lt;= pow)</a>
+<a name="ln957">        return min(maxrange, (int)you.current_vision);</a>
+<a name="ln958"> </a>
+<a name="ln959">    // Round appropriately.</a>
+<a name="ln960">    return min((int)you.current_vision,</a>
+<a name="ln961">           (pow * (maxrange - minrange) + powercap / 2) / powercap + minrange);</a>
+<a name="ln962">}</a>
+<a name="ln963"> </a>
+<a name="ln964">/**</a>
+<a name="ln965"> * Spell casting noise.</a>
+<a name="ln966"> *</a>
+<a name="ln967"> * @param spell  The spell being casted.</a>
+<a name="ln968"> * @return       The amount of noise generated on cast.</a>
+<a name="ln969"> */</a>
+<a name="ln970">int spell_noise(spell_type spell)</a>
+<a name="ln971">{</a>
+<a name="ln972">    return _seekspell(spell)-&gt;noise;</a>
+<a name="ln973">}</a>
+<a name="ln974"> </a>
+<a name="ln975">/**</a>
+<a name="ln976"> * Miscellaneous spell casting noise.</a>
+<a name="ln977"> *</a>
+<a name="ln978"> * This returns the usual spell noise for the effects of this spell.</a>
+<a name="ln979"> * Used for various noisy() calls, as well as the I screen; see effect_noise</a>
+<a name="ln980"> * comment above for more information.</a>
+<a name="ln981"> * @param spell  The spell being casted.</a>
+<a name="ln982"> * @return       The amount of noise generated by the effects of the spell.</a>
+<a name="ln983"> */</a>
+<a name="ln984">int spell_effect_noise(spell_type spell, bool random)</a>
+<a name="ln985">{</a>
+<a name="ln986">    const int noise = _seekspell(spell)-&gt;effect_noise;</a>
+<a name="ln987"> </a>
+<a name="ln988">    if (spell == SPELL_ABSOLUTE_ZERO)</a>
+<a name="ln989">    {</a>
+<a name="ln990">        const int pow = calc_spell_power(spell, true, false, true);</a>
+<a name="ln991">        if (random)</a>
+<a name="ln992">            return noise - div_rand_round(noise * pow, 200);</a>
+<a name="ln993">        // For spell noise display, we assume worst case.</a>
+<a name="ln994">        else</a>
+<a name="ln995">            return noise - (noise * pow) / 200;</a>
+<a name="ln996">    }</a>
+<a name="ln997"> </a>
+<a name="ln998">    int expl_size;</a>
+<a name="ln999">    switch (spell)</a>
+<a name="ln1000">    {</a>
+<a name="ln1001">    case SPELL_MEPHITIC_CLOUD:</a>
+<a name="ln1002">    case SPELL_FIREBALL:</a>
+<a name="ln1003">    case SPELL_VIOLENT_UNRAVELLING:</a>
+<a name="ln1004">    case SPELL_IGNITION:</a>
+<a name="ln1005">        expl_size = 1;</a>
+<a name="ln1006">        break;</a>
+<a name="ln1007"> </a>
+<a name="ln1008">    case SPELL_LRD:</a>
+<a name="ln1009">        expl_size = 2; // Can reach 3 only with crystal walls, which are rare</a>
+<a name="ln1010">        break;</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    // worst case scenario for these</a>
+<a name="ln1013">    case SPELL_FIRE_STORM:</a>
+<a name="ln1014">    case SPELL_CONJURE_BALL_LIGHTNING:</a>
+<a name="ln1015">        expl_size = 3;</a>
+<a name="ln1016">        break;</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    default:</a>
+<a name="ln1019">        expl_size = 0;</a>
+<a name="ln1020">    }</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    if (expl_size)</a>
+<a name="ln1023">        return explosion_noise(expl_size);</a>
+<a name="ln1024"> </a>
+<a name="ln1025">    return noise;</a>
+<a name="ln1026">}</a>
+<a name="ln1027"> </a>
+<a name="ln1028">/**</a>
+<a name="ln1029"> * Does the given spell map to a player transformation?</a>
+<a name="ln1030"> *</a>
+<a name="ln1031"> * @param spell     The spell in question.</a>
+<a name="ln1032"> * @return          Whether the spell, when cast, puts the player in a form.</a>
+<a name="ln1033"> */</a>
+<a name="ln1034">bool spell_is_form(spell_type spell)</a>
+<a name="ln1035">{</a>
+<a name="ln1036">    switch (spell)</a>
+<a name="ln1037">    {</a>
+<a name="ln1038">        case SPELL_BEASTLY_APPENDAGE:</a>
+<a name="ln1039">        case SPELL_BLADE_HANDS:</a>
+<a name="ln1040">        case SPELL_DRAGON_FORM:</a>
+<a name="ln1041">        case SPELL_HYDRA_FORM:</a>
+<a name="ln1042">        case SPELL_ICE_FORM:</a>
+<a name="ln1043">        case SPELL_SPIDER_FORM:</a>
+<a name="ln1044">        case SPELL_STATUE_FORM:</a>
+<a name="ln1045">        case SPELL_NECROMUTATION:</a>
+<a name="ln1046">            return true;</a>
+<a name="ln1047">        default:</a>
+<a name="ln1048">            return false;</a>
+<a name="ln1049">    }</a>
+<a name="ln1050">}</a>
+<a name="ln1051"> </a>
+<a name="ln1052">/**</a>
+<a name="ln1053"> * This function attempts to determine if a given spell is useless to the</a>
+<a name="ln1054"> * player.</a>
+<a name="ln1055"> *</a>
+<a name="ln1056"> * @param spell      The spell in question.</a>
+<a name="ln1057"> * @param temp       Include checks for volatile or temporary states</a>
+<a name="ln1058"> *                   (status effects, mana, gods, items, etc.)</a>
+<a name="ln1059"> * @param prevent    Whether to only check for effects which prevent casting,</a>
+<a name="ln1060"> *                   rather than just ones that make it unproductive.</a>
+<a name="ln1061"> * @param fake_spell true if the spell is evoked or from an innate or divine ability</a>
+<a name="ln1062"> *                   false if it is a spell being cast normally.</a>
+<a name="ln1063"> * @return           Whether the given spell has no chance of being useful.</a>
+<a name="ln1064"> */</a>
+<a name="ln1065">bool spell_is_useless(spell_type spell, bool temp, bool prevent,</a>
+<a name="ln1066">                      bool fake_spell)</a>
+<a name="ln1067">{</a>
+<a name="ln1068">    return !spell_uselessness_reason(spell, temp, prevent, fake_spell).empty();</a>
+<a name="ln1069">}</a>
+<a name="ln1070"> </a>
+<a name="ln1071">/**</a>
+<a name="ln1072"> * This function gives the reason that a spell is currently useless to the</a>
+<a name="ln1073"> * player, if it is.</a>
+<a name="ln1074"> *</a>
+<a name="ln1075"> * @param spell      The spell in question.</a>
+<a name="ln1076"> * @param temp       Include checks for volatile or temporary states</a>
+<a name="ln1077"> *                   (status effects, mana, gods, items, etc.)</a>
+<a name="ln1078"> * @param prevent    Whether to only check for effects which prevent casting,</a>
+<a name="ln1079"> *                   rather than just ones that make it unproductive.</a>
+<a name="ln1080"> * @param fake_spell true if the spell is evoked or from an innate or divine ability</a>
+<a name="ln1081"> *                   false if it is a spell being cast normally.</a>
+<a name="ln1082"> * @return           The reason a spell is useless to the player, if it is;</a>
+<a name="ln1083"> *                   &quot;&quot; otherwise. The string should be a full clause, but</a>
+<a name="ln1084"> *                   begin with a lowercase letter so callers can put it in</a>
+<a name="ln1085"> *                   the middle of a sentence.</a>
+<a name="ln1086"> */</a>
+<a name="ln1087">string spell_uselessness_reason(spell_type spell, bool temp, bool prevent,</a>
+<a name="ln1088">                                bool fake_spell)</a>
+<a name="ln1089">{</a>
+<a name="ln1090">    if (temp)</a>
+<a name="ln1091">    {</a>
+<a name="ln1092">        if (!fake_spell &amp;&amp; you.duration[DUR_CONF] &gt; 0)</a>
+<a name="ln1093">            return &quot;you're too confused.&quot;;</a>
+<a name="ln1094">        if (!enough_mp(spell_mana(spell), true, false)</a>
+<a name="ln1095">            &amp;&amp; !fake_spell)</a>
+<a name="ln1096">        {</a>
+<a name="ln1097">            return &quot;you don't have enough magic.&quot;;</a>
+<a name="ln1098">        }</a>
+<a name="ln1099">        if (!prevent &amp;&amp; spell_no_hostile_in_range(spell))</a>
+<a name="ln1100">            return &quot;you can't see any valid targets.&quot;;</a>
+<a name="ln1101">    }</a>
+<a name="ln1102"> </a>
+<a name="ln1103">    // Check for banned schools (Currently just Ru sacrifices)</a>
+<a name="ln1104">    if (!fake_spell &amp;&amp; cannot_use_schools(get_spell_disciplines(spell)))</a>
+<a name="ln1105">        return &quot;you cannot use spells of this school.&quot;;</a>
+<a name="ln1106"> </a>
+<a name="ln1107">    switch (spell)</a>
+<a name="ln1108">    {</a>
+<a name="ln1109">    case SPELL_BLINK:</a>
+<a name="ln1110">    case SPELL_CONTROLLED_BLINK:</a>
+<a name="ln1111">        // XXX: this is a little redundant with you_no_tele_reason()</a>
+<a name="ln1112">        // but trying to sort out temp and so on is a mess</a>
+<a name="ln1113">        if (you.species == SP_FORMICID)</a>
+<a name="ln1114">            return &quot;your stasis prevents you from teleporting.&quot;;</a>
+<a name="ln1115"> </a>
+<a name="ln1116">        if (temp &amp;&amp; you.no_tele(false, false, true))</a>
+<a name="ln1117">            return lowercase_first(you.no_tele_reason(false, true));</a>
+<a name="ln1118">        break;</a>
+<a name="ln1119"> </a>
+<a name="ln1120">    case SPELL_SWIFTNESS:</a>
+<a name="ln1121">        if (temp)</a>
+<a name="ln1122">        {</a>
+<a name="ln1123">            if (you.duration[DUR_SWIFTNESS])</a>
+<a name="ln1124">                return &quot;this spell is already in effect.&quot;;</a>
+<a name="ln1125">            if (player_movement_speed() &lt;= FASTEST_PLAYER_MOVE_SPEED)</a>
+<a name="ln1126">                return &quot;you're already traveling as fast as you can.&quot;;</a>
+<a name="ln1127">            if (you.is_stationary())</a>
+<a name="ln1128">                return &quot;you can't move.&quot;;</a>
+<a name="ln1129">        }</a>
+<a name="ln1130">        break;</a>
+<a name="ln1131"> </a>
+<a name="ln1132">    case SPELL_INVISIBILITY:</a>
+<a name="ln1133">        if (!prevent &amp;&amp; temp &amp;&amp; you.backlit())</a>
+<a name="ln1134">            return &quot;invisibility won't help you when you glow in the dark.&quot;;</a>
+<a name="ln1135">        break;</a>
+<a name="ln1136"> </a>
+<a name="ln1137">    case SPELL_DARKNESS:</a>
+<a name="ln1138">        // mere corona is not enough, but divine light blocks it completely</a>
+<a name="ln1139">        if (temp &amp;&amp; (you.haloed() || !prevent &amp;&amp; have_passive(passive_t::halo)))</a>
+<a name="ln1140">            return &quot;darkness is useless against divine light.&quot;;</a>
+<a name="ln1141">        break;</a>
+<a name="ln1142"> </a>
+<a name="ln1143">    case SPELL_STATUE_FORM:</a>
+<a name="ln1144">        if (SP_GARGOYLE == you.species)</a>
+<a name="ln1145">            return &quot;you're already a statue.&quot;;</a>
+<a name="ln1146">        // fallthrough to other forms</a>
+<a name="ln1147"> </a>
+<a name="ln1148">    case SPELL_BEASTLY_APPENDAGE:</a>
+<a name="ln1149">    case SPELL_BLADE_HANDS:</a>
+<a name="ln1150">    case SPELL_DRAGON_FORM:</a>
+<a name="ln1151">    case SPELL_HYDRA_FORM:</a>
+<a name="ln1152">    case SPELL_ICE_FORM:</a>
+<a name="ln1153">    case SPELL_SPIDER_FORM:</a>
+<a name="ln1154">        if (you.undead_state(temp) == US_UNDEAD</a>
+<a name="ln1155">            || you.undead_state(temp) == US_HUNGRY_DEAD)</a>
+<a name="ln1156">        {</a>
+<a name="ln1157">            return &quot;your undead flesh cannot be transformed.&quot;;</a>
+<a name="ln1158">        }</a>
+<a name="ln1159">        if (temp &amp;&amp; you.is_lifeless_undead())</a>
+<a name="ln1160">            return &quot;your current blood level is not sufficient.&quot;;</a>
+<a name="ln1161">        break;</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    case SPELL_EXCRUCIATING_WOUNDS:</a>
+<a name="ln1164">        if (temp</a>
+<a name="ln1165">            &amp;&amp; (!you.weapon()</a>
+<a name="ln1166">                || you.weapon()-&gt;base_type != OBJ_WEAPONS</a>
+<a name="ln1167">                || !is_brandable_weapon(*you.weapon(), true)))</a>
+<a name="ln1168">        {</a>
+<a name="ln1169">            return &quot;you aren't wielding a brandable weapon.&quot;;</a>
+<a name="ln1170">        }</a>
+<a name="ln1171">        // intentional fallthrough</a>
+<a name="ln1172">    case SPELL_PORTAL_PROJECTILE:</a>
+<a name="ln1173">    case SPELL_SPECTRAL_WEAPON:</a>
+<a name="ln1174">        if (you.species == SP_FELID)</a>
+<a name="ln1175">            return &quot;this spell is useless without hands.&quot;;</a>
+<a name="ln1176">        break;</a>
+<a name="ln1177"> </a>
+<a name="ln1178">    case SPELL_LEDAS_LIQUEFACTION:</a>
+<a name="ln1179">        if (temp &amp;&amp; you.duration[DUR_LIQUEFYING])</a>
+<a name="ln1180">            return &quot;you need to wait for the ground to become solid again.&quot;;</a>
+<a name="ln1181">        break;</a>
+<a name="ln1182"> </a>
+<a name="ln1183">    case SPELL_BORGNJORS_REVIVIFICATION:</a>
+<a name="ln1184">        if (temp &amp;&amp; you.hp == you.hp_max)</a>
+<a name="ln1185">            return &quot;you cannot be healed further.&quot;;</a>
+<a name="ln1186">        if (temp &amp;&amp; you.hp_max &lt; 21)</a>
+<a name="ln1187">            return &quot;you lack the resilience to cast this spell.&quot;;</a>
+<a name="ln1188">        // Prohibited to all undead.</a>
+<a name="ln1189">        if (you.undead_state(temp))</a>
+<a name="ln1190">            return &quot;you're too dead.&quot;;</a>
+<a name="ln1191">        break;</a>
+<a name="ln1192">    case SPELL_DEATHS_DOOR:</a>
+<a name="ln1193">        if (temp &amp;&amp; you.duration[DUR_DEATHS_DOOR])</a>
+<a name="ln1194">            return &quot;you are already standing in death's doorway.&quot;;</a>
+<a name="ln1195">        if (temp &amp;&amp; you.duration[DUR_DEATHS_DOOR_COOLDOWN])</a>
+<a name="ln1196">            return &quot;you are still too close to death's doorway.&quot;;</a>
+<a name="ln1197">        // Prohibited to all undead.</a>
+<a name="ln1198">        if (you.undead_state(temp))</a>
+<a name="ln1199">            return &quot;you're too dead.&quot;;</a>
+<a name="ln1200">        break;</a>
+<a name="ln1201">    case SPELL_NECROMUTATION:</a>
+<a name="ln1202">        // only prohibited to actual undead, not lichformed players</a>
+<a name="ln1203">        if (you.undead_state(false))</a>
+<a name="ln1204">            return &quot;you're too dead.&quot;;</a>
+<a name="ln1205">        break;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">    case SPELL_OZOCUBUS_ARMOUR:</a>
+<a name="ln1208">        if (temp &amp;&amp; !player_effectively_in_light_armour())</a>
+<a name="ln1209">            return &quot;your body armour is too heavy.&quot;;</a>
+<a name="ln1210">        if (temp &amp;&amp; you.form == transformation::statue)</a>
+<a name="ln1211">            return &quot;the film of ice won't work on stone.&quot;;</a>
+<a name="ln1212">        if (temp &amp;&amp; you.duration[DUR_FIRE_SHIELD])</a>
+<a name="ln1213">            return &quot;your ring of flames would instantly melt the ice.&quot;;</a>
+<a name="ln1214">        break;</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    case SPELL_SUBLIMATION_OF_BLOOD:</a>
+<a name="ln1217">        // XXX: write player_can_bleed(bool temp) &amp; use that</a>
+<a name="ln1218">        if (you.species == SP_GARGOYLE</a>
+<a name="ln1219">            || you.species == SP_GHOUL</a>
+<a name="ln1220">            || you.species == SP_MUMMY</a>
+<a name="ln1221">            || (temp &amp;&amp; !form_can_bleed(you.form)))</a>
+<a name="ln1222">        {</a>
+<a name="ln1223">            return &quot;you have no blood to sublime.&quot;;</a>
+<a name="ln1224">        }</a>
+<a name="ln1225">        if (you.magic_points == you.max_magic_points &amp;&amp; temp)</a>
+<a name="ln1226">            return &quot;your reserves of magic are already full.&quot;;</a>
+<a name="ln1227">        break;</a>
+<a name="ln1228"> </a>
+<a name="ln1229">    case SPELL_TORNADO:</a>
+<a name="ln1230">        if (temp &amp;&amp; (you.duration[DUR_TORNADO]</a>
+<a name="ln1231">                     || you.duration[DUR_TORNADO_COOLDOWN]))</a>
+<a name="ln1232">        {</a>
+<a name="ln1233">            return &quot;you need to wait for the winds to calm down.&quot;;</a>
+<a name="ln1234">        }</a>
+<a name="ln1235">        break;</a>
+<a name="ln1236"> </a>
+<a name="ln1237">    case SPELL_MALIGN_GATEWAY:</a>
+<a name="ln1238">        if (temp &amp;&amp; !can_cast_malign_gateway())</a>
+<a name="ln1239">        {</a>
+<a name="ln1240">            return &quot;the dungeon can only cope with one malign gateway&quot;</a>
+<a name="ln1241">                    &quot; at a time.&quot;;</a>
+<a name="ln1242">        }</a>
+<a name="ln1243">        break;</a>
+<a name="ln1244"> </a>
+<a name="ln1245">    case SPELL_SUMMON_FOREST:</a>
+<a name="ln1246">        if (temp &amp;&amp; you.duration[DUR_FORESTED])</a>
+<a name="ln1247">            return &quot;you can only summon one forest at a time.&quot;;</a>
+<a name="ln1248">        break;</a>
+<a name="ln1249"> </a>
+<a name="ln1250">    case SPELL_PASSWALL:</a>
+<a name="ln1251">        if (temp &amp;&amp; you.is_stationary())</a>
+<a name="ln1252">            return &quot;you can't move.&quot;;</a>
+<a name="ln1253">        break;</a>
+<a name="ln1254"> </a>
+<a name="ln1255">    case SPELL_ANIMATE_DEAD:</a>
+<a name="ln1256">    case SPELL_ANIMATE_SKELETON:</a>
+<a name="ln1257">    case SPELL_DEATH_CHANNEL:</a>
+<a name="ln1258">    case SPELL_SIMULACRUM:</a>
+<a name="ln1259">    case SPELL_INFESTATION:</a>
+<a name="ln1260">    case SPELL_STICKS_TO_SNAKES:</a>
+<a name="ln1261">    case SPELL_TUKIMAS_DANCE:</a>
+<a name="ln1262">        if (you.get_mutation_level(MUT_NO_LOVE))</a>
+<a name="ln1263">            return &quot;you cannot coerce anything to obey you.&quot;;</a>
+<a name="ln1264">        break;</a>
+<a name="ln1265"> </a>
+<a name="ln1266">    case SPELL_CORPSE_ROT:</a>
+<a name="ln1267">    case SPELL_POISONOUS_VAPOURS:</a>
+<a name="ln1268">    case SPELL_CONJURE_FLAME:</a>
+<a name="ln1269">    case SPELL_POISONOUS_CLOUD:</a>
+<a name="ln1270">    case SPELL_FREEZING_CLOUD:</a>
+<a name="ln1271">    case SPELL_MEPHITIC_CLOUD:</a>
+<a name="ln1272">        if (temp &amp;&amp; env.level_state &amp; LSTATE_STILL_WINDS)</a>
+<a name="ln1273">            return &quot;the air is too still for clouds to form.&quot;;</a>
+<a name="ln1274">        break;</a>
+<a name="ln1275"> </a>
+<a name="ln1276">    case SPELL_GOLUBRIAS_PASSAGE:</a>
+<a name="ln1277">        if (orb_limits_translocation(temp))</a>
+<a name="ln1278">            return &quot;the Orb prevents this spell from working.&quot;;</a>
+<a name="ln1279">        else if (temp &amp;&amp; player_in_branch(BRANCH_GAUNTLET))</a>
+<a name="ln1280">        {</a>
+<a name="ln1281">            return &quot;a magic seal in the Gauntlet prevents this spell &quot;</a>
+<a name="ln1282">                &quot;from working.&quot;;</a>
+<a name="ln1283">        }</a>
+<a name="ln1284">        break;</a>
+<a name="ln1285"> </a>
+<a name="ln1286">    case  SPELL_DRAGON_CALL:</a>
+<a name="ln1287">        if (temp &amp;&amp; (you.duration[DUR_DRAGON_CALL]</a>
+<a name="ln1288">                     || you.duration[DUR_DRAGON_CALL_COOLDOWN]))</a>
+<a name="ln1289">        {</a>
+<a name="ln1290">            return &quot;you cannot issue another dragon's call so soon.&quot;;</a>
+<a name="ln1291">        }</a>
+<a name="ln1292">        break;</a>
+<a name="ln1293"> </a>
+<a name="ln1294">    case SPELL_FROZEN_RAMPARTS:</a>
+<a name="ln1295">        if (temp &amp;&amp; you.duration[DUR_FROZEN_RAMPARTS])</a>
+<a name="ln1296">            return &quot;you cannot sustain more frozen ramparts right now.&quot;;</a>
+<a name="ln1297">        break;</a>
+<a name="ln1298"> </a>
+<a name="ln1299">    default:</a>
+<a name="ln1300">        break;</a>
+<a name="ln1301">    }</a>
+<a name="ln1302"> </a>
+<a name="ln1303">    if (get_spell_disciplines(spell) &amp; spschool::summoning</a>
+<a name="ln1304">        &amp;&amp; spell != SPELL_AURA_OF_ABJURATION</a>
+<a name="ln1305">        &amp;&amp; you.get_mutation_level(MUT_NO_LOVE))</a>
+<a name="ln1306">    {</a>
+<a name="ln1307">        return &quot;you cannot coerce anything to answer your summons.&quot;;</a>
+<a name="ln1308">    }</a>
+<a name="ln1309"> </a>
+<a name="ln1310">    return &quot;&quot;;</a>
+<a name="ln1311">}</a>
+<a name="ln1312"> </a>
+<a name="ln1313">/**</a>
+<a name="ln1314"> * Determines what colour a spell should be highlighted with.</a>
+<a name="ln1315"> *</a>
+<a name="ln1316"> * @param spell           The type of spell to be coloured.</a>
+<a name="ln1317"> * @param default_colour   Colour to be used if the spell is unremarkable.</a>
+<a name="ln1318"> * @param transient       If true, check if spell is temporarily useless.</a>
+<a name="ln1319"> * @param memcheck        If true, check if spell can be memorised</a>
+<a name="ln1320"> * @return                The colour to highlight the spell.</a>
+<a name="ln1321"> */</a>
+<a name="ln1322">int spell_highlight_by_utility(spell_type spell, int default_colour,</a>
+<a name="ln1323">                               bool transient, bool memcheck)</a>
+<a name="ln1324">{</a>
+<a name="ln1325">    // If your god hates the spell, that overrides all other concerns.</a>
+<a name="ln1326">    if (god_hates_spell(spell, you.religion)</a>
+<a name="ln1327">        || is_good_god(you.religion) &amp;&amp; you.spellcasting_unholy())</a>
+<a name="ln1328">    {</a>
+<a name="ln1329">        return COL_FORBIDDEN;</a>
+<a name="ln1330">    }</a>
+<a name="ln1331">    // Grey out spells for which you lack experience or spell levels.</a>
+<a name="ln1332">    if (memcheck &amp;&amp; (spell_difficulty(spell) &gt; you.experience_level</a>
+<a name="ln1333">        || player_spell_levels() &lt; spell_levels_required(spell)))</a>
+<a name="ln1334">    {</a>
+<a name="ln1335">        return COL_INAPPLICABLE;</a>
+<a name="ln1336">    }</a>
+<a name="ln1337">    // Check if the spell is considered useless based on your current status</a>
+<a name="ln1338">    if (spell_is_useless(spell, transient))</a>
+<a name="ln1339">        return COL_USELESS;</a>
+<a name="ln1340"> </a>
+<a name="ln1341">    return default_colour;</a>
+<a name="ln1342">}</a>
+<a name="ln1343"> </a>
+<a name="ln1344">bool spell_no_hostile_in_range(spell_type spell)</a>
+<a name="ln1345">{</a>
+<a name="ln1346">    const int range = calc_spell_range(spell, 0);</a>
+<a name="ln1347">    const int minRange = get_dist_to_nearest_monster();</a>
+<a name="ln1348">    const int pow = calc_spell_power(spell, true, false, true);</a>
+<a name="ln1349"> </a>
+<a name="ln1350">    switch (spell)</a>
+<a name="ln1351">    {</a>
+<a name="ln1352">    // These don't target monsters or can target features.</a>
+<a name="ln1353">    case SPELL_APPORTATION:</a>
+<a name="ln1354">    case SPELL_CONJURE_FLAME:</a>
+<a name="ln1355">    case SPELL_PASSWALL:</a>
+<a name="ln1356">    case SPELL_GOLUBRIAS_PASSAGE:</a>
+<a name="ln1357">    case SPELL_LRD:</a>
+<a name="ln1358">    case SPELL_FULMINANT_PRISM:</a>
+<a name="ln1359">    case SPELL_SUMMON_LIGHTNING_SPIRE:</a>
+<a name="ln1360">    // This can always potentially hit out-of-LOS, although this is conditional</a>
+<a name="ln1361">    // on spell-power.</a>
+<a name="ln1362">    case SPELL_FIRE_STORM:</a>
+<a name="ln1363">        return false;</a>
+<a name="ln1364"> </a>
+<a name="ln1365">    case SPELL_CHAIN_LIGHTNING:</a>
+<a name="ln1366">    case SPELL_OZOCUBUS_REFRIGERATION:</a>
+<a name="ln1367">    case SPELL_OLGREBS_TOXIC_RADIANCE:</a>
+<a name="ln1368">    case SPELL_INTOXICATE:</a>
+<a name="ln1369">    case SPELL_IGNITION:</a>
+<a name="ln1370">    case SPELL_FROZEN_RAMPARTS:</a>
+<a name="ln1371">        return minRange &gt; you.current_vision;</a>
+<a name="ln1372"> </a>
+<a name="ln1373">    // Special handling for cloud spells.</a>
+<a name="ln1374">    case SPELL_FREEZING_CLOUD:</a>
+<a name="ln1375">    case SPELL_POISONOUS_CLOUD:</a>
+<a name="ln1376">    case SPELL_HOLY_BREATH:</a>
+<a name="ln1377">    {</a>
+<a name="ln1378">        targeter_cloud tgt(&amp;you, range);</a>
+<a name="ln1379">        // Accept monsters that are in clouds for the hostiles-in-range check</a>
+<a name="ln1380">        // (not for actual targeting).</a>
+<a name="ln1381">        tgt.avoid_clouds = false;</a>
+<a name="ln1382">        for (radius_iterator ri(you.pos(), range, C_SQUARE, LOS_NO_TRANS);</a>
+<a name="ln1383">             ri; ++ri)</a>
+<a name="ln1384">        {</a>
+<a name="ln1385">            if (!tgt.valid_aim(*ri))</a>
+<a name="ln1386">                continue;</a>
+<a name="ln1387">            tgt.set_aim(*ri);</a>
+<a name="ln1388">            for (const auto &amp;entry : tgt.seen)</a>
+<a name="ln1389">            {</a>
+<a name="ln1390">                if (entry.second == AFF_NO || entry.second == AFF_TRACER)</a>
+<a name="ln1391">                    continue;</a>
+<a name="ln1392"> </a>
+<a name="ln1393">                // Checks here are from get_dist_to_nearest_monster().</a>
+<a name="ln1394">                const monster* mons = monster_at(entry.first);</a>
+<a name="ln1395">                if (mons &amp;&amp; !mons-&gt;wont_attack() &amp;&amp; mons_is_threatening(*mons))</a>
+<a name="ln1396">                    return false;</a>
+<a name="ln1397">            }</a>
+<a name="ln1398">        }</a>
+<a name="ln1399"> </a>
+<a name="ln1400">        return true;</a>
+<a name="ln1401">    }</a>
+<a name="ln1402"> </a>
+<a name="ln1403">    case SPELL_IGNITE_POISON:</a>
+<a name="ln1404">        return cast_ignite_poison(&amp;you, -1, false, true) == spret::abort;</a>
+<a name="ln1405"> </a>
+<a name="ln1406">    case SPELL_STARBURST:</a>
+<a name="ln1407">        return cast_starburst(-1, false, true) == spret::abort;</a>
+<a name="ln1408"> </a>
+<a name="ln1409">    case SPELL_HAILSTORM:</a>
+<a name="ln1410">        return cast_hailstorm(-1, false, true) == spret::abort;</a>
+<a name="ln1411"> </a>
+<a name="ln1412">    case SPELL_DAZZLING_FLASH:</a>
+<a name="ln1413">        return cast_dazzling_flash(pow, false, true) == spret::abort;</a>
+<a name="ln1414"> </a>
+<a name="ln1415">     case SPELL_ABSOLUTE_ZERO:</a>
+<a name="ln1416">         return cast_absolute_zero(pow, false, true) == spret::abort;</a>
+<a name="ln1417"> </a>
+<a name="ln1418">    default:</a>
+<a name="ln1419">        break;</a>
+<a name="ln1420">    }</a>
+<a name="ln1421"> </a>
+<a name="ln1422">    if (minRange &lt; 0 || range &lt; 0)</a>
+<a name="ln1423">        return false;</a>
+<a name="ln1424"> </a>
+<a name="ln1425">    const spell_flags flags = get_spell_flags(spell);</a>
+<a name="ln1426"> </a>
+<a name="ln1427">    // The healing spells.</a>
+<a name="ln1428">    if (testbits(flags, spflag::helpful))</a>
+<a name="ln1429">        return false;</a>
+<a name="ln1430"> </a>
+<a name="ln1431">    const bool neutral = testbits(flags, spflag::neutral);</a>
+<a name="ln1432"> </a>
+<a name="ln1433">    bolt beam;</a>
+<a name="ln1434">    beam.flavour = BEAM_VISUAL;</a>
+<a name="ln1435">    beam.origin_spell = spell;</a>
+<a name="ln1436"> </a>
+<a name="ln1437">    zap_type zap = spell_to_zap(spell);</a>
+<a name="ln1438">    // Don't let it think that there are no susceptible monsters in range</a>
+<a name="ln1439">    if (spell == SPELL_RANDOM_BOLT)</a>
+<a name="ln1440">        zap = ZAP_DEBUGGING_RAY;</a>
+<a name="ln1441"> </a>
+<a name="ln1442">    if (zap != NUM_ZAPS)</a>
+<a name="ln1443">    {</a>
+<a name="ln1444">        beam.thrower = KILL_YOU_MISSILE;</a>
+<a name="ln1445">        zappy(zap, calc_spell_power(spell, true, false, true), false,</a>
+<a name="ln1446">              beam);</a>
+<a name="ln1447">        if (spell == SPELL_MEPHITIC_CLOUD)</a>
+<a name="ln1448">            beam.damage = dice_def(1, 1); // so that foe_info is populated</a>
+<a name="ln1449">    }</a>
+<a name="ln1450"> </a>
+<a name="ln1451">    if (beam.flavour != BEAM_VISUAL)</a>
+<a name="ln1452">    {</a>
+<a name="ln1453">        bolt tempbeam;</a>
+<a name="ln1454">        bool found = false;</a>
+<a name="ln1455">        beam.source_id = MID_PLAYER;</a>
+<a name="ln1456">        beam.range = range;</a>
+<a name="ln1457">        beam.is_tracer = true;</a>
+<a name="ln1458">        beam.is_targeting = true;</a>
+<a name="ln1459">        beam.source  = you.pos();</a>
+<a name="ln1460">        beam.dont_stop_player = true;</a>
+<a name="ln1461">        beam.friend_info.dont_stop = true;</a>
+<a name="ln1462">        beam.foe_info.dont_stop = true;</a>
+<a name="ln1463">        beam.attitude = ATT_FRIENDLY;</a>
+<a name="ln1464">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1465">        beam.quiet_debug = true;</a>
+<a name="ln1466">#endif</a>
+<a name="ln1467"> </a>
+<a name="ln1468">        const bool smite = testbits(flags, spflag::target);</a>
+<a name="ln1469"> </a>
+<a name="ln1470">        for (radius_iterator ri(you.pos(), range, C_SQUARE, LOS_DEFAULT);</a>
+<a name="ln1471">             ri; ++ri)</a>
+<a name="ln1472">        {</a>
+<a name="ln1473">            tempbeam = beam;</a>
+<a name="ln1474">            tempbeam.target = *ri;</a>
+<a name="ln1475"> </a>
+<a name="ln1476">            // For smite-targeted spells that aren't LOS-range.</a>
+<a name="ln1477">            if (smite)</a>
+<a name="ln1478">            {</a>
+<a name="ln1479">                // XXX These are basic checks that might be applicable to</a>
+<a name="ln1480">                // non-smiting spells as well. For those, the loop currently</a>
+<a name="ln1481">                // relies mostly on results from the temp beam firing, but it</a>
+<a name="ln1482">                // may be valid to exclude solid and non-reachable targets for</a>
+<a name="ln1483">                // all spells. -gammafunk</a>
+<a name="ln1484">                if (cell_is_solid(*ri) || !you.see_cell_no_trans(*ri))</a>
+<a name="ln1485">                    continue;</a>
+<a name="ln1486"> </a>
+<a name="ln1487">                // XXX Currently Vile Clutch is the only smite-targeted area</a>
+<a name="ln1488">                // spell that isn't LOS-range. Spell explosion radii are not</a>
+<a name="ln1489">                // stored anywhere, defaulting to 1 for non-smite-targeting</a>
+<a name="ln1490">                // spells through bolt::refine_for_explosions() or being set in</a>
+<a name="ln1491">                // setup functions for the smite targeted explosions. It would</a>
+<a name="ln1492">                // be good to move basic explosion radius info into spell_desc</a>
+<a name="ln1493">                // or possibly zap_data. -gammafunk</a>
+<a name="ln1494">                tempbeam.ex_size = tempbeam.is_explosion ? 1 : 0;</a>
+<a name="ln1495">                tempbeam.explode();</a>
+<a name="ln1496">            }</a>
+<a name="ln1497">            else</a>
+<a name="ln1498">                tempbeam.fire();</a>
+<a name="ln1499"> </a>
+<a name="ln1500">            if (tempbeam.foe_info.count &gt; 0</a>
+<a name="ln1501">                || neutral &amp;&amp; tempbeam.friend_info.count &gt; 0)</a>
+<a name="ln1502">            {</a>
+<a name="ln1503">                found = true;</a>
+<a name="ln1504">                break;</a>
+<a name="ln1505">            }</a>
+<a name="ln1506">        }</a>
+<a name="ln1507">        return !found;</a>
+<a name="ln1508">    }</a>
+<a name="ln1509"> </a>
+<a name="ln1510">    if (range &lt; minRange)</a>
+<a name="ln1511">        return true;</a>
+<a name="ln1512"> </a>
+<a name="ln1513">    return false;</a>
+<a name="ln1514">}</a>
+<a name="ln1515"> </a>
+<a name="ln1516"> </a>
+<a name="ln1517">// a map of schools to the corresponding sacrifice 'mutations'.</a>
+<a name="ln1518">static const mutation_type arcana_sacrifice_map[] = {</a>
+<a name="ln1519">    MUT_NO_CONJURATION_MAGIC,</a>
+<a name="ln1520">    MUT_NO_HEXES_MAGIC,</a>
+<a name="ln1521">    MUT_NO_CHARM_MAGIC,</a>
+<a name="ln1522">    MUT_NO_FIRE_MAGIC,</a>
+<a name="ln1523">    MUT_NO_ICE_MAGIC,</a>
+<a name="ln1524">    MUT_NO_TRANSMUTATION_MAGIC,</a>
+<a name="ln1525">    MUT_NO_NECROMANCY_MAGIC,</a>
+<a name="ln1526">    MUT_NO_SUMMONING_MAGIC,</a>
+<a name="ln1527">    MUT_NO_TRANSLOCATION_MAGIC,</a>
+<a name="ln1528">    MUT_NO_POISON_MAGIC,</a>
+<a name="ln1529">    MUT_NO_EARTH_MAGIC,</a>
+<a name="ln1530">    MUT_NO_AIR_MAGIC</a>
+<a name="ln1531">};</a>
+<a name="ln1532"> </a>
+<a name="ln1533">/**</a>
+<a name="ln1534"> * Are some subset of the given schools unusable by the player?</a>
+<a name="ln1535"> * (Due to Sacrifice Arcana)</a>
+<a name="ln1536"> *</a>
+<a name="ln1537"> * @param schools   A bitfield containing a union of spschools.</a>
+<a name="ln1538"> * @return          Whether the player is unable use any of the given schools.</a>
+<a name="ln1539"> */</a>
+<a name="ln1540">bool cannot_use_schools(spschools_type schools)</a>
+<a name="ln1541">{</a>
+<a name="ln1542">    COMPILE_CHECK(ARRAYSZ(arcana_sacrifice_map) == SPSCHOOL_LAST_EXPONENT + 1);</a>
+<a name="ln1543"> </a>
+<a name="ln1544">    // iter over every school</a>
+<a name="ln1545">    for (int i = 0; i &lt;= SPSCHOOL_LAST_EXPONENT; i++)</a>
+<a name="ln1546">    {</a>
+<a name="ln1547">        // skip schools not in the provided set</a>
+<a name="ln1548">        const auto school = spschools_type::exponent(i);</a>
+<a name="ln1549">        if (!(schools &amp; school))</a>
+<a name="ln1550">            continue;</a>
+<a name="ln1551"> </a>
+<a name="ln1552">        // check if the player has this school locked out</a>
+<a name="ln1553">        const mutation_type lockout_mut = arcana_sacrifice_map[i];</a>
+<a name="ln1554">        if (you.has_mutation(lockout_mut))</a>
+<a name="ln1555">            return true;</a>
+<a name="ln1556">    }</a>
+<a name="ln1557"> </a>
+<a name="ln1558">    return false;</a>
+<a name="ln1559">}</a>
+<a name="ln1560"> </a>
+<a name="ln1561"> </a>
+<a name="ln1562">/**</a>
+<a name="ln1563"> * What's the spell school corresponding to the given Ru mutation?</a>
+<a name="ln1564"> *</a>
+<a name="ln1565"> * @param mutation  The variety of MUT_NO_*_MAGIC in question.</a>
+<a name="ln1566"> * @return          The skill of the appropriate school (SK_AIR_MAGIC, etc).</a>
+<a name="ln1567"> *                  If no school corresponds, returns SK_NONE.</a>
+<a name="ln1568"> */</a>
+<a name="ln1569">skill_type arcane_mutation_to_skill(mutation_type mutation)</a>
+<a name="ln1570">{</a>
+<a name="ln1571">    for (int exp = 0; exp &lt;= SPSCHOOL_LAST_EXPONENT; exp++)</a>
+<a name="ln1572">        if (arcana_sacrifice_map[exp] == mutation)</a>
+<a name="ln1573">            return spell_type2skill(spschools_type::exponent(exp));</a>
+<a name="ln1574">    return SK_NONE;</a>
+<a name="ln1575">}</a>
+<a name="ln1576"> </a>
+<a name="ln1577">bool spell_is_soh_breath(spell_type spell)</a>
+<a name="ln1578">{</a>
+<a name="ln1579">    return spell == SPELL_SERPENT_OF_HELL_GEH_BREATH</a>
+<a name="ln1580">        || spell == SPELL_SERPENT_OF_HELL_COC_BREATH</a>
+<a name="ln1581">        || spell == SPELL_SERPENT_OF_HELL_DIS_BREATH</a>
+<a name="ln1582">        || spell == SPELL_SERPENT_OF_HELL_TAR_BREATH;</a>
+<a name="ln1583">}</a>
+<a name="ln1584"> </a>
+<a name="ln1585">const vector&lt;spell_type&gt; *soh_breath_spells(spell_type spell)</a>
+<a name="ln1586">{</a>
+<a name="ln1587">    static const map&lt;spell_type, vector&lt;spell_type&gt;&gt; soh_breaths = {</a>
+<a name="ln1588">        { SPELL_SERPENT_OF_HELL_GEH_BREATH,</a>
+<a name="ln1589">            { SPELL_FIRE_BREATH,</a>
+<a name="ln1590">              SPELL_FLAMING_CLOUD,</a>
+<a name="ln1591">              SPELL_FIREBALL } },</a>
+<a name="ln1592">        { SPELL_SERPENT_OF_HELL_COC_BREATH,</a>
+<a name="ln1593">            { SPELL_COLD_BREATH,</a>
+<a name="ln1594">              SPELL_FREEZING_CLOUD,</a>
+<a name="ln1595">              SPELL_FLASH_FREEZE } },</a>
+<a name="ln1596">        { SPELL_SERPENT_OF_HELL_DIS_BREATH,</a>
+<a name="ln1597">            { SPELL_METAL_SPLINTERS,</a>
+<a name="ln1598">              SPELL_QUICKSILVER_BOLT,</a>
+<a name="ln1599">              SPELL_LEHUDIBS_CRYSTAL_SPEAR } },</a>
+<a name="ln1600">        { SPELL_SERPENT_OF_HELL_TAR_BREATH,</a>
+<a name="ln1601">            { SPELL_BOLT_OF_DRAINING,</a>
+<a name="ln1602">              SPELL_MIASMA_BREATH,</a>
+<a name="ln1603">              SPELL_CORROSIVE_BOLT } },</a>
+<a name="ln1604">    };</a>
+<a name="ln1605"> </a>
+<a name="ln1606">    return map_find(soh_breaths, spell);</a>
+<a name="ln1607">}</a>
+
+</code></pre>
+<div class="balloon" rel="1139"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1189"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'you.undead_state(temp)' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+<div class="balloon" rel="1198"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'you.undead_state(temp)' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+<div class="balloon" rel="1203"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'you.undead_state(false)' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+<div class="balloon" rel="1327"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1501"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,2182 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>abyss.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Misc abyss specific functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;abyss.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cmath&gt;</a>
+<a name="ln12">#include &lt;cstdlib&gt;</a>
+<a name="ln13">#include &lt;queue&gt;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;act-iter.h&quot;</a>
+<a name="ln16">#include &quot;areas.h&quot;</a>
+<a name="ln17">#include &quot;bloodspatter.h&quot;</a>
+<a name="ln18">#include &quot;branch.h&quot;</a>
+<a name="ln19">#include &quot;cloud.h&quot;</a>
+<a name="ln20">#include &quot;colour.h&quot;</a>
+<a name="ln21">#include &quot;coordit.h&quot;</a>
+<a name="ln22">#include &quot;dbg-scan.h&quot;</a>
+<a name="ln23">#include &quot;dbg-util.h&quot;</a>
+<a name="ln24">#include &quot;delay.h&quot;</a>
+<a name="ln25">#include &quot;dgn-overview.h&quot;</a>
+<a name="ln26">#include &quot;dgn-proclayouts.h&quot;</a>
+<a name="ln27">#include &quot;files.h&quot;</a>
+<a name="ln28">#include &quot;god-companions.h&quot; // hep stuff</a>
+<a name="ln29">#include &quot;god-passive.h&quot; // passive_t::slow_abyss</a>
+<a name="ln30">#include &quot;hiscores.h&quot;</a>
+<a name="ln31">#include &quot;item-prop.h&quot;</a>
+<a name="ln32">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln33">#include &quot;items.h&quot;</a>
+<a name="ln34">#include &quot;libutil.h&quot;</a>
+<a name="ln35">#include &quot;mapmark.h&quot;</a>
+<a name="ln36">#include &quot;maps.h&quot;</a>
+<a name="ln37">#include &quot;message.h&quot;</a>
+<a name="ln38">#include &quot;mon-cast.h&quot;</a>
+<a name="ln39">#include &quot;mon-death.h&quot;</a>
+<a name="ln40">#include &quot;mon-pathfind.h&quot;</a>
+<a name="ln41">#include &quot;mon-pick.h&quot;</a>
+<a name="ln42">#include &quot;mon-place.h&quot;</a>
+<a name="ln43">#include &quot;mon-transit.h&quot;</a>
+<a name="ln44">#include &quot;notes.h&quot;</a>
+<a name="ln45">#include &quot;output.h&quot; // redraw_screens</a>
+<a name="ln46">#include &quot;religion.h&quot;</a>
+<a name="ln47">#include &quot;spl-clouds.h&quot; // big_cloud</a>
+<a name="ln48">#include &quot;stash.h&quot;</a>
+<a name="ln49">#include &quot;state.h&quot;</a>
+<a name="ln50">#include &quot;stairs.h&quot;</a>
+<a name="ln51">#include &quot;stringutil.h&quot;</a>
+<a name="ln52">#include &quot;terrain.h&quot;</a>
+<a name="ln53">#include &quot;rltiles/tiledef-dngn.h&quot;</a>
+<a name="ln54">#include &quot;tileview.h&quot;</a>
+<a name="ln55">#include &quot;timed-effects.h&quot;</a>
+<a name="ln56">#include &quot;traps.h&quot;</a>
+<a name="ln57">#include &quot;travel.h&quot;</a>
+<a name="ln58">#include &quot;view.h&quot;</a>
+<a name="ln59">#include &quot;xom.h&quot;</a>
+<a name="ln60"> </a>
+<a name="ln61">const coord_def ABYSS_CENTRE(GXM / 2, GYM / 2);</a>
+<a name="ln62"> </a>
+<a name="ln63">static const int ABYSSAL_RUNE_MAX_ROLL = 200;</a>
+<a name="ln64"> </a>
+<a name="ln65">abyss_state abyssal_state;</a>
+<a name="ln66"> </a>
+<a name="ln67">static ProceduralLayout *abyssLayout = nullptr, *levelLayout = nullptr;</a>
+<a name="ln68"> </a>
+<a name="ln69">typedef priority_queue&lt;ProceduralSample, vector&lt;ProceduralSample&gt;, ProceduralSamplePQCompare&gt; sample_queue;</a>
+<a name="ln70"> </a>
+<a name="ln71">static sample_queue abyss_sample_queue;</a>
+<a name="ln72">static vector&lt;dungeon_feature_type&gt; abyssal_features;</a>
+<a name="ln73">static list&lt;monster*&gt; displaced_monsters;</a>
+<a name="ln74"> </a>
+<a name="ln75">static void abyss_area_shift();</a>
+<a name="ln76">static void _push_items();</a>
+<a name="ln77">static void _push_displaced_monster(monster* mon);</a>
+<a name="ln78"> </a>
+<a name="ln79">// If not_seen is true, don't place the feature where it can be seen from</a>
+<a name="ln80">// the centre. Returns the chosen location, or INVALID_COORD if it</a>
+<a name="ln81">// could not be placed.</a>
+<a name="ln82">static coord_def _place_feature_near(const coord_def &amp;centre,</a>
+<a name="ln83">                                     int radius,</a>
+<a name="ln84">                                     dungeon_feature_type candidate,</a>
+<a name="ln85">                                     dungeon_feature_type replacement,</a>
+<a name="ln86">                                     int tries, bool not_seen = false)</a>
+<a name="ln87">{</a>
+<a name="ln88">    coord_def cp = INVALID_COORD;</a>
+<a name="ln89">    for (int i = 0; i &lt; tries; ++i)</a>
+<a name="ln90">    {</a>
+<a name="ln91">        coord_def offset;</a>
+<a name="ln92">        offset.x = random_range(-radius, radius);</a>
+<a name="ln93">        offset.y = random_range(-radius, radius);</a>
+<a name="ln94">        cp = centre + offset;</a>
+<a name="ln95"> </a>
+<a name="ln96">        if (cp == centre || !in_bounds(cp))</a>
+<a name="ln97">            continue;</a>
+<a name="ln98"> </a>
+<a name="ln99">        if (not_seen &amp;&amp; cell_see_cell_nocache(cp, centre))</a>
+<a name="ln100">            continue;</a>
+<a name="ln101"> </a>
+<a name="ln102">        if (grd(cp) == candidate)</a>
+<a name="ln103">        {</a>
+<a name="ln104">            dprf(DIAG_ABYSS, &quot;Placing %s at (%d,%d)&quot;,</a>
+<a name="ln105">                 dungeon_feature_name(replacement),</a>
+<a name="ln106">                 cp.x, cp.y);</a>
+<a name="ln107">            grd(cp) = replacement;</a>
+<a name="ln108">            return cp;</a>
+<a name="ln109">        }</a>
+<a name="ln110">    }</a>
+<a name="ln111">    return INVALID_COORD;</a>
+<a name="ln112">}</a>
+<a name="ln113"> </a>
+<a name="ln114">// Returns a feature suitable for use in the proto-Abyss level.</a>
+<a name="ln115">static dungeon_feature_type _abyss_proto_feature()</a>
+<a name="ln116">{</a>
+<a name="ln117">    return random_choose_weighted(3000, DNGN_FLOOR,</a>
+<a name="ln118">                                   600, DNGN_ROCK_WALL,</a>
+<a name="ln119">                                   300, DNGN_STONE_WALL,</a>
+<a name="ln120">                                   100, DNGN_METAL_WALL,</a>
+<a name="ln121">                                     1, DNGN_CLOSED_DOOR);</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">static void _write_abyssal_features()</a>
+<a name="ln125">{</a>
+<a name="ln126">    if (abyssal_features.empty())</a>
+<a name="ln127">        return;</a>
+<a name="ln128"> </a>
+<a name="ln129">    dprf(DIAG_ABYSS, &quot;Writing a mock-up of old level.&quot;);</a>
+<a name="ln130">    ASSERT((int)abyssal_features.size() == sqr(2 * LOS_RADIUS + 1));</a>
+<a name="ln131">    const int scalar = 0xFF;</a>
+<a name="ln132">    int index = 0;</a>
+<a name="ln133">    for (int x = -LOS_RADIUS; x &lt;= LOS_RADIUS; x++)</a>
+<a name="ln134">    {</a>
+<a name="ln135">        for (int y = -LOS_RADIUS; y &lt;= LOS_RADIUS; y++)</a>
+<a name="ln136">        {</a>
+<a name="ln137">            coord_def p(x, y);</a>
+<a name="ln138">            const int dist = p.rdist();</a>
+<a name="ln139">            p += ABYSS_CENTRE;</a>
+<a name="ln140"> </a>
+<a name="ln141">            int chance = pow(0.98, dist * dist) * scalar;</a>
+<a name="ln142">            if (!map_masked(p, MMT_VAULT))</a>
+<a name="ln143">            {</a>
+<a name="ln144">                if (dist &lt; 2 || x_chance_in_y(chance, scalar))</a>
+<a name="ln145">                {</a>
+<a name="ln146">                    if (abyssal_features[index] != DNGN_UNSEEN)</a>
+<a name="ln147">                    {</a>
+<a name="ln148">                        grd(p) = abyssal_features[index];</a>
+<a name="ln149">                        env.level_map_mask(p) = MMT_VAULT;</a>
+<a name="ln150">                        if (cell_is_solid(p))</a>
+<a name="ln151">                            delete_cloud(p);</a>
+<a name="ln152">                        if (monster* mon = monster_at(p))</a>
+<a name="ln153">                            _push_displaced_monster(mon);</a>
+<a name="ln154">                    }</a>
+<a name="ln155">                }</a>
+<a name="ln156">                else</a>
+<a name="ln157">                {</a>
+<a name="ln158">                    //Entombing the player is lame.</a>
+<a name="ln159">                    grd(p) = DNGN_FLOOR;</a>
+<a name="ln160">                }</a>
+<a name="ln161">            }</a>
+<a name="ln162"> </a>
+<a name="ln163">            ++index;</a>
+<a name="ln164">        }</a>
+<a name="ln165">    }</a>
+<a name="ln166"> </a>
+<a name="ln167">    _push_items();</a>
+<a name="ln168">    abyssal_features.clear();</a>
+<a name="ln169">}</a>
+<a name="ln170"> </a>
+<a name="ln171">// Returns the roll to use to check if we want to create an abyssal rune.</a>
+<a name="ln172">static int _abyssal_rune_roll()</a>
+<a name="ln173">{</a>
+<a name="ln174">    if (you.runes[RUNE_ABYSSAL] || you.depth &lt; ABYSSAL_RUNE_MIN_LEVEL)</a>
+<a name="ln175">        return -1;</a>
+<a name="ln176">    const bool god_favoured = have_passive(passive_t::attract_abyssal_rune);</a>
+<a name="ln177"> </a>
+<a name="ln178">    const double depth = you.depth + god_favoured;</a>
+<a name="ln179"> </a>
+<a name="ln180">    return (int) pow(100.0, depth/(1 + brdepth[BRANCH_ABYSS]));</a>
+<a name="ln181">}</a>
+<a name="ln182"> </a>
+<a name="ln183">static void _abyss_fixup_vault(const vault_placement *vp)</a>
+<a name="ln184">{</a>
+<a name="ln185">    for (vault_place_iterator vi(*vp); vi; ++vi)</a>
+<a name="ln186">    {</a>
+<a name="ln187">        const coord_def p(*vi);</a>
+<a name="ln188">        const dungeon_feature_type feat(grd(p));</a>
+<a name="ln189">        if (feat_is_stair(feat)</a>
+<a name="ln190">            &amp;&amp; feat != DNGN_EXIT_ABYSS</a>
+<a name="ln191">            &amp;&amp; feat != DNGN_ABYSSAL_STAIR</a>
+<a name="ln192">            &amp;&amp; !feat_is_portal_entrance(feat))</a>
+<a name="ln193">        {</a>
+<a name="ln194">            grd(p) = DNGN_FLOOR;</a>
+<a name="ln195">        }</a>
+<a name="ln196"> </a>
+<a name="ln197">        tile_init_flavour(p);</a>
+<a name="ln198">    }</a>
+<a name="ln199">}</a>
+<a name="ln200"> </a>
+<a name="ln201">static bool _abyss_place_map(const map_def *mdef)</a>
+<a name="ln202">{</a>
+<a name="ln203">    // This is to prevent the player position from being updated by vaults</a>
+<a name="ln204">    // until after everything is done.</a>
+<a name="ln205">    unwind_bool gen(crawl_state.generating_level, true);</a>
+<a name="ln206"> </a>
+<a name="ln207">    try</a>
+<a name="ln208">    {</a>
+<a name="ln209">        if (dgn_safe_place_map(mdef, true, false, INVALID_COORD))</a>
+<a name="ln210">        {</a>
+<a name="ln211">            _abyss_fixup_vault(env.level_vaults.back().get());</a>
+<a name="ln212">            return true;</a>
+<a name="ln213">        }</a>
+<a name="ln214">    }</a>
+<a name="ln215">    catch (dgn_veto_exception &amp;e)</a>
+<a name="ln216">    {</a>
+<a name="ln217">        dprf(DIAG_ABYSS, &quot;Abyss map placement vetoed: %s&quot;, e.what());</a>
+<a name="ln218">    }</a>
+<a name="ln219">    return false;</a>
+<a name="ln220">}</a>
+<a name="ln221"> </a>
+<a name="ln222">static bool _abyss_place_vault_tagged(const map_bitmask &amp;abyss_genlevel_mask,</a>
+<a name="ln223">                                      const string &amp;tag)</a>
+<a name="ln224">{</a>
+<a name="ln225">    const map_def *map = random_map_for_tag(tag, true, true, MB_FALSE);</a>
+<a name="ln226">    if (map)</a>
+<a name="ln227">    {</a>
+<a name="ln228">        unwind_vault_placement_mask vaultmask(&amp;abyss_genlevel_mask);</a>
+<a name="ln229">        return _abyss_place_map(map);</a>
+<a name="ln230">    }</a>
+<a name="ln231">    return false;</a>
+<a name="ln232">}</a>
+<a name="ln233"> </a>
+<a name="ln234">static void _abyss_postvault_fixup()</a>
+<a name="ln235">{</a>
+<a name="ln236">    fixup_misplaced_items();</a>
+<a name="ln237">    link_items();</a>
+<a name="ln238">    dgn_make_transporters_from_markers();</a>
+<a name="ln239">    env.markers.activate_all();</a>
+<a name="ln240">}</a>
+<a name="ln241"> </a>
+<a name="ln242">static bool _abyss_place_rune_vault(const map_bitmask &amp;abyss_genlevel_mask)</a>
+<a name="ln243">{</a>
+<a name="ln244">    // Make sure we're not about to link bad items.</a>
+<a name="ln245">    debug_item_scan();</a>
+<a name="ln246"> </a>
+<a name="ln247">    bool result = false;</a>
+<a name="ln248">    int tries = 10;</a>
+<a name="ln249">    do</a>
+<a name="ln250">    {</a>
+<a name="ln251">        result = _abyss_place_vault_tagged(abyss_genlevel_mask, &quot;abyss_rune&quot;);</a>
+<a name="ln252">    }</a>
+<a name="ln253">    while (!result &amp;&amp; --tries);</a>
+<a name="ln254"> </a>
+<a name="ln255">    // Make sure the rune is linked.</a>
+<a name="ln256">    // XXX: I'm fairly sure this does nothing if result == false,</a>
+<a name="ln257">    //      but leaving it alone for now. -- Grunt</a>
+<a name="ln258">    _abyss_postvault_fixup();</a>
+<a name="ln259">    return result;</a>
+<a name="ln260">}</a>
+<a name="ln261"> </a>
+<a name="ln262">static bool _abyss_place_rune(const map_bitmask &amp;abyss_genlevel_mask)</a>
+<a name="ln263">{</a>
+<a name="ln264">    // Use a rune vault if there's one.</a>
+<a name="ln265">    if (_abyss_place_rune_vault(abyss_genlevel_mask))</a>
+<a name="ln266">        return true;</a>
+<a name="ln267"> </a>
+<a name="ln268">    coord_def chosen_spot;</a>
+<a name="ln269">    int places_found = 0;</a>
+<a name="ln270"> </a>
+<a name="ln271">    // Pick a random spot to drop the rune. We specifically do not use</a>
+<a name="ln272">    // random_in_bounds and similar, because we may be dealing with a</a>
+<a name="ln273">    // non-rectangular region, and we want to place the rune fairly.</a>
+<a name="ln274">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln275">    {</a>
+<a name="ln276">        const coord_def p(*ri);</a>
+<a name="ln277">        if (abyss_genlevel_mask(p)</a>
+<a name="ln278">            &amp;&amp; grd(p) == DNGN_FLOOR &amp;&amp; igrd(p) == NON_ITEM</a>
+<a name="ln279">            &amp;&amp; one_chance_in(++places_found))</a>
+<a name="ln280">        {</a>
+<a name="ln281">            chosen_spot = p;</a>
+<a name="ln282">        }</a>
+<a name="ln283">    }</a>
+<a name="ln284"> </a>
+<a name="ln285">    if (places_found)</a>
+<a name="ln286">    {</a>
+<a name="ln287">        dprf(DIAG_ABYSS, &quot;Placing abyssal rune at (%d,%d)&quot;,</a>
+<a name="ln288">             chosen_spot.x, chosen_spot.y);</a>
+<a name="ln289">        int item_ind  = items(true, OBJ_RUNES, RUNE_ABYSSAL, 0);</a>
+<a name="ln290">        if (item_ind != NON_ITEM)</a>
+<a name="ln291">            item_colour(mitm[item_ind]);</a>
+<a name="ln292">        move_item_to_grid(&amp;item_ind, chosen_spot);</a>
+<a name="ln293">        return item_ind != NON_ITEM;</a>
+<a name="ln294">    }</a>
+<a name="ln295"> </a>
+<a name="ln296">    return false;</a>
+<a name="ln297">}</a>
+<a name="ln298"> </a>
+<a name="ln299">// Returns true if items can be generated on the given square.</a>
+<a name="ln300">static bool _abyss_square_accepts_items(const map_bitmask &amp;abyss_genlevel_mask,</a>
+<a name="ln301">                                        coord_def p)</a>
+<a name="ln302">{</a>
+<a name="ln303">    return abyss_genlevel_mask(p)</a>
+<a name="ln304">           &amp;&amp; grd(p) == DNGN_FLOOR</a>
+<a name="ln305">           &amp;&amp; igrd(p) == NON_ITEM</a>
+<a name="ln306">           &amp;&amp; !map_masked(p, MMT_VAULT);</a>
+<a name="ln307">}</a>
+<a name="ln308"> </a>
+<a name="ln309">static int _abyss_create_items(const map_bitmask &amp;abyss_genlevel_mask,</a>
+<a name="ln310">                               bool placed_abyssal_rune)</a>
+<a name="ln311">{</a>
+<a name="ln312">    // During game start, number and level of items mustn't be higher than</a>
+<a name="ln313">    // that on level 1.</a>
+<a name="ln314">    int num_items = 150, items_level = 52;</a>
+<a name="ln315">    int items_placed = 0;</a>
+<a name="ln316"> </a>
+<a name="ln317">    if (player_in_starting_abyss())</a>
+<a name="ln318">    {</a>
+<a name="ln319">        num_items   = 3 + roll_dice(3, 11);</a>
+<a name="ln320">        items_level = 0;</a>
+<a name="ln321">    }</a>
+<a name="ln322"> </a>
+<a name="ln323">    const int abyssal_rune_roll = _abyssal_rune_roll();</a>
+<a name="ln324">    bool should_place_abyssal_rune = false;</a>
+<a name="ln325">    vector&lt;coord_def&gt; chosen_item_places;</a>
+<a name="ln326">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln327">    {</a>
+<a name="ln328">        if (_abyss_square_accepts_items(abyss_genlevel_mask, *ri))</a>
+<a name="ln329">        {</a>
+<a name="ln330">            if (items_placed &lt; num_items &amp;&amp; one_chance_in(200))</a>
+<a name="ln331">            {</a>
+<a name="ln332">                // [ds] Don't place abyssal rune in this loop to avoid</a>
+<a name="ln333">                // biasing rune placement toward the north-west of the</a>
+<a name="ln334">                // abyss level. Instead, make a note of whether we</a>
+<a name="ln335">                // decided to place the abyssal rune at all, and if we</a>
+<a name="ln336">                // did, place it randomly somewhere in the map at the</a>
+<a name="ln337">                // end of the item-gen pass. We may as a result create</a>
+<a name="ln338">                // (num_items + 1) items instead of num_items, which</a>
+<a name="ln339">                // is acceptable.</a>
+<a name="ln340">                if (!placed_abyssal_rune &amp;&amp; !should_place_abyssal_rune</a>
+<a name="ln341">                    &amp;&amp; abyssal_rune_roll != -1</a>
+<a name="ln342">                    &amp;&amp; x_chance_in_y(abyssal_rune_roll, ABYSSAL_RUNE_MAX_ROLL))</a>
+<a name="ln343">                {</a>
+<a name="ln344">                    should_place_abyssal_rune = true;</a>
+<a name="ln345">                }</a>
+<a name="ln346"> </a>
+<a name="ln347">                chosen_item_places.push_back(*ri);</a>
+<a name="ln348">            }</a>
+<a name="ln349">        }</a>
+<a name="ln350">    }</a>
+<a name="ln351"> </a>
+<a name="ln352">    if (!placed_abyssal_rune &amp;&amp; should_place_abyssal_rune)</a>
+<a name="ln353">    {</a>
+<a name="ln354">        if (_abyss_place_rune(abyss_genlevel_mask))</a>
+<a name="ln355">            ++items_placed;</a>
+<a name="ln356">    }</a>
+<a name="ln357"> </a>
+<a name="ln358">    for (const coord_def place : chosen_item_places)</a>
+<a name="ln359">    {</a>
+<a name="ln360">        if (_abyss_square_accepts_items(abyss_genlevel_mask, place))</a>
+<a name="ln361">        {</a>
+<a name="ln362">            int thing_created = items(true, OBJ_RANDOM, OBJ_RANDOM,</a>
+<a name="ln363">                                      items_level);</a>
+<a name="ln364">            move_item_to_grid(&amp;thing_created, place);</a>
+<a name="ln365">            if (thing_created != NON_ITEM)</a>
+<a name="ln366">                items_placed++;</a>
+<a name="ln367">        }</a>
+<a name="ln368">    }</a>
+<a name="ln369"> </a>
+<a name="ln370">    return items_placed;</a>
+<a name="ln371">}</a>
+<a name="ln372"> </a>
+<a name="ln373">static string _who_banished(const string &amp;who)</a>
+<a name="ln374">{</a>
+<a name="ln375">    return who.empty() ? who : &quot; (&quot; + who + &quot;)&quot;;</a>
+<a name="ln376">}</a>
+<a name="ln377"> </a>
+<a name="ln378">static int _banished_depth(const int power)</a>
+<a name="ln379">{</a>
+<a name="ln380">    // Linear, with the max going from (1,1) to (25,5)</a>
+<a name="ln381">    // and the min going from (9,1) to (27,5)</a>
+<a name="ln382">    // Currently using HD for power</a>
+<a name="ln383"> </a>
+<a name="ln384">    // This means an orc will send you to A:1, an orc warrior</a>
+<a name="ln385">    // has a small chance of A:2,</a>
+<a name="ln386">    // Elves have a good shot at sending you to A:3, but won't</a>
+<a name="ln387">    // always</a>
+<a name="ln388">    // Ancient Liches are sending you to A:5 and there's nothing</a>
+<a name="ln389">    // you can do about that.</a>
+<a name="ln390">    const int maxdepth = div_rand_round((power + 5), 6);</a>
+<a name="ln391">    const int mindepth = (4 * power + 7) / 23;</a>
+<a name="ln392">    return min(5, max(1, random_range(mindepth, maxdepth)));</a>
+<a name="ln393">}</a>
+<a name="ln394"> </a>
+<a name="ln395">void banished(const string &amp;who, const int power)</a>
+<a name="ln396">{</a>
+<a name="ln397">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln398">    if (brdepth[BRANCH_ABYSS] == -1)</a>
+<a name="ln399">        return;</a>
+<a name="ln400"> </a>
+<a name="ln401">    if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln402">    {</a>
+<a name="ln403">        if (level_id::current().depth &lt; brdepth[BRANCH_ABYSS])</a>
+<a name="ln404">            down_stairs(DNGN_ABYSSAL_STAIR);</a>
+<a name="ln405">        else</a>
+<a name="ln406">        {</a>
+<a name="ln407">            // On Abyss:5 we can't go deeper; cause a shift to a new area</a>
+<a name="ln408">            mprf(MSGCH_BANISHMENT, &quot;You are banished to a different region of the Abyss.&quot;);</a>
+<a name="ln409">            abyss_teleport();</a>
+<a name="ln410">        }</a>
+<a name="ln411">        return;</a>
+<a name="ln412">    }</a>
+<a name="ln413"> </a>
+<a name="ln414">    const int depth = _banished_depth(power);</a>
+<a name="ln415">    const string what = make_stringf(&quot;Cast into level %d of the Abyss&quot;, depth)</a>
+<a name="ln416">                      + _who_banished(who);</a>
+<a name="ln417">    take_note(Note(NOTE_MESSAGE, 0, 0, what), true);</a>
+<a name="ln418"> </a>
+<a name="ln419">    stop_delay(true);</a>
+<a name="ln420">    run_animation(ANIMATION_BANISH, UA_BRANCH_ENTRY, false);</a>
+<a name="ln421">    push_features_to_abyss();</a>
+<a name="ln422">    floor_transition(DNGN_ENTER_ABYSS, orig_terrain(you.pos()),</a>
+<a name="ln423">                     level_id(BRANCH_ABYSS, depth), true);</a>
+<a name="ln424">    // This is an honest abyss entry, mark milestone</a>
+<a name="ln425">    mark_milestone(&quot;abyss.enter&quot;,</a>
+<a name="ln426">        &quot;was cast into the Abyss!&quot; + _who_banished(who), &quot;parent&quot;);</a>
+<a name="ln427"> </a>
+<a name="ln428">    // Xom just might decide to interfere.</a>
+<a name="ln429">    if (you_worship(GOD_XOM) &amp;&amp; who != &quot;Xom&quot; &amp;&amp; who != &quot;wizard command&quot;</a>
+<a name="ln430">        &amp;&amp; who != &quot;a distortion unwield&quot;)</a>
+<a name="ln431">    {</a>
+<a name="ln432">        xom_maybe_reverts_banishment(false, false);</a>
+<a name="ln433">    }</a>
+<a name="ln434">}</a>
+<a name="ln435"> </a>
+<a name="ln436">void push_features_to_abyss()</a>
+<a name="ln437">{</a>
+<a name="ln438">    abyssal_features.clear();</a>
+<a name="ln439"> </a>
+<a name="ln440">    for (int x = -LOS_RADIUS; x &lt;= LOS_RADIUS; x++)</a>
+<a name="ln441">    {</a>
+<a name="ln442">        for (int y = -LOS_RADIUS; y &lt;= LOS_RADIUS; y++)</a>
+<a name="ln443">        {</a>
+<a name="ln444">            coord_def p(x, y);</a>
+<a name="ln445"> </a>
+<a name="ln446">            p += you.pos();</a>
+<a name="ln447"> </a>
+<a name="ln448">            dungeon_feature_type feature = map_bounds(p) ? grd(p) : DNGN_UNSEEN;</a>
+<a name="ln449">            feature = sanitize_feature(feature);</a>
+<a name="ln450">            abyssal_features.push_back(feature);</a>
+<a name="ln451">        }</a>
+<a name="ln452">    }</a>
+<a name="ln453">}</a>
+<a name="ln454"> </a>
+<a name="ln455">static bool _abyss_check_place_feat(coord_def p,</a>
+<a name="ln456">                                    const int feat_chance,</a>
+<a name="ln457">                                    int *feats_wanted,</a>
+<a name="ln458">                                    bool *use_map,</a>
+<a name="ln459">                                    dungeon_feature_type which_feat,</a>
+<a name="ln460">                                    const map_bitmask &amp;abyss_genlevel_mask)</a>
+<a name="ln461">{</a>
+<a name="ln462">    if (!which_feat)</a>
+<a name="ln463">        return false;</a>
+<a name="ln464"> </a>
+<a name="ln465">    const bool place_feat = feat_chance &amp;&amp; one_chance_in(feat_chance);</a>
+<a name="ln466"> </a>
+<a name="ln467">    if (place_feat &amp;&amp; feats_wanted)</a>
+<a name="ln468">        ++*feats_wanted;</a>
+<a name="ln469"> </a>
+<a name="ln470">    // Don't place features in bubbles.</a>
+<a name="ln471">    int wall_count = 0;</a>
+<a name="ln472">    for (adjacent_iterator ai(p); ai; ++ai)</a>
+<a name="ln473">        wall_count += cell_is_solid(p);</a>
+<a name="ln474">    if (wall_count &gt; 6)</a>
+<a name="ln475">        return false;</a>
+<a name="ln476"> </a>
+<a name="ln477">    // There's no longer a need to check for features under items,</a>
+<a name="ln478">    // since we're working on fresh grids that are guaranteed</a>
+<a name="ln479">    // item-free.</a>
+<a name="ln480">    if (place_feat || (feats_wanted &amp;&amp; *feats_wanted &gt; 0))</a>
+<a name="ln481">    {</a>
+<a name="ln482">        dprf(DIAG_ABYSS, &quot;Placing abyss feature: %s.&quot;,</a>
+<a name="ln483">             dungeon_feature_name(which_feat));</a>
+<a name="ln484"> </a>
+<a name="ln485">        // When placing Abyss exits, try to use a vault if we have one.</a>
+<a name="ln486">        if (which_feat == DNGN_EXIT_ABYSS</a>
+<a name="ln487">            &amp;&amp; use_map &amp;&amp; *use_map</a>
+<a name="ln488">            &amp;&amp; _abyss_place_vault_tagged(abyss_genlevel_mask, &quot;abyss_exit&quot;))</a>
+<a name="ln489">        {</a>
+<a name="ln490">            *use_map = false;</a>
+<a name="ln491"> </a>
+<a name="ln492">            // Link the vault-placed items.</a>
+<a name="ln493">            _abyss_postvault_fixup();</a>
+<a name="ln494">        }</a>
+<a name="ln495">        else if (!abyss_genlevel_mask(p))</a>
+<a name="ln496">            return false;</a>
+<a name="ln497">        else</a>
+<a name="ln498">            grd(p) = which_feat;</a>
+<a name="ln499"> </a>
+<a name="ln500">        if (feats_wanted)</a>
+<a name="ln501">            --*feats_wanted;</a>
+<a name="ln502">        return true;</a>
+<a name="ln503">    }</a>
+<a name="ln504">    return false;</a>
+<a name="ln505">}</a>
+<a name="ln506"> </a>
+<a name="ln507">static dungeon_feature_type _abyss_pick_altar()</a>
+<a name="ln508">{</a>
+<a name="ln509">    // Lugonu has a flat 50% chance of corrupting the altar.</a>
+<a name="ln510">    if (coinflip())</a>
+<a name="ln511">        return DNGN_ALTAR_LUGONU;</a>
+<a name="ln512"> </a>
+<a name="ln513">    god_type god;</a>
+<a name="ln514"> </a>
+<a name="ln515">    do</a>
+<a name="ln516">    {</a>
+<a name="ln517">        god = random_god();</a>
+<a name="ln518">    }</a>
+<a name="ln519">    while (is_good_god(god));</a>
+<a name="ln520"> </a>
+<a name="ln521">    return altar_for_god(god);</a>
+<a name="ln522">}</a>
+<a name="ln523"> </a>
+<a name="ln524">static bool _abyssal_rune_at(const coord_def p)</a>
+<a name="ln525">{</a>
+<a name="ln526">    for (stack_iterator si(p); si; ++si)</a>
+<a name="ln527">        if (si-&gt;is_type(OBJ_RUNES, RUNE_ABYSSAL))</a>
+<a name="ln528">            return true;</a>
+<a name="ln529">    return false;</a>
+<a name="ln530">}</a>
+<a name="ln531"> </a>
+<a name="ln532">class xom_abyss_feature_amusement_check</a>
+<a name="ln533">{</a>
+<a name="ln534">private:</a>
+<a name="ln535">    bool exit_was_near;</a>
+<a name="ln536">    bool rune_was_near;</a>
+<a name="ln537"> </a>
+<a name="ln538">private:</a>
+<a name="ln539">    bool abyss_exit_nearness() const</a>
+<a name="ln540">    {</a>
+<a name="ln541">        // env.map_knowledge().known() doesn't work on unmappable levels because</a>
+<a name="ln542">        // mapping flags are not set on such levels.</a>
+<a name="ln543">        for (radius_iterator ri(you.pos(), LOS_DEFAULT); ri; ++ri)</a>
+<a name="ln544">            if (grd(*ri) == DNGN_EXIT_ABYSS &amp;&amp; env.map_knowledge(*ri).seen())</a>
+<a name="ln545">                return true;</a>
+<a name="ln546"> </a>
+<a name="ln547">        return false;</a>
+<a name="ln548">    }</a>
+<a name="ln549"> </a>
+<a name="ln550">    bool abyss_rune_nearness() const</a>
+<a name="ln551">    {</a>
+<a name="ln552">        // See above comment about env.map_knowledge().known().</a>
+<a name="ln553">        for (radius_iterator ri(you.pos(), LOS_DEFAULT); ri; ++ri)</a>
+<a name="ln554">            if (env.map_knowledge(*ri).seen() &amp;&amp; _abyssal_rune_at(*ri))</a>
+<a name="ln555">                return true;</a>
+<a name="ln556">        return false;</a>
+<a name="ln557">    }</a>
+<a name="ln558"> </a>
+<a name="ln559">public:</a>
+<a name="ln560">    xom_abyss_feature_amusement_check()</a>
+<a name="ln561">    {</a>
+<a name="ln562">        exit_was_near = abyss_exit_nearness();</a>
+<a name="ln563">        rune_was_near = abyss_rune_nearness();</a>
+<a name="ln564">    }</a>
+<a name="ln565"> </a>
+<a name="ln566">    // If the player was almost to the exit when it disappeared, Xom</a>
+<a name="ln567">    // is extremely amused. He's also extremely amused if the player</a>
+<a name="ln568">    // winds up right next to an exit when there wasn't one there</a>
+<a name="ln569">    // before. The same applies to Abyssal runes.</a>
+<a name="ln570">    ~xom_abyss_feature_amusement_check()</a>
+<a name="ln571">    {</a>
+<a name="ln572">        // Update known terrain</a>
+<a name="ln573">        viewwindow();</a>
+<a name="ln574"> </a>
+<a name="ln575">        const bool exit_is_near = abyss_exit_nearness();</a>
+<a name="ln576">        const bool rune_is_near = abyss_rune_nearness();</a>
+<a name="ln577"> </a>
+<a name="ln578">        if (exit_was_near &amp;&amp; !exit_is_near || rune_was_near &amp;&amp; !rune_is_near)</a>
+<a name="ln579">            xom_is_stimulated(200, &quot;Xom snickers loudly.&quot;, true);</a>
+<a name="ln580"> </a>
+<a name="ln581">        if (!rune_was_near &amp;&amp; rune_is_near || !exit_was_near &amp;&amp; exit_is_near)</a>
+<a name="ln582">            xom_is_stimulated(200);</a>
+<a name="ln583">    }</a>
+<a name="ln584">};</a>
+<a name="ln585"> </a>
+<a name="ln586">static void _abyss_lose_monster(monster&amp; mons)</a>
+<a name="ln587">{</a>
+<a name="ln588">    if (mons.needs_abyss_transit())</a>
+<a name="ln589">        mons.set_transit(level_id(BRANCH_ABYSS));</a>
+<a name="ln590">    // make sure we don't end up with an invalid hep ancestor</a>
+<a name="ln591">    else if (hepliaklqana_ancestor() == mons.mid)</a>
+<a name="ln592">    {</a>
+<a name="ln593">        simple_monster_message(mons, &quot; is pulled into the Abyss.&quot;,</a>
+<a name="ln594">                MSGCH_BANISHMENT);</a>
+<a name="ln595">        remove_companion(&amp;mons);</a>
+<a name="ln596">        you.duration[DUR_ANCESTOR_DELAY] = random_range(50, 150); //~5-15 turns</a>
+<a name="ln597">    }</a>
+<a name="ln598"> </a>
+<a name="ln599">    mons.destroy_inventory();</a>
+<a name="ln600">    monster_cleanup(&amp;mons);</a>
+<a name="ln601">}</a>
+<a name="ln602"> </a>
+<a name="ln603">// If a sanctuary exists and is in LOS, moves it to keep it in the</a>
+<a name="ln604">// same place relative to the player's location after a shift. If the</a>
+<a name="ln605">// sanctuary is not in player LOS, removes it.</a>
+<a name="ln606">static void _abyss_move_sanctuary(const coord_def abyss_shift_start_centre,</a>
+<a name="ln607">                                  const coord_def abyss_shift_end_centre)</a>
+<a name="ln608">{</a>
+<a name="ln609">    if (env.sanctuary_time &gt; 0 &amp;&amp; in_bounds(env.sanctuary_pos))</a>
+<a name="ln610">    {</a>
+<a name="ln611">        if (you.see_cell(env.sanctuary_pos))</a>
+<a name="ln612">        {</a>
+<a name="ln613">            env.sanctuary_pos += (abyss_shift_end_centre -</a>
+<a name="ln614">                                  abyss_shift_start_centre);</a>
+<a name="ln615">        }</a>
+<a name="ln616">        else</a>
+<a name="ln617">            remove_sanctuary();</a>
+<a name="ln618">    }</a>
+<a name="ln619">}</a>
+<a name="ln620"> </a>
+<a name="ln621">static void _push_displaced_monster(monster* mon)</a>
+<a name="ln622">{</a>
+<a name="ln623">    displaced_monsters.push_back(mon);</a>
+<a name="ln624">}</a>
+<a name="ln625"> </a>
+<a name="ln626">static void _place_displaced_monsters()</a>
+<a name="ln627">{</a>
+<a name="ln628">    for (monster *mon : displaced_monsters)</a>
+<a name="ln629">    {</a>
+<a name="ln630">        if (mon-&gt;alive() &amp;&amp; !mon-&gt;find_home_near_place(mon-&gt;pos()))</a>
+<a name="ln631">        {</a>
+<a name="ln632">            maybe_bloodify_square(mon-&gt;pos());</a>
+<a name="ln633">            // hep messaging is done in _abyss_lose_monster</a>
+<a name="ln634">            if (you.can_see(*mon) &amp;&amp; hepliaklqana_ancestor() != mon-&gt;mid)</a>
+<a name="ln635">            {</a>
+<a name="ln636">                simple_monster_message(*mon, &quot; is pulled into the Abyss.&quot;,</a>
+<a name="ln637">                        MSGCH_BANISHMENT);</a>
+<a name="ln638">            }</a>
+<a name="ln639">            _abyss_lose_monster(*mon);</a>
+<a name="ln640"> </a>
+<a name="ln641">        }</a>
+<a name="ln642">    }</a>
+<a name="ln643"> </a>
+<a name="ln644">    displaced_monsters.clear();</a>
+<a name="ln645">}</a>
+<a name="ln646"> </a>
+<a name="ln647">static bool _pushy_feature(dungeon_feature_type feat)</a>
+<a name="ln648">{</a>
+<a name="ln649">    // Only completely impassible features and lava will push items.</a>
+<a name="ln650">    // In particular, deep water will not push items, because the item</a>
+<a name="ln651">    // will eventually become accessible again through abyss morphing.</a>
+<a name="ln652"> </a>
+<a name="ln653">    // Perhaps this should instead be merged with (the complement of)</a>
+<a name="ln654">    // _item_safe_square() in terrain.cc. Unlike this function, that</a>
+<a name="ln655">    // one treats traps as unsafe, but closed doors as safe.</a>
+<a name="ln656">    return feat_is_solid(feat) || feat == DNGN_LAVA;</a>
+<a name="ln657">}</a>
+<a name="ln658"> </a>
+<a name="ln659">static void _push_items()</a>
+<a name="ln660">{</a>
+<a name="ln661">    for (int i = 0; i &lt; MAX_ITEMS; i++)</a>
+<a name="ln662">    {</a>
+<a name="ln663">        item_def&amp; item(mitm[i]);</a>
+<a name="ln664">        if (!item.defined() || !in_bounds(item.pos) || item.held_by_monster())</a>
+<a name="ln665">            continue;</a>
+<a name="ln666"> </a>
+<a name="ln667">        if (!_pushy_feature(grd(item.pos)))</a>
+<a name="ln668">            continue;</a>
+<a name="ln669"> </a>
+<a name="ln670">        for (distance_iterator di(item.pos); di; ++di)</a>
+<a name="ln671">            if (!_pushy_feature(grd(*di)))</a>
+<a name="ln672">            {</a>
+<a name="ln673">                int j = i;</a>
+<a name="ln674">                ASSERT(!testbits(item.flags, ISFLAG_SUMMONED));</a>
+<a name="ln675">                move_item_to_grid(&amp;j, *di, true);</a>
+<a name="ln676">                break;</a>
+<a name="ln677">            }</a>
+<a name="ln678">    }</a>
+<a name="ln679">}</a>
+<a name="ln680"> </a>
+<a name="ln681">// Deletes everything on the level at the given position.</a>
+<a name="ln682">// Things that are wiped:</a>
+<a name="ln683">// 1. Dungeon terrain (set to DNGN_UNSEEN)</a>
+<a name="ln684">// 2. Monsters (the player is unaffected)</a>
+<a name="ln685">// 3. Items</a>
+<a name="ln686">// 4. Clouds</a>
+<a name="ln687">// 5. Terrain properties</a>
+<a name="ln688">// 6. Terrain colours</a>
+<a name="ln689">// 7. Vault (map) mask</a>
+<a name="ln690">// 8. Vault id mask</a>
+<a name="ln691">// 9. Map markers</a>
+<a name="ln692"> </a>
+<a name="ln693">static void _abyss_wipe_square_at(coord_def p, bool saveMonsters=false)</a>
+<a name="ln694">{</a>
+<a name="ln695">    // Nuke terrain.</a>
+<a name="ln696">    destroy_shop_at(p);</a>
+<a name="ln697">    destroy_trap(p);</a>
+<a name="ln698"> </a>
+<a name="ln699">    // Nuke vault flag.</a>
+<a name="ln700">    if (map_masked(p, MMT_VAULT))</a>
+<a name="ln701">        env.level_map_mask(p) &amp;= ~MMT_VAULT;</a>
+<a name="ln702"> </a>
+<a name="ln703">    grd(p) = DNGN_UNSEEN;</a>
+<a name="ln704"> </a>
+<a name="ln705">    // Nuke items.</a>
+<a name="ln706">    if (igrd(p) != NON_ITEM)</a>
+<a name="ln707">        dprf(DIAG_ABYSS, &quot;Nuke item stack at (%d, %d)&quot;, p.x, p.y);</a>
+<a name="ln708">    lose_item_stack(p);</a>
+<a name="ln709"> </a>
+<a name="ln710">    // Nuke monster.</a>
+<a name="ln711">    if (monster* mon = monster_at(p))</a>
+<a name="ln712">    {</a>
+<a name="ln713">        ASSERT(mon-&gt;alive());</a>
+<a name="ln714"> </a>
+<a name="ln715">        if (saveMonsters)</a>
+<a name="ln716">            _push_displaced_monster(mon);</a>
+<a name="ln717">        else</a>
+<a name="ln718">            _abyss_lose_monster(*mon);</a>
+<a name="ln719">    }</a>
+<a name="ln720"> </a>
+<a name="ln721">    // Delete cloud.</a>
+<a name="ln722">    delete_cloud(p);</a>
+<a name="ln723"> </a>
+<a name="ln724">    env.pgrid(p)        = terrain_property_t{};</a>
+<a name="ln725">    env.grid_colours(p) = 0;</a>
+<a name="ln726">#ifdef USE_TILE</a>
+<a name="ln727">    env.tile_bk_fg(p)   = 0;</a>
+<a name="ln728">    env.tile_bk_bg(p)   = 0;</a>
+<a name="ln729">    env.tile_bk_cloud(p)= 0;</a>
+<a name="ln730">#endif</a>
+<a name="ln731">    tile_clear_flavour(p);</a>
+<a name="ln732">    tile_init_flavour(p);</a>
+<a name="ln733"> </a>
+<a name="ln734">    env.level_map_mask(p) = 0;</a>
+<a name="ln735">    env.level_map_ids(p)  = INVALID_MAP_INDEX;</a>
+<a name="ln736"> </a>
+<a name="ln737">    remove_markers_and_listeners_at(p);</a>
+<a name="ln738"> </a>
+<a name="ln739">    env.map_knowledge(p).clear();</a>
+<a name="ln740">    if (env.map_forgotten)</a>
+<a name="ln741">        (*env.map_forgotten)(p).clear();</a>
+<a name="ln742">    env.map_seen.set(p, false);</a>
+<a name="ln743">#ifdef USE_TILE</a>
+<a name="ln744">    tile_forget_map(p);</a>
+<a name="ln745">#endif</a>
+<a name="ln746">    StashTrack.update_stash(p);</a>
+<a name="ln747">}</a>
+<a name="ln748"> </a>
+<a name="ln749">// Removes monsters, clouds, dungeon features, and items from the</a>
+<a name="ln750">// level, torching all squares for which the supplied mask is false.</a>
+<a name="ln751">static void _abyss_wipe_unmasked_area(const map_bitmask &amp;abyss_preserve_mask)</a>
+<a name="ln752">{</a>
+<a name="ln753">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln754">        if (!abyss_preserve_mask(*ri))</a>
+<a name="ln755">            _abyss_wipe_square_at(*ri);</a>
+<a name="ln756">}</a>
+<a name="ln757"> </a>
+<a name="ln758">// Moves everything at src to dst.</a>
+<a name="ln759">static void _abyss_move_entities_at(coord_def src, coord_def dst)</a>
+<a name="ln760">{</a>
+<a name="ln761">    dgn_move_entities_at(src, dst, true, true, true);</a>
+<a name="ln762">}</a>
+<a name="ln763"> </a>
+<a name="ln764">// Move all vaults within the mask by the specified delta.</a>
+<a name="ln765">static void _abyss_move_masked_vaults_by_delta(const coord_def delta)</a>
+<a name="ln766">{</a>
+<a name="ln767">    set&lt;int&gt; vault_indexes;</a>
+<a name="ln768">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln769">    {</a>
+<a name="ln770">        const int vi = env.level_map_ids(*ri);</a>
+<a name="ln771">        if (vi != INVALID_MAP_INDEX)</a>
+<a name="ln772">            vault_indexes.insert(vi);</a>
+<a name="ln773">    }</a>
+<a name="ln774"> </a>
+<a name="ln775">    for (auto i : vault_indexes)</a>
+<a name="ln776">    {</a>
+<a name="ln777">        vault_placement &amp;vp(*env.level_vaults[i]);</a>
+<a name="ln778">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln779">        const coord_def oldp = vp.pos;</a>
+<a name="ln780">#endif</a>
+<a name="ln781">        vp.pos += delta;</a>
+<a name="ln782">        dprf(DIAG_ABYSS, &quot;Moved vault (%s) from (%d,%d)-(%d,%d)&quot;,</a>
+<a name="ln783">             vp.map.name.c_str(), oldp.x, oldp.y, vp.pos.x, vp.pos.y);</a>
+<a name="ln784">    }</a>
+<a name="ln785">}</a>
+<a name="ln786"> </a>
+<a name="ln787">/**</a>
+<a name="ln788"> * Updates the destination of a transporter that has been shifted to a new</a>
+<a name="ln789"> * center. Assumes that the transporter itself and its position marker have</a>
+<a name="ln790"> * already been moved.</a>
+<a name="ln791"> *</a>
+<a name="ln792"> * @param pos            Transporter's new (and current) location.</a>
+<a name="ln793"> * @param source_center  Center of where the transporter's vault area was</a>
+<a name="ln794"> *                       shifted from.</a>
+<a name="ln795"> * @param target_center  Center of where the transporter's vault area is being</a>
+<a name="ln796"> *                       shifted to.</a>
+<a name="ln797"> * @param shift_area     A map_bitmask of the entire area being shifted.</a>
+<a name="ln798"> </a>
+<a name="ln799"> */</a>
+<a name="ln800">static void _abyss_update_transporter(const coord_def &amp;pos,</a>
+<a name="ln801">                                      const coord_def &amp;source_centre,</a>
+<a name="ln802">                                      const coord_def &amp;target_centre,</a>
+<a name="ln803">                                      const map_bitmask &amp;shift_area)</a>
+<a name="ln804">{</a>
+<a name="ln805">    if (grd(pos) != DNGN_TRANSPORTER)</a>
+<a name="ln806">        return;</a>
+<a name="ln807"> </a>
+<a name="ln808">    // Get the marker, since we will need to modify it.</a>
+<a name="ln809">    map_position_marker *marker =</a>
+<a name="ln810">        get_position_marker_at(pos, DNGN_TRANSPORTER);</a>
+<a name="ln811">    if (!marker || marker-&gt;dest == INVALID_COORD)</a>
+<a name="ln812">        return;</a>
+<a name="ln813"> </a>
+<a name="ln814">    // Original destination is not being preserved, so disable the transporter.</a>
+<a name="ln815">    if (!shift_area.get(marker-&gt;dest))</a>
+<a name="ln816">    {</a>
+<a name="ln817">        marker-&gt;dest = INVALID_COORD;</a>
+<a name="ln818">        return;</a>
+<a name="ln819">    }</a>
+<a name="ln820"> </a>
+<a name="ln821">    marker-&gt;dest = marker-&gt;dest - source_centre + target_centre;</a>
+<a name="ln822">}</a>
+<a name="ln823"> </a>
+<a name="ln824">// Moves the player, monsters, terrain and items in the square (circle</a>
+<a name="ln825">// in movement distance) around the player with the given radius to</a>
+<a name="ln826">// the square centred on target_centre.</a>
+<a name="ln827">//</a>
+<a name="ln828">// Assumes:</a>
+<a name="ln829">// a) target can be truncated if not fully in bounds</a>
+<a name="ln830">// b) source and target areas may overlap</a>
+<a name="ln831">//</a>
+<a name="ln832">static void _abyss_move_entities(coord_def target_centre,</a>
+<a name="ln833">                                 map_bitmask *shift_area_mask)</a>
+<a name="ln834">{</a>
+<a name="ln835">    const coord_def source_centre = you.pos();</a>
+<a name="ln836">    const coord_def delta = (target_centre - source_centre).sgn();</a>
+<a name="ln837">    const map_bitmask original_area_mask = *shift_area_mask;</a>
+<a name="ln838"> </a>
+<a name="ln839">    // When moving a region, walk backward to handle overlapping</a>
+<a name="ln840">    // ranges correctly.</a>
+<a name="ln841">    coord_def direction = -delta;</a>
+<a name="ln842"> </a>
+<a name="ln843">    if (!direction.x)</a>
+<a name="ln844">        direction.x = 1;</a>
+<a name="ln845">    if (!direction.y)</a>
+<a name="ln846">        direction.y = 1;</a>
+<a name="ln847"> </a>
+<a name="ln848">    coord_def start(MAPGEN_BORDER, MAPGEN_BORDER);</a>
+<a name="ln849">    coord_def end(GXM - 1 - MAPGEN_BORDER, GYM - 1 - MAPGEN_BORDER);</a>
+<a name="ln850"> </a>
+<a name="ln851">    if (direction.x == -1)</a>
+<a name="ln852">        swap(start.x, end.x);</a>
+<a name="ln853">    if (direction.y == -1)</a>
+<a name="ln854">        swap(start.y, end.y);</a>
+<a name="ln855"> </a>
+<a name="ln856">    end += direction;</a>
+<a name="ln857"> </a>
+<a name="ln858">    for (int y = start.y; y != end.y; y += direction.y)</a>
+<a name="ln859">    {</a>
+<a name="ln860">        for (int x = start.x; x != end.x; x += direction.x)</a>
+<a name="ln861">        {</a>
+<a name="ln862">            const coord_def src(x, y);</a>
+<a name="ln863">            if (!shift_area_mask-&gt;get(src))</a>
+<a name="ln864">                continue;</a>
+<a name="ln865"> </a>
+<a name="ln866">            shift_area_mask-&gt;set(src, false);</a>
+<a name="ln867"> </a>
+<a name="ln868">            const coord_def dst = src - source_centre + target_centre;</a>
+<a name="ln869">            if (map_bounds_with_margin(dst, MAPGEN_BORDER))</a>
+<a name="ln870">            {</a>
+<a name="ln871">                shift_area_mask-&gt;set(dst);</a>
+<a name="ln872">                // Wipe the dstination clean before dropping things on it.</a>
+<a name="ln873">                _abyss_wipe_square_at(dst);</a>
+<a name="ln874">                _abyss_move_entities_at(src, dst);</a>
+<a name="ln875">                _abyss_update_transporter(dst, source_centre, target_centre,</a>
+<a name="ln876">                                          original_area_mask);</a>
+<a name="ln877">            }</a>
+<a name="ln878">            else</a>
+<a name="ln879">            {</a>
+<a name="ln880">                // Wipe the source clean even if the dst is not in bounds.</a>
+<a name="ln881">                _abyss_wipe_square_at(src);</a>
+<a name="ln882">            }</a>
+<a name="ln883">        }</a>
+<a name="ln884">    }</a>
+<a name="ln885"> </a>
+<a name="ln886">    _abyss_move_masked_vaults_by_delta(target_centre - source_centre);</a>
+<a name="ln887">}</a>
+<a name="ln888"> </a>
+<a name="ln889">static void _abyss_expand_mask_to_cover_vault(map_bitmask *mask,</a>
+<a name="ln890">                                              int map_index)</a>
+<a name="ln891">{</a>
+<a name="ln892">    dprf(DIAG_ABYSS, &quot;Expanding mask to cover vault %d (nvaults: %u)&quot;,</a>
+<a name="ln893">         map_index, (unsigned int)env.level_vaults.size());</a>
+<a name="ln894">    const vault_placement &amp;vp = *env.level_vaults[map_index];</a>
+<a name="ln895">    for (vault_place_iterator vpi(vp); vpi; ++vpi)</a>
+<a name="ln896">        mask-&gt;set(*vpi);</a>
+<a name="ln897">}</a>
+<a name="ln898"> </a>
+<a name="ln899">// Identifies the smallest square around the given source that can be</a>
+<a name="ln900">// shifted without breaking up any vaults.</a>
+<a name="ln901">static void _abyss_identify_area_to_shift(coord_def source, int radius,</a>
+<a name="ln902">                                          map_bitmask *mask)</a>
+<a name="ln903">{</a>
+<a name="ln904">    mask-&gt;reset();</a>
+<a name="ln905"> </a>
+<a name="ln906">    set&lt;int&gt; affected_vault_indexes;</a>
+<a name="ln907">    for (rectangle_iterator ri(source, radius); ri; ++ri)</a>
+<a name="ln908">    {</a>
+<a name="ln909">        if (!map_bounds_with_margin(*ri, MAPGEN_BORDER))</a>
+<a name="ln910">            continue;</a>
+<a name="ln911"> </a>
+<a name="ln912">        mask-&gt;set(*ri);</a>
+<a name="ln913"> </a>
+<a name="ln914">        const int map_index = env.level_map_ids(*ri);</a>
+<a name="ln915">        if (map_index != INVALID_MAP_INDEX)</a>
+<a name="ln916">            affected_vault_indexes.insert(map_index);</a>
+<a name="ln917">    }</a>
+<a name="ln918"> </a>
+<a name="ln919">    for (auto i : affected_vault_indexes)</a>
+<a name="ln920">        _abyss_expand_mask_to_cover_vault(mask, i);</a>
+<a name="ln921">}</a>
+<a name="ln922"> </a>
+<a name="ln923">static void _abyss_invert_mask(map_bitmask *mask)</a>
+<a name="ln924">{</a>
+<a name="ln925">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln926">        mask-&gt;set(*ri, !mask-&gt;get(*ri));</a>
+<a name="ln927">}</a>
+<a name="ln928"> </a>
+<a name="ln929">// Moves everything in the given radius around the player (where radius=0 =&gt;</a>
+<a name="ln930">// only the player) to another part of the level, centred on target_centre.</a>
+<a name="ln931">// Everything not in the given radius is wiped to DNGN_UNSEEN and the provided</a>
+<a name="ln932">// map_bitmask is set to true for all wiped squares.</a>
+<a name="ln933">//</a>
+<a name="ln934">// Things that are moved:</a>
+<a name="ln935">// 1. Dungeon terrain</a>
+<a name="ln936">// 2. Actors (player + monsters)</a>
+<a name="ln937">// 3. Items</a>
+<a name="ln938">// 4. Clouds</a>
+<a name="ln939">// 5. Terrain properties</a>
+<a name="ln940">// 6. Terrain colours</a>
+<a name="ln941">// 7. Vaults</a>
+<a name="ln942">// 8. Vault (map) mask</a>
+<a name="ln943">// 9. Vault id mask</a>
+<a name="ln944">// 10. Map markers</a>
+<a name="ln945">//</a>
+<a name="ln946">// After the shift, any vaults that are no longer referenced in the id</a>
+<a name="ln947">// mask will be discarded. If those vaults had any unique tags or</a>
+<a name="ln948">// names, the tag/name will NOT be unregistered.</a>
+<a name="ln949">//</a>
+<a name="ln950">// Assumes:</a>
+<a name="ln951">// a) radius &gt;= LOS_RADIUS</a>
+<a name="ln952">// b) All points in the source and target areas are in bounds.</a>
+<a name="ln953">static void _abyss_shift_level_contents_around_player(</a>
+<a name="ln954">    int radius,</a>
+<a name="ln955">    coord_def target_centre,</a>
+<a name="ln956">    map_bitmask &amp;abyss_destruction_mask)</a>
+<a name="ln957">{</a>
+<a name="ln958">    const coord_def source_centre = you.pos();</a>
+<a name="ln959"> </a>
+<a name="ln960">    abyssal_state.major_coord += (source_centre - ABYSS_CENTRE);</a>
+<a name="ln961"> </a>
+<a name="ln962">    ASSERT(radius &gt;= LOS_RADIUS);</a>
+<a name="ln963">    // This should only really happen due to wizmode blink/movement.</a>
+<a name="ln964">    // 1KB: ... yet at least Xom &quot;swap with monster&quot; triggers it.</a>
+<a name="ln965">    //ASSERT(map_bounds_with_margin(source_centre, radius));</a>
+<a name="ln966">    //ASSERT(map_bounds_with_margin(target_centre, radius));</a>
+<a name="ln967"> </a>
+<a name="ln968">    _abyss_identify_area_to_shift(source_centre, radius,</a>
+<a name="ln969">                                  &amp;abyss_destruction_mask);</a>
+<a name="ln970"> </a>
+<a name="ln971">    // Shift sanctuary centre if it's close.</a>
+<a name="ln972">    _abyss_move_sanctuary(you.pos(), target_centre);</a>
+<a name="ln973"> </a>
+<a name="ln974">    // Zap everything except the area we're shifting, so that there's</a>
+<a name="ln975">    // nothing in the way of moving stuff.</a>
+<a name="ln976">    _abyss_wipe_unmasked_area(abyss_destruction_mask);</a>
+<a name="ln977"> </a>
+<a name="ln978">    // Move stuff to its new home. This will also move the player.</a>
+<a name="ln979">    _abyss_move_entities(target_centre, &amp;abyss_destruction_mask);</a>
+<a name="ln980"> </a>
+<a name="ln981">    // [ds] Rezap everything except the shifted area. NOTE: the old</a>
+<a name="ln982">    // code did not do this, leaving a repeated swatch of Abyss behind</a>
+<a name="ln983">    // at the old location for every shift; discussions between Linley</a>
+<a name="ln984">    // and dpeg on ##crawl confirm that this (repeated swatch of</a>
+<a name="ln985">    // terrain left behind) was not intentional.</a>
+<a name="ln986">    _abyss_wipe_unmasked_area(abyss_destruction_mask);</a>
+<a name="ln987"> </a>
+<a name="ln988">    // So far we've used the mask to track the portions of the level we're</a>
+<a name="ln989">    // preserving. The inverse of the mask represents the area to be filled</a>
+<a name="ln990">    // with brand new abyss:</a>
+<a name="ln991">    _abyss_invert_mask(&amp;abyss_destruction_mask);</a>
+<a name="ln992"> </a>
+<a name="ln993">    // Update env.level_vaults to discard any vaults that are no longer in</a>
+<a name="ln994">    // the picture.</a>
+<a name="ln995">    dgn_erase_unused_vault_placements();</a>
+<a name="ln996">}</a>
+<a name="ln997"> </a>
+<a name="ln998">static void _abyss_generate_monsters(int nmonsters)</a>
+<a name="ln999">{</a>
+<a name="ln1000">    if (crawl_state.disables[DIS_SPAWNS])</a>
+<a name="ln1001">        return;</a>
+<a name="ln1002"> </a>
+<a name="ln1003">    mgen_data mg;</a>
+<a name="ln1004">    mg.proximity = PROX_ANYWHERE;</a>
+<a name="ln1005"> </a>
+<a name="ln1006">    for (int mcount = 0; mcount &lt; nmonsters; mcount++)</a>
+<a name="ln1007">    {</a>
+<a name="ln1008">        mg.cls = pick_random_monster(level_id::current());</a>
+<a name="ln1009">        if (!invalid_monster_type(mg.cls))</a>
+<a name="ln1010">            mons_place(mg);</a>
+<a name="ln1011">    }</a>
+<a name="ln1012">}</a>
+<a name="ln1013"> </a>
+<a name="ln1014"> </a>
+<a name="ln1015">void maybe_shift_abyss_around_player()</a>
+<a name="ln1016">{</a>
+<a name="ln1017">    ASSERT(player_in_branch(BRANCH_ABYSS));</a>
+<a name="ln1018">    if (map_bounds_with_margin(you.pos(),</a>
+<a name="ln1019">                               MAPGEN_BORDER + ABYSS_AREA_SHIFT_RADIUS + 1))</a>
+<a name="ln1020">    {</a>
+<a name="ln1021">        return;</a>
+<a name="ln1022">    }</a>
+<a name="ln1023"> </a>
+<a name="ln1024">    dprf(DIAG_ABYSS, &quot;Shifting abyss at (%d,%d)&quot;, you.pos().x, you.pos().y);</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    abyss_area_shift();</a>
+<a name="ln1027">    if (you.pet_target != MHITYOU)</a>
+<a name="ln1028">        you.pet_target = MHITNOT;</a>
+<a name="ln1029"> </a>
+<a name="ln1030">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1031">    int j = count_if(begin(mitm), end(mitm), mem_fn(&amp;item_def::defined));</a>
+<a name="ln1032"> </a>
+<a name="ln1033">    dprf(DIAG_ABYSS, &quot;Number of items present: %d&quot;, j);</a>
+<a name="ln1034"> </a>
+<a name="ln1035">    j = 0;</a>
+<a name="ln1036">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1037">        ++j;</a>
+<a name="ln1038"> </a>
+<a name="ln1039">    dprf(DIAG_ABYSS, &quot;Number of monsters present: %d&quot;, j);</a>
+<a name="ln1040">    dprf(DIAG_ABYSS, &quot;Number of clouds present: %d&quot;, int(env.cloud.size()));</a>
+<a name="ln1041">#endif</a>
+<a name="ln1042">}</a>
+<a name="ln1043"> </a>
+<a name="ln1044">void save_abyss_uniques()</a>
+<a name="ln1045">{</a>
+<a name="ln1046">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1047">        if (mi-&gt;needs_abyss_transit()</a>
+<a name="ln1048">            &amp;&amp; !testbits(mi-&gt;flags, MF_TAKING_STAIRS))</a>
+<a name="ln1049">        {</a>
+<a name="ln1050">            mi-&gt;set_transit(level_id(BRANCH_ABYSS));</a>
+<a name="ln1051">        }</a>
+<a name="ln1052">}</a>
+<a name="ln1053"> </a>
+<a name="ln1054">static bool _in_wastes(const coord_def &amp;p)</a>
+<a name="ln1055">{</a>
+<a name="ln1056">    return p.x &gt; 0 &amp;&amp; p.x &lt; 0x7FFFFFF &amp;&amp; p.y &gt; 0 &amp;&amp; p.y &lt; 0x7FFFFFF;</a>
+<a name="ln1057">}</a>
+<a name="ln1058"> </a>
+<a name="ln1059">static level_id _get_random_level()</a>
+<a name="ln1060">{</a>
+<a name="ln1061">    vector&lt;level_id&gt; levels;</a>
+<a name="ln1062">    for (branch_iterator it; it; ++it)</a>
+<a name="ln1063">    {</a>
+<a name="ln1064">        if (it-&gt;id == BRANCH_VESTIBULE || it-&gt;id == BRANCH_ABYSS</a>
+<a name="ln1065">            || it-&gt;id == BRANCH_SHOALS)</a>
+<a name="ln1066">        {</a>
+<a name="ln1067">            continue;</a>
+<a name="ln1068">        }</a>
+<a name="ln1069">        for (int j = 1; j &lt;= brdepth[it-&gt;id]; ++j)</a>
+<a name="ln1070">        {</a>
+<a name="ln1071">            const level_id id(it-&gt;id, j);</a>
+<a name="ln1072">            // for pregen, this will use levels the player hasn't seen yet</a>
+<a name="ln1073">            if (is_existing_level(id))</a>
+<a name="ln1074">                levels.push_back(id);</a>
+<a name="ln1075">        }</a>
+<a name="ln1076">    }</a>
+<a name="ln1077">    if (levels.empty())</a>
+<a name="ln1078">    {</a>
+<a name="ln1079">        // Let this fail later on.</a>
+<a name="ln1080">        return level_id(static_cast&lt;branch_type&gt;(BRANCH_DUNGEON), 1);</a>
+<a name="ln1081">    }</a>
+<a name="ln1082"> </a>
+<a name="ln1083">    return levels[hash_with_seed(levels.size(), abyssal_state.seed)];</a>
+<a name="ln1084">}</a>
+<a name="ln1085"> </a>
+<a name="ln1086">/**************************************************************/</a>
+<a name="ln1087">/* Fixed layouts (ie, those that depend only on abyss coords) */</a>
+<a name="ln1088">/**************************************************************/</a>
+<a name="ln1089">const static WastesLayout wastes;</a>
+<a name="ln1090">const static DiamondLayout diamond30(3,0);</a>
+<a name="ln1091">const static DiamondLayout diamond21(2,1);</a>
+<a name="ln1092">const static ColumnLayout column2(2);</a>
+<a name="ln1093">const static ColumnLayout column26(2,6);</a>
+<a name="ln1094">const static ProceduralLayout* regularLayouts[] =</a>
+<a name="ln1095">{</a>
+<a name="ln1096">    &amp;diamond30, &amp;diamond21, &amp;column2, &amp;column26,</a>
+<a name="ln1097">};</a>
+<a name="ln1098">const static vector&lt;const ProceduralLayout*&gt; layout_vec(regularLayouts,</a>
+<a name="ln1099">    regularLayouts + ARRAYSZ(regularLayouts));</a>
+<a name="ln1100">const static WorleyLayout worleyL(123456, layout_vec);</a>
+<a name="ln1101">const static RoilingChaosLayout chaosA(8675309, 450);</a>
+<a name="ln1102">const static RoilingChaosLayout chaosB(7654321, 400);</a>
+<a name="ln1103">const static RoilingChaosLayout chaosC(24324,   380);</a>
+<a name="ln1104">const static RoilingChaosLayout chaosD(24816,   500);</a>
+<a name="ln1105">const static NewAbyssLayout newAbyssLayout(7629);</a>
+<a name="ln1106">const static ProceduralLayout* mixedLayouts[] =</a>
+<a name="ln1107">{</a>
+<a name="ln1108">    &amp;chaosA, &amp;worleyL, &amp;chaosB, &amp;chaosC, &amp;chaosD, &amp;newAbyssLayout,</a>
+<a name="ln1109">};</a>
+<a name="ln1110">const static vector&lt;const ProceduralLayout*&gt; mixed_vec(mixedLayouts,</a>
+<a name="ln1111">    mixedLayouts + ARRAYSZ(mixedLayouts));</a>
+<a name="ln1112">const static WorleyLayout layout(4321, mixed_vec);</a>
+<a name="ln1113">const static ProceduralLayout* baseLayouts[] = { &amp;newAbyssLayout, &amp;layout };</a>
+<a name="ln1114">const static vector&lt;const ProceduralLayout*&gt; base_vec(baseLayouts,</a>
+<a name="ln1115">    baseLayouts + ARRAYSZ(baseLayouts));</a>
+<a name="ln1116">const static WorleyLayout baseLayout(314159, base_vec, 5.0);</a>
+<a name="ln1117">const static RiverLayout rivers(1800, baseLayout);</a>
+<a name="ln1118">// This one is not fixed: [0] is a level pulled from the current game</a>
+<a name="ln1119">static vector&lt;const ProceduralLayout*&gt; complex_vec(2);</a>
+<a name="ln1120"> </a>
+<a name="ln1121">static ProceduralSample _abyss_grid(const coord_def &amp;p)</a>
+<a name="ln1122">{</a>
+<a name="ln1123">    const coord_def pt = p + abyssal_state.major_coord;</a>
+<a name="ln1124"> </a>
+<a name="ln1125">    if (_in_wastes(pt))</a>
+<a name="ln1126">    {</a>
+<a name="ln1127">        ProceduralSample sample = wastes(pt, abyssal_state.depth);</a>
+<a name="ln1128">        abyss_sample_queue.push(sample);</a>
+<a name="ln1129">        return sample;</a>
+<a name="ln1130">    }</a>
+<a name="ln1131"> </a>
+<a name="ln1132">    if (abyssLayout == nullptr)</a>
+<a name="ln1133">    {</a>
+<a name="ln1134">        const level_id lid = _get_random_level();</a>
+<a name="ln1135">        levelLayout = new LevelLayout(lid, 5, rivers);</a>
+<a name="ln1136">        complex_vec[0] = levelLayout;</a>
+<a name="ln1137">        complex_vec[1] = &amp;rivers; // const</a>
+<a name="ln1138">        abyssLayout = new WorleyLayout(23571113, complex_vec, 6.1);</a>
+<a name="ln1139">        if (is_existing_level(lid))</a>
+<a name="ln1140">        {</a>
+<a name="ln1141">            auto &amp;vault_list =  you.vault_list[level_id::current()];</a>
+<a name="ln1142">            vault_list.push_back(&quot;base: &quot; + lid.describe(false));</a>
+<a name="ln1143">        }</a>
+<a name="ln1144">    }</a>
+<a name="ln1145"> </a>
+<a name="ln1146">    const ProceduralSample sample = (*abyssLayout)(pt, abyssal_state.depth);</a>
+<a name="ln1147">    ASSERT(sample.feat() &gt; DNGN_UNSEEN);</a>
+<a name="ln1148"> </a>
+<a name="ln1149">    abyss_sample_queue.push(sample);</a>
+<a name="ln1150">    return sample;</a>
+<a name="ln1151">}</a>
+<a name="ln1152"> </a>
+<a name="ln1153">static cloud_type _cloud_from_feat(const dungeon_feature_type &amp;ft)</a>
+<a name="ln1154">{</a>
+<a name="ln1155">    switch (ft)</a>
+<a name="ln1156">    {</a>
+<a name="ln1157">        case DNGN_CLOSED_DOOR:</a>
+<a name="ln1158">        case DNGN_OPEN_DOOR:</a>
+<a name="ln1159">        case DNGN_METAL_WALL:</a>
+<a name="ln1160">            return CLOUD_GREY_SMOKE;</a>
+<a name="ln1161">        case DNGN_CRYSTAL_WALL:</a>
+<a name="ln1162">        case DNGN_ROCK_WALL:</a>
+<a name="ln1163">        case DNGN_SLIMY_WALL:</a>
+<a name="ln1164">        case DNGN_STONE_WALL:</a>
+<a name="ln1165">        case DNGN_PERMAROCK_WALL:</a>
+<a name="ln1166">            return random_choose(CLOUD_BLUE_SMOKE, CLOUD_PURPLE_SMOKE);</a>
+<a name="ln1167">        case DNGN_CLEAR_ROCK_WALL:</a>
+<a name="ln1168">        case DNGN_CLEAR_STONE_WALL:</a>
+<a name="ln1169">        case DNGN_CLEAR_PERMAROCK_WALL:</a>
+<a name="ln1170">        case DNGN_GRATE:</a>
+<a name="ln1171">        case DNGN_CLOSED_CLEAR_DOOR:</a>
+<a name="ln1172">        case DNGN_OPEN_CLEAR_DOOR:</a>
+<a name="ln1173">            return CLOUD_MIST;</a>
+<a name="ln1174">        case DNGN_ORCISH_IDOL:</a>
+<a name="ln1175">        case DNGN_GRANITE_STATUE:</a>
+<a name="ln1176">        case DNGN_LAVA:</a>
+<a name="ln1177">            return CLOUD_BLACK_SMOKE;</a>
+<a name="ln1178">        case DNGN_DEEP_WATER:</a>
+<a name="ln1179">        case DNGN_SHALLOW_WATER:</a>
+<a name="ln1180">        case DNGN_FOUNTAIN_BLUE:</a>
+<a name="ln1181">            return one_chance_in(5) ? CLOUD_RAIN : CLOUD_BLUE_SMOKE;</a>
+<a name="ln1182">        case DNGN_FOUNTAIN_SPARKLING:</a>
+<a name="ln1183">            return CLOUD_RAIN;</a>
+<a name="ln1184">        default:</a>
+<a name="ln1185">            return CLOUD_NONE;</a>
+<a name="ln1186">    }</a>
+<a name="ln1187">}</a>
+<a name="ln1188"> </a>
+<a name="ln1189">static dungeon_feature_type _veto_dangerous_terrain(dungeon_feature_type feat)</a>
+<a name="ln1190">{</a>
+<a name="ln1191">    if (feat == DNGN_DEEP_WATER)</a>
+<a name="ln1192">        return DNGN_SHALLOW_WATER;</a>
+<a name="ln1193">    if (feat == DNGN_LAVA)</a>
+<a name="ln1194">        return DNGN_FLOOR;</a>
+<a name="ln1195">    if (feat_is_solid(feat))</a>
+<a name="ln1196">        return DNGN_FLOOR;</a>
+<a name="ln1197"> </a>
+<a name="ln1198">    return feat;</a>
+<a name="ln1199">}</a>
+<a name="ln1200"> </a>
+<a name="ln1201">static void _update_abyss_terrain(const coord_def &amp;p,</a>
+<a name="ln1202">    const map_bitmask &amp;abyss_genlevel_mask, bool morph)</a>
+<a name="ln1203">{</a>
+<a name="ln1204">    const coord_def rp = p - abyssal_state.major_coord;</a>
+<a name="ln1205">    // ignore dead coordinates</a>
+<a name="ln1206">    if (!in_bounds(rp))</a>
+<a name="ln1207">        return;</a>
+<a name="ln1208"> </a>
+<a name="ln1209">    const dungeon_feature_type currfeat = grd(rp);</a>
+<a name="ln1210"> </a>
+<a name="ln1211">    // Don't decay vaults.</a>
+<a name="ln1212">    if (map_masked(rp, MMT_VAULT))</a>
+<a name="ln1213">        return;</a>
+<a name="ln1214"> </a>
+<a name="ln1215">    switch (currfeat)</a>
+<a name="ln1216">    {</a>
+<a name="ln1217">        case DNGN_EXIT_ABYSS:</a>
+<a name="ln1218">        case DNGN_ABYSSAL_STAIR:</a>
+<a name="ln1219">            return;</a>
+<a name="ln1220">        default:</a>
+<a name="ln1221">            break;</a>
+<a name="ln1222">    }</a>
+<a name="ln1223"> </a>
+<a name="ln1224">    if (feat_is_altar(currfeat))</a>
+<a name="ln1225">        return;</a>
+<a name="ln1226"> </a>
+<a name="ln1227">    if (!abyss_genlevel_mask(rp))</a>
+<a name="ln1228">        return;</a>
+<a name="ln1229"> </a>
+<a name="ln1230">    if (currfeat != DNGN_UNSEEN &amp;&amp; !morph)</a>
+<a name="ln1231">        return;</a>
+<a name="ln1232"> </a>
+<a name="ln1233">    // What should have been there previously?  It might not be because</a>
+<a name="ln1234">    // of external changes such as digging.</a>
+<a name="ln1235">    const ProceduralSample sample = _abyss_grid(rp);</a>
+<a name="ln1236"> </a>
+<a name="ln1237">    // Enqueue the update, but don't morph.</a>
+<a name="ln1238">    if (_abyssal_rune_at(rp))</a>
+<a name="ln1239">        return;</a>
+<a name="ln1240"> </a>
+<a name="ln1241">    dungeon_feature_type feat = sample.feat();</a>
+<a name="ln1242"> </a>
+<a name="ln1243">    // Don't replace open doors with closed doors!</a>
+<a name="ln1244">    if (feat_is_door(currfeat) &amp;&amp; feat_is_door(feat))</a>
+<a name="ln1245">        return;</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    // Veto dangerous terrain.</a>
+<a name="ln1248">    if (you.pos() == rp)</a>
+<a name="ln1249">        feat = _veto_dangerous_terrain(feat);</a>
+<a name="ln1250">    // Veto morph when there's a submerged monster (or a plant) below you.</a>
+<a name="ln1251">    if (you.pos() == rp &amp;&amp; mgrd(rp) != NON_MONSTER)</a>
+<a name="ln1252">        feat = currfeat;</a>
+<a name="ln1253"> </a>
+<a name="ln1254">    // If the selected grid is already there, *or* if we're morphing and</a>
+<a name="ln1255">    // the selected grid should have been there, do nothing.</a>
+<a name="ln1256">    if (feat != currfeat)</a>
+<a name="ln1257">    {</a>
+<a name="ln1258">        grd(rp) = feat;</a>
+<a name="ln1259">        if (feat == DNGN_FLOOR &amp;&amp; in_los_bounds_g(rp))</a>
+<a name="ln1260">        {</a>
+<a name="ln1261">            cloud_type cloud = _cloud_from_feat(currfeat);</a>
+<a name="ln1262">            int cloud_life = _in_wastes(abyssal_state.major_coord) ? 5 : 2;</a>
+<a name="ln1263">            cloud_life += random2(2); // force a sequence point, just in case</a>
+<a name="ln1264">            if (cloud != CLOUD_NONE)</a>
+<a name="ln1265">                check_place_cloud(_cloud_from_feat(currfeat), rp, cloud_life, 0, 3);</a>
+<a name="ln1266">        }</a>
+<a name="ln1267">        else if (feat_is_solid(feat))</a>
+<a name="ln1268">            delete_cloud(rp);</a>
+<a name="ln1269">        monster* mon = monster_at(rp);</a>
+<a name="ln1270">        if (mon &amp;&amp; !monster_habitable_grid(mon, feat))</a>
+<a name="ln1271">            _push_displaced_monster(mon);</a>
+<a name="ln1272">    }</a>
+<a name="ln1273">}</a>
+<a name="ln1274"> </a>
+<a name="ln1275">static void _destroy_all_terrain(bool vaults)</a>
+<a name="ln1276">{</a>
+<a name="ln1277">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln1278">    {</a>
+<a name="ln1279">        if (vaults &amp;&amp; env.level_map_mask(*ri) &amp; MMT_VAULT)</a>
+<a name="ln1280">            continue;</a>
+<a name="ln1281">        env.level_map_mask(*ri) = MMT_TURNED_TO_FLOOR;</a>
+<a name="ln1282">    }</a>
+<a name="ln1283">}</a>
+<a name="ln1284"> </a>
+<a name="ln1285">static void _ensure_player_habitable(bool dig_instead)</a>
+<a name="ln1286">{</a>
+<a name="ln1287">    dungeon_feature_type feat = grd(you.pos());</a>
+<a name="ln1288">    if (!you.can_pass_through_feat(feat) || is_feat_dangerous(feat))</a>
+<a name="ln1289">    {</a>
+<a name="ln1290">        bool shoved = you.shove();</a>
+<a name="ln1291">        if (!shoved)</a>
+<a name="ln1292">        {</a>
+<a name="ln1293">            // legal only if we just placed a vault</a>
+<a name="ln1294">            ASSERT(dig_instead);</a>
+<a name="ln1295">            grd(you.pos()) = DNGN_FLOOR;</a>
+<a name="ln1296">        }</a>
+<a name="ln1297">    }</a>
+<a name="ln1298">}</a>
+<a name="ln1299"> </a>
+<a name="ln1300">static void _abyss_apply_terrain(const map_bitmask &amp;abyss_genlevel_mask,</a>
+<a name="ln1301">                                 bool morph = false, bool now = false)</a>
+<a name="ln1302">{</a>
+<a name="ln1303">    // The chance is reciprocal to these numbers.</a>
+<a name="ln1304">    const int exit_chance = you.runes[RUNE_ABYSSAL] ? 1250</a>
+<a name="ln1305">                            : 7500 - 1250 * (you.depth - 1);</a>
+<a name="ln1306"> </a>
+<a name="ln1307">    int exits_wanted  = 0;</a>
+<a name="ln1308">    int altars_wanted = 0;</a>
+<a name="ln1309">    bool use_abyss_exit_map = true;</a>
+<a name="ln1310">    bool used_queue = false;</a>
+<a name="ln1311">    if (morph &amp;&amp; !abyss_sample_queue.empty())</a>
+<a name="ln1312">    {</a>
+<a name="ln1313">        int ii = 0;</a>
+<a name="ln1314">        used_queue = true;</a>
+<a name="ln1315">        while (!abyss_sample_queue.empty()</a>
+<a name="ln1316">            &amp;&amp; abyss_sample_queue.top().changepoint() &lt; abyssal_state.depth)</a>
+<a name="ln1317">        {</a>
+<a name="ln1318">            ++ii;</a>
+<a name="ln1319">            coord_def p = abyss_sample_queue.top().coord();</a>
+<a name="ln1320">            _update_abyss_terrain(p, abyss_genlevel_mask, morph);</a>
+<a name="ln1321">            abyss_sample_queue.pop();</a>
+<a name="ln1322">        }</a>
+<a name="ln1323">/*</a>
+<a name="ln1324">        if (ii)</a>
+<a name="ln1325">            dprf(DIAG_ABYSS, &quot;Examined %d features.&quot;, ii);</a>
+<a name="ln1326">*/</a>
+<a name="ln1327">    }</a>
+<a name="ln1328"> </a>
+<a name="ln1329">    int ii = 0;</a>
+<a name="ln1330">    int delta = you.time_taken * (you.abyss_speed + 40) / 200;</a>
+<a name="ln1331">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln1332">    {</a>
+<a name="ln1333">        const coord_def p(*ri);</a>
+<a name="ln1334">        const coord_def abyss_coord = p + abyssal_state.major_coord;</a>
+<a name="ln1335">        bool turned_to_floor = map_masked(p, MMT_TURNED_TO_FLOOR);</a>
+<a name="ln1336">        if (used_queue &amp;&amp; !turned_to_floor)</a>
+<a name="ln1337">            continue;</a>
+<a name="ln1338"> </a>
+<a name="ln1339">        if (turned_to_floor &amp;&amp; (now || x_chance_in_y(delta, 50))</a>
+<a name="ln1340">            || !turned_to_floor &amp;&amp; !used_queue)</a>
+<a name="ln1341">        {</a>
+<a name="ln1342">            ++ii;</a>
+<a name="ln1343">            _update_abyss_terrain(abyss_coord, abyss_genlevel_mask, morph);</a>
+<a name="ln1344">            env.level_map_mask(p) &amp;= ~MMT_TURNED_TO_FLOOR;</a>
+<a name="ln1345">        }</a>
+<a name="ln1346">        if (morph)</a>
+<a name="ln1347">            continue;</a>
+<a name="ln1348"> </a>
+<a name="ln1349">        // Place abyss exits, stone arches, and altars to liven up the scene</a>
+<a name="ln1350">        // (only on area creation, not on morphing).</a>
+<a name="ln1351">        _abyss_check_place_feat(p, exit_chance,</a>
+<a name="ln1352">                                &amp;exits_wanted,</a>
+<a name="ln1353">                                &amp;use_abyss_exit_map,</a>
+<a name="ln1354">                                DNGN_EXIT_ABYSS,</a>
+<a name="ln1355">                                abyss_genlevel_mask)</a>
+<a name="ln1356">        ||</a>
+<a name="ln1357">        _abyss_check_place_feat(p, 10000,</a>
+<a name="ln1358">                                &amp;altars_wanted,</a>
+<a name="ln1359">                                nullptr,</a>
+<a name="ln1360">                                _abyss_pick_altar(),</a>
+<a name="ln1361">                                abyss_genlevel_mask)</a>
+<a name="ln1362">        ||</a>
+<a name="ln1363">        level_id::current().depth &lt; brdepth[BRANCH_ABYSS]</a>
+<a name="ln1364">        &amp;&amp; _abyss_check_place_feat(p, 1900, nullptr, nullptr,</a>
+<a name="ln1365">                                   DNGN_ABYSSAL_STAIR,</a>
+<a name="ln1366">                                   abyss_genlevel_mask);</a>
+<a name="ln1367">    }</a>
+<a name="ln1368">    if (ii)</a>
+<a name="ln1369">        dprf(DIAG_ABYSS, &quot;Nuked %d features&quot;, ii);</a>
+<a name="ln1370">    _ensure_player_habitable(false);</a>
+<a name="ln1371">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln1372">        ASSERT_RANGE(grd(*ri), DNGN_UNSEEN + 1, NUM_FEATURES);</a>
+<a name="ln1373">}</a>
+<a name="ln1374"> </a>
+<a name="ln1375">static int _abyss_place_vaults(const map_bitmask &amp;abyss_genlevel_mask)</a>
+<a name="ln1376">{</a>
+<a name="ln1377">    unwind_vault_placement_mask vaultmask(&amp;abyss_genlevel_mask);</a>
+<a name="ln1378"> </a>
+<a name="ln1379">    int vaults_placed = 0;</a>
+<a name="ln1380"> </a>
+<a name="ln1381">    bool extra = false;</a>
+<a name="ln1382">    const int maxvaults = 6;</a>
+<a name="ln1383">    int tries = 0;</a>
+<a name="ln1384">    while (vaults_placed &lt; maxvaults)</a>
+<a name="ln1385">    {</a>
+<a name="ln1386">        const map_def *map = random_map_in_depth(level_id::current(), extra);</a>
+<a name="ln1387">        if (map)</a>
+<a name="ln1388">        {</a>
+<a name="ln1389">            if (_abyss_place_map(map) &amp;&amp; !map-&gt;is_extra_vault())</a>
+<a name="ln1390">            {</a>
+<a name="ln1391">                extra = true;</a>
+<a name="ln1392"> </a>
+<a name="ln1393">                if (!one_chance_in(2 + (++vaults_placed)))</a>
+<a name="ln1394">                    break;</a>
+<a name="ln1395">            }</a>
+<a name="ln1396">            else</a>
+<a name="ln1397">            {</a>
+<a name="ln1398">                if (tries++ &gt;= 100)</a>
+<a name="ln1399">                    break;</a>
+<a name="ln1400"> </a>
+<a name="ln1401">                continue;</a>
+<a name="ln1402">            }</a>
+<a name="ln1403"> </a>
+<a name="ln1404">        }</a>
+<a name="ln1405">        else</a>
+<a name="ln1406">        {</a>
+<a name="ln1407">            if (extra)</a>
+<a name="ln1408">                break;</a>
+<a name="ln1409">            else</a>
+<a name="ln1410">            {</a>
+<a name="ln1411">                extra = true;</a>
+<a name="ln1412">                continue;</a>
+<a name="ln1413">            }</a>
+<a name="ln1414">        }</a>
+<a name="ln1415">    }</a>
+<a name="ln1416"> </a>
+<a name="ln1417">    return vaults_placed;</a>
+<a name="ln1418">}</a>
+<a name="ln1419"> </a>
+<a name="ln1420">static void _generate_area(const map_bitmask &amp;abyss_genlevel_mask)</a>
+<a name="ln1421">{</a>
+<a name="ln1422">    // Any rune on the floor prevents the abyssal rune from being generated.</a>
+<a name="ln1423">    const bool placed_abyssal_rune = find_floor_item(OBJ_RUNES);</a>
+<a name="ln1424"> </a>
+<a name="ln1425">    dprf(DIAG_ABYSS, &quot;_generate_area(). turns_on_level: %d, rune_on_floor: %s&quot;,</a>
+<a name="ln1426">         env.turns_on_level, placed_abyssal_rune? &quot;yes&quot; : &quot;no&quot;);</a>
+<a name="ln1427"> </a>
+<a name="ln1428">    _abyss_apply_terrain(abyss_genlevel_mask);</a>
+<a name="ln1429"> </a>
+<a name="ln1430">    // Make sure we're not about to link bad items.</a>
+<a name="ln1431">    debug_item_scan();</a>
+<a name="ln1432">    _abyss_place_vaults(abyss_genlevel_mask);</a>
+<a name="ln1433"> </a>
+<a name="ln1434">    // Link the vault-placed items.</a>
+<a name="ln1435">    _abyss_postvault_fixup();</a>
+<a name="ln1436"> </a>
+<a name="ln1437">    _abyss_create_items(abyss_genlevel_mask, placed_abyssal_rune);</a>
+<a name="ln1438">    setup_environment_effects();</a>
+<a name="ln1439"> </a>
+<a name="ln1440">    _ensure_player_habitable(true);</a>
+<a name="ln1441"> </a>
+<a name="ln1442">    // Abyss has a constant density.</a>
+<a name="ln1443">    env.density = 0;</a>
+<a name="ln1444">}</a>
+<a name="ln1445"> </a>
+<a name="ln1446">static void _initialize_abyss_state()</a>
+<a name="ln1447">{</a>
+<a name="ln1448">    abyssal_state.major_coord.x = rng::get_uint32() &amp; 0x7FFFFFFF;</a>
+<a name="ln1449">    abyssal_state.major_coord.y = rng::get_uint32() &amp; 0x7FFFFFFF;</a>
+<a name="ln1450">    abyssal_state.seed = rng::get_uint32() &amp; 0x7FFFFFFF;</a>
+<a name="ln1451">    abyssal_state.phase = 0.0;</a>
+<a name="ln1452">    abyssal_state.depth = rng::get_uint32() &amp; 0x7FFFFFFF;</a>
+<a name="ln1453">    abyssal_state.destroy_all_terrain = false;</a>
+<a name="ln1454">    abyssal_state.level = _get_random_level();</a>
+<a name="ln1455">    abyss_sample_queue = sample_queue(ProceduralSamplePQCompare());</a>
+<a name="ln1456">}</a>
+<a name="ln1457"> </a>
+<a name="ln1458">void set_abyss_state(coord_def coord, uint32_t depth)</a>
+<a name="ln1459">{</a>
+<a name="ln1460">    abyssal_state.major_coord = coord;</a>
+<a name="ln1461">    abyssal_state.depth = depth;</a>
+<a name="ln1462">    abyssal_state.seed = rng::get_uint32() &amp; 0x7FFFFFFF;</a>
+<a name="ln1463">    abyssal_state.phase = 0.0;</a>
+<a name="ln1464">    abyssal_state.destroy_all_terrain = true;</a>
+<a name="ln1465">    abyss_sample_queue = sample_queue(ProceduralSamplePQCompare());</a>
+<a name="ln1466">    you.moveto(ABYSS_CENTRE);</a>
+<a name="ln1467">    map_bitmask abyss_genlevel_mask(true);</a>
+<a name="ln1468">    _abyss_apply_terrain(abyss_genlevel_mask, true, true);</a>
+<a name="ln1469">}</a>
+<a name="ln1470"> </a>
+<a name="ln1471">static void abyss_area_shift()</a>
+<a name="ln1472">{</a>
+<a name="ln1473">    dprf(DIAG_ABYSS, &quot;area_shift() - player at pos (%d, %d)&quot;,</a>
+<a name="ln1474">         you.pos().x, you.pos().y);</a>
+<a name="ln1475"> </a>
+<a name="ln1476">    {</a>
+<a name="ln1477">        xom_abyss_feature_amusement_check xomcheck;</a>
+<a name="ln1478"> </a>
+<a name="ln1479">        // A teleport may move you back to the center, resulting in a (0,0)</a>
+<a name="ln1480">        // shift. The code can't handle those. We still to forget the map,</a>
+<a name="ln1481">        // spawn new monsters or allow return from transit, though.</a>
+<a name="ln1482">        if (you.pos() != ABYSS_CENTRE)</a>
+<a name="ln1483">        {</a>
+<a name="ln1484">            // Use a map mask to track the areas that the shift destroys and</a>
+<a name="ln1485">            // that must be regenerated by _generate_area.</a>
+<a name="ln1486">            map_bitmask abyss_genlevel_mask;</a>
+<a name="ln1487">            _abyss_shift_level_contents_around_player(</a>
+<a name="ln1488">                ABYSS_AREA_SHIFT_RADIUS, ABYSS_CENTRE, abyss_genlevel_mask);</a>
+<a name="ln1489">            _generate_area(abyss_genlevel_mask);</a>
+<a name="ln1490">        }</a>
+<a name="ln1491">        forget_map(true);</a>
+<a name="ln1492"> </a>
+<a name="ln1493">        // Update LOS at player's new abyssal vacation retreat.</a>
+<a name="ln1494">        los_changed();</a>
+<a name="ln1495">    }</a>
+<a name="ln1496"> </a>
+<a name="ln1497">    // Place some monsters to keep the abyss party going.</a>
+<a name="ln1498">    int num_monsters = 15 + you.depth * (1 + coinflip());</a>
+<a name="ln1499">    _abyss_generate_monsters(num_monsters);</a>
+<a name="ln1500"> </a>
+<a name="ln1501">    // And allow monsters in transit another chance to return.</a>
+<a name="ln1502">    place_transiting_monsters();</a>
+<a name="ln1503"> </a>
+<a name="ln1504">    auto &amp;vault_list =  you.vault_list[level_id::current()];</a>
+<a name="ln1505">#ifdef DEBUG</a>
+<a name="ln1506">    vault_list.push_back(&quot;[shift]&quot;);</a>
+<a name="ln1507">#endif</a>
+<a name="ln1508">    const auto &amp;level_vaults = level_vault_names();</a>
+<a name="ln1509">    vault_list.insert(vault_list.end(),</a>
+<a name="ln1510">                        level_vaults.begin(), level_vaults.end());</a>
+<a name="ln1511"> </a>
+<a name="ln1512"> </a>
+<a name="ln1513">    check_map_validity();</a>
+<a name="ln1514">    // TODO: should dactions be rerun at this point instead? That would cover</a>
+<a name="ln1515">    // this particular case...</a>
+<a name="ln1516">    gozag_detect_level_gold(false);</a>
+<a name="ln1517">}</a>
+<a name="ln1518"> </a>
+<a name="ln1519">void destroy_abyss()</a>
+<a name="ln1520">{</a>
+<a name="ln1521">    if (abyssLayout)</a>
+<a name="ln1522">    {</a>
+<a name="ln1523">        delete abyssLayout;</a>
+<a name="ln1524">        abyssLayout = nullptr;</a>
+<a name="ln1525">        delete levelLayout;</a>
+<a name="ln1526">        levelLayout = nullptr;</a>
+<a name="ln1527">    }</a>
+<a name="ln1528">}</a>
+<a name="ln1529"> </a>
+<a name="ln1530">static colour_t _roll_abyss_floor_colour()</a>
+<a name="ln1531">{</a>
+<a name="ln1532">    return random_choose_weighted&lt;colour_t&gt;(</a>
+<a name="ln1533">         108, BLUE,</a>
+<a name="ln1534">         632, GREEN,</a>
+<a name="ln1535">         // no CYAN (silence)</a>
+<a name="ln1536">         932, RED,</a>
+<a name="ln1537">         488, MAGENTA,</a>
+<a name="ln1538">         433, BROWN,</a>
+<a name="ln1539">        3438, LIGHTGRAY,</a>
+<a name="ln1540">         // no DARKGREY (out of LOS)</a>
+<a name="ln1541">         766, LIGHTBLUE,</a>
+<a name="ln1542">         587, LIGHTGREEN,</a>
+<a name="ln1543">         794, LIGHTCYAN,</a>
+<a name="ln1544">         566, LIGHTRED,</a>
+<a name="ln1545">         313, LIGHTMAGENTA,</a>
+<a name="ln1546">         // no YELLOW (halo)</a>
+<a name="ln1547">         890, WHITE,</a>
+<a name="ln1548">          50, ETC_FIRE);</a>
+<a name="ln1549">}</a>
+<a name="ln1550"> </a>
+<a name="ln1551">static colour_t _roll_abyss_rock_colour()</a>
+<a name="ln1552">{</a>
+<a name="ln1553">    return random_choose_weighted&lt;colour_t&gt;(</a>
+<a name="ln1554">         130, BLUE,</a>
+<a name="ln1555">         409, GREEN,</a>
+<a name="ln1556">         // no CYAN (metal)</a>
+<a name="ln1557">         770, RED,</a>
+<a name="ln1558">         522, MAGENTA,</a>
+<a name="ln1559">        1292, BROWN,</a>
+<a name="ln1560">         // no LIGHTGRAY (stone)</a>
+<a name="ln1561">         // no DARKGREY (out of LOS)</a>
+<a name="ln1562">         570, LIGHTBLUE,</a>
+<a name="ln1563">         705, LIGHTGREEN,</a>
+<a name="ln1564">         // no LIGHTCYAN (glass)</a>
+<a name="ln1565">        1456, LIGHTRED,</a>
+<a name="ln1566">         377, LIGHTMAGENTA,</a>
+<a name="ln1567">         105, YELLOW,</a>
+<a name="ln1568">         101, WHITE,</a>
+<a name="ln1569">          60, ETC_FIRE);</a>
+<a name="ln1570">}</a>
+<a name="ln1571"> </a>
+<a name="ln1572">static void _abyss_generate_new_area()</a>
+<a name="ln1573">{</a>
+<a name="ln1574">    _initialize_abyss_state();</a>
+<a name="ln1575">    dprf(DIAG_ABYSS, &quot;Abyss Coord (%d, %d)&quot;,</a>
+<a name="ln1576">         abyssal_state.major_coord.x, abyssal_state.major_coord.y);</a>
+<a name="ln1577">    remove_sanctuary();</a>
+<a name="ln1578"> </a>
+<a name="ln1579">    env.floor_colour = _roll_abyss_floor_colour();</a>
+<a name="ln1580">    env.rock_colour = _roll_abyss_rock_colour();</a>
+<a name="ln1581">    tile_init_flavour();</a>
+<a name="ln1582"> </a>
+<a name="ln1583">    map_bitmask abyss_genlevel_mask;</a>
+<a name="ln1584">    _abyss_wipe_unmasked_area(abyss_genlevel_mask);</a>
+<a name="ln1585">    dgn_erase_unused_vault_placements();</a>
+<a name="ln1586"> </a>
+<a name="ln1587">    you.moveto(ABYSS_CENTRE);</a>
+<a name="ln1588">    abyss_genlevel_mask.init(true);</a>
+<a name="ln1589">    _generate_area(abyss_genlevel_mask);</a>
+<a name="ln1590">    if (one_chance_in(5))</a>
+<a name="ln1591">    {</a>
+<a name="ln1592">        _place_feature_near(you.pos(), LOS_RADIUS,</a>
+<a name="ln1593">                            DNGN_FLOOR, DNGN_ALTAR_LUGONU, 50);</a>
+<a name="ln1594">    }</a>
+<a name="ln1595"> </a>
+<a name="ln1596">    los_changed();</a>
+<a name="ln1597">    place_transiting_monsters();</a>
+<a name="ln1598">}</a>
+<a name="ln1599"> </a>
+<a name="ln1600">// Check if there is a path between the abyss centre and an exit location.</a>
+<a name="ln1601">static bool _abyss_has_path(const coord_def &amp;to)</a>
+<a name="ln1602">{</a>
+<a name="ln1603">    ASSERT(grd(to) == DNGN_EXIT_ABYSS);</a>
+<a name="ln1604"> </a>
+<a name="ln1605">    monster_pathfind pf;</a>
+<a name="ln1606">    return pf.init_pathfind(ABYSS_CENTRE, to);</a>
+<a name="ln1607">}</a>
+<a name="ln1608"> </a>
+<a name="ln1609">// Generate the initial (proto) Abyss level. The proto Abyss is where</a>
+<a name="ln1610">// the player lands when they arrive in the Abyss from elsewhere.</a>
+<a name="ln1611">// _generate_area generates all other Abyss areas.</a>
+<a name="ln1612">void generate_abyss()</a>
+<a name="ln1613">{</a>
+<a name="ln1614">    env.level_build_method += &quot; abyss&quot;;</a>
+<a name="ln1615">    env.level_layout_types.insert(&quot;abyss&quot;);</a>
+<a name="ln1616">    destroy_abyss();</a>
+<a name="ln1617"> </a>
+<a name="ln1618">retry:</a>
+<a name="ln1619">    _initialize_abyss_state();</a>
+<a name="ln1620"> </a>
+<a name="ln1621">    dprf(DIAG_ABYSS, &quot;generate_abyss(); turn_on_level: %d&quot;,</a>
+<a name="ln1622">         env.turns_on_level);</a>
+<a name="ln1623"> </a>
+<a name="ln1624">    // Generate the initial abyss without vaults. Vaults are horrifying.</a>
+<a name="ln1625">    _abyss_generate_new_area();</a>
+<a name="ln1626">    _write_abyssal_features();</a>
+<a name="ln1627">    map_bitmask abyss_genlevel_mask(true);</a>
+<a name="ln1628">    _abyss_apply_terrain(abyss_genlevel_mask);</a>
+<a name="ln1629"> </a>
+<a name="ln1630">    grd(you.pos()) = _veto_dangerous_terrain(grd(you.pos()));</a>
+<a name="ln1631">    _place_displaced_monsters();</a>
+<a name="ln1632"> </a>
+<a name="ln1633">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln1634">        ASSERT(grd(*ri) &gt; DNGN_UNSEEN);</a>
+<a name="ln1635">    check_map_validity();</a>
+<a name="ln1636"> </a>
+<a name="ln1637">    // If we're starting out in the Abyss, make sure the starting grid is</a>
+<a name="ln1638">    // an altar to Lugonu and there's an exit near-by.</a>
+<a name="ln1639">    // Otherwise, we start out on floor and there's a chance there's an</a>
+<a name="ln1640">    // altar near-by.</a>
+<a name="ln1641">    if (player_in_starting_abyss())</a>
+<a name="ln1642">    {</a>
+<a name="ln1643">        grd(ABYSS_CENTRE) = DNGN_ALTAR_LUGONU;</a>
+<a name="ln1644">        const coord_def eloc = _place_feature_near(ABYSS_CENTRE, LOS_RADIUS + 2,</a>
+<a name="ln1645">                                                   DNGN_FLOOR, DNGN_EXIT_ABYSS,</a>
+<a name="ln1646">                                                   50, true);</a>
+<a name="ln1647">        // Now make sure there is a path from the abyss centre to the exit.</a>
+<a name="ln1648">        // If for some reason an exit could not be placed, don't bother.</a>
+<a name="ln1649">        if (eloc == INVALID_COORD || !_abyss_has_path(eloc))</a>
+<a name="ln1650">            goto retry;</a>
+<a name="ln1651">    }</a>
+<a name="ln1652">    else</a>
+<a name="ln1653">    {</a>
+<a name="ln1654">        grd(ABYSS_CENTRE) = DNGN_FLOOR;</a>
+<a name="ln1655">        if (one_chance_in(5))</a>
+<a name="ln1656">        {</a>
+<a name="ln1657">            _place_feature_near(ABYSS_CENTRE, LOS_RADIUS,</a>
+<a name="ln1658">                                DNGN_FLOOR, DNGN_ALTAR_LUGONU, 50);</a>
+<a name="ln1659">        }</a>
+<a name="ln1660">    }</a>
+<a name="ln1661"> </a>
+<a name="ln1662">    setup_environment_effects();</a>
+<a name="ln1663">}</a>
+<a name="ln1664"> </a>
+<a name="ln1665">static void _increase_depth()</a>
+<a name="ln1666">{</a>
+<a name="ln1667">    int delta = you.time_taken * (you.abyss_speed + 40) / 200;</a>
+<a name="ln1668">    if (!have_passive(passive_t::slow_abyss))</a>
+<a name="ln1669">        delta *= 2;</a>
+<a name="ln1670">    if (you.duration[DUR_TELEPORT])</a>
+<a name="ln1671">        delta *= 5;</a>
+<a name="ln1672">    const double theta = abyssal_state.phase;</a>
+<a name="ln1673">    double depth_change = delta * (0.2 + 2.8 * pow(sin(theta/2), 10.0));</a>
+<a name="ln1674">    abyssal_state.depth += depth_change;</a>
+<a name="ln1675">    abyssal_state.phase += delta / 100.0;</a>
+<a name="ln1676">    if (abyssal_state.phase &gt; PI)</a>
+<a name="ln1677">        abyssal_state.phase -= PI;</a>
+<a name="ln1678">}</a>
+<a name="ln1679"> </a>
+<a name="ln1680">void abyss_morph()</a>
+<a name="ln1681">{</a>
+<a name="ln1682">    if (abyssal_state.destroy_all_terrain)</a>
+<a name="ln1683">    {</a>
+<a name="ln1684">        _destroy_all_terrain(false);</a>
+<a name="ln1685">        abyssal_state.destroy_all_terrain = false;</a>
+<a name="ln1686">    }</a>
+<a name="ln1687">    if (!player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln1688">        return;</a>
+<a name="ln1689">    _increase_depth();</a>
+<a name="ln1690">    map_bitmask abyss_genlevel_mask(true);</a>
+<a name="ln1691">    dgn_erase_unused_vault_placements();</a>
+<a name="ln1692">    _abyss_apply_terrain(abyss_genlevel_mask, true);</a>
+<a name="ln1693">    _place_displaced_monsters();</a>
+<a name="ln1694">    _push_items();</a>
+<a name="ln1695">    // TODO: does gozag gold detection need to be here too?</a>
+<a name="ln1696">    los_changed();</a>
+<a name="ln1697">}</a>
+<a name="ln1698"> </a>
+<a name="ln1699">// Force the player one level deeper in the abyss during an abyss teleport with</a>
+<a name="ln1700">// probability:</a>
+<a name="ln1701">//   (XL + 4 - Depth)^2 / (27^2 * (Depth + 5))</a>
+<a name="ln1702">//</a>
+<a name="ln1703">// Consequences of this formula:</a>
+<a name="ln1704">// - Chance to be pulled deeper increases with XL and decreases with current</a>
+<a name="ln1705">//   abyss depth.</a>
+<a name="ln1706">// - Characters at XL 1 have about a 0.1% chance of getting pulled from A:1.</a>
+<a name="ln1707">// - Characters at XL 13 have chances for getting pulled from A:1/A:2/A:3/A:4</a>
+<a name="ln1708">//   of about 5.9%/4.4%/3.3%/2.6%.</a>
+<a name="ln1709">// - Characters at XL 27 have chances for getting pulled from A:1/A:2/A:3/A:4</a>
+<a name="ln1710">//   of about 20.6%/16.5%/13.4%/11.1%.</a>
+<a name="ln1711">static bool _abyss_force_descent()</a>
+<a name="ln1712">{</a>
+<a name="ln1713">    const int depth = level_id::current().depth;</a>
+<a name="ln1714">    const int xl_factor = you.experience_level + 4 - depth;</a>
+<a name="ln1715">    return x_chance_in_y(xl_factor * xl_factor, 729 * (5 + depth));</a>
+<a name="ln1716">}</a>
+<a name="ln1717"> </a>
+<a name="ln1718">void abyss_teleport()</a>
+<a name="ln1719">{</a>
+<a name="ln1720">    xom_abyss_feature_amusement_check xomcheck;</a>
+<a name="ln1721">    dprf(DIAG_ABYSS, &quot;New area Abyss teleport.&quot;);</a>
+<a name="ln1722"> </a>
+<a name="ln1723">    if (level_id::current().depth &lt; brdepth[BRANCH_ABYSS]</a>
+<a name="ln1724">        &amp;&amp; _abyss_force_descent())</a>
+<a name="ln1725">    {</a>
+<a name="ln1726">        down_stairs(DNGN_ABYSSAL_STAIR);</a>
+<a name="ln1727">        more();</a>
+<a name="ln1728">        return;</a>
+<a name="ln1729">    }</a>
+<a name="ln1730"> </a>
+<a name="ln1731">    mprf(MSGCH_BANISHMENT, &quot;You are suddenly pulled into a different region of&quot;</a>
+<a name="ln1732">        &quot; the Abyss!&quot;);</a>
+<a name="ln1733">    _abyss_generate_new_area();</a>
+<a name="ln1734">    _write_abyssal_features();</a>
+<a name="ln1735">    grd(you.pos()) = _veto_dangerous_terrain(grd(you.pos()));</a>
+<a name="ln1736"> </a>
+<a name="ln1737">    stop_delay(true);</a>
+<a name="ln1738">    forget_map(false);</a>
+<a name="ln1739">    clear_excludes();</a>
+<a name="ln1740">    gozag_detect_level_gold(false);</a>
+<a name="ln1741">    auto &amp;vault_list =  you.vault_list[level_id::current()];</a>
+<a name="ln1742">#ifdef DEBUG</a>
+<a name="ln1743">    vault_list.push_back(&quot;[tele]&quot;);</a>
+<a name="ln1744">#endif</a>
+<a name="ln1745">    const auto &amp;level_vaults = level_vault_names();</a>
+<a name="ln1746">    vault_list.insert(vault_list.end(),</a>
+<a name="ln1747">                        level_vaults.begin(), level_vaults.end());</a>
+<a name="ln1748"> </a>
+<a name="ln1749">    more();</a>
+<a name="ln1750">}</a>
+<a name="ln1751"> </a>
+<a name="ln1752">//////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1753">// Abyss effects in other levels, courtesy Lugonu.</a>
+<a name="ln1754"> </a>
+<a name="ln1755">struct corrupt_env</a>
+<a name="ln1756">{</a>
+<a name="ln1757">    int rock_colour, floor_colour;</a>
+<a name="ln1758">    corrupt_env(): rock_colour(BLACK), floor_colour(BLACK) { }</a>
+<a name="ln1759">};</a>
+<a name="ln1760"> </a>
+<a name="ln1761">static void _place_corruption_seed(const coord_def &amp;pos, int duration)</a>
+<a name="ln1762">{</a>
+<a name="ln1763">    env.markers.add(new map_corruption_marker(pos, duration));</a>
+<a name="ln1764">    // Corruption markers don't need activation, though we might</a>
+<a name="ln1765">    // occasionally miss other unactivated markers by clearing.</a>
+<a name="ln1766">    env.markers.clear_need_activate();</a>
+<a name="ln1767">}</a>
+<a name="ln1768"> </a>
+<a name="ln1769">static void _initialise_level_corrupt_seeds(int power)</a>
+<a name="ln1770">{</a>
+<a name="ln1771">    const int low = power * 40 / 100, high = power * 140 / 100;</a>
+<a name="ln1772">    const int nseeds = random_range(-1, min(2 + power / 110, 4), 2);</a>
+<a name="ln1773"> </a>
+<a name="ln1774">    const int aux_seed_radius = 4;</a>
+<a name="ln1775"> </a>
+<a name="ln1776">    dprf(&quot;Placing %d corruption seeds (power: %d)&quot;, nseeds, power);</a>
+<a name="ln1777"> </a>
+<a name="ln1778">    // The corruption centreed on the player is free.</a>
+<a name="ln1779">    _place_corruption_seed(you.pos(), high + 300);</a>
+<a name="ln1780"> </a>
+<a name="ln1781">    for (int i = 0; i &lt; nseeds; ++i)</a>
+<a name="ln1782">    {</a>
+<a name="ln1783">        coord_def where;</a>
+<a name="ln1784">        int tries = 100;</a>
+<a name="ln1785">        while (tries-- &gt; 0)</a>
+<a name="ln1786">        {</a>
+<a name="ln1787">            where = dgn_random_point_from(you.pos(), aux_seed_radius, 2);</a>
+<a name="ln1788">            if (grd(where) == DNGN_FLOOR &amp;&amp; !env.markers.find(where, MAT_ANY))</a>
+<a name="ln1789">                break;</a>
+<a name="ln1790">            where.reset();</a>
+<a name="ln1791">        }</a>
+<a name="ln1792"> </a>
+<a name="ln1793">        if (!where.origin())</a>
+<a name="ln1794">            _place_corruption_seed(where, random_range(low, high, 2) + 300);</a>
+<a name="ln1795">    }</a>
+<a name="ln1796">}</a>
+<a name="ln1797"> </a>
+<a name="ln1798">static bool _incorruptible(monster_type mt)</a>
+<a name="ln1799">{</a>
+<a name="ln1800">    return mons_is_abyssal_only(mt) || mons_class_holiness(mt) == MH_HOLY;</a>
+<a name="ln1801">}</a>
+<a name="ln1802"> </a>
+<a name="ln1803">// Create a corruption spawn at the given position. Returns false if further</a>
+<a name="ln1804">// monsters should not be placed near this spot (overcrowding), true if</a>
+<a name="ln1805">// more monsters can fit in.</a>
+<a name="ln1806">static bool _spawn_corrupted_servant_near(const coord_def &amp;pos)</a>
+<a name="ln1807">{</a>
+<a name="ln1808">    // Chance to fail to place a monster (but allow continued attempts).</a>
+<a name="ln1809">    if (x_chance_in_y(100, 200 + you.skill(SK_INVOCATIONS, 25)))</a>
+<a name="ln1810">        return true;</a>
+<a name="ln1811"> </a>
+<a name="ln1812">    // Thirty tries for a place.</a>
+<a name="ln1813">    for (int i = 0; i &lt; 30; ++i)</a>
+<a name="ln1814">    {</a>
+<a name="ln1815">        int offsetX = random2avg(4, 3);</a>
+<a name="ln1816">        offsetX += random2(3); // force a sequence point between random calls</a>
+<a name="ln1817">        int offsetY = random2avg(4, 3);</a>
+<a name="ln1818">        offsetY += random2(3); // ditto</a>
+<a name="ln1819">        coord_def p;</a>
+<a name="ln1820">        p.x = pos.x + random_choose(offsetX, -offsetX);</a>
+<a name="ln1821">        p.y = pos.y + random_choose(offsetY, -offsetY);</a>
+<a name="ln1822">        if (!in_bounds(p) || actor_at(p))</a>
+<a name="ln1823">            continue;</a>
+<a name="ln1824"> </a>
+<a name="ln1825">        monster_type mons = pick_monster(level_id(BRANCH_ABYSS), _incorruptible);</a>
+<a name="ln1826">        ASSERT(mons);</a>
+<a name="ln1827">        if (!monster_habitable_grid(mons, grd(p)))</a>
+<a name="ln1828">            continue;</a>
+<a name="ln1829">        mgen_data mg(mons, BEH_NEUTRAL, p);</a>
+<a name="ln1830">        mg.set_summoned(0, 5, 0).set_non_actor_summoner(&quot;Lugonu's corruption&quot;);</a>
+<a name="ln1831">        mg.place = BRANCH_ABYSS;</a>
+<a name="ln1832">        return create_monster(mg);</a>
+<a name="ln1833">    }</a>
+<a name="ln1834"> </a>
+<a name="ln1835">    return false;</a>
+<a name="ln1836">}</a>
+<a name="ln1837"> </a>
+<a name="ln1838">static void _apply_corruption_effect(map_marker *marker, int duration)</a>
+<a name="ln1839">{</a>
+<a name="ln1840">    if (!duration)</a>
+<a name="ln1841">        return;</a>
+<a name="ln1842"> </a>
+<a name="ln1843">    map_corruption_marker *cmark = dynamic_cast&lt;map_corruption_marker*&gt;(marker);</a>
+<a name="ln1844">    if (cmark-&gt;duration &lt; 1)</a>
+<a name="ln1845">        return;</a>
+<a name="ln1846"> </a>
+<a name="ln1847">    const int neffects = max(div_rand_round(duration, 5), 1);</a>
+<a name="ln1848"> </a>
+<a name="ln1849">    for (int i = 0; i &lt; neffects; ++i)</a>
+<a name="ln1850">    {</a>
+<a name="ln1851">        if (x_chance_in_y(cmark-&gt;duration, 4000)</a>
+<a name="ln1852">            &amp;&amp; !_spawn_corrupted_servant_near(cmark-&gt;pos))</a>
+<a name="ln1853">        {</a>
+<a name="ln1854">            break;</a>
+<a name="ln1855">        }</a>
+<a name="ln1856">    }</a>
+<a name="ln1857">    cmark-&gt;duration -= duration;</a>
+<a name="ln1858">}</a>
+<a name="ln1859"> </a>
+<a name="ln1860">void run_corruption_effects(int duration)</a>
+<a name="ln1861">{</a>
+<a name="ln1862">    for (map_marker *mark : env.markers.get_all(MAT_CORRUPTION_NEXUS))</a>
+<a name="ln1863">    {</a>
+<a name="ln1864">        if (mark-&gt;get_type() != MAT_CORRUPTION_NEXUS)</a>
+<a name="ln1865">            continue;</a>
+<a name="ln1866"> </a>
+<a name="ln1867">        _apply_corruption_effect(mark, duration);</a>
+<a name="ln1868">    }</a>
+<a name="ln1869">}</a>
+<a name="ln1870"> </a>
+<a name="ln1871">static bool _is_grid_corruptible(const coord_def &amp;c)</a>
+<a name="ln1872">{</a>
+<a name="ln1873">    if (c == you.pos())</a>
+<a name="ln1874">        return false;</a>
+<a name="ln1875"> </a>
+<a name="ln1876">    const dungeon_feature_type feat = grd(c);</a>
+<a name="ln1877"> </a>
+<a name="ln1878">    // Stairs and portals cannot be corrupted.</a>
+<a name="ln1879">    if (feat_stair_direction(feat) != CMD_NO_CMD)</a>
+<a name="ln1880">        return false;</a>
+<a name="ln1881"> </a>
+<a name="ln1882">    switch (feat)</a>
+<a name="ln1883">    {</a>
+<a name="ln1884">    case DNGN_PERMAROCK_WALL:</a>
+<a name="ln1885">    case DNGN_CLEAR_PERMAROCK_WALL:</a>
+<a name="ln1886">    case DNGN_OPEN_SEA:</a>
+<a name="ln1887">    case DNGN_LAVA_SEA:</a>
+<a name="ln1888">    case DNGN_TRANSPORTER_LANDING: // entry already taken care of as stairs</a>
+<a name="ln1889">        return false;</a>
+<a name="ln1890"> </a>
+<a name="ln1891">    case DNGN_METAL_WALL:</a>
+<a name="ln1892">    case DNGN_CRYSTAL_WALL:</a>
+<a name="ln1893">        return one_chance_in(4);</a>
+<a name="ln1894"> </a>
+<a name="ln1895">    case DNGN_STONE_WALL:</a>
+<a name="ln1896">    case DNGN_CLEAR_STONE_WALL:</a>
+<a name="ln1897">        return one_chance_in(3);</a>
+<a name="ln1898"> </a>
+<a name="ln1899">    case DNGN_ROCK_WALL:</a>
+<a name="ln1900">    case DNGN_CLEAR_ROCK_WALL:</a>
+<a name="ln1901">        return !one_chance_in(3);</a>
+<a name="ln1902"> </a>
+<a name="ln1903">    default:</a>
+<a name="ln1904">        return true;</a>
+<a name="ln1905">    }</a>
+<a name="ln1906">}</a>
+<a name="ln1907"> </a>
+<a name="ln1908">// Returns true if the square has &lt;= 4 traversable neighbours.</a>
+<a name="ln1909">static bool _is_crowded_square(const coord_def &amp;c)</a>
+<a name="ln1910">{</a>
+<a name="ln1911">    int neighbours = 0;</a>
+<a name="ln1912">    for (int xi = -1; xi &lt;= 1; ++xi)</a>
+<a name="ln1913">        for (int yi = -1; yi &lt;= 1; ++yi)</a>
+<a name="ln1914">        {</a>
+<a name="ln1915">            if (!xi &amp;&amp; !yi)</a>
+<a name="ln1916">                continue;</a>
+<a name="ln1917"> </a>
+<a name="ln1918">            const coord_def n(c.x + xi, c.y + yi);</a>
+<a name="ln1919">            if (!in_bounds(n) || !feat_is_traversable(grd(n)))</a>
+<a name="ln1920">                continue;</a>
+<a name="ln1921"> </a>
+<a name="ln1922">            if (++neighbours &gt; 4)</a>
+<a name="ln1923">                return false;</a>
+<a name="ln1924">        }</a>
+<a name="ln1925"> </a>
+<a name="ln1926">    return true;</a>
+<a name="ln1927">}</a>
+<a name="ln1928"> </a>
+<a name="ln1929">// Returns true if the square has all opaque neighbours.</a>
+<a name="ln1930">static bool _is_sealed_square(const coord_def &amp;c)</a>
+<a name="ln1931">{</a>
+<a name="ln1932">    for (adjacent_iterator ai(c); ai; ++ai)</a>
+<a name="ln1933">        if (!feat_is_opaque(grd(*ai)))</a>
+<a name="ln1934">            return false;</a>
+<a name="ln1935"> </a>
+<a name="ln1936">    return true;</a>
+<a name="ln1937">}</a>
+<a name="ln1938"> </a>
+<a name="ln1939">static void _corrupt_square(const corrupt_env &amp;cenv, const coord_def &amp;c)</a>
+<a name="ln1940">{</a>
+<a name="ln1941">    // Ask dungeon_change_terrain to preserve things that are not altars.</a>
+<a name="ln1942">    // This only actually matters for malign gateways and features that happen</a>
+<a name="ln1943">    // to be on squares that happen to contain map markers (e.g. sealed doors,</a>
+<a name="ln1944">    // which come with their own markers). MAT_CORRUPTION_NEXUS is a marker,</a>
+<a name="ln1945">    // and some of those are certainly nearby, but they only appear on</a>
+<a name="ln1946">    // DNGN_FLOOR. preserve_features=true would ordinarily cause</a>
+<a name="ln1947">    // dungeon_terrain_changed to protect stairs/branch entries/portals as</a>
+<a name="ln1948">    // well, but _corrupt_square is not called on squares containing those</a>
+<a name="ln1949">    // features.</a>
+<a name="ln1950">    bool preserve_features = true;</a>
+<a name="ln1951">    dungeon_feature_type feat = DNGN_UNSEEN;</a>
+<a name="ln1952">    if (feat_altar_god(grd(c)) != GOD_NO_GOD)</a>
+<a name="ln1953">    {</a>
+<a name="ln1954">        preserve_features = false;</a>
+<a name="ln1955">        if (!one_chance_in(3))</a>
+<a name="ln1956">            feat = DNGN_ALTAR_LUGONU;</a>
+<a name="ln1957">    }</a>
+<a name="ln1958">    else</a>
+<a name="ln1959">        feat = _abyss_proto_feature();</a>
+<a name="ln1960"> </a>
+<a name="ln1961">    if (feat_is_trap(feat)</a>
+<a name="ln1962">        || feat == DNGN_UNSEEN</a>
+<a name="ln1963">        || (feat_is_traversable(grd(c)) &amp;&amp; !feat_is_traversable(feat)</a>
+<a name="ln1964">            &amp;&amp; coinflip()))</a>
+<a name="ln1965">    {</a>
+<a name="ln1966">        feat = DNGN_FLOOR;</a>
+<a name="ln1967">    }</a>
+<a name="ln1968"> </a>
+<a name="ln1969">    if (feat_is_traversable(grd(c)) &amp;&amp; !feat_is_traversable(feat)</a>
+<a name="ln1970">        &amp;&amp; _is_crowded_square(c))</a>
+<a name="ln1971">    {</a>
+<a name="ln1972">        return;</a>
+<a name="ln1973">    }</a>
+<a name="ln1974"> </a>
+<a name="ln1975">    if (!feat_is_traversable(grd(c)) &amp;&amp; feat_is_traversable(feat)</a>
+<a name="ln1976">        &amp;&amp; _is_sealed_square(c))</a>
+<a name="ln1977">    {</a>
+<a name="ln1978">        return;</a>
+<a name="ln1979">    }</a>
+<a name="ln1980"> </a>
+<a name="ln1981">    if (feat == DNGN_EXIT_ABYSS)</a>
+<a name="ln1982">        feat = DNGN_ENTER_ABYSS;</a>
+<a name="ln1983"> </a>
+<a name="ln1984">    // If we are trying to place a wall on top of a creature or item, try to</a>
+<a name="ln1985">    // move it aside. If this fails, simply place floor instead.</a>
+<a name="ln1986">    actor* act = actor_at(c);</a>
+<a name="ln1987">    if (feat_is_solid(feat) &amp;&amp; (igrd(c) != NON_ITEM || act))</a>
+<a name="ln1988">    {</a>
+<a name="ln1989">        push_items_from(c, nullptr);</a>
+<a name="ln1990">        push_actor_from(c, nullptr, true);</a>
+<a name="ln1991">        if (actor_at(c) || igrd(c) != NON_ITEM)</a>
+<a name="ln1992">            feat = DNGN_FLOOR;</a>
+<a name="ln1993">    }</a>
+<a name="ln1994"> </a>
+<a name="ln1995">    dungeon_terrain_changed(c, feat, preserve_features, true);</a>
+<a name="ln1996">    if (feat == DNGN_ROCK_WALL)</a>
+<a name="ln1997">        env.grid_colours(c) = cenv.rock_colour;</a>
+<a name="ln1998">    else if (feat == DNGN_FLOOR)</a>
+<a name="ln1999">        env.grid_colours(c) = cenv.floor_colour;</a>
+<a name="ln2000"> </a>
+<a name="ln2001">    if (feat == DNGN_ROCK_WALL)</a>
+<a name="ln2002">    {</a>
+<a name="ln2003">        tileidx_t idx = tile_dngn_coloured(TILE_WALL_ABYSS,</a>
+<a name="ln2004">                                           cenv.floor_colour);</a>
+<a name="ln2005">        env.tile_flv(c).wall = idx + random2(tile_dngn_count(idx));</a>
+<a name="ln2006">    }</a>
+<a name="ln2007">    else if (feat == DNGN_FLOOR)</a>
+<a name="ln2008">    {</a>
+<a name="ln2009">        tileidx_t idx = tile_dngn_coloured(TILE_FLOOR_NERVES,</a>
+<a name="ln2010">                                           cenv.floor_colour);</a>
+<a name="ln2011">        env.tile_flv(c).floor = idx + random2(tile_dngn_count(idx));</a>
+<a name="ln2012">    }</a>
+<a name="ln2013">}</a>
+<a name="ln2014"> </a>
+<a name="ln2015">static void _corrupt_level_features(const corrupt_env &amp;cenv)</a>
+<a name="ln2016">{</a>
+<a name="ln2017">    vector&lt;coord_def&gt; corrupt_seeds;</a>
+<a name="ln2018"> </a>
+<a name="ln2019">    for (const map_marker *mark : env.markers.get_all(MAT_CORRUPTION_NEXUS))</a>
+<a name="ln2020">        corrupt_seeds.push_back(mark-&gt;pos);</a>
+<a name="ln2021"> </a>
+<a name="ln2022">    for (rectangle_iterator ri(MAPGEN_BORDER); ri; ++ri)</a>
+<a name="ln2023">    {</a>
+<a name="ln2024">        int idistance = GXM + GYM;</a>
+<a name="ln2025">        for (const coord_def seed : corrupt_seeds)</a>
+<a name="ln2026">            idistance = min(idistance, (*ri - seed).rdist());</a>
+<a name="ln2027"> </a>
+<a name="ln2028">        const int ground_zero_radius = 2;</a>
+<a name="ln2029"> </a>
+<a name="ln2030">        // Corruption odds are 100% within 2 squares, decaying to 30%</a>
+<a name="ln2031">        // at LOS range (radius 7). Even if the corruption roll is made,</a>
+<a name="ln2032">        // the feature still gets a chance to resist if it's a wall.</a>
+<a name="ln2033">        const int corrupt_perc_chance =</a>
+<a name="ln2034">            (idistance &lt;= ground_zero_radius) ? 100 :</a>
+<a name="ln2035">            max(1, 100 - (sqr(idistance) - sqr(ground_zero_radius)) * 70 / 45);</a>
+<a name="ln2036"> </a>
+<a name="ln2037">        if (random2(100) &lt; corrupt_perc_chance &amp;&amp; _is_grid_corruptible(*ri))</a>
+<a name="ln2038">            _corrupt_square(cenv, *ri);</a>
+<a name="ln2039">    }</a>
+<a name="ln2040">}</a>
+<a name="ln2041"> </a>
+<a name="ln2042">static bool _is_level_corrupted()</a>
+<a name="ln2043">{</a>
+<a name="ln2044">    if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln2045">        return true;</a>
+<a name="ln2046"> </a>
+<a name="ln2047">    return !!env.markers.find(MAT_CORRUPTION_NEXUS);</a>
+<a name="ln2048">}</a>
+<a name="ln2049"> </a>
+<a name="ln2050">bool is_level_incorruptible(bool quiet)</a>
+<a name="ln2051">{</a>
+<a name="ln2052">    if (_is_level_corrupted())</a>
+<a name="ln2053">    {</a>
+<a name="ln2054">        if (!quiet)</a>
+<a name="ln2055">            mpr(&quot;This place is already infused with evil and corruption.&quot;);</a>
+<a name="ln2056">        return true;</a>
+<a name="ln2057">    }</a>
+<a name="ln2058"> </a>
+<a name="ln2059">    return false;</a>
+<a name="ln2060">}</a>
+<a name="ln2061"> </a>
+<a name="ln2062">static void _corrupt_choose_colours(corrupt_env *cenv)</a>
+<a name="ln2063">{</a>
+<a name="ln2064">    colour_t colour = BLACK;</a>
+<a name="ln2065">    do</a>
+<a name="ln2066">    {</a>
+<a name="ln2067">        colour = random_uncommon_colour();</a>
+<a name="ln2068">    }</a>
+<a name="ln2069">    while (colour == env.rock_colour || colour == LIGHTGREY || colour == WHITE);</a>
+<a name="ln2070">    cenv-&gt;rock_colour = colour;</a>
+<a name="ln2071"> </a>
+<a name="ln2072">    do</a>
+<a name="ln2073">    {</a>
+<a name="ln2074">        colour = random_uncommon_colour();</a>
+<a name="ln2075">    }</a>
+<a name="ln2076">    while (colour == env.floor_colour || colour == LIGHTGREY</a>
+<a name="ln2077">           || colour == WHITE);</a>
+<a name="ln2078">    cenv-&gt;floor_colour = colour;</a>
+<a name="ln2079">}</a>
+<a name="ln2080"> </a>
+<a name="ln2081">bool lugonu_corrupt_level(int power)</a>
+<a name="ln2082">{</a>
+<a name="ln2083">    if (is_level_incorruptible())</a>
+<a name="ln2084">        return false;</a>
+<a name="ln2085"> </a>
+<a name="ln2086">    simple_god_message(&quot;'s Hand of Corruption reaches out!&quot;);</a>
+<a name="ln2087">    take_note(Note(NOTE_MESSAGE, 0, 0, make_stringf(&quot;Corrupted %s&quot;,</a>
+<a name="ln2088">              level_id::current().describe().c_str()).c_str()));</a>
+<a name="ln2089">    mark_corrupted_level(level_id::current());</a>
+<a name="ln2090"> </a>
+<a name="ln2091">    flash_view(UA_PLAYER, MAGENTA);</a>
+<a name="ln2092"> </a>
+<a name="ln2093">    _initialise_level_corrupt_seeds(power);</a>
+<a name="ln2094"> </a>
+<a name="ln2095">    corrupt_env cenv;</a>
+<a name="ln2096">    _corrupt_choose_colours(&amp;cenv);</a>
+<a name="ln2097">    _corrupt_level_features(cenv);</a>
+<a name="ln2098">    run_corruption_effects(300);</a>
+<a name="ln2099"> </a>
+<a name="ln2100">#ifndef USE_TILE_LOCAL</a>
+<a name="ln2101">    // Allow extra time for the flash to linger.</a>
+<a name="ln2102">    scaled_delay(1000);</a>
+<a name="ln2103">#endif</a>
+<a name="ln2104"> </a>
+<a name="ln2105">    return true;</a>
+<a name="ln2106">}</a>
+<a name="ln2107"> </a>
+<a name="ln2108">/// If the player has earned enough XP, spawn an exit or stairs down.</a>
+<a name="ln2109">void abyss_maybe_spawn_xp_exit()</a>
+<a name="ln2110">{</a>
+<a name="ln2111">    if (!player_in_branch(BRANCH_ABYSS)</a>
+<a name="ln2112">        || !you.props.exists(ABYSS_STAIR_XP_KEY)</a>
+<a name="ln2113">        || you.props[ABYSS_STAIR_XP_KEY].get_int() &gt; 0</a>
+<a name="ln2114">        || !in_bounds(you.pos())</a>
+<a name="ln2115">        || feat_is_staircase(grd(you.pos())))</a>
+<a name="ln2116">    {</a>
+<a name="ln2117">        return;</a>
+<a name="ln2118">    }</a>
+<a name="ln2119">    const bool stairs = !at_branch_bottom()</a>
+<a name="ln2120">                        &amp;&amp; you.props.exists(ABYSS_SPAWNED_XP_EXIT_KEY)</a>
+<a name="ln2121">                        &amp;&amp; you.props[ABYSS_SPAWNED_XP_EXIT_KEY].get_bool();</a>
+<a name="ln2122"> </a>
+<a name="ln2123">    destroy_wall(you.pos()); // fires listeners etc even if it wasn't a wall</a>
+<a name="ln2124">    grd(you.pos()) = stairs ? DNGN_ABYSSAL_STAIR : DNGN_EXIT_ABYSS;</a>
+<a name="ln2125">    big_cloud(CLOUD_TLOC_ENERGY, &amp;you, you.pos(), 3 + random2(3), 3, 3);</a>
+<a name="ln2126">    redraw_screen(); // before the force-more</a>
+<a name="ln2127">    mprf(MSGCH_BANISHMENT,</a>
+<a name="ln2128">         &quot;The substance of the Abyss twists violently,&quot;</a>
+<a name="ln2129">         &quot; and a gateway leading %s appears!&quot;, stairs ? &quot;down&quot; : &quot;out&quot;);</a>
+<a name="ln2130"> </a>
+<a name="ln2131">    you.props[ABYSS_STAIR_XP_KEY] = EXIT_XP_COST;</a>
+<a name="ln2132">    you.props[ABYSS_SPAWNED_XP_EXIT_KEY] = true;</a>
+<a name="ln2133">}</a>
+
+</code></pre>
+<div class="balloon" rel="462"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'which_feat' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+<div class="balloon" rel="1264"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'cloud_life' should be checked here.</p></div>
+<div class="balloon" rel="1363"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1844"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'cmark'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

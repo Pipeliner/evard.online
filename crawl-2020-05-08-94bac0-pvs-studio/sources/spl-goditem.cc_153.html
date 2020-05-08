@@ -1,0 +1,1419 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>spl-goditem.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Pseudo spells triggered by gods and various items.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;spl-goditem.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;cleansing-flame-source-type.h&quot;</a>
+<a name="ln11">#include &quot;coordit.h&quot;</a>
+<a name="ln12">#include &quot;database.h&quot;</a>
+<a name="ln13">#include &quot;directn.h&quot;</a>
+<a name="ln14">#include &quot;english.h&quot;</a>
+<a name="ln15">#include &quot;env.h&quot;</a>
+<a name="ln16">#include &quot;fight.h&quot;</a>
+<a name="ln17">#include &quot;god-conduct.h&quot;</a>
+<a name="ln18">#include &quot;god-passive.h&quot;</a>
+<a name="ln19">#include &quot;hints.h&quot;</a>
+<a name="ln20">#include &quot;invent.h&quot;</a>
+<a name="ln21">#include &quot;item-prop.h&quot;</a>
+<a name="ln22">#include &quot;items.h&quot;</a>
+<a name="ln23">#include &quot;los.h&quot;</a>
+<a name="ln24">#include &quot;mapdef.h&quot;</a>
+<a name="ln25">#include &quot;mapmark.h&quot;</a>
+<a name="ln26">#include &quot;map-knowledge.h&quot;</a>
+<a name="ln27">#include &quot;message.h&quot;</a>
+<a name="ln28">#include &quot;mon-behv.h&quot;</a>
+<a name="ln29">#include &quot;mon-cast.h&quot;</a>
+<a name="ln30">#include &quot;mon-death.h&quot;</a>
+<a name="ln31">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln32">#include &quot;religion.h&quot;</a>
+<a name="ln33">#include &quot;spl-util.h&quot;</a>
+<a name="ln34">#include &quot;state.h&quot;</a>
+<a name="ln35">#include &quot;status.h&quot;</a>
+<a name="ln36">#include &quot;stringutil.h&quot;</a>
+<a name="ln37">#include &quot;terrain.h&quot;</a>
+<a name="ln38">#include &quot;rltiles/tiledef-dngn.h&quot;</a>
+<a name="ln39">#include &quot;traps.h&quot;</a>
+<a name="ln40">#include &quot;viewchar.h&quot;</a>
+<a name="ln41"> </a>
+<a name="ln42">static void _print_holy_pacification_speech(const string &amp;key,</a>
+<a name="ln43">                                            const monster &amp;mon,</a>
+<a name="ln44">                                            msg_channel_type channel)</a>
+<a name="ln45">{</a>
+<a name="ln46">    string full_key = &quot;holy_being_pacification&quot;;</a>
+<a name="ln47">    full_key += key;</a>
+<a name="ln48"> </a>
+<a name="ln49">    string msg = getSpeakString(full_key);</a>
+<a name="ln50"> </a>
+<a name="ln51">    if (!msg.empty())</a>
+<a name="ln52">    {</a>
+<a name="ln53">        msg = do_mon_str_replacements(msg, mon);</a>
+<a name="ln54">        strip_channel_prefix(msg, channel);</a>
+<a name="ln55">        mprf(channel, &quot;%s&quot;, msg.c_str());</a>
+<a name="ln56">    }</a>
+<a name="ln57">}</a>
+<a name="ln58"> </a>
+<a name="ln59">static bool _mons_hostile(const monster* mon)</a>
+<a name="ln60">{</a>
+<a name="ln61">    // Needs to be done this way because of friendly/neutral enchantments.</a>
+<a name="ln62">    return !mon-&gt;wont_attack() &amp;&amp; !mon-&gt;neutral();</a>
+<a name="ln63">}</a>
+<a name="ln64"> </a>
+<a name="ln65">string unpacifiable_reason(const monster&amp; mon)</a>
+<a name="ln66">{</a>
+<a name="ln67">    return unpacifiable_reason(monster_info(&amp;mon));</a>
+<a name="ln68">}</a>
+<a name="ln69"> </a>
+<a name="ln70">/**</a>
+<a name="ln71"> * Is it possible for the player to pacify this monster, independent of their</a>
+<a name="ln72"> * total 'heal power'? If not, why not?</a>
+<a name="ln73"> *</a>
+<a name="ln74"> * @param mon   The monster to be checked for pacifiability.</a>
+<a name="ln75"> * @return      A description of why the monster can't be pacified, if it can't;</a>
+<a name="ln76"> *              e.g. &quot;You cannot pacify this monster while she is sleeping!&quot;</a>
+<a name="ln77"> *              If the monster *can* be pacified, returns the empty string.</a>
+<a name="ln78"> */</a>
+<a name="ln79">string unpacifiable_reason(const monster_info&amp; mi)</a>
+<a name="ln80">{</a>
+<a name="ln81">    // XXX: be more specific?</a>
+<a name="ln82">    const string generic_reason = &quot;You cannot pacify this monster!&quot;;</a>
+<a name="ln83"> </a>
+<a name="ln84">    // I was thinking of jellies when I wrote this, but maybe we shouldn't</a>
+<a name="ln85">    // exclude zombies and such... (jpeg)</a>
+<a name="ln86">    if (mi.intel() &lt;= I_BRAINLESS // no self-awareness</a>
+<a name="ln87">        || mons_is_tentacle_or_tentacle_segment(mi.type)) // body part</a>
+<a name="ln88">    {</a>
+<a name="ln89">        return generic_reason;</a>
+<a name="ln90">    }</a>
+<a name="ln91"> </a>
+<a name="ln92">    const mon_holy_type holiness = mi.holi;</a>
+<a name="ln93"> </a>
+<a name="ln94">    if (!(holiness &amp; (MH_HOLY | MH_UNDEAD | MH_DEMONIC | MH_NATURAL)))</a>
+<a name="ln95">        return generic_reason;</a>
+<a name="ln96"> </a>
+<a name="ln97">    if (mons_class_is_stationary(mi.type)) // not able to leave the level</a>
+<a name="ln98">        return generic_reason;</a>
+<a name="ln99"> </a>
+<a name="ln100">    if (mi.is(MB_SLEEPING)) // not aware of what is happening</a>
+<a name="ln101">    {</a>
+<a name="ln102">        return make_stringf(&quot;You cannot pacify this monster while %s %s &quot;</a>
+<a name="ln103">                            &quot;sleeping!&quot;,</a>
+<a name="ln104">                            mi.pronoun(PRONOUN_SUBJECTIVE),</a>
+<a name="ln105">                            conjugate_verb(&quot;are&quot;,</a>
+<a name="ln106">                                           mi.pronoun_plurality()).c_str());</a>
+<a name="ln107">    }</a>
+<a name="ln108"> </a>
+<a name="ln109">    // pacifiable, maybe!</a>
+<a name="ln110">    return &quot;&quot;;</a>
+<a name="ln111">}</a>
+<a name="ln112"> </a>
+<a name="ln113">/**</a>
+<a name="ln114"> * By what factor should a monster of the given holiness have healing divided,</a>
+<a name="ln115"> * when calculating its vulnerability to Elyvilon's pacification?</a>
+<a name="ln116"> * A larger divisor means the monster is less vulnerable.</a>
+<a name="ln117"> *</a>
+<a name="ln118"> * @param holiness  The holiness of the mon to be pacified; e.g. MH_UNDEAD.</a>
+<a name="ln119"> * @return          A value to divide the healing the player does against the</a>
+<a name="ln120"> *                  monster by; e.g. 3.</a>
+<a name="ln121"> */</a>
+<a name="ln122">static int _pacification_heal_div(mon_holy_type holiness)</a>
+<a name="ln123">{</a>
+<a name="ln124">    if (holiness &amp; MH_HOLY)</a>
+<a name="ln125">        return 2;</a>
+<a name="ln126">    if (holiness &amp; MH_UNDEAD)</a>
+<a name="ln127">        return 4;</a>
+<a name="ln128">    if (holiness &amp; MH_DEMONIC)</a>
+<a name="ln129">        return 5;</a>
+<a name="ln130">    return 3;</a>
+<a name="ln131">}</a>
+<a name="ln132"> </a>
+<a name="ln133">/**</a>
+<a name="ln134"> * The sides for the roll against monster avg hp to determine if the</a>
+<a name="ln135"> * monster can be pacified.</a>
+<a name="ln136"> *</a>
+<a name="ln137"> * The formula is sides = int * ((invo + 1) * power) / holiness)</a>
+<a name="ln138"> * where</a>
+<a name="ln139"> *   power = 30 + invo</a>
+<a name="ln140"> *   int = 3 for animals, 1 for smarter intelligence</a>
+<a name="ln141"> *   holiness = holiness modifier determined in _heal_div</a>
+<a name="ln142"> *</a>
+<a name="ln143"> * @param mc        The type of monster in question.</a>
+<a name="ln144"> * @param pow       The power of the pacification.</a>
+<a name="ln145"> * @return          The dice sides to roll against max hp</a>
+<a name="ln146"> */</a>
+<a name="ln147">static int _pacification_sides(const monster_type mc, int pow)</a>
+<a name="ln148">{</a>
+<a name="ln149">    const int heal_mult = (mons_class_intel(mc) &lt; I_HUMAN) ? 3  // animals</a>
+<a name="ln150">                                                      : 1; // other</a>
+<a name="ln151">    const int heal_div = _pacification_heal_div(mons_class_holiness(mc));</a>
+<a name="ln152">    // ignoring monster holiness &amp; int</a>
+<a name="ln153">    const int base_sides = you.skill(SK_INVOCATIONS, pow) + pow;</a>
+<a name="ln154">    const int sides = heal_mult * base_sides / heal_div;</a>
+<a name="ln155"> </a>
+<a name="ln156">    return sides;</a>
+<a name="ln157">}</a>
+<a name="ln158"> </a>
+<a name="ln159">/**</a>
+<a name="ln160"> * Pan lords and player ghosts are beyond Elyvilon's light</a>
+<a name="ln161"> */</a>
+<a name="ln162">static int _pacification_hp(monster_type mc)</a>
+<a name="ln163">{</a>
+<a name="ln164">    return mons_is_pghost(mc) || mc == MONS_PANDEMONIUM_LORD ? 1000</a>
+<a name="ln165">        : mons_avg_hp(mc);</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">/**</a>
+<a name="ln169"> * Try to pacify the given monster. Aborts if that's clearly impossible.</a>
+<a name="ln170"> *</a>
+<a name="ln171"> * @param mon           The monster to be pacified, potentially.</a>
+<a name="ln172"> * @param healed        The amount of healing the pacification attempt uses.</a>
+<a name="ln173"> * @param pow           The healing power.</a>
+<a name="ln174"> * @param fail          Whether the healing invocation has failed (and will</a>
+<a name="ln175"> *                      return spret::failED after targeting checks finish).</a>
+<a name="ln176"> * @return              Whether the pacification effect was aborted</a>
+<a name="ln177"> *                      (spret::abort) or the invocation failed (spret::fail);</a>
+<a name="ln178"> *                      returns spret::success otherwise, regardless of whether</a>
+<a name="ln179"> *                      the target was actually pacified.</a>
+<a name="ln180"> */</a>
+<a name="ln181">static spret _try_to_pacify(monster &amp;mon, int healed, int pow,</a>
+<a name="ln182">                                 bool fail)</a>
+<a name="ln183">{</a>
+<a name="ln184">    const monster_info mi(&amp;mon);</a>
+<a name="ln185">    const string illegal_reason = unpacifiable_reason(mi);</a>
+<a name="ln186">    if (!illegal_reason.empty())</a>
+<a name="ln187">    {</a>
+<a name="ln188">        mpr(illegal_reason);</a>
+<a name="ln189">        return spret::abort;</a>
+<a name="ln190">    }</a>
+<a name="ln191"> </a>
+<a name="ln192">    fail_check();</a>
+<a name="ln193"> </a>
+<a name="ln194">    const int mon_hp = _pacification_hp(mon.type);</a>
+<a name="ln195"> </a>
+<a name="ln196">    if (_pacification_sides(mon.type, pow) &lt; mon_hp)</a>
+<a name="ln197">    {</a>
+<a name="ln198">        // monster avg hp too high to ever be pacified with your invo skill.</a>
+<a name="ln199">        mprf(&quot;%s would be completely unfazed by your meagre offer of peace.&quot;,</a>
+<a name="ln200">             mon.name(DESC_THE).c_str());</a>
+<a name="ln201">        return spret::abort;</a>
+<a name="ln202">    }</a>
+<a name="ln203"> </a>
+<a name="ln204">    // Take the min of two rolls of 1d(_pacification_sides)</a>
+<a name="ln205">    const int pacified_roll = biased_random2(_pacification_sides(mon.type, pow) - 1,2);</a>
+<a name="ln206">    dprf(&quot;pacified roll: %d, monclass avmhp: %d&quot;, pacified_roll, mon_hp);</a>
+<a name="ln207">    if (pacified_roll * 23 / 20 &lt; mon_hp)</a>
+<a name="ln208">    {</a>
+<a name="ln209">        // not even close.</a>
+<a name="ln210">        mprf(&quot;The light of Elyvilon fails to reach %s.&quot;,</a>
+<a name="ln211">             mon.name(DESC_THE).c_str());</a>
+<a name="ln212">        return spret::success;</a>
+<a name="ln213">    }</a>
+<a name="ln214"> </a>
+<a name="ln215">    if (pacified_roll &lt; mon_hp)</a>
+<a name="ln216">    {</a>
+<a name="ln217">        // closer! ...but not quite.</a>
+<a name="ln218">        mprf(&quot;The light of Elyvilon almost touches upon %s.&quot;,</a>
+<a name="ln219">             mon.name(DESC_THE).c_str());</a>
+<a name="ln220">        return spret::success;</a>
+<a name="ln221">    }</a>
+<a name="ln222"> </a>
+<a name="ln223">    // we did it!</a>
+<a name="ln224">    // let the player know.</a>
+<a name="ln225">    if (mon.is_holy())</a>
+<a name="ln226">    {</a>
+<a name="ln227">        string key;</a>
+<a name="ln228"> </a>
+<a name="ln229">        // Quadrupeds can't salute, etc.</a>
+<a name="ln230">        if (mon_shape_is_humanoid(get_mon_shape(mon)))</a>
+<a name="ln231">            key = &quot;_humanoid&quot;;</a>
+<a name="ln232"> </a>
+<a name="ln233">        _print_holy_pacification_speech(key, mon,</a>
+<a name="ln234">                                        MSGCH_FRIEND_ENCHANT);</a>
+<a name="ln235"> </a>
+<a name="ln236">        if (!one_chance_in(3)</a>
+<a name="ln237">            &amp;&amp; mon.can_speak()</a>
+<a name="ln238">            &amp;&amp; mon.type != MONS_MENNAS) // Mennas is mute and only has visual speech</a>
+<a name="ln239">        {</a>
+<a name="ln240">            _print_holy_pacification_speech(&quot;_speech&quot;, mon, MSGCH_TALK);</a>
+<a name="ln241">        }</a>
+<a name="ln242">    }</a>
+<a name="ln243">    else</a>
+<a name="ln244">        simple_monster_message(mon, &quot; turns neutral.&quot;);</a>
+<a name="ln245"> </a>
+<a name="ln246">    record_monster_defeat(&amp;mon, KILL_PACIFIED);</a>
+<a name="ln247">    mons_pacify(mon, ATT_NEUTRAL);</a>
+<a name="ln248"> </a>
+<a name="ln249">    heal_monster(mon, healed);</a>
+<a name="ln250">    return spret::success;</a>
+<a name="ln251">}</a>
+<a name="ln252"> </a>
+<a name="ln253">/**</a>
+<a name="ln254"> * Heal a monster and print an appropriate message.</a>
+<a name="ln255"> *</a>
+<a name="ln256"> * Should only be called if the player is responsible!</a>
+<a name="ln257"> * @param patient the monster to be healed</a>
+<a name="ln258"> * @param amount  how many HP to restore</a>
+<a name="ln259"> * @return whether the monster could be healed.</a>
+<a name="ln260"> */</a>
+<a name="ln261">bool heal_monster(monster&amp; patient, int amount)</a>
+<a name="ln262">{</a>
+<a name="ln263">    if (!patient.heal(amount))</a>
+<a name="ln264">        return false;</a>
+<a name="ln265"> </a>
+<a name="ln266">    mprf(&quot;You heal %s.&quot;, patient.name(DESC_THE).c_str());</a>
+<a name="ln267"> </a>
+<a name="ln268">    if (patient.hit_points == patient.max_hit_points)</a>
+<a name="ln269">        simple_monster_message(patient, &quot; is completely healed.&quot;);</a>
+<a name="ln270">    else</a>
+<a name="ln271">        print_wounds(patient);</a>
+<a name="ln272"> </a>
+<a name="ln273">    return true;</a>
+<a name="ln274">}</a>
+<a name="ln275"> </a>
+<a name="ln276">/**</a>
+<a name="ln277"> * Compute the success chance of pacification out of scale</a>
+<a name="ln278"> *</a>
+<a name="ln279"> * biased_random2(sides-1,2) is equivalent to picking two integers in</a>
+<a name="ln280"> * [0,sides), re-rolling if they come up the same, and taking a min if they</a>
+<a name="ln281"> * come up distinct. The formula below computes the probability of rolling two</a>
+<a name="ln282"> * numbers that are both large enough, minus the probability they are the same.</a>
+<a name="ln283"> *</a>
+<a name="ln284"> * The reason for the + 1 in the inequality is that if the die is only one</a>
+<a name="ln285"> * larger than monster hp, the min of two distinct rolls is guaranteed to lose.</a>
+<a name="ln286"> */</a>
+<a name="ln287">static int _pacify_chance(const monster_info&amp; mi, const int pow, int scale)</a>
+<a name="ln288">{</a>
+<a name="ln289">    const int sides = _pacification_sides(mi.type, pow);</a>
+<a name="ln290">    const int target = _pacification_hp(mi.type);</a>
+<a name="ln291"> </a>
+<a name="ln292">    if (sides &lt;= target + 1)</a>
+<a name="ln293">        return 0;</a>
+<a name="ln294"> </a>
+<a name="ln295">    return (scale * ((sides - target) * (sides - target) - sides))</a>
+<a name="ln296">         / (sides * sides);</a>
+<a name="ln297">}</a>
+<a name="ln298"> </a>
+<a name="ln299">static vector&lt;string&gt; _desc_pacify_chance(const monster_info&amp; mi, const int pow)</a>
+<a name="ln300">{</a>
+<a name="ln301">    vector&lt;string&gt; descs;</a>
+<a name="ln302"> </a>
+<a name="ln303">    if (mi.intel() &lt;= I_BRAINLESS)</a>
+<a name="ln304">        descs.push_back(&quot;mindless&quot;);</a>
+<a name="ln305">    else if (!unpacifiable_reason(mi).empty()</a>
+<a name="ln306">             || _pacification_sides(mi.type, pow)</a>
+<a name="ln307">                &lt;= _pacification_hp(mi.type) + 1)</a>
+<a name="ln308">        descs.push_back(&quot;uninterested&quot;);</a>
+<a name="ln309">    else</a>
+<a name="ln310">    {</a>
+<a name="ln311">        const int success = _pacify_chance(mi, pow, 100);</a>
+<a name="ln312">        descs.push_back(make_stringf(&quot;chance to pacify: %d%%&quot;, success));</a>
+<a name="ln313">    }</a>
+<a name="ln314">    return descs;</a>
+<a name="ln315">}</a>
+<a name="ln316"> </a>
+<a name="ln317">spret cast_healing(int pow, bool fail)</a>
+<a name="ln318">{</a>
+<a name="ln319">    // This arithmetic is to make the healing amount match Greater Healing</a>
+<a name="ln320">    const int base = div_rand_round(pow, 3);</a>
+<a name="ln321">    const int healed = base + roll_dice(2, base) - 2;</a>
+<a name="ln322">    ASSERT(healed &gt;= 1);</a>
+<a name="ln323"> </a>
+<a name="ln324">    dist spd;</a>
+<a name="ln325"> </a>
+<a name="ln326">    direction_chooser_args args;</a>
+<a name="ln327">    args.restricts = DIR_TARGET;</a>
+<a name="ln328">    args.mode = TARG_INJURED_FRIEND;</a>
+<a name="ln329">    args.needs_path = false;</a>
+<a name="ln330">    args.self = confirm_prompt_type::cancel;</a>
+<a name="ln331">    args.target_prefix = &quot;Heal&quot;;</a>
+<a name="ln332">    args.get_desc_func = bind(_desc_pacify_chance, placeholders::_1, pow);</a>
+<a name="ln333">    direction(spd, args);</a>
+<a name="ln334"> </a>
+<a name="ln335">    if (!spd.isValid)</a>
+<a name="ln336">        return spret::abort;</a>
+<a name="ln337">    if (cell_is_solid(spd.target))</a>
+<a name="ln338">    {</a>
+<a name="ln339">        canned_msg(MSG_NOTHING_THERE);</a>
+<a name="ln340">        return spret::abort;</a>
+<a name="ln341">    }</a>
+<a name="ln342"> </a>
+<a name="ln343">    monster* mons = monster_at(spd.target);</a>
+<a name="ln344">    if (!mons)</a>
+<a name="ln345">    {</a>
+<a name="ln346">        canned_msg(MSG_NOTHING_THERE);</a>
+<a name="ln347">        // This isn't a cancel, to avoid leaking invisible monster</a>
+<a name="ln348">        // locations.</a>
+<a name="ln349">        return spret::success;</a>
+<a name="ln350">    }</a>
+<a name="ln351"> </a>
+<a name="ln352">    if (_mons_hostile(mons))</a>
+<a name="ln353">        return _try_to_pacify(*mons, healed, pow, fail);</a>
+<a name="ln354"> </a>
+<a name="ln355">    fail_check();</a>
+<a name="ln356"> </a>
+<a name="ln357">    if (!heal_monster(*mons, healed))</a>
+<a name="ln358">        canned_msg(MSG_NOTHING_HAPPENS);</a>
+<a name="ln359"> </a>
+<a name="ln360">    return spret::success;</a>
+<a name="ln361">}</a>
+<a name="ln362"> </a>
+<a name="ln363">/// Effects that occur when the player is debuffed.</a>
+<a name="ln364">struct player_debuff_effects</a>
+<a name="ln365">{</a>
+<a name="ln366">    /// Attributes removed by a debuff.</a>
+<a name="ln367">    vector&lt;attribute_type&gt; attributes;</a>
+<a name="ln368">    /// Durations removed by a debuff.</a>
+<a name="ln369">    vector&lt;duration_type&gt; durations;</a>
+<a name="ln370">};</a>
+<a name="ln371"> </a>
+<a name="ln372">/**</a>
+<a name="ln373"> * What dispellable effects currently exist on the player?</a>
+<a name="ln374"> *</a>
+<a name="ln375"> * @param[out] buffs   The dispellable effects that exist on the player.</a>
+<a name="ln376"> *                     Assumed to be empty when passed in.</a>
+<a name="ln377"> */</a>
+<a name="ln378">static void _dispellable_player_buffs(player_debuff_effects &amp;buffs)</a>
+<a name="ln379">{</a>
+<a name="ln380">    // durations</a>
+<a name="ln381">    for (unsigned int i = 0; i &lt; NUM_DURATIONS; ++i)</a>
+<a name="ln382">    {</a>
+<a name="ln383">        const int dur = you.duration[i];</a>
+<a name="ln384">        if (dur &lt;= 0 || !duration_dispellable((duration_type) i))</a>
+<a name="ln385">            continue;</a>
+<a name="ln386">        if (i == DUR_TRANSFORMATION &amp;&amp; you.form == transformation::shadow)</a>
+<a name="ln387">            continue;</a>
+<a name="ln388">        buffs.durations.push_back((duration_type) i);</a>
+<a name="ln389">        // this includes some buffs that won't be reduced in duration -</a>
+<a name="ln390">        // anything already at 1 aut, or flight/transform while &lt;= 11 aut</a>
+<a name="ln391">        // that's probably not an actual problem</a>
+<a name="ln392">    }</a>
+<a name="ln393">}</a>
+<a name="ln394"> </a>
+<a name="ln395">/**</a>
+<a name="ln396"> * Does the player have any magical effects that can be removed (by debuff)?</a>
+<a name="ln397"> *</a>
+<a name="ln398"> * @return  Whether there are any effects to be dispelled.</a>
+<a name="ln399"> */</a>
+<a name="ln400">bool player_is_debuffable()</a>
+<a name="ln401">{</a>
+<a name="ln402">    player_debuff_effects buffs;</a>
+<a name="ln403">    _dispellable_player_buffs(buffs);</a>
+<a name="ln404">    return !buffs.durations.empty()</a>
+<a name="ln405">           || !buffs.attributes.empty();</a>
+<a name="ln406">}</a>
+<a name="ln407"> </a>
+<a name="ln408">/**</a>
+<a name="ln409"> * Remove magical effects from the player.</a>
+<a name="ln410"> *</a>
+<a name="ln411"> * Forms, buffs, debuffs, contamination, probably a few other things.</a>
+<a name="ln412"> * Flight gets an extra 11 aut before going away to minimize instadeaths.</a>
+<a name="ln413"> */</a>
+<a name="ln414">void debuff_player()</a>
+<a name="ln415">{</a>
+<a name="ln416">    bool need_msg = false;</a>
+<a name="ln417"> </a>
+<a name="ln418">    // find the list of debuffable effects currently active</a>
+<a name="ln419">    player_debuff_effects buffs;</a>
+<a name="ln420">    _dispellable_player_buffs(buffs);</a>
+<a name="ln421"> </a>
+<a name="ln422">    for (auto attr : buffs.attributes)</a>
+<a name="ln423">    {</a>
+<a name="ln424">        you.attribute[attr] = 0;</a>
+<a name="ln425">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln426">        if (attr == ATTR_DELAYED_FIREBALL)</a>
+<a name="ln427">            mprf(MSGCH_DURATION, &quot;Your charged fireball dissipates.&quot;);</a>
+<a name="ln428">        else</a>
+<a name="ln429">#endif</a>
+<a name="ln430">            need_msg = true;</a>
+<a name="ln431">    }</a>
+<a name="ln432"> </a>
+<a name="ln433">    for (auto duration : buffs.durations)</a>
+<a name="ln434">    {</a>
+<a name="ln435">        int &amp;len = you.duration[duration];</a>
+<a name="ln436">        if (duration == DUR_TELEPORT)</a>
+<a name="ln437">        {</a>
+<a name="ln438">            len = 0;</a>
+<a name="ln439">            mprf(MSGCH_DURATION, &quot;You feel strangely stable.&quot;);</a>
+<a name="ln440">        }</a>
+<a name="ln441">        else if (duration == DUR_PETRIFYING)</a>
+<a name="ln442">        {</a>
+<a name="ln443">            len = 0;</a>
+<a name="ln444">            mprf(MSGCH_DURATION, &quot;You feel limber!&quot;);</a>
+<a name="ln445">            you.redraw_evasion = true;</a>
+<a name="ln446">        }</a>
+<a name="ln447">        else if (duration == DUR_FLAYED)</a>
+<a name="ln448">        {</a>
+<a name="ln449">            len = 0;</a>
+<a name="ln450">            heal_flayed_effect(&amp;you);</a>
+<a name="ln451">        }</a>
+<a name="ln452">        else if (len &gt; 1)</a>
+<a name="ln453">        {</a>
+<a name="ln454">            len = 1;</a>
+<a name="ln455">            need_msg = true;</a>
+<a name="ln456">        }</a>
+<a name="ln457">    }</a>
+<a name="ln458"> </a>
+<a name="ln459">    if (need_msg)</a>
+<a name="ln460">        mprf(MSGCH_WARN, &quot;Your magical effects are unravelling.&quot;);</a>
+<a name="ln461">}</a>
+<a name="ln462"> </a>
+<a name="ln463"> </a>
+<a name="ln464">/**</a>
+<a name="ln465">  * What dispellable effects currently exist on a given monster?</a>
+<a name="ln466">  *</a>
+<a name="ln467">  * @param[in] mon      The monster in question.</a>
+<a name="ln468">  * @param[out] buffs   The dispellable effects that exist on that monster.</a>
+<a name="ln469">  *                     Assumed to be empty when passed in.</a>
+<a name="ln470">  */</a>
+<a name="ln471">static void _dispellable_monster_buffs(const monster &amp;mon,</a>
+<a name="ln472">                                       vector&lt;enchant_type&gt; &amp;buffs)</a>
+<a name="ln473">{</a>
+<a name="ln474">    // Dispel all magical enchantments...</a>
+<a name="ln475">    for (enchant_type ench : dispellable_enchantments)</a>
+<a name="ln476">    {</a>
+<a name="ln477">        // except for permaconfusion.</a>
+<a name="ln478">        if (ench == ENCH_CONFUSION &amp;&amp; mons_class_flag(mon.type, M_CONFUSED))</a>
+<a name="ln479">            continue;</a>
+<a name="ln480"> </a>
+<a name="ln481">        // Gozag-incited haste is permanent.</a>
+<a name="ln482">        if (ench == ENCH_HASTE &amp;&amp; mon.has_ench(ENCH_GOZAG_INCITE))</a>
+<a name="ln483">            continue;</a>
+<a name="ln484"> </a>
+<a name="ln485">        if (mon.has_ench(ench))</a>
+<a name="ln486">            buffs.push_back(ench);</a>
+<a name="ln487">    }</a>
+<a name="ln488"> </a>
+<a name="ln489">    // special-case invis, to avoid hitting naturally invis monsters.</a>
+<a name="ln490">    if (mon.has_ench(ENCH_INVIS) &amp;&amp; !mons_class_flag(mon.type, M_INVIS))</a>
+<a name="ln491">        buffs.push_back(ENCH_INVIS);</a>
+<a name="ln492">}</a>
+<a name="ln493"> </a>
+<a name="ln494"> </a>
+<a name="ln495">/**</a>
+<a name="ln496"> * Does a given monster have any buffs that can be removed?</a>
+<a name="ln497"> *</a>
+<a name="ln498"> * @param mon           The monster in question.</a>
+<a name="ln499"> */</a>
+<a name="ln500">bool monster_is_debuffable(const monster &amp;mon)</a>
+<a name="ln501">{</a>
+<a name="ln502">    vector&lt;enchant_type&gt; buffs;</a>
+<a name="ln503">    _dispellable_monster_buffs(mon, buffs);</a>
+<a name="ln504">    return !buffs.empty();</a>
+<a name="ln505">}</a>
+<a name="ln506"> </a>
+<a name="ln507">/**</a>
+<a name="ln508"> * Remove magical effects from a given monster.</a>
+<a name="ln509"> *</a>
+<a name="ln510"> * @param mon           The monster to be debuffed.</a>
+<a name="ln511"> */</a>
+<a name="ln512">void debuff_monster(monster &amp;mon)</a>
+<a name="ln513">{</a>
+<a name="ln514">    vector&lt;enchant_type&gt; buffs;</a>
+<a name="ln515">    _dispellable_monster_buffs(mon, buffs);</a>
+<a name="ln516">    if (buffs.empty())</a>
+<a name="ln517">        return;</a>
+<a name="ln518"> </a>
+<a name="ln519">    for (enchant_type buff : buffs)</a>
+<a name="ln520">        mon.del_ench(buff, true, true);</a>
+<a name="ln521"> </a>
+<a name="ln522">    simple_monster_message(mon, &quot;'s magical effects unravel!&quot;);</a>
+<a name="ln523">}</a>
+<a name="ln524"> </a>
+<a name="ln525">// pow -1 for passive</a>
+<a name="ln526">int detect_items(int pow)</a>
+<a name="ln527">{</a>
+<a name="ln528">    int items_found = 0;</a>
+<a name="ln529">    int map_radius = 0;</a>
+<a name="ln530">    if (pow &gt;= 0)</a>
+<a name="ln531">        map_radius = 7 + random2(7) + pow;</a>
+<a name="ln532"> </a>
+<a name="ln533">    else if (you.has_mutation(MUT_STRONG_NOSE))</a>
+<a name="ln534">        map_radius = get_los_radius();</a>
+<a name="ln535">    else</a>
+<a name="ln536">    {</a>
+<a name="ln537">        if (you.has_mutation(MUT_JELLY_GROWTH))</a>
+<a name="ln538">            map_radius = 5;</a>
+<a name="ln539">        // Check which god may be providing detect_items and set map_radius</a>
+<a name="ln540">        if (have_passive(passive_t::detect_items))</a>
+<a name="ln541">        {</a>
+<a name="ln542">            map_radius = max(map_radius,</a>
+<a name="ln543">                             min(you.piety / 20 - 1, get_los_radius()));</a>
+<a name="ln544"> </a>
+<a name="ln545">            if (map_radius &lt;= 0)</a>
+<a name="ln546">                return 0;</a>
+<a name="ln547">        }</a>
+<a name="ln548">    }</a>
+<a name="ln549"> </a>
+<a name="ln550">    for (radius_iterator ri(you.pos(), map_radius, C_SQUARE); ri; ++ri)</a>
+<a name="ln551">    {</a>
+<a name="ln552">        // Don't expose new dug out areas:</a>
+<a name="ln553">        // Note: assumptions are being made here about how</a>
+<a name="ln554">        // terrain can change (eg it used to be solid, and</a>
+<a name="ln555">        // thus item free).</a>
+<a name="ln556">        if (pow != -1 &amp;&amp; env.map_knowledge(*ri).changed())</a>
+<a name="ln557">            continue;</a>
+<a name="ln558"> </a>
+<a name="ln559">        if (you.visible_igrd(*ri) != NON_ITEM</a>
+<a name="ln560">            &amp;&amp; !env.map_knowledge(*ri).item())</a>
+<a name="ln561">        {</a>
+<a name="ln562">            items_found++;</a>
+<a name="ln563">            env.map_knowledge(*ri).set_detected_item();</a>
+<a name="ln564">        }</a>
+<a name="ln565">    }</a>
+<a name="ln566"> </a>
+<a name="ln567">    return items_found;</a>
+<a name="ln568">}</a>
+<a name="ln569"> </a>
+<a name="ln570">static void _fuzz_detect_creatures(int pow, int *fuzz_radius, int *fuzz_chance)</a>
+<a name="ln571">{</a>
+<a name="ln572">    dprf(&quot;dc_fuzz: Power is %d&quot;, pow);</a>
+<a name="ln573"> </a>
+<a name="ln574">    pow = max(1, pow);</a>
+<a name="ln575"> </a>
+<a name="ln576">    *fuzz_radius = pow &gt;= 50 ? 1 : 2;</a>
+<a name="ln577"> </a>
+<a name="ln578">    // Fuzz chance starts off at 100% and declines to a low of 10% for</a>
+<a name="ln579">    // obscenely powerful castings (pow caps around the 60 mark).</a>
+<a name="ln580">    *fuzz_chance = 100 - 90 * (pow - 1) / 59;</a>
+<a name="ln581">    if (*fuzz_chance &lt; 10)</a>
+<a name="ln582">        *fuzz_chance = 10;</a>
+<a name="ln583">}</a>
+<a name="ln584"> </a>
+<a name="ln585">static void _mark_detected_creature(coord_def where, const monster&amp; mon,</a>
+<a name="ln586">                                    int fuzz_chance, int fuzz_radius)</a>
+<a name="ln587">{</a>
+<a name="ln588">    if (fuzz_radius &amp;&amp; x_chance_in_y(fuzz_chance, 100))</a>
+<a name="ln589">    {</a>
+<a name="ln590">        const int fuzz_diam = 2 * fuzz_radius + 1;</a>
+<a name="ln591"> </a>
+<a name="ln592">        coord_def place;</a>
+<a name="ln593">        // Try five times to find a valid placement, else we attempt to place</a>
+<a name="ln594">        // the monster where it really is (and may fail).</a>
+<a name="ln595">        for (int itry = 0; itry &lt; 5; ++itry)</a>
+<a name="ln596">        {</a>
+<a name="ln597">            place.set(where.x + random2(fuzz_diam) - fuzz_radius,</a>
+<a name="ln598">                      where.y + random2(fuzz_diam) - fuzz_radius);</a>
+<a name="ln599"> </a>
+<a name="ln600">            // the player believes there is no monster there, and this one could be there</a>
+<a name="ln601">            if (query_map_knowledge(false, place, [&amp;mon](const map_cell&amp; m) {</a>
+<a name="ln602">                  return !m.detected_monster() &amp;&amp; mon.can_pass_through_feat(m.feat());</a>
+<a name="ln603">                }) &amp;&amp; !you.see_cell(place))</a>
+<a name="ln604">            {</a>
+<a name="ln605">                where = place;</a>
+<a name="ln606">            }</a>
+<a name="ln607">        }</a>
+<a name="ln608">    }</a>
+<a name="ln609"> </a>
+<a name="ln610">    env.map_knowledge(where).set_detected_monster(mons_detected_base(mon.type));</a>
+<a name="ln611">}</a>
+<a name="ln612"> </a>
+<a name="ln613">int detect_creatures(int pow, bool telepathic)</a>
+<a name="ln614">{</a>
+<a name="ln615">    int fuzz_radius = 0, fuzz_chance = 0;</a>
+<a name="ln616">    if (!telepathic)</a>
+<a name="ln617">        _fuzz_detect_creatures(pow, &amp;fuzz_radius, &amp;fuzz_chance);</a>
+<a name="ln618"> </a>
+<a name="ln619">    int creatures_found = 0;</a>
+<a name="ln620">    const int map_radius = 9 + random2(7) + pow;</a>
+<a name="ln621"> </a>
+<a name="ln622">    // Clear the map so detect creatures is more useful and the detection</a>
+<a name="ln623">    // fuzz is harder to analyse by averaging.</a>
+<a name="ln624">    clear_map(false);</a>
+<a name="ln625"> </a>
+<a name="ln626">    for (radius_iterator ri(you.pos(), map_radius, C_SQUARE); ri; ++ri)</a>
+<a name="ln627">    {</a>
+<a name="ln628">        if (monster* mon = monster_at(*ri))</a>
+<a name="ln629">        {</a>
+<a name="ln630">            // If you can see the monster, don't &quot;detect&quot; it elsewhere.</a>
+<a name="ln631">            if (!you.can_see(*mon))</a>
+<a name="ln632">            {</a>
+<a name="ln633">                creatures_found++;</a>
+<a name="ln634">                _mark_detected_creature(*ri, *mon, fuzz_chance, fuzz_radius);</a>
+<a name="ln635">            }</a>
+<a name="ln636">        }</a>
+<a name="ln637">    }</a>
+<a name="ln638"> </a>
+<a name="ln639">    return creatures_found;</a>
+<a name="ln640">}</a>
+<a name="ln641"> </a>
+<a name="ln642">static bool _selectively_remove_curse(const string &amp;pre_msg)</a>
+<a name="ln643">{</a>
+<a name="ln644">    bool used = false;</a>
+<a name="ln645"> </a>
+<a name="ln646">    while (1)</a>
+<a name="ln647">    {</a>
+<a name="ln648">        if (!any_items_of_type(OSEL_CURSED_WORN) &amp;&amp; used)</a>
+<a name="ln649">        {</a>
+<a name="ln650">            mpr(&quot;You have uncursed all your worn items.&quot;);</a>
+<a name="ln651">            return used;</a>
+<a name="ln652">        }</a>
+<a name="ln653"> </a>
+<a name="ln654">        int item_slot = prompt_invent_item(&quot;Uncurse which item?&quot;,</a>
+<a name="ln655">                                           menu_type::invlist,</a>
+<a name="ln656">                                           OSEL_CURSED_WORN, OPER_ANY,</a>
+<a name="ln657">                                           invprompt_flag::escape_only);</a>
+<a name="ln658">        if (prompt_failed(item_slot))</a>
+<a name="ln659">            return used;</a>
+<a name="ln660"> </a>
+<a name="ln661">        item_def&amp; item(you.inv[item_slot]);</a>
+<a name="ln662"> </a>
+<a name="ln663">        if (!item.cursed()</a>
+<a name="ln664">            || !item_is_equipped(item)</a>
+<a name="ln665">            || &amp;item == you.weapon() &amp;&amp; !is_weapon(item))</a>
+<a name="ln666">        {</a>
+<a name="ln667">            mpr(&quot;Choose a cursed equipped item, or Esc to abort.&quot;);</a>
+<a name="ln668">            more();</a>
+<a name="ln669">            continue;</a>
+<a name="ln670">        }</a>
+<a name="ln671"> </a>
+<a name="ln672">        if (!used &amp;&amp; !pre_msg.empty())</a>
+<a name="ln673">            mpr(pre_msg);</a>
+<a name="ln674"> </a>
+<a name="ln675">        do_uncurse_item(item, false);</a>
+<a name="ln676">        used = true;</a>
+<a name="ln677">    }</a>
+<a name="ln678">}</a>
+<a name="ln679"> </a>
+<a name="ln680">bool remove_curse(bool alreadyknown, const string &amp;pre_msg)</a>
+<a name="ln681">{</a>
+<a name="ln682">    if (have_passive(passive_t::want_curses) &amp;&amp; alreadyknown)</a>
+<a name="ln683">    {</a>
+<a name="ln684">        if (_selectively_remove_curse(pre_msg))</a>
+<a name="ln685">        {</a>
+<a name="ln686">            ash_check_bondage();</a>
+<a name="ln687">            return true;</a>
+<a name="ln688">        }</a>
+<a name="ln689">        else</a>
+<a name="ln690">            return false;</a>
+<a name="ln691">    }</a>
+<a name="ln692"> </a>
+<a name="ln693">    bool success = false;</a>
+<a name="ln694"> </a>
+<a name="ln695">    // Players can no longer wield armour and jewellery as weapons, so we do</a>
+<a name="ln696">    // not need to check whether the EQ_WEAPON slot actually contains a weapon:</a>
+<a name="ln697">    // only weapons (and staves) are both wieldable and cursable.</a>
+<a name="ln698">    for (int i = EQ_WEAPON; i &lt; NUM_EQUIP; i++)</a>
+<a name="ln699">    {</a>
+<a name="ln700">        // Melded equipment can also get uncursed this way.</a>
+<a name="ln701">        item_def * const it = you.slot_item(equipment_type(i), true);</a>
+<a name="ln702">        if (it &amp;&amp; it-&gt;cursed())</a>
+<a name="ln703">        {</a>
+<a name="ln704">            do_uncurse_item(*it);</a>
+<a name="ln705">            success = true;</a>
+<a name="ln706">        }</a>
+<a name="ln707">    }</a>
+<a name="ln708"> </a>
+<a name="ln709">    if (success)</a>
+<a name="ln710">    {</a>
+<a name="ln711">        if (!pre_msg.empty())</a>
+<a name="ln712">            mpr(pre_msg);</a>
+<a name="ln713">        mpr(&quot;You feel as if something is helping you.&quot;);</a>
+<a name="ln714">        learned_something_new(HINT_REMOVED_CURSE);</a>
+<a name="ln715">    }</a>
+<a name="ln716">    else if (alreadyknown)</a>
+<a name="ln717">        mprf(MSGCH_PROMPT, &quot;None of your equipped items are cursed.&quot;);</a>
+<a name="ln718">    else</a>
+<a name="ln719">    {</a>
+<a name="ln720">        if (!pre_msg.empty())</a>
+<a name="ln721">            mpr(pre_msg);</a>
+<a name="ln722">        mpr(&quot;You feel blessed for a moment.&quot;);</a>
+<a name="ln723">    }</a>
+<a name="ln724"> </a>
+<a name="ln725">    return success;</a>
+<a name="ln726">}</a>
+<a name="ln727"> </a>
+<a name="ln728">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln729">static bool _selectively_curse_item(bool armour, const string &amp;pre_msg)</a>
+<a name="ln730">{</a>
+<a name="ln731">    while (1)</a>
+<a name="ln732">    {</a>
+<a name="ln733">        int item_slot = prompt_invent_item(&quot;Curse which item?&quot;, menu_type::invlist,</a>
+<a name="ln734">                                           armour ? OSEL_UNCURSED_WORN_ARMOUR</a>
+<a name="ln735">                                                  : OSEL_UNCURSED_WORN_JEWELLERY,</a>
+<a name="ln736">                                           OPER_ANY, invprompt_flag::escape_only);</a>
+<a name="ln737">        if (prompt_failed(item_slot))</a>
+<a name="ln738">            return false;</a>
+<a name="ln739"> </a>
+<a name="ln740">        item_def&amp; item(you.inv[item_slot]);</a>
+<a name="ln741"> </a>
+<a name="ln742">        if (item.cursed()</a>
+<a name="ln743">            || !item_is_equipped(item)</a>
+<a name="ln744">            || armour &amp;&amp; item.base_type != OBJ_ARMOUR</a>
+<a name="ln745">            || !armour &amp;&amp; item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln746">        {</a>
+<a name="ln747">            mprf(&quot;Choose an uncursed equipped piece of %s, or Esc to abort.&quot;,</a>
+<a name="ln748">                 armour ? &quot;armour&quot; : &quot;jewellery&quot;);</a>
+<a name="ln749">            more();</a>
+<a name="ln750">            continue;</a>
+<a name="ln751">        }</a>
+<a name="ln752"> </a>
+<a name="ln753">        if (!pre_msg.empty())</a>
+<a name="ln754">            mpr(pre_msg);</a>
+<a name="ln755">        do_curse_item(item, false);</a>
+<a name="ln756">        learned_something_new(HINT_YOU_CURSED);</a>
+<a name="ln757">        return true;</a>
+<a name="ln758">    }</a>
+<a name="ln759">}</a>
+<a name="ln760"> </a>
+<a name="ln761">bool curse_item(bool armour, const string &amp;pre_msg)</a>
+<a name="ln762">{</a>
+<a name="ln763">    // Make sure there's something to curse first.</a>
+<a name="ln764">    bool found = false;</a>
+<a name="ln765">    int min_type, max_type;</a>
+<a name="ln766">    if (armour)</a>
+<a name="ln767">        min_type = EQ_MIN_ARMOUR, max_type = EQ_MAX_ARMOUR;</a>
+<a name="ln768">    else</a>
+<a name="ln769">        min_type = EQ_LEFT_RING, max_type = EQ_RING_AMULET;</a>
+<a name="ln770">    for (int i = min_type; i &lt;= max_type; i++)</a>
+<a name="ln771">    {</a>
+<a name="ln772">        if (you.equip[i] != -1 &amp;&amp; !you.inv[you.equip[i]].cursed())</a>
+<a name="ln773">            found = true;</a>
+<a name="ln774">    }</a>
+<a name="ln775">    if (!found)</a>
+<a name="ln776">    {</a>
+<a name="ln777">        mprf(MSGCH_PROMPT, &quot;You aren't wearing any piece of uncursed %s.&quot;,</a>
+<a name="ln778">             armour ? &quot;armour&quot; : &quot;jewellery&quot;);</a>
+<a name="ln779">        return false;</a>
+<a name="ln780">    }</a>
+<a name="ln781"> </a>
+<a name="ln782">    return _selectively_curse_item(armour, pre_msg);</a>
+<a name="ln783">}</a>
+<a name="ln784">#endif</a>
+<a name="ln785"> </a>
+<a name="ln786">static bool _do_imprison(int pow, const coord_def&amp; where, bool zin)</a>
+<a name="ln787">{</a>
+<a name="ln788">    // power guidelines:</a>
+<a name="ln789">    // powc is roughly 50 at Evoc 10 with no godly assistance, ranging</a>
+<a name="ln790">    // up to 300 or so with godly assistance or end-level, and 1200</a>
+<a name="ln791">    // as more or less the theoretical maximum.</a>
+<a name="ln792">    int number_built = 0;</a>
+<a name="ln793"> </a>
+<a name="ln794">    static const set&lt;dungeon_feature_type&gt; safe_tiles =</a>
+<a name="ln795">    {</a>
+<a name="ln796">        DNGN_SHALLOW_WATER, DNGN_DEEP_WATER, DNGN_FLOOR, DNGN_OPEN_DOOR,</a>
+<a name="ln797">        DNGN_OPEN_CLEAR_DOOR</a>
+<a name="ln798">    };</a>
+<a name="ln799"> </a>
+<a name="ln800">    bool proceed;</a>
+<a name="ln801">    monster *mon;</a>
+<a name="ln802">    string targname;</a>
+<a name="ln803"> </a>
+<a name="ln804">    vector&lt;coord_def&gt; veto_spots(8);</a>
+<a name="ln805">    for (adjacent_iterator ai(where); ai; ++ai)</a>
+<a name="ln806">        veto_spots.push_back(*ai);</a>
+<a name="ln807">    const vector&lt;coord_def&gt; adj_spots = veto_spots;</a>
+<a name="ln808"> </a>
+<a name="ln809">    if (zin)</a>
+<a name="ln810">    {</a>
+<a name="ln811">        // We need to get this now because we won't be able to see</a>
+<a name="ln812">        // the monster once the walls go up!</a>
+<a name="ln813">        mon = monster_at(where);</a>
+<a name="ln814">        targname = mon-&gt;name(DESC_THE);</a>
+<a name="ln815">        bool success = true;</a>
+<a name="ln816">        bool none_vis = true;</a>
+<a name="ln817"> </a>
+<a name="ln818">        // Check that any adjacent creatures can be pushed out of the way.</a>
+<a name="ln819">        for (adjacent_iterator ai(where); ai; ++ai)</a>
+<a name="ln820">        {</a>
+<a name="ln821">            // The tile is occupied.</a>
+<a name="ln822">            if (actor *act = actor_at(*ai))</a>
+<a name="ln823">            {</a>
+<a name="ln824">                // Can't push ourselves.</a>
+<a name="ln825">                vector&lt;coord_def&gt; push_targets = get_push_spaces(*ai, true, &amp;veto_spots);</a>
+<a name="ln826">                if (act-&gt;is_player() || push_targets.empty())</a>
+<a name="ln827">                {</a>
+<a name="ln828">                    success = false;</a>
+<a name="ln829">                    if (you.can_see(*act))</a>
+<a name="ln830">                        none_vis = false;</a>
+<a name="ln831">                    break;</a>
+<a name="ln832">                }</a>
+<a name="ln833">                else // the new position of the monster is now an additional veto spot for monsters</a>
+<a name="ln834">                    veto_spots.push_back(push_targets.front());</a>
+<a name="ln835">            }</a>
+<a name="ln836"> </a>
+<a name="ln837">            // don't try to shove the orb of zot into lava and/or crash</a>
+<a name="ln838">            if (igrd(*ai) != NON_ITEM)</a>
+<a name="ln839">            {</a>
+<a name="ln840">                if (!has_push_spaces(*ai, false, &amp;adj_spots))</a>
+<a name="ln841">                {</a>
+<a name="ln842">                    success = false;</a>
+<a name="ln843">                    none_vis = false;</a>
+<a name="ln844">                    break;</a>
+<a name="ln845">                }</a>
+<a name="ln846">            }</a>
+<a name="ln847"> </a>
+<a name="ln848">            // Make sure we have a legitimate tile.</a>
+<a name="ln849">            proceed = false;</a>
+<a name="ln850">            if (cell_is_solid(*ai) &amp;&amp; !feat_is_opaque(grd(*ai)))</a>
+<a name="ln851">            {</a>
+<a name="ln852">                success = false;</a>
+<a name="ln853">                none_vis = false;</a>
+<a name="ln854">                break;</a>
+<a name="ln855">            }</a>
+<a name="ln856">        }</a>
+<a name="ln857"> </a>
+<a name="ln858">        if (!success)</a>
+<a name="ln859">        {</a>
+<a name="ln860">            mprf(none_vis ? &quot;You briefly glimpse something next to %s.&quot;</a>
+<a name="ln861">                        : &quot;You need more space to imprison %s.&quot;,</a>
+<a name="ln862">                targname.c_str());</a>
+<a name="ln863">            return false;</a>
+<a name="ln864">        }</a>
+<a name="ln865">    }</a>
+<a name="ln866"> </a>
+<a name="ln867">    veto_spots = adj_spots;</a>
+<a name="ln868">    for (adjacent_iterator ai(where); ai; ++ai)</a>
+<a name="ln869">    {</a>
+<a name="ln870">        // This is where power comes in.</a>
+<a name="ln871">        if (!zin &amp;&amp; one_chance_in(pow / 3))</a>
+<a name="ln872">            continue;</a>
+<a name="ln873"> </a>
+<a name="ln874">        // The tile is occupied.</a>
+<a name="ln875">        if (zin &amp;&amp; actor_at(*ai))</a>
+<a name="ln876">        {</a>
+<a name="ln877">            coord_def newpos = push_actor_from(*ai, &amp;veto_spots, false);</a>
+<a name="ln878">            ASSERT(!newpos.origin());</a>
+<a name="ln879">            veto_spots.push_back(newpos);</a>
+<a name="ln880">        }</a>
+<a name="ln881"> </a>
+<a name="ln882">        // closed doors are solid, but we don't want a behaviour difference</a>
+<a name="ln883">        // between open and closed doors</a>
+<a name="ln884">        proceed = !cell_is_solid(*ai) || feat_is_door(grd(*ai));</a>
+<a name="ln885">        if (!zin &amp;&amp; monster_at(*ai))</a>
+<a name="ln886">            proceed = false;</a>
+<a name="ln887"> </a>
+<a name="ln888">        if (proceed)</a>
+<a name="ln889">        {</a>
+<a name="ln890">            // All items are moved aside for zin, tomb just skips the tile.</a>
+<a name="ln891">            if (igrd(*ai) != NON_ITEM &amp;&amp; zin)</a>
+<a name="ln892">                push_items_from(*ai, &amp;adj_spots);</a>
+<a name="ln893"> </a>
+<a name="ln894">            // All traps are destroyed.</a>
+<a name="ln895">            if (trap_def *ptrap = trap_at(*ai))</a>
+<a name="ln896">            {</a>
+<a name="ln897">                ptrap-&gt;destroy();</a>
+<a name="ln898">                grd(*ai) = DNGN_FLOOR;</a>
+<a name="ln899">            }</a>
+<a name="ln900"> </a>
+<a name="ln901">            // Actually place the wall.</a>
+<a name="ln902">            if (zin)</a>
+<a name="ln903">            {</a>
+<a name="ln904">                map_wiz_props_marker *marker = new map_wiz_props_marker(*ai);</a>
+<a name="ln905">                marker-&gt;set_property(&quot;feature_description&quot;, &quot;a gleaming silver wall&quot;);</a>
+<a name="ln906">                env.markers.add(marker);</a>
+<a name="ln907"> </a>
+<a name="ln908">                temp_change_terrain(*ai, DNGN_METAL_WALL, INFINITE_DURATION,</a>
+<a name="ln909">                                    TERRAIN_CHANGE_IMPRISON);</a>
+<a name="ln910"> </a>
+<a name="ln911">                // Make the walls silver.</a>
+<a name="ln912">                env.grid_colours(*ai) = WHITE;</a>
+<a name="ln913">                env.tile_flv(*ai).feat_idx =</a>
+<a name="ln914">                        store_tilename_get_index(&quot;dngn_silver_wall&quot;);</a>
+<a name="ln915">                env.tile_flv(*ai).feat = TILE_DNGN_SILVER_WALL;</a>
+<a name="ln916">                if (env.map_knowledge(*ai).seen())</a>
+<a name="ln917">                {</a>
+<a name="ln918">                    env.map_knowledge(*ai).set_feature(DNGN_METAL_WALL);</a>
+<a name="ln919">                    env.map_knowledge(*ai).clear_item();</a>
+<a name="ln920">#ifdef USE_TILE</a>
+<a name="ln921">                    env.tile_bk_bg(*ai) = TILE_DNGN_SILVER_WALL;</a>
+<a name="ln922">                    env.tile_bk_fg(*ai) = 0;</a>
+<a name="ln923">#endif</a>
+<a name="ln924">                }</a>
+<a name="ln925">            }</a>
+<a name="ln926">            // Tomb card</a>
+<a name="ln927">            else</a>
+<a name="ln928">            {</a>
+<a name="ln929">                temp_change_terrain(*ai, DNGN_ROCK_WALL, INFINITE_DURATION,</a>
+<a name="ln930">                                    TERRAIN_CHANGE_TOMB);</a>
+<a name="ln931">            }</a>
+<a name="ln932"> </a>
+<a name="ln933">            number_built++;</a>
+<a name="ln934">        }</a>
+<a name="ln935">    }</a>
+<a name="ln936"> </a>
+<a name="ln937">    if (number_built &gt; 0)</a>
+<a name="ln938">    {</a>
+<a name="ln939">        if (zin)</a>
+<a name="ln940">        {</a>
+<a name="ln941">            mprf(&quot;Zin imprisons %s with walls of pure silver!&quot;,</a>
+<a name="ln942">                 targname.c_str());</a>
+<a name="ln943">        }</a>
+<a name="ln944">        else</a>
+<a name="ln945">            mpr(&quot;Walls emerge from the floor!&quot;);</a>
+<a name="ln946"> </a>
+<a name="ln947">        you.update_beholders();</a>
+<a name="ln948">        you.update_fearmongers();</a>
+<a name="ln949">        env.markers.clear_need_activate();</a>
+<a name="ln950">    }</a>
+<a name="ln951">    else</a>
+<a name="ln952">        canned_msg(MSG_NOTHING_HAPPENS);</a>
+<a name="ln953"> </a>
+<a name="ln954">    return number_built &gt; 0;</a>
+<a name="ln955">}</a>
+<a name="ln956"> </a>
+<a name="ln957">bool entomb(int pow)</a>
+<a name="ln958">{</a>
+<a name="ln959">    if (_do_imprison(pow, you.pos(), false))</a>
+<a name="ln960">    {</a>
+<a name="ln961">        const int tomb_duration = BASELINE_DELAY * pow;</a>
+<a name="ln962">        env.markers.add(new map_tomb_marker(you.pos(),</a>
+<a name="ln963">                                            tomb_duration,</a>
+<a name="ln964">                                            you.mindex(),</a>
+<a name="ln965">                                            you.mindex()));</a>
+<a name="ln966">        env.markers.clear_need_activate(); // doesn't need activation</a>
+<a name="ln967">        return true;</a>
+<a name="ln968">    }</a>
+<a name="ln969"> </a>
+<a name="ln970">    return false;</a>
+<a name="ln971">}</a>
+<a name="ln972"> </a>
+<a name="ln973">bool cast_imprison(int pow, monster* mons, int source)</a>
+<a name="ln974">{</a>
+<a name="ln975">    if (_do_imprison(pow, mons-&gt;pos(), true))</a>
+<a name="ln976">    {</a>
+<a name="ln977">        const int tomb_duration = BASELINE_DELAY * pow;</a>
+<a name="ln978">        env.markers.add(new map_tomb_marker(mons-&gt;pos(),</a>
+<a name="ln979">                                            tomb_duration,</a>
+<a name="ln980">                                            source,</a>
+<a name="ln981">                                            mons-&gt;mindex()));</a>
+<a name="ln982">        env.markers.clear_need_activate(); // doesn't need activation</a>
+<a name="ln983">        return true;</a>
+<a name="ln984">    }</a>
+<a name="ln985"> </a>
+<a name="ln986">    return false;</a>
+<a name="ln987">}</a>
+<a name="ln988"> </a>
+<a name="ln989">bool cast_smiting(int pow, monster* mons)</a>
+<a name="ln990">{</a>
+<a name="ln991">    if (mons == nullptr || mons-&gt;submerged())</a>
+<a name="ln992">    {</a>
+<a name="ln993">        canned_msg(MSG_NOTHING_THERE);</a>
+<a name="ln994">        // Counts as a real cast, due to invisible/submerged monsters.</a>
+<a name="ln995">        return true;</a>
+<a name="ln996">    }</a>
+<a name="ln997"> </a>
+<a name="ln998">    if (stop_attack_prompt(mons, false, you.pos()))</a>
+<a name="ln999">        return false;</a>
+<a name="ln1000"> </a>
+<a name="ln1001">    god_conduct_trigger conducts[3];</a>
+<a name="ln1002">    set_attack_conducts(conducts, *mons, you.can_see(*mons));</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    mprf(&quot;You smite %s!&quot;, mons-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1005">    behaviour_event(mons, ME_ANNOY, &amp;you);</a>
+<a name="ln1006"> </a>
+<a name="ln1007">    // damage at 0 Invo ranges from 9-12 (avg 10), to 9-72 (avg 40) at 27.</a>
+<a name="ln1008">    int damage_increment = div_rand_round(pow, 8);</a>
+<a name="ln1009">    mons-&gt;hurt(&amp;you, 6 + roll_dice(3, damage_increment));</a>
+<a name="ln1010">    if (mons-&gt;alive())</a>
+<a name="ln1011">        print_wounds(*mons);</a>
+<a name="ln1012"> </a>
+<a name="ln1013">    return true;</a>
+<a name="ln1014">}</a>
+<a name="ln1015"> </a>
+<a name="ln1016">void holy_word_player(holy_word_source_type source)</a>
+<a name="ln1017">{</a>
+<a name="ln1018">    if (!you.undead_or_demonic())</a>
+<a name="ln1019">        return;</a>
+<a name="ln1020"> </a>
+<a name="ln1021">    int hploss = max(0, you.hp / 2 - 1);</a>
+<a name="ln1022"> </a>
+<a name="ln1023">    if (!hploss)</a>
+<a name="ln1024">        return;</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    mpr(&quot;You are blasted by holy energy!&quot;);</a>
+<a name="ln1027"> </a>
+<a name="ln1028">    const char *aux = &quot;holy word&quot;;</a>
+<a name="ln1029"> </a>
+<a name="ln1030">    kill_method_type type = KILLED_BY_SOMETHING;</a>
+<a name="ln1031">    if (crawl_state.is_god_acting())</a>
+<a name="ln1032">        type = KILLED_BY_DIVINE_WRATH;</a>
+<a name="ln1033"> </a>
+<a name="ln1034">    switch (source)</a>
+<a name="ln1035">    {</a>
+<a name="ln1036">    case HOLY_WORD_SCROLL:</a>
+<a name="ln1037">        aux = &quot;a scroll of holy word&quot;;</a>
+<a name="ln1038">        break;</a>
+<a name="ln1039"> </a>
+<a name="ln1040">    case HOLY_WORD_ZIN:</a>
+<a name="ln1041">        aux = &quot;Zin's holy word&quot;;</a>
+<a name="ln1042">        break;</a>
+<a name="ln1043"> </a>
+<a name="ln1044">    case HOLY_WORD_TSO:</a>
+<a name="ln1045">        aux = &quot;the Shining One's holy word&quot;;</a>
+<a name="ln1046">        break;</a>
+<a name="ln1047"> </a>
+<a name="ln1048">    case HOLY_WORD_CARD:</a>
+<a name="ln1049">        aux = &quot;the Torment card&quot;;</a>
+<a name="ln1050">        break;</a>
+<a name="ln1051">    }</a>
+<a name="ln1052"> </a>
+<a name="ln1053">    ouch(hploss, type, MID_NOBODY, aux);</a>
+<a name="ln1054"> </a>
+<a name="ln1055">    return;</a>
+<a name="ln1056">}</a>
+<a name="ln1057"> </a>
+<a name="ln1058">void holy_word_monsters(coord_def where, int pow, holy_word_source_type source,</a>
+<a name="ln1059">                        actor *attacker)</a>
+<a name="ln1060">{</a>
+<a name="ln1061">    pow = min(300, pow);</a>
+<a name="ln1062"> </a>
+<a name="ln1063">    // Is the player in this cell?</a>
+<a name="ln1064">    if (where == you.pos())</a>
+<a name="ln1065">        holy_word_player(source);</a>
+<a name="ln1066"> </a>
+<a name="ln1067">    // Is a monster in this cell?</a>
+<a name="ln1068">    monster* mons = monster_at(where);</a>
+<a name="ln1069">    if (!mons || !mons-&gt;alive() || !mons-&gt;undead_or_demonic())</a>
+<a name="ln1070">        return;</a>
+<a name="ln1071"> </a>
+<a name="ln1072">    god_conduct_trigger conducts[3];</a>
+<a name="ln1073">    int hploss = roll_dice(3, 15) + (random2(pow) / 5);</a>
+<a name="ln1074"> </a>
+<a name="ln1075">    if (hploss)</a>
+<a name="ln1076">    {</a>
+<a name="ln1077">        if (source == HOLY_WORD_ZIN)</a>
+<a name="ln1078">            simple_monster_message(*mons, &quot; is blasted by Zin's holy word!&quot;);</a>
+<a name="ln1079">        else</a>
+<a name="ln1080">            simple_monster_message(*mons, &quot; convulses!&quot;);</a>
+<a name="ln1081"> </a>
+<a name="ln1082">        if (attacker &amp;&amp; attacker-&gt;is_player()</a>
+<a name="ln1083">            &amp;&amp; source == HOLY_WORD_SCROLL</a>
+<a name="ln1084">            &amp;&amp; item_type_known(OBJ_SCROLLS, SCR_HOLY_WORD))</a>
+<a name="ln1085">        {</a>
+<a name="ln1086">            set_attack_conducts(conducts, *mons, you.can_see(*mons));</a>
+<a name="ln1087">        }</a>
+<a name="ln1088">    }</a>
+<a name="ln1089">    mons-&gt;hurt(attacker, hploss, BEAM_MISSILE);</a>
+<a name="ln1090"> </a>
+<a name="ln1091">    if (!hploss || !mons-&gt;alive())</a>
+<a name="ln1092">        return;</a>
+<a name="ln1093"> </a>
+<a name="ln1094">    // Currently, holy word annoys the monsters it affects</a>
+<a name="ln1095">    // because it can kill them, and because hostile</a>
+<a name="ln1096">    // monsters don't use it.</a>
+<a name="ln1097">    // Tolerate unknown scroll, to not annoy Yred worshippers too much.</a>
+<a name="ln1098">    if (attacker != nullptr</a>
+<a name="ln1099">        &amp;&amp; attacker != mons</a>
+<a name="ln1100">        &amp;&amp; (attacker != &amp;you</a>
+<a name="ln1101">            || source != HOLY_WORD_SCROLL</a>
+<a name="ln1102">            || item_type_known(OBJ_SCROLLS, SCR_HOLY_WORD)))</a>
+<a name="ln1103">    {</a>
+<a name="ln1104">        behaviour_event(mons, ME_ANNOY, attacker);</a>
+<a name="ln1105">    }</a>
+<a name="ln1106"> </a>
+<a name="ln1107">    mons-&gt;add_ench(mon_enchant(ENCH_DAZED, 0, attacker,</a>
+<a name="ln1108">                               (10 + random2(10)) * BASELINE_DELAY));</a>
+<a name="ln1109">}</a>
+<a name="ln1110"> </a>
+<a name="ln1111">void holy_word(int pow, holy_word_source_type source, const coord_def&amp; where,</a>
+<a name="ln1112">               bool silent, actor *attacker)</a>
+<a name="ln1113">{</a>
+<a name="ln1114">    if (!silent &amp;&amp; attacker)</a>
+<a name="ln1115">    {</a>
+<a name="ln1116">        mprf(&quot;%s %s a Word of immense power!&quot;,</a>
+<a name="ln1117">             attacker-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1118">             attacker-&gt;conj_verb(&quot;speak&quot;).c_str());</a>
+<a name="ln1119">    }</a>
+<a name="ln1120"> </a>
+<a name="ln1121">    for (radius_iterator ri(where, LOS_SOLID); ri; ++ri)</a>
+<a name="ln1122">        holy_word_monsters(*ri, pow, source, attacker);</a>
+<a name="ln1123">}</a>
+<a name="ln1124"> </a>
+<a name="ln1125">void torment_player(actor *attacker, torment_source_type taux)</a>
+<a name="ln1126">{</a>
+<a name="ln1127">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln1128"> </a>
+<a name="ln1129">    int hploss = 0;</a>
+<a name="ln1130"> </a>
+<a name="ln1131">    if (!player_res_torment())</a>
+<a name="ln1132">    {</a>
+<a name="ln1133">        // Negative energy resistance can alleviate torment.</a>
+<a name="ln1134">        hploss = max(0, you.hp * (50 - player_prot_life() * 5) / 100 - 1);</a>
+<a name="ln1135">        // Statue form is only partial petrification.</a>
+<a name="ln1136">        if (you.form == transformation::statue || you.species == SP_GARGOYLE)</a>
+<a name="ln1137">            hploss /= 2;</a>
+<a name="ln1138">    }</a>
+<a name="ln1139"> </a>
+<a name="ln1140">    // Kiku protects you from torment to a degree.</a>
+<a name="ln1141">    const bool kiku_shielding_player = player_kiku_res_torment();</a>
+<a name="ln1142"> </a>
+<a name="ln1143">    if (kiku_shielding_player)</a>
+<a name="ln1144">    {</a>
+<a name="ln1145">        if (hploss &gt; 0)</a>
+<a name="ln1146">        {</a>
+<a name="ln1147">            if (random2(600) &lt; you.piety) // 13.33% to 33.33% chance</a>
+<a name="ln1148">            {</a>
+<a name="ln1149">                hploss = 0;</a>
+<a name="ln1150">                simple_god_message(&quot; shields you from torment!&quot;);</a>
+<a name="ln1151">            }</a>
+<a name="ln1152">            else if (random2(250) &lt; you.piety) // 24% to 80% chance</a>
+<a name="ln1153">            {</a>
+<a name="ln1154">                hploss -= random2(hploss - 1);</a>
+<a name="ln1155">                simple_god_message(&quot; partially shields you from torment!&quot;);</a>
+<a name="ln1156">            }</a>
+<a name="ln1157">        }</a>
+<a name="ln1158">    }</a>
+<a name="ln1159"> </a>
+<a name="ln1160">    if (!hploss)</a>
+<a name="ln1161">    {</a>
+<a name="ln1162">        mpr(&quot;You feel a surge of unholy energy.&quot;);</a>
+<a name="ln1163">        return;</a>
+<a name="ln1164">    }</a>
+<a name="ln1165"> </a>
+<a name="ln1166">    mpr(&quot;Your body is wracked with pain!&quot;);</a>
+<a name="ln1167"> </a>
+<a name="ln1168"> </a>
+<a name="ln1169">    kill_method_type type = KILLED_BY_BEAM;</a>
+<a name="ln1170">    if (crawl_state.is_god_acting())</a>
+<a name="ln1171">        type = KILLED_BY_DIVINE_WRATH;</a>
+<a name="ln1172">    else if (taux == TORMENT_MISCAST)</a>
+<a name="ln1173">        type = KILLED_BY_WILD_MAGIC;</a>
+<a name="ln1174"> </a>
+<a name="ln1175">    const char *aux = &quot;&quot;;</a>
+<a name="ln1176"> </a>
+<a name="ln1177">    switch (taux)</a>
+<a name="ln1178">    {</a>
+<a name="ln1179">    case TORMENT_CARDS:</a>
+<a name="ln1180">    case TORMENT_SPELL:</a>
+<a name="ln1181">    case TORMENT_CARD_PAIN:</a>
+<a name="ln1182">        aux = &quot;Symbol of Torment&quot;;</a>
+<a name="ln1183">        break;</a>
+<a name="ln1184"> </a>
+<a name="ln1185">    case TORMENT_AGONY:</a>
+<a name="ln1186">        aux = &quot;Agony&quot;;</a>
+<a name="ln1187">        break;</a>
+<a name="ln1188"> </a>
+<a name="ln1189">    case TORMENT_SCEPTRE:</a>
+<a name="ln1190">        aux = &quot;sceptre of Torment&quot;;</a>
+<a name="ln1191">        break;</a>
+<a name="ln1192"> </a>
+<a name="ln1193">    case TORMENT_SCROLL:</a>
+<a name="ln1194">        aux = &quot;a scroll of torment&quot;;</a>
+<a name="ln1195">        break;</a>
+<a name="ln1196"> </a>
+<a name="ln1197">    case TORMENT_XOM:</a>
+<a name="ln1198">        type = KILLED_BY_XOM;</a>
+<a name="ln1199">        aux = &quot;Xom's torment&quot;;</a>
+<a name="ln1200">        break;</a>
+<a name="ln1201"> </a>
+<a name="ln1202">    case TORMENT_KIKUBAAQUDGHA:</a>
+<a name="ln1203">        aux = &quot;Kikubaaqudgha's torment&quot;;</a>
+<a name="ln1204">        break;</a>
+<a name="ln1205"> </a>
+<a name="ln1206">    case TORMENT_LURKING_HORROR:</a>
+<a name="ln1207">        type = KILLED_BY_SPORE;</a>
+<a name="ln1208">        aux = &quot;an exploding lurking horror&quot;;</a>
+<a name="ln1209">        break;</a>
+<a name="ln1210"> </a>
+<a name="ln1211">    case TORMENT_MISCAST:</a>
+<a name="ln1212">        aux = &quot;by torment&quot;;</a>
+<a name="ln1213">        break;</a>
+<a name="ln1214">    }</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    ouch(hploss, type, attacker ? attacker-&gt;mid : MID_NOBODY, aux);</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    return;</a>
+<a name="ln1219">}</a>
+<a name="ln1220"> </a>
+<a name="ln1221">void torment_cell(coord_def where, actor *attacker, torment_source_type taux)</a>
+<a name="ln1222">{</a>
+<a name="ln1223">    if (where == you.pos()</a>
+<a name="ln1224">        // The Sceptre of Torment and pain card do not affect the user.</a>
+<a name="ln1225">        &amp;&amp; !(attacker &amp;&amp; attacker-&gt;is_player()</a>
+<a name="ln1226">            &amp;&amp; (taux == TORMENT_SCEPTRE || taux == TORMENT_CARD_PAIN)))</a>
+<a name="ln1227">    {</a>
+<a name="ln1228">        torment_player(attacker, taux);</a>
+<a name="ln1229">    }</a>
+<a name="ln1230">    // Don't return, since you could be standing on a monster.</a>
+<a name="ln1231"> </a>
+<a name="ln1232">    monster* mons = monster_at(where);</a>
+<a name="ln1233">    if (!mons</a>
+<a name="ln1234">        || !mons-&gt;alive()</a>
+<a name="ln1235">        || mons-&gt;res_torment()</a>
+<a name="ln1236">        // Monsters can't currently use the sceptre, but just in case.</a>
+<a name="ln1237">        || attacker</a>
+<a name="ln1238">           &amp;&amp; mons == attacker-&gt;as_monster()</a>
+<a name="ln1239">           &amp;&amp; taux == TORMENT_SCEPTRE)</a>
+<a name="ln1240">    {</a>
+<a name="ln1241">        return;</a>
+<a name="ln1242">    }</a>
+<a name="ln1243"> </a>
+<a name="ln1244">    god_conduct_trigger conducts[3];</a>
+<a name="ln1245">    int hploss = max(0, mons-&gt;hit_points *</a>
+<a name="ln1246">                        (50 - mons-&gt;res_negative_energy() * 5) / 100 - 1);</a>
+<a name="ln1247"> </a>
+<a name="ln1248">    if (hploss)</a>
+<a name="ln1249">    {</a>
+<a name="ln1250">        if (mons-&gt;observable())</a>
+<a name="ln1251">            simple_monster_message(*mons, &quot; convulses!&quot;);</a>
+<a name="ln1252">        else if (you.see_cell(mons-&gt;pos()))</a>
+<a name="ln1253">            mpr(&quot;Something is bathed in an unholy light!&quot;);</a>
+<a name="ln1254"> </a>
+<a name="ln1255">        // Currently, torment doesn't annoy the monsters it affects</a>
+<a name="ln1256">        // because it can't kill them, and because hostile monsters use</a>
+<a name="ln1257">        // it. It does alert them, though.</a>
+<a name="ln1258">        // XXX: attacker isn't passed through &quot;int torment()&quot;.</a>
+<a name="ln1259">        behaviour_event(mons, ME_ALERT, attacker);</a>
+<a name="ln1260"> </a>
+<a name="ln1261">        if (attacker &amp;&amp; attacker-&gt;is_player())</a>
+<a name="ln1262">        {</a>
+<a name="ln1263">            bool set_conducts = false;</a>
+<a name="ln1264">            switch (taux)</a>
+<a name="ln1265">            {</a>
+<a name="ln1266">                case TORMENT_SCROLL:</a>
+<a name="ln1267">                    set_conducts = item_type_known(OBJ_SCROLLS, SCR_TORMENT);</a>
+<a name="ln1268">                    break;</a>
+<a name="ln1269">                case TORMENT_SCEPTRE:</a>
+<a name="ln1270">                    set_conducts = true;</a>
+<a name="ln1271">                    break;</a>
+<a name="ln1272">                default: break;</a>
+<a name="ln1273">            }</a>
+<a name="ln1274"> </a>
+<a name="ln1275">            if (set_conducts)</a>
+<a name="ln1276">                set_attack_conducts(conducts, *mons, you.can_see(*mons));</a>
+<a name="ln1277">        }</a>
+<a name="ln1278">    }</a>
+<a name="ln1279"> </a>
+<a name="ln1280">    // Player torment annoys the monsters it affects</a>
+<a name="ln1281">    // Tolerate unknown scroll, to not annoy ally god users too much.</a>
+<a name="ln1282">    if (attacker != nullptr</a>
+<a name="ln1283">        &amp;&amp; attacker-&gt;is_player()</a>
+<a name="ln1284">        &amp;&amp; (taux != TORMENT_SCROLL</a>
+<a name="ln1285">            || item_type_known(OBJ_SCROLLS, SCR_TORMENT)))</a>
+<a name="ln1286">    {</a>
+<a name="ln1287">        behaviour_event(mons, ME_ANNOY, attacker);</a>
+<a name="ln1288">    }</a>
+<a name="ln1289"> </a>
+<a name="ln1290">    mons-&gt;hurt(attacker, hploss, BEAM_TORMENT_DAMAGE);</a>
+<a name="ln1291">}</a>
+<a name="ln1292"> </a>
+<a name="ln1293">void torment(actor *attacker, torment_source_type taux, const coord_def&amp; where)</a>
+<a name="ln1294">{</a>
+<a name="ln1295">    for (radius_iterator ri(where, LOS_NO_TRANS); ri; ++ri)</a>
+<a name="ln1296">        torment_cell(*ri, attacker, taux);</a>
+<a name="ln1297">}</a>
+<a name="ln1298"> </a>
+<a name="ln1299">void setup_cleansing_flame_beam(bolt &amp;beam, int pow,</a>
+<a name="ln1300">                                cleansing_flame_source caster,</a>
+<a name="ln1301">                                coord_def where, actor *attacker)</a>
+<a name="ln1302">{</a>
+<a name="ln1303">    beam.flavour      = BEAM_HOLY;</a>
+<a name="ln1304">    beam.glyph        = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln1305">    beam.damage       = dice_def(2, pow);</a>
+<a name="ln1306">    beam.target       = where;</a>
+<a name="ln1307">    beam.name         = &quot;golden flame&quot;;</a>
+<a name="ln1308">    beam.colour       = YELLOW;</a>
+<a name="ln1309">    beam.aux_source   = (caster == cleansing_flame_source::tso)</a>
+<a name="ln1310">                        ? &quot;the Shining One's cleansing flame&quot;</a>
+<a name="ln1311">                        : &quot;cleansing flame&quot;;</a>
+<a name="ln1312">    beam.ex_size      = 2;</a>
+<a name="ln1313">    beam.is_explosion = true;</a>
+<a name="ln1314"> </a>
+<a name="ln1315">    if (caster == cleansing_flame_source::generic</a>
+<a name="ln1316">        || caster == cleansing_flame_source::tso)</a>
+<a name="ln1317">    {</a>
+<a name="ln1318">        beam.thrower   = KILL_MISC;</a>
+<a name="ln1319">        beam.source_id = MID_NOBODY;</a>
+<a name="ln1320">    }</a>
+<a name="ln1321">    else if (attacker-&gt;is_player())</a>
+<a name="ln1322">    {</a>
+<a name="ln1323">        beam.thrower   = KILL_YOU;</a>
+<a name="ln1324">        beam.source_id = MID_PLAYER;</a>
+<a name="ln1325">    }</a>
+<a name="ln1326">    else</a>
+<a name="ln1327">    {</a>
+<a name="ln1328">        // If there was no attacker, caster should have been</a>
+<a name="ln1329">        // CLEANSING_FLAME_{GENERIC,TSO} which we handled above.</a>
+<a name="ln1330">        ASSERT(attacker);</a>
+<a name="ln1331"> </a>
+<a name="ln1332">        beam.thrower   = KILL_MON;</a>
+<a name="ln1333">        beam.source_id = attacker-&gt;mid;</a>
+<a name="ln1334">    }</a>
+<a name="ln1335">}</a>
+<a name="ln1336"> </a>
+<a name="ln1337">void cleansing_flame(int pow, cleansing_flame_source caster, coord_def where,</a>
+<a name="ln1338">                     actor *attacker)</a>
+<a name="ln1339">{</a>
+<a name="ln1340">    bolt beam;</a>
+<a name="ln1341">    setup_cleansing_flame_beam(beam, pow, caster, where, attacker);</a>
+<a name="ln1342">    beam.explode();</a>
+<a name="ln1343">}</a>
+<a name="ln1344"> </a>
+<a name="ln1345">spret cast_random_effects(int pow, bolt&amp; beam, bool fail)</a>
+<a name="ln1346">{</a>
+<a name="ln1347">    bolt tracer = beam;</a>
+<a name="ln1348">    if (!player_tracer(ZAP_DEBUGGING_RAY, 200, tracer, LOS_RADIUS))</a>
+<a name="ln1349">        return spret::abort;</a>
+<a name="ln1350"> </a>
+<a name="ln1351">    fail_check();</a>
+<a name="ln1352"> </a>
+<a name="ln1353">    // Extremely arbitrary list of possible effects.</a>
+<a name="ln1354">    zap_type zap = random_choose(ZAP_THROW_FLAME,</a>
+<a name="ln1355">                                 ZAP_THROW_FROST,</a>
+<a name="ln1356">                                 ZAP_SLOW,</a>
+<a name="ln1357">                                 ZAP_HASTE,</a>
+<a name="ln1358">                                 ZAP_PARALYSE,</a>
+<a name="ln1359">                                 ZAP_CONFUSE,</a>
+<a name="ln1360">                                 ZAP_TELEPORT_OTHER,</a>
+<a name="ln1361">                                 ZAP_INVISIBILITY,</a>
+<a name="ln1362">                                 ZAP_ICEBLAST,</a>
+<a name="ln1363">                                 ZAP_FIREBALL,</a>
+<a name="ln1364">                                 ZAP_BOLT_OF_DRAINING,</a>
+<a name="ln1365">                                 ZAP_VENOM_BOLT,</a>
+<a name="ln1366">                                 ZAP_MALMUTATE);</a>
+<a name="ln1367">    beam.origin_spell = SPELL_NO_SPELL; // let zapping reset this</a>
+<a name="ln1368"> </a>
+<a name="ln1369">    zapping(zap, pow, beam, false);</a>
+<a name="ln1370"> </a>
+<a name="ln1371">    return spret::success;</a>
+<a name="ln1372">}</a>
+
+</code></pre>
+<div class="balloon" rel="665"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="744"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

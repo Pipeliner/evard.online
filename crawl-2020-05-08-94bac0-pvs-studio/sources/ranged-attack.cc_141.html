@@ -1,0 +1,802 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ranged-attack.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief ranged_attack class and associated ranged_attack methods</a>
+<a name="ln4"> */</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;ranged-attack.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;areas.h&quot;</a>
+<a name="ln11">#include &quot;chardump.h&quot;</a>
+<a name="ln12">#include &quot;coord.h&quot;</a>
+<a name="ln13">#include &quot;english.h&quot;</a>
+<a name="ln14">#include &quot;env.h&quot;</a>
+<a name="ln15">#include &quot;fprop.h&quot;</a>
+<a name="ln16">#include &quot;god-conduct.h&quot;</a>
+<a name="ln17">#include &quot;item-prop.h&quot;</a>
+<a name="ln18">#include &quot;message.h&quot;</a>
+<a name="ln19">#include &quot;mon-behv.h&quot;</a>
+<a name="ln20">#include &quot;mon-util.h&quot;</a>
+<a name="ln21">#include &quot;monster.h&quot;</a>
+<a name="ln22">#include &quot;player.h&quot;</a>
+<a name="ln23">#include &quot;stringutil.h&quot;</a>
+<a name="ln24">#include &quot;teleport.h&quot;</a>
+<a name="ln25">#include &quot;throw.h&quot;</a>
+<a name="ln26">#include &quot;traps.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">ranged_attack::ranged_attack(actor *attk, actor *defn, item_def *proj,</a>
+<a name="ln29">                             bool tele, actor *blame)</a>
+<a name="ln30">    : ::attack(attk, defn, blame), range_used(0), reflected(false),</a>
+<a name="ln31">      projectile(proj), teleport(tele), orig_to_hit(0),</a>
+<a name="ln32">      should_alert_defender(true), launch_type(launch_retval::BUGGY)</a>
+<a name="ln33">{</a>
+<a name="ln34">    init_attack(SK_THROWING, 0);</a>
+<a name="ln35">    kill_type = KILLED_BY_BEAM;</a>
+<a name="ln36"> </a>
+<a name="ln37">    string proj_name = projectile-&gt;name(DESC_PLAIN);</a>
+<a name="ln38">    // init launch type early, so we can use it later in the constructor</a>
+<a name="ln39">    launch_type = is_launched(attacker, weapon, *projectile);</a>
+<a name="ln40"> </a>
+<a name="ln41">    // [dshaligram] When changing bolt names here, you must edit</a>
+<a name="ln42">    // hiscores.cc (scorefile_entry::terse_missile_cause()) to match.</a>
+<a name="ln43">    if (attacker-&gt;is_player())</a>
+<a name="ln44">    {</a>
+<a name="ln45">        kill_type = KILLED_BY_SELF_AIMED;</a>
+<a name="ln46">        aux_source = proj_name;</a>
+<a name="ln47">    }</a>
+<a name="ln48">    else if (launch_type == launch_retval::LAUNCHED)</a>
+<a name="ln49">    {</a>
+<a name="ln50">        aux_source = make_stringf(&quot;Shot with a%s %s by %s&quot;,</a>
+<a name="ln51">                 (is_vowel(proj_name[0]) ? &quot;n&quot; : &quot;&quot;), proj_name.c_str(),</a>
+<a name="ln52">                 attacker-&gt;name(DESC_A).c_str());</a>
+<a name="ln53">    }</a>
+<a name="ln54">    else</a>
+<a name="ln55">    {</a>
+<a name="ln56">        aux_source = make_stringf(&quot;Hit by a%s %s thrown by %s&quot;,</a>
+<a name="ln57">                 (is_vowel(proj_name[0]) ? &quot;n&quot; : &quot;&quot;), proj_name.c_str(),</a>
+<a name="ln58">                 attacker-&gt;name(DESC_A).c_str());</a>
+<a name="ln59">    }</a>
+<a name="ln60"> </a>
+<a name="ln61">    needs_message = defender_visible;</a>
+<a name="ln62"> </a>
+<a name="ln63">    if (!using_weapon())</a>
+<a name="ln64">        wpn_skill = SK_THROWING;</a>
+<a name="ln65">}</a>
+<a name="ln66"> </a>
+<a name="ln67">int ranged_attack::calc_to_hit(bool random)</a>
+<a name="ln68">{</a>
+<a name="ln69">    orig_to_hit = attack::calc_to_hit(random);</a>
+<a name="ln70"> </a>
+<a name="ln71">    if (orig_to_hit == AUTOMATIC_HIT)</a>
+<a name="ln72">        return AUTOMATIC_HIT;</a>
+<a name="ln73"> </a>
+<a name="ln74">    if (teleport)</a>
+<a name="ln75">    {</a>
+<a name="ln76">        orig_to_hit +=</a>
+<a name="ln77">            (attacker-&gt;is_player())</a>
+<a name="ln78">            ? maybe_random2(you.attribute[ATTR_PORTAL_PROJECTILE] / 4, random)</a>
+<a name="ln79">            : 3 * attacker-&gt;as_monster()-&gt;get_hit_dice();</a>
+<a name="ln80">    }</a>
+<a name="ln81"> </a>
+<a name="ln82">    int hit = orig_to_hit;</a>
+<a name="ln83">    if (defender-&gt;missile_repulsion())</a>
+<a name="ln84">    {</a>
+<a name="ln85">        if (random)</a>
+<a name="ln86">            hit = random2(hit);</a>
+<a name="ln87">        else</a>
+<a name="ln88">            hit = (hit - 1) / 2;</a>
+<a name="ln89">    }</a>
+<a name="ln90"> </a>
+<a name="ln91">    return hit;</a>
+<a name="ln92">}</a>
+<a name="ln93"> </a>
+<a name="ln94">bool ranged_attack::attack()</a>
+<a name="ln95">{</a>
+<a name="ln96">    if (!handle_phase_attempted())</a>
+<a name="ln97">        return false;</a>
+<a name="ln98"> </a>
+<a name="ln99">    // XXX: Can this ever happen?</a>
+<a name="ln100">    if (!defender-&gt;alive())</a>
+<a name="ln101">    {</a>
+<a name="ln102">        handle_phase_killed();</a>
+<a name="ln103">        handle_phase_end();</a>
+<a name="ln104">        return true;</a>
+<a name="ln105">    }</a>
+<a name="ln106"> </a>
+<a name="ln107">    const int ev = defender-&gt;evasion(ev_ignore::none, attacker);</a>
+<a name="ln108">    ev_margin = test_hit(to_hit, ev, !attacker-&gt;is_player());</a>
+<a name="ln109">    bool shield_blocked = attack_shield_blocked(false);</a>
+<a name="ln110"> </a>
+<a name="ln111">    god_conduct_trigger conducts[3];</a>
+<a name="ln112">    if (attacker-&gt;is_player() &amp;&amp; attacker != defender)</a>
+<a name="ln113">    {</a>
+<a name="ln114">        set_attack_conducts(conducts, *defender-&gt;as_monster(),</a>
+<a name="ln115">                            you.can_see(*defender));</a>
+<a name="ln116">    }</a>
+<a name="ln117"> </a>
+<a name="ln118">    if (shield_blocked)</a>
+<a name="ln119">        handle_phase_blocked();</a>
+<a name="ln120">    else</a>
+<a name="ln121">    {</a>
+<a name="ln122">        if (ev_margin &gt;= 0)</a>
+<a name="ln123">        {</a>
+<a name="ln124">            if (!handle_phase_hit())</a>
+<a name="ln125">            {</a>
+<a name="ln126">                if (!defender-&gt;alive())</a>
+<a name="ln127">                    handle_phase_killed();</a>
+<a name="ln128">                handle_phase_end();</a>
+<a name="ln129">                return false;</a>
+<a name="ln130">            }</a>
+<a name="ln131">        }</a>
+<a name="ln132">        else</a>
+<a name="ln133">            handle_phase_dodged();</a>
+<a name="ln134">    }</a>
+<a name="ln135"> </a>
+<a name="ln136">    if (should_alert_defender)</a>
+<a name="ln137">        alert_defender();</a>
+<a name="ln138"> </a>
+<a name="ln139">    if (!defender-&gt;alive())</a>
+<a name="ln140">        handle_phase_killed();</a>
+<a name="ln141"> </a>
+<a name="ln142">    if (attacker-&gt;is_player() &amp;&amp; defender-&gt;is_monster()</a>
+<a name="ln143">        &amp;&amp; !shield_blocked &amp;&amp; ev_margin &gt;= 0)</a>
+<a name="ln144">    {</a>
+<a name="ln145">        print_wounds(*defender-&gt;as_monster());</a>
+<a name="ln146">    }</a>
+<a name="ln147"> </a>
+<a name="ln148">    handle_phase_end();</a>
+<a name="ln149"> </a>
+<a name="ln150">    return attack_occurred;</a>
+<a name="ln151">}</a>
+<a name="ln152"> </a>
+<a name="ln153">// XXX: Are there any cases where this might fail?</a>
+<a name="ln154">bool ranged_attack::handle_phase_attempted()</a>
+<a name="ln155">{</a>
+<a name="ln156">    attacker-&gt;attacking(defender, true);</a>
+<a name="ln157">    attack_occurred = true;</a>
+<a name="ln158"> </a>
+<a name="ln159">    return true;</a>
+<a name="ln160">}</a>
+<a name="ln161"> </a>
+<a name="ln162">bool ranged_attack::handle_phase_blocked()</a>
+<a name="ln163">{</a>
+<a name="ln164">    ASSERT(!ignores_shield(false));</a>
+<a name="ln165">    string punctuation = &quot;.&quot;;</a>
+<a name="ln166">    string verb = &quot;block&quot;;</a>
+<a name="ln167"> </a>
+<a name="ln168">    const bool reflected_by_shield = defender_shield</a>
+<a name="ln169">                                     &amp;&amp; is_shield(*defender_shield)</a>
+<a name="ln170">                                     &amp;&amp; shield_reflects(*defender_shield);</a>
+<a name="ln171">    if (reflected_by_shield || defender-&gt;reflection())</a>
+<a name="ln172">    {</a>
+<a name="ln173">        reflected = true;</a>
+<a name="ln174">        verb = &quot;reflect&quot;;</a>
+<a name="ln175">        if (defender-&gt;observable())</a>
+<a name="ln176">        {</a>
+<a name="ln177">            if (reflected_by_shield)</a>
+<a name="ln178">            {</a>
+<a name="ln179">                punctuation = &quot; off &quot; + defender-&gt;pronoun(PRONOUN_POSSESSIVE)</a>
+<a name="ln180">                              + &quot; &quot; + defender_shield-&gt;name(DESC_PLAIN).c_str()</a>
+<a name="ln181">                              + &quot;!&quot;;</a>
+<a name="ln182">                ident_reflector(defender_shield);</a>
+<a name="ln183">            }</a>
+<a name="ln184">            else</a>
+<a name="ln185">            {</a>
+<a name="ln186">                punctuation = &quot; off an invisible shield around &quot;</a>
+<a name="ln187">                            + defender-&gt;pronoun(PRONOUN_OBJECTIVE) + &quot;!&quot;;</a>
+<a name="ln188"> </a>
+<a name="ln189">                item_def *amulet = defender-&gt;slot_item(EQ_AMULET, false);</a>
+<a name="ln190">                if (amulet)</a>
+<a name="ln191">                   ident_reflector(amulet);</a>
+<a name="ln192">            }</a>
+<a name="ln193">        }</a>
+<a name="ln194">        else</a>
+<a name="ln195">            punctuation = &quot;!&quot;;</a>
+<a name="ln196">    }</a>
+<a name="ln197">    else</a>
+<a name="ln198">        range_used = BEAM_STOP;</a>
+<a name="ln199"> </a>
+<a name="ln200">    if (needs_message)</a>
+<a name="ln201">    {</a>
+<a name="ln202">        mprf(&quot;%s %s %s%s&quot;,</a>
+<a name="ln203">             defender_name(false).c_str(),</a>
+<a name="ln204">             defender-&gt;conj_verb(verb).c_str(),</a>
+<a name="ln205">             projectile-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln206">             punctuation.c_str());</a>
+<a name="ln207">    }</a>
+<a name="ln208"> </a>
+<a name="ln209">    return attack::handle_phase_blocked();</a>
+<a name="ln210">}</a>
+<a name="ln211"> </a>
+<a name="ln212">bool ranged_attack::handle_phase_dodged()</a>
+<a name="ln213">{</a>
+<a name="ln214">    did_hit = false;</a>
+<a name="ln215"> </a>
+<a name="ln216">    const int ev = defender-&gt;evasion(ev_ignore::none, attacker);</a>
+<a name="ln217"> </a>
+<a name="ln218">    const int orig_ev_margin =</a>
+<a name="ln219">        test_hit(orig_to_hit, ev, !attacker-&gt;is_player());</a>
+<a name="ln220"> </a>
+<a name="ln221">    if (defender-&gt;missile_repulsion() &amp;&amp; orig_ev_margin &gt;= 0)</a>
+<a name="ln222">    {</a>
+<a name="ln223">        if (needs_message &amp;&amp; defender_visible)</a>
+<a name="ln224">        {</a>
+<a name="ln225">            mprf(&quot;%s is repelled.&quot;, projectile-&gt;name(DESC_THE).c_str());</a>
+<a name="ln226">            defender-&gt;ablate_repulsion();</a>
+<a name="ln227">        }</a>
+<a name="ln228"> </a>
+<a name="ln229">        if (defender-&gt;is_player())</a>
+<a name="ln230">            count_action(CACT_DODGE, DODGE_REPEL);</a>
+<a name="ln231"> </a>
+<a name="ln232">        return true;</a>
+<a name="ln233">    }</a>
+<a name="ln234"> </a>
+<a name="ln235">    if (defender-&gt;is_player())</a>
+<a name="ln236">        count_action(CACT_DODGE, DODGE_EVASION);</a>
+<a name="ln237"> </a>
+<a name="ln238">    if (needs_message)</a>
+<a name="ln239">    {</a>
+<a name="ln240">        mprf(&quot;%s%s misses %s%s&quot;,</a>
+<a name="ln241">             projectile-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln242">             evasion_margin_adverb().c_str(),</a>
+<a name="ln243">             defender_name(false).c_str(),</a>
+<a name="ln244">             attack_strength_punctuation(damage_done).c_str());</a>
+<a name="ln245">    }</a>
+<a name="ln246"> </a>
+<a name="ln247">    return true;</a>
+<a name="ln248">}</a>
+<a name="ln249"> </a>
+<a name="ln250">bool ranged_attack::handle_phase_hit()</a>
+<a name="ln251">{</a>
+<a name="ln252">    // XXX: this kind of hijacks the shield block check</a>
+<a name="ln253">    if (!is_penetrating_attack(*attacker, weapon, *projectile))</a>
+<a name="ln254">        range_used = BEAM_STOP;</a>
+<a name="ln255"> </a>
+<a name="ln256">    if (projectile-&gt;is_type(OBJ_MISSILES, MI_DART))</a>
+<a name="ln257">    {</a>
+<a name="ln258">        damage_done = dart_duration_roll(get_ammo_brand(*projectile));</a>
+<a name="ln259">        set_attack_verb(0);</a>
+<a name="ln260">        announce_hit();</a>
+<a name="ln261">    }</a>
+<a name="ln262">    else if (projectile-&gt;is_type(OBJ_MISSILES, MI_THROWING_NET))</a>
+<a name="ln263">    {</a>
+<a name="ln264">        set_attack_verb(0);</a>
+<a name="ln265">        announce_hit();</a>
+<a name="ln266">        if (defender-&gt;is_player())</a>
+<a name="ln267">            player_caught_in_net();</a>
+<a name="ln268">        else</a>
+<a name="ln269">            monster_caught_in_net(defender-&gt;as_monster());</a>
+<a name="ln270">    }</a>
+<a name="ln271">    else</a>
+<a name="ln272">    {</a>
+<a name="ln273">        damage_done = calc_damage();</a>
+<a name="ln274">        if (damage_done &gt; 0 || projectile-&gt;is_type(OBJ_MISSILES, MI_DART))</a>
+<a name="ln275">        {</a>
+<a name="ln276">            if (!handle_phase_damaged())</a>
+<a name="ln277">                return false;</a>
+<a name="ln278">        }</a>
+<a name="ln279">        else if (needs_message)</a>
+<a name="ln280">        {</a>
+<a name="ln281">            mprf(&quot;%s %s %s but does no damage.&quot;,</a>
+<a name="ln282">                 projectile-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln283">                 attack_verb.c_str(),</a>
+<a name="ln284">                 defender-&gt;name(DESC_THE).c_str());</a>
+<a name="ln285">        }</a>
+<a name="ln286">    }</a>
+<a name="ln287"> </a>
+<a name="ln288">    if (using_weapon() || launch_type == launch_retval::THROWN)</a>
+<a name="ln289">    {</a>
+<a name="ln290">        if (using_weapon()</a>
+<a name="ln291">            &amp;&amp; apply_damage_brand(projectile-&gt;name(DESC_THE).c_str()))</a>
+<a name="ln292">        {</a>
+<a name="ln293">            return false;</a>
+<a name="ln294">        }</a>
+<a name="ln295">        if (apply_missile_brand())</a>
+<a name="ln296">            return false;</a>
+<a name="ln297">    }</a>
+<a name="ln298"> </a>
+<a name="ln299">    // XXX: unify this with melee_attack's code</a>
+<a name="ln300">    if (attacker-&gt;is_player() &amp;&amp; defender-&gt;is_monster()</a>
+<a name="ln301">        &amp;&amp; should_alert_defender)</a>
+<a name="ln302">    {</a>
+<a name="ln303">        behaviour_event(defender-&gt;as_monster(), ME_WHACK, attacker,</a>
+<a name="ln304">                        coord_def());</a>
+<a name="ln305">    }</a>
+<a name="ln306"> </a>
+<a name="ln307">    return true;</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">bool ranged_attack::using_weapon() const</a>
+<a name="ln311">{</a>
+<a name="ln312">    return weapon &amp;&amp; (launch_type == launch_retval::LAUNCHED</a>
+<a name="ln313">                     || launch_type == launch_retval::BUGGY // not initialized</a>
+<a name="ln314">                         &amp;&amp; is_launched(attacker, weapon, *projectile)</a>
+<a name="ln315">                            == launch_retval::LAUNCHED);</a>
+<a name="ln316">}</a>
+<a name="ln317"> </a>
+<a name="ln318">int ranged_attack::weapon_damage()</a>
+<a name="ln319">{</a>
+<a name="ln320">    if (launch_type == launch_retval::FUMBLED)</a>
+<a name="ln321">        return 0;</a>
+<a name="ln322"> </a>
+<a name="ln323">    int dam = property(*projectile, PWPN_DAMAGE);</a>
+<a name="ln324">    if (using_weapon())</a>
+<a name="ln325">        dam += property(*weapon, PWPN_DAMAGE);</a>
+<a name="ln326">    else if (attacker-&gt;is_player())</a>
+<a name="ln327">        dam += calc_base_unarmed_damage();</a>
+<a name="ln328"> </a>
+<a name="ln329">    return dam;</a>
+<a name="ln330">}</a>
+<a name="ln331"> </a>
+<a name="ln332">/**</a>
+<a name="ln333"> * For ranged attacked, &quot;unarmed&quot; is throwing damage.</a>
+<a name="ln334"> */</a>
+<a name="ln335">int ranged_attack::calc_base_unarmed_damage()</a>
+<a name="ln336">{</a>
+<a name="ln337">    // No damage bonus for throwing non-throwing weapons.</a>
+<a name="ln338">    if (launch_type == launch_retval::FUMBLED)</a>
+<a name="ln339">        return 0;</a>
+<a name="ln340"> </a>
+<a name="ln341">    int damage = you.skill_rdiv(wpn_skill);</a>
+<a name="ln342"> </a>
+<a name="ln343">    // Stones get half bonus; everything else gets full bonus.</a>
+<a name="ln344">    return div_rand_round(damage</a>
+<a name="ln345">                          * min(4, property(*projectile, PWPN_DAMAGE)), 4);</a>
+<a name="ln346">}</a>
+<a name="ln347"> </a>
+<a name="ln348">int ranged_attack::calc_mon_to_hit_base()</a>
+<a name="ln349">{</a>
+<a name="ln350">    ASSERT(attacker-&gt;is_monster());</a>
+<a name="ln351">    const int hd_mult = attacker-&gt;as_monster()-&gt;is_archer() ? 15 : 9;</a>
+<a name="ln352">    return 18 + attacker-&gt;get_hit_dice() * hd_mult / 6;</a>
+<a name="ln353">}</a>
+<a name="ln354"> </a>
+<a name="ln355">int ranged_attack::apply_damage_modifiers(int damage)</a>
+<a name="ln356">{</a>
+<a name="ln357">    ASSERT(attacker-&gt;is_monster());</a>
+<a name="ln358">    if (attacker-&gt;as_monster()-&gt;is_archer())</a>
+<a name="ln359">    {</a>
+<a name="ln360">        const int bonus = attacker-&gt;get_hit_dice() * 4 / 3;</a>
+<a name="ln361">        damage += random2avg(bonus, 2);</a>
+<a name="ln362">    }</a>
+<a name="ln363">    return damage;</a>
+<a name="ln364">}</a>
+<a name="ln365"> </a>
+<a name="ln366">bool ranged_attack::ignores_shield(bool verbose)</a>
+<a name="ln367">{</a>
+<a name="ln368">    if (defender-&gt;is_player() &amp;&amp; player_omnireflects())</a>
+<a name="ln369">        return false;</a>
+<a name="ln370"> </a>
+<a name="ln371">    if (is_penetrating_attack(*attacker, weapon, *projectile))</a>
+<a name="ln372">    {</a>
+<a name="ln373">        if (verbose)</a>
+<a name="ln374">        {</a>
+<a name="ln375">            mprf(&quot;%s pierces through %s %s!&quot;,</a>
+<a name="ln376">                 projectile-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln377">                 apostrophise(defender_name(false)).c_str(),</a>
+<a name="ln378">                 defender_shield ? defender_shield-&gt;name(DESC_PLAIN).c_str()</a>
+<a name="ln379">                                 : &quot;shielding&quot;);</a>
+<a name="ln380">        }</a>
+<a name="ln381">        return true;</a>
+<a name="ln382">    }</a>
+<a name="ln383">    return false;</a>
+<a name="ln384">}</a>
+<a name="ln385"> </a>
+<a name="ln386">bool ranged_attack::apply_damage_brand(const char *what)</a>
+<a name="ln387">{</a>
+<a name="ln388">    if (!weapon || !is_range_weapon(*weapon))</a>
+<a name="ln389">        return false;</a>
+<a name="ln390"> </a>
+<a name="ln391">    const brand_type brand = get_weapon_brand(*weapon);</a>
+<a name="ln392"> </a>
+<a name="ln393">    // No stacking elemental brands.</a>
+<a name="ln394">    if (projectile-&gt;base_type == OBJ_MISSILES</a>
+<a name="ln395">        &amp;&amp; get_ammo_brand(*projectile) != SPMSL_NORMAL</a>
+<a name="ln396">        &amp;&amp; (brand == SPWPN_FLAMING</a>
+<a name="ln397">            || brand == SPWPN_FREEZING</a>
+<a name="ln398">            || brand == SPWPN_HOLY_WRATH</a>
+<a name="ln399">            || brand == SPWPN_ELECTROCUTION</a>
+<a name="ln400">            || brand == SPWPN_VENOM</a>
+<a name="ln401">            || brand == SPWPN_CHAOS))</a>
+<a name="ln402">    {</a>
+<a name="ln403">        return false;</a>
+<a name="ln404">    }</a>
+<a name="ln405"> </a>
+<a name="ln406">    damage_brand = brand;</a>
+<a name="ln407">    return attack::apply_damage_brand(what);</a>
+<a name="ln408">}</a>
+<a name="ln409"> </a>
+<a name="ln410">special_missile_type ranged_attack::random_chaos_missile_brand()</a>
+<a name="ln411">{</a>
+<a name="ln412">    special_missile_type brand = SPMSL_NORMAL;</a>
+<a name="ln413">    // Assuming the chaos to be mildly intelligent, try to avoid brands</a>
+<a name="ln414">    // that clash with the most basic resists of the defender,</a>
+<a name="ln415">    // i.e. its holiness.</a>
+<a name="ln416">    while (true)</a>
+<a name="ln417">    {</a>
+<a name="ln418">        brand = (random_choose_weighted(</a>
+<a name="ln419">                    10, SPMSL_FLAME,</a>
+<a name="ln420">                    10, SPMSL_FROST,</a>
+<a name="ln421">                    10, SPMSL_POISONED,</a>
+<a name="ln422">                    10, SPMSL_CHAOS,</a>
+<a name="ln423">                    10, SPMSL_BLINDING,</a>
+<a name="ln424">                     5, SPMSL_FRENZY,</a>
+<a name="ln425">                     2, SPMSL_CURARE,</a>
+<a name="ln426">                     2, SPMSL_DISPERSAL));</a>
+<a name="ln427"> </a>
+<a name="ln428">        if (one_chance_in(3))</a>
+<a name="ln429">            break;</a>
+<a name="ln430"> </a>
+<a name="ln431">        bool susceptible = true;</a>
+<a name="ln432">        switch (brand)</a>
+<a name="ln433">        {</a>
+<a name="ln434">        case SPMSL_FLAME:</a>
+<a name="ln435">            if (defender-&gt;is_fiery())</a>
+<a name="ln436">                susceptible = false;</a>
+<a name="ln437">            break;</a>
+<a name="ln438">        case SPMSL_FROST:</a>
+<a name="ln439">            if (defender-&gt;is_icy())</a>
+<a name="ln440">                susceptible = false;</a>
+<a name="ln441">            break;</a>
+<a name="ln442">        case SPMSL_POISONED:</a>
+<a name="ln443">            if (defender-&gt;holiness() &amp; MH_UNDEAD)</a>
+<a name="ln444">                susceptible = false;</a>
+<a name="ln445">            break;</a>
+<a name="ln446">        case SPMSL_DISPERSAL:</a>
+<a name="ln447">            if (defender-&gt;no_tele(true, false, true))</a>
+<a name="ln448">                susceptible = false;</a>
+<a name="ln449">            break;</a>
+<a name="ln450">        case SPMSL_FRENZY:</a>
+<a name="ln451">            if (defender-&gt;holiness() &amp; (MH_UNDEAD | MH_NONLIVING)</a>
+<a name="ln452">                || defender-&gt;is_player()</a>
+<a name="ln453">                   &amp;&amp; !you.can_go_berserk(false, false, false)</a>
+<a name="ln454">                || defender-&gt;is_monster()</a>
+<a name="ln455">                   &amp;&amp; !defender-&gt;as_monster()-&gt;can_go_frenzy())</a>
+<a name="ln456">            {</a>
+<a name="ln457">                susceptible = false;</a>
+<a name="ln458">            }</a>
+<a name="ln459">            break;</a>
+<a name="ln460">        default:</a>
+<a name="ln461">            break;</a>
+<a name="ln462">        }</a>
+<a name="ln463"> </a>
+<a name="ln464">        if (susceptible)</a>
+<a name="ln465">            break;</a>
+<a name="ln466">    }</a>
+<a name="ln467">#ifdef NOTE_DEBUG_CHAOS_BRAND</a>
+<a name="ln468">    string brand_name = &quot;CHAOS missile: &quot;;</a>
+<a name="ln469">    switch (brand)</a>
+<a name="ln470">    {</a>
+<a name="ln471">    case SPMSL_NORMAL:          brand_name += &quot;(plain)&quot;; break;</a>
+<a name="ln472">    case SPMSL_FLAME:           brand_name += &quot;flame&quot;; break;</a>
+<a name="ln473">    case SPMSL_FROST:           brand_name += &quot;frost&quot;; break;</a>
+<a name="ln474">    case SPMSL_POISONED:        brand_name += &quot;poisoned&quot;; break;</a>
+<a name="ln475">    case SPMSL_CURARE:          brand_name += &quot;curare&quot;; break;</a>
+<a name="ln476">    case SPMSL_CHAOS:           brand_name += &quot;chaos&quot;; break;</a>
+<a name="ln477">    case SPMSL_DISPERSAL:       brand_name += &quot;dispersal&quot;; break;</a>
+<a name="ln478">    case SPMSL_FRENZY:          brand_name += &quot;frenzy&quot;; break;</a>
+<a name="ln479">    case SPMSL_BLINDING:        brand_name += &quot;blinding&quot;; break;</a>
+<a name="ln480">    default:                    brand_name += &quot;(other)&quot;; break;</a>
+<a name="ln481">    }</a>
+<a name="ln482"> </a>
+<a name="ln483">    // Pretty much duplicated by the chaos effect note,</a>
+<a name="ln484">    // which will be much more informative.</a>
+<a name="ln485">    if (brand != SPMSL_CHAOS)</a>
+<a name="ln486">        take_note(Note(NOTE_MESSAGE, 0, 0, brand_name), true);</a>
+<a name="ln487">#endif</a>
+<a name="ln488">    return brand;</a>
+<a name="ln489">}</a>
+<a name="ln490"> </a>
+<a name="ln491">bool ranged_attack::dart_check(special_missile_type type)</a>
+<a name="ln492">{</a>
+<a name="ln493">    if (defender-&gt;holiness() &amp; (MH_UNDEAD | MH_NONLIVING))</a>
+<a name="ln494">    {</a>
+<a name="ln495">        if (needs_message)</a>
+<a name="ln496">        {</a>
+<a name="ln497">            if (defender-&gt;is_monster())</a>
+<a name="ln498">            {</a>
+<a name="ln499">                simple_monster_message(*defender-&gt;as_monster(),</a>
+<a name="ln500">                                       &quot; is unaffected.&quot;);</a>
+<a name="ln501">            }</a>
+<a name="ln502">            else</a>
+<a name="ln503">                canned_msg(MSG_YOU_UNAFFECTED);</a>
+<a name="ln504">        }</a>
+<a name="ln505">        return false;</a>
+<a name="ln506">    }</a>
+<a name="ln507"> </a>
+<a name="ln508">    if (attacker-&gt;is_monster())</a>
+<a name="ln509">    {</a>
+<a name="ln510">        int chance = 85 - ((defender-&gt;get_hit_dice()</a>
+<a name="ln511">                            - attacker-&gt;get_hit_dice()) * 5 / 2);</a>
+<a name="ln512">        chance = min(95, chance);</a>
+<a name="ln513"> </a>
+<a name="ln514">        if (type == SPMSL_FRENZY)</a>
+<a name="ln515">            chance = chance / 2;</a>
+<a name="ln516"> </a>
+<a name="ln517">        return x_chance_in_y(chance, 100);</a>
+<a name="ln518">    }</a>
+<a name="ln519"> </a>
+<a name="ln520">    const int pow = (2 * (you.skill_rdiv(SK_THROWING)</a>
+<a name="ln521">                          + you.skill_rdiv(SK_STEALTH))) / 3;</a>
+<a name="ln522"> </a>
+<a name="ln523">    // You have a really minor chance of hitting weak things no matter what</a>
+<a name="ln524">    if (defender-&gt;get_hit_dice() &lt; 15 &amp;&amp; random2(100) &lt;= 2)</a>
+<a name="ln525">        return true;</a>
+<a name="ln526"> </a>
+<a name="ln527">    const int resist_roll = 2 + random2(4 + pow);</a>
+<a name="ln528"> </a>
+<a name="ln529">    dprf(DIAG_COMBAT, &quot;Brand rolled %d against defender HD: %d.&quot;,</a>
+<a name="ln530">         resist_roll, defender-&gt;get_hit_dice());</a>
+<a name="ln531"> </a>
+<a name="ln532">    if (resist_roll &lt; defender-&gt;get_hit_dice())</a>
+<a name="ln533">    {</a>
+<a name="ln534">        if (needs_message)</a>
+<a name="ln535">        {</a>
+<a name="ln536">            if (defender-&gt;is_monster())</a>
+<a name="ln537">                simple_monster_message(*defender-&gt;as_monster(), &quot; resists.&quot;);</a>
+<a name="ln538">            else</a>
+<a name="ln539">                canned_msg(MSG_YOU_RESIST);</a>
+<a name="ln540">        }</a>
+<a name="ln541">        return false;</a>
+<a name="ln542">    }</a>
+<a name="ln543"> </a>
+<a name="ln544">    return true;</a>
+<a name="ln545"> </a>
+<a name="ln546">}</a>
+<a name="ln547"> </a>
+<a name="ln548">int ranged_attack::dart_duration_roll(special_missile_type type)</a>
+<a name="ln549">{</a>
+<a name="ln550">    // Leaving monster poison the same by separating it from player poison</a>
+<a name="ln551">    if (type == SPMSL_POISONED &amp;&amp; attacker-&gt;is_monster())</a>
+<a name="ln552">        return 6 + random2(8);</a>
+<a name="ln553"> </a>
+<a name="ln554">    if (type == SPMSL_CURARE)</a>
+<a name="ln555">        return 2;</a>
+<a name="ln556"> </a>
+<a name="ln557">    const int base_power = (attacker-&gt;is_monster())</a>
+<a name="ln558">                           ? attacker-&gt;get_hit_dice()</a>
+<a name="ln559">                           : attacker-&gt;skill_rdiv(SK_THROWING);</a>
+<a name="ln560"> </a>
+<a name="ln561">    // Scale down nastier dart effects against players.</a>
+<a name="ln562">    // Fixed duration regardless of power, since power already affects success</a>
+<a name="ln563">    // chance considerably, and this helps avoid effects being too nasty from</a>
+<a name="ln564">    // high HD shooters and too ignorable from low ones.</a>
+<a name="ln565">    if (defender-&gt;is_player())</a>
+<a name="ln566">        return 5 + random2(5);</a>
+<a name="ln567">    else if (type == SPMSL_POISONED) // Player poison needles</a>
+<a name="ln568">        return random2(3 + base_power * 2);</a>
+<a name="ln569">    else</a>
+<a name="ln570">        return 5 + random2(base_power);</a>
+<a name="ln571">}</a>
+<a name="ln572"> </a>
+<a name="ln573">bool ranged_attack::apply_missile_brand()</a>
+<a name="ln574">{</a>
+<a name="ln575">    if (projectile-&gt;base_type != OBJ_MISSILES)</a>
+<a name="ln576">        return false;</a>
+<a name="ln577"> </a>
+<a name="ln578">    special_damage = 0;</a>
+<a name="ln579">    special_missile_type brand = get_ammo_brand(*projectile);</a>
+<a name="ln580">    if (brand == SPMSL_CHAOS)</a>
+<a name="ln581">        brand = random_chaos_missile_brand();</a>
+<a name="ln582"> </a>
+<a name="ln583">    switch (brand)</a>
+<a name="ln584">    {</a>
+<a name="ln585">    default:</a>
+<a name="ln586">        break;</a>
+<a name="ln587">    case SPMSL_FLAME:</a>
+<a name="ln588">        calc_elemental_brand_damage(BEAM_FIRE,</a>
+<a name="ln589">                                    defender-&gt;is_icy() ? &quot;melt&quot; : &quot;burn&quot;,</a>
+<a name="ln590">                                    projectile-&gt;name(DESC_THE).c_str());</a>
+<a name="ln591"> </a>
+<a name="ln592">        defender-&gt;expose_to_element(BEAM_FIRE, 2);</a>
+<a name="ln593">        if (defender-&gt;is_player())</a>
+<a name="ln594">            maybe_melt_player_enchantments(BEAM_FIRE, special_damage);</a>
+<a name="ln595">        break;</a>
+<a name="ln596">    case SPMSL_FROST:</a>
+<a name="ln597">        calc_elemental_brand_damage(BEAM_COLD, &quot;freeze&quot;,</a>
+<a name="ln598">                                    projectile-&gt;name(DESC_THE).c_str());</a>
+<a name="ln599">        defender-&gt;expose_to_element(BEAM_COLD, 2);</a>
+<a name="ln600">        break;</a>
+<a name="ln601">    case SPMSL_POISONED:</a>
+<a name="ln602">        if (projectile-&gt;is_type(OBJ_MISSILES, MI_DART)</a>
+<a name="ln603">                &amp;&amp; damage_done &gt; 0</a>
+<a name="ln604">            || !one_chance_in(4))</a>
+<a name="ln605">        {</a>
+<a name="ln606">            int old_poison;</a>
+<a name="ln607"> </a>
+<a name="ln608">            if (defender-&gt;is_player())</a>
+<a name="ln609">                old_poison = you.duration[DUR_POISONING];</a>
+<a name="ln610">            else</a>
+<a name="ln611">            {</a>
+<a name="ln612">                old_poison =</a>
+<a name="ln613">                    (defender-&gt;as_monster()-&gt;get_ench(ENCH_POISON)).degree;</a>
+<a name="ln614">            }</a>
+<a name="ln615"> </a>
+<a name="ln616">            defender-&gt;poison(attacker,</a>
+<a name="ln617">                             projectile-&gt;is_type(OBJ_MISSILES, MI_DART)</a>
+<a name="ln618">                             ? damage_done</a>
+<a name="ln619">                             : 6 + random2(8) + random2(damage_done * 3 / 2));</a>
+<a name="ln620"> </a>
+<a name="ln621">            if (defender-&gt;is_player()</a>
+<a name="ln622">                   &amp;&amp; old_poison &lt; you.duration[DUR_POISONING]</a>
+<a name="ln623">                || !defender-&gt;is_player()</a>
+<a name="ln624">                   &amp;&amp; old_poison &lt;</a>
+<a name="ln625">                      (defender-&gt;as_monster()-&gt;get_ench(ENCH_POISON)).degree)</a>
+<a name="ln626">            {</a>
+<a name="ln627">                obvious_effect = true;</a>
+<a name="ln628">            }</a>
+<a name="ln629"> </a>
+<a name="ln630">        }</a>
+<a name="ln631">        break;</a>
+<a name="ln632">    case SPMSL_CURARE:</a>
+<a name="ln633">        obvious_effect = curare_actor(attacker, defender,</a>
+<a name="ln634">                                      damage_done,</a>
+<a name="ln635">                                      projectile-&gt;name(DESC_PLAIN),</a>
+<a name="ln636">                                      atk_name(DESC_PLAIN));</a>
+<a name="ln637">        break;</a>
+<a name="ln638">    case SPMSL_CHAOS:</a>
+<a name="ln639">        chaos_affects_defender();</a>
+<a name="ln640">        break;</a>
+<a name="ln641">    case SPMSL_DISPERSAL:</a>
+<a name="ln642">        if (damage_done &gt; 0)</a>
+<a name="ln643">        {</a>
+<a name="ln644">            if (defender-&gt;no_tele(true, true))</a>
+<a name="ln645">            {</a>
+<a name="ln646">                if (defender-&gt;is_player())</a>
+<a name="ln647">                    canned_msg(MSG_STRANGE_STASIS);</a>
+<a name="ln648">            }</a>
+<a name="ln649">            else</a>
+<a name="ln650">            {</a>
+<a name="ln651">                coord_def pos, pos2;</a>
+<a name="ln652">                const bool no_sanct = defender-&gt;kill_alignment() == KC_OTHER;</a>
+<a name="ln653">                if (random_near_space(defender, defender-&gt;pos(), pos, false,</a>
+<a name="ln654">                                      no_sanct)</a>
+<a name="ln655">                    &amp;&amp; random_near_space(defender, defender-&gt;pos(), pos2, false,</a>
+<a name="ln656">                                         no_sanct))</a>
+<a name="ln657">                {</a>
+<a name="ln658">                    const coord_def from = attacker-&gt;pos();</a>
+<a name="ln659">                    if (grid_distance(pos2, from) &gt; grid_distance(pos, from))</a>
+<a name="ln660">                        pos = pos2;</a>
+<a name="ln661"> </a>
+<a name="ln662">                    if (defender-&gt;is_player())</a>
+<a name="ln663">                        defender-&gt;blink_to(pos);</a>
+<a name="ln664">                    else</a>
+<a name="ln665">                        defender-&gt;as_monster()-&gt;blink_to(pos, false, false);</a>
+<a name="ln666">                }</a>
+<a name="ln667">            }</a>
+<a name="ln668">        }</a>
+<a name="ln669">        break;</a>
+<a name="ln670">    case SPMSL_SILVER:</a>
+<a name="ln671">        special_damage = max(1 + random2(damage_done) / 3,</a>
+<a name="ln672">                             silver_damages_victim(defender, damage_done,</a>
+<a name="ln673">                                                   special_damage_message));</a>
+<a name="ln674">        break;</a>
+<a name="ln675">    case SPMSL_BLINDING:</a>
+<a name="ln676">        if (!dart_check(brand))</a>
+<a name="ln677">            break;</a>
+<a name="ln678">        if (defender-&gt;is_monster())</a>
+<a name="ln679">        {</a>
+<a name="ln680">            monster* mon = defender-&gt;as_monster();</a>
+<a name="ln681">            if (mons_can_be_blinded(mon-&gt;type))</a>
+<a name="ln682">            {</a>
+<a name="ln683">                mon-&gt;add_ench(mon_enchant(ENCH_BLIND, 1, attacker,</a>
+<a name="ln684">                       damage_done * BASELINE_DELAY));</a>
+<a name="ln685">            }</a>
+<a name="ln686">        }</a>
+<a name="ln687">        defender-&gt;confuse(attacker, damage_done / 3);</a>
+<a name="ln688">        break;</a>
+<a name="ln689">    case SPMSL_FRENZY:</a>
+<a name="ln690">        if (!dart_check(brand))</a>
+<a name="ln691">            break;</a>
+<a name="ln692">        if (defender-&gt;is_monster())</a>
+<a name="ln693">        {</a>
+<a name="ln694">            monster* mon = defender-&gt;as_monster();</a>
+<a name="ln695">            // Wake up the monster so that it can frenzy.</a>
+<a name="ln696">            if (mon-&gt;behaviour == BEH_SLEEP)</a>
+<a name="ln697">                mon-&gt;behaviour = BEH_WANDER;</a>
+<a name="ln698">            mon-&gt;go_frenzy(attacker);</a>
+<a name="ln699">        }</a>
+<a name="ln700">        else</a>
+<a name="ln701">            defender-&gt;go_berserk(false);</a>
+<a name="ln702">        break;</a>
+<a name="ln703">    }</a>
+<a name="ln704"> </a>
+<a name="ln705">    if (needs_message &amp;&amp; !special_damage_message.empty())</a>
+<a name="ln706">    {</a>
+<a name="ln707">        mpr(special_damage_message);</a>
+<a name="ln708"> </a>
+<a name="ln709">        special_damage_message.clear();</a>
+<a name="ln710">    }</a>
+<a name="ln711"> </a>
+<a name="ln712">    if (special_damage &gt; 0)</a>
+<a name="ln713">        inflict_damage(special_damage, special_damage_flavour);</a>
+<a name="ln714"> </a>
+<a name="ln715">    return !defender-&gt;alive();</a>
+<a name="ln716">}</a>
+<a name="ln717"> </a>
+<a name="ln718">bool ranged_attack::check_unrand_effects()</a>
+<a name="ln719">{</a>
+<a name="ln720">    return false;</a>
+<a name="ln721">}</a>
+<a name="ln722"> </a>
+<a name="ln723">bool ranged_attack::mons_attack_effects()</a>
+<a name="ln724">{</a>
+<a name="ln725">    return true;</a>
+<a name="ln726">}</a>
+<a name="ln727"> </a>
+<a name="ln728">void ranged_attack::player_stab_check()</a>
+<a name="ln729">{</a>
+<a name="ln730">    stab_attempt = false;</a>
+<a name="ln731">    stab_bonus = 0;</a>
+<a name="ln732">}</a>
+<a name="ln733"> </a>
+<a name="ln734">bool ranged_attack::player_good_stab()</a>
+<a name="ln735">{</a>
+<a name="ln736">    return false;</a>
+<a name="ln737">}</a>
+<a name="ln738"> </a>
+<a name="ln739">void ranged_attack::set_attack_verb(int/* damage*/)</a>
+<a name="ln740">{</a>
+<a name="ln741">    attack_verb = is_penetrating_attack(*attacker, weapon, *projectile) ? &quot;pierces through&quot; : &quot;hits&quot;;</a>
+<a name="ln742">}</a>
+<a name="ln743"> </a>
+<a name="ln744">void ranged_attack::announce_hit()</a>
+<a name="ln745">{</a>
+<a name="ln746">    if (!needs_message)</a>
+<a name="ln747">        return;</a>
+<a name="ln748"> </a>
+<a name="ln749">    mprf(&quot;%s %s %s%s%s&quot;,</a>
+<a name="ln750">         projectile-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln751">         attack_verb.c_str(),</a>
+<a name="ln752">         defender_name(false).c_str(),</a>
+<a name="ln753">         debug_damage_number().c_str(),</a>
+<a name="ln754">         attack_strength_punctuation(damage_done).c_str());</a>
+<a name="ln755">}</a>
+
+</code></pre>
+<div class="balloon" rel="313"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="452"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

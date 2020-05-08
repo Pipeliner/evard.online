@@ -1,0 +1,743 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>describe-spells.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions used to print information about spells, spellbooks, etc.</a>
+<a name="ln4"> **/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;describe-spells.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;delay.h&quot;</a>
+<a name="ln11">#include &quot;describe.h&quot;</a>
+<a name="ln12">#include &quot;english.h&quot;</a>
+<a name="ln13">#include &quot;externs.h&quot;</a>
+<a name="ln14">#include &quot;invent.h&quot;</a>
+<a name="ln15">#include &quot;libutil.h&quot;</a>
+<a name="ln16">#include &quot;menu.h&quot;</a>
+<a name="ln17">#include &quot;mon-book.h&quot;</a>
+<a name="ln18">#include &quot;mon-cast.h&quot;</a>
+<a name="ln19">#include &quot;monster.h&quot; // SEEN_SPELLS_KEY</a>
+<a name="ln20">#include &quot;religion.h&quot;</a>
+<a name="ln21">#include &quot;shopping.h&quot;</a>
+<a name="ln22">#include &quot;spl-book.h&quot;</a>
+<a name="ln23">#include &quot;spl-util.h&quot;</a>
+<a name="ln24">#include &quot;stringutil.h&quot;</a>
+<a name="ln25">#include &quot;state.h&quot;</a>
+<a name="ln26">#include &quot;tileweb.h&quot;</a>
+<a name="ln27">#include &quot;unicode.h&quot;</a>
+<a name="ln28">#ifdef USE_TILE</a>
+<a name="ln29"> #include &quot;tilepick.h&quot;</a>
+<a name="ln30">#endif</a>
+<a name="ln31"> </a>
+<a name="ln32">/**</a>
+<a name="ln33"> * Returns a spellset containing the spells for the given item.</a>
+<a name="ln34"> *</a>
+<a name="ln35"> * @param item      The item in question.</a>
+<a name="ln36"> * @return          A single-element vector, containing the list of all</a>
+<a name="ln37"> *                  non-null spells in the given book, blank-labeled.</a>
+<a name="ln38"> */</a>
+<a name="ln39">spellset item_spellset(const item_def &amp;item)</a>
+<a name="ln40">{</a>
+<a name="ln41">    if (!item.has_spells())</a>
+<a name="ln42">        return {};</a>
+<a name="ln43"> </a>
+<a name="ln44">    return { { &quot;\n&quot;, spells_in_book(item) } };</a>
+<a name="ln45">}</a>
+<a name="ln46"> </a>
+<a name="ln47">/**</a>
+<a name="ln48"> * What's the appropriate descriptor for a given type of &quot;spell&quot; that's not</a>
+<a name="ln49"> * really a spell?</a>
+<a name="ln50"> *</a>
+<a name="ln51"> * @param type              The type of spell-ability; e.g. MON_SPELL_MAGICAL.</a>
+<a name="ln52"> * @return                  A descriptor of the spell type; e.g. &quot;divine&quot;,</a>
+<a name="ln53"> *                          &quot;magical&quot;, etc.</a>
+<a name="ln54"> */</a>
+<a name="ln55">static string _ability_type_descriptor(mon_spell_slot_flag type)</a>
+<a name="ln56">{</a>
+<a name="ln57">    static const map&lt;mon_spell_slot_flag, string&gt; descriptors =</a>
+<a name="ln58">    {</a>
+<a name="ln59">        { MON_SPELL_NATURAL, &quot;natural&quot; },</a>
+<a name="ln60">        { MON_SPELL_MAGICAL, &quot;magical&quot; },</a>
+<a name="ln61">        { MON_SPELL_PRIEST,  &quot;divine&quot; },</a>
+<a name="ln62">    };</a>
+<a name="ln63"> </a>
+<a name="ln64">    return lookup(descriptors, type, &quot;buggy&quot;);</a>
+<a name="ln65">}</a>
+<a name="ln66"> </a>
+<a name="ln67">/**</a>
+<a name="ln68"> * What type of effects is this spell type vulnerable to?</a>
+<a name="ln69"> *</a>
+<a name="ln70"> * @param type              The type of spell-ability; e.g. MON_SPELL_MAGICAL.</a>
+<a name="ln71"> * @param silencable        Whether any of the spells are subject to Silence</a>
+<a name="ln72"> *                          despite being non-wizardly and non-priestly.</a>
+<a name="ln73"> * @return                  A description of the spell's vulnerabilities.</a>
+<a name="ln74"> */</a>
+<a name="ln75">static string _ability_type_vulnerabilities(mon_spell_slot_flag type,</a>
+<a name="ln76">                                            bool silencable)</a>
+<a name="ln77">{</a>
+<a name="ln78">    if (type == MON_SPELL_NATURAL &amp;&amp; !silencable)</a>
+<a name="ln79">        return &quot;&quot;;</a>
+<a name="ln80">    silencable |= type == MON_SPELL_WIZARD || type == MON_SPELL_PRIEST;</a>
+<a name="ln81">    const bool antimagicable</a>
+<a name="ln82">        = type == MON_SPELL_WIZARD || type == MON_SPELL_MAGICAL;</a>
+<a name="ln83">    ASSERT(silencable || antimagicable);</a>
+<a name="ln84">    return make_stringf(&quot;, which are affected by%s%s%s&quot;,</a>
+<a name="ln85">                        silencable ? &quot; silence&quot; : &quot;&quot;,</a>
+<a name="ln86">                        silencable &amp;&amp; antimagicable ? &quot; and&quot; : &quot;&quot;,</a>
+<a name="ln87">                        antimagicable ? &quot; antimagic&quot; : &quot;&quot;);</a>
+<a name="ln88">}</a>
+<a name="ln89"> </a>
+<a name="ln90">/**</a>
+<a name="ln91"> * Produces a portion of the spellbook description: the portion indicating</a>
+<a name="ln92"> * whether the list of spellbooks has been filtered based on which spells you</a>
+<a name="ln93"> * have seen the monster cast already.</a>
+<a name="ln94"> *</a>
+<a name="ln95"> * @param type    The type of ability set / spellbook we're decribing.</a>
+<a name="ln96"> * @param pronoun The monster pronoun to use (should be derived from PRONOUN_OBJECTIVE).</a>
+<a name="ln97"> * @return        A string to include in the spellbook description.</a>
+<a name="ln98"> */</a>
+<a name="ln99">static string _describe_spell_filtering(mon_spell_slot_flag type, const char* pronoun)</a>
+<a name="ln100">{</a>
+<a name="ln101">    const bool is_spell = type = MON_SPELL_WIZARD;</a>
+<a name="ln102">    return make_stringf(&quot; (judging by the %s you have seen %s %s)&quot;,</a>
+<a name="ln103">                        is_spell ? &quot;spells&quot; : &quot;abilities&quot;,</a>
+<a name="ln104">                        pronoun,</a>
+<a name="ln105">                        is_spell ? &quot;cast&quot; : &quot;use&quot;);</a>
+<a name="ln106">}</a>
+<a name="ln107"> </a>
+<a name="ln108">/**</a>
+<a name="ln109"> * What description should a given (set of) monster spellbooks be prefixed</a>
+<a name="ln110"> * with?</a>
+<a name="ln111"> *</a>
+<a name="ln112"> * @param type              The type of book(s); e.g. MON_SPELL_MAGICAL.</a>
+<a name="ln113"> * @param num_books         The number of books in the set.</a>
+<a name="ln114"> * @param has_silencable    Whether any of the spells are subject to Silence</a>
+<a name="ln115"> *                          despite being non-wizardly and non-priestly.</a>
+<a name="ln116"> * @param has_filtered      Whether any spellbooks have been filtered out due</a>
+<a name="ln117"> *                          to the spells you've seen the monster cast.</a>
+<a name="ln118"> * @param pronoun           The pronoun to use in describing which spells</a>
+<a name="ln119"> *                          the monster has been seen casting.</a>
+<a name="ln120"> * @return                  A header string for the bookset; e.g.,</a>
+<a name="ln121"> *                          &quot;has mastered one of the following spellbooks:&quot;</a>
+<a name="ln122"> *                          &quot;possesses the following natural abilities:&quot;</a>
+<a name="ln123"> */</a>
+<a name="ln124">static string _booktype_header(mon_spell_slot_flag type, size_t num_books,</a>
+<a name="ln125">                               bool has_silencable, bool has_filtered,</a>
+<a name="ln126">                               const char* pronoun, bool pronoun_plural)</a>
+<a name="ln127">{</a>
+<a name="ln128">    const string vulnerabilities =</a>
+<a name="ln129">        _ability_type_vulnerabilities(type, has_silencable);</a>
+<a name="ln130">    const string spell_filter_desc =</a>
+<a name="ln131">        has_filtered ? _describe_spell_filtering(type, pronoun) : &quot;&quot;;</a>
+<a name="ln132"> </a>
+<a name="ln133">    if (type == MON_SPELL_WIZARD)</a>
+<a name="ln134">    {</a>
+<a name="ln135">        return make_stringf(&quot;%s mastered %s%s%s:&quot;,</a>
+<a name="ln136">                            conjugate_verb(&quot;have&quot;, pronoun_plural).c_str(),</a>
+<a name="ln137">                            num_books &gt; 1 ? &quot;one of the following spellbooks&quot;</a>
+<a name="ln138">                                          : &quot;the following spells&quot;,</a>
+<a name="ln139">                            spell_filter_desc.c_str(),</a>
+<a name="ln140">                            vulnerabilities.c_str());</a>
+<a name="ln141">    }</a>
+<a name="ln142"> </a>
+<a name="ln143">    const string descriptor = _ability_type_descriptor(type);</a>
+<a name="ln144"> </a>
+<a name="ln145">    return make_stringf(&quot;%s the following %s abilities%s%s:&quot;,</a>
+<a name="ln146">                        conjugate_verb(&quot;possess&quot;, pronoun_plural).c_str(),</a>
+<a name="ln147">                        descriptor.c_str(),</a>
+<a name="ln148">                        spell_filter_desc.c_str(),</a>
+<a name="ln149">                        vulnerabilities.c_str());</a>
+<a name="ln150">}</a>
+<a name="ln151"> </a>
+<a name="ln152">static bool _spell_in_book(spell_type spell, const vector&lt;mon_spell_slot&gt; &amp;book)</a>
+<a name="ln153">{</a>
+<a name="ln154">    return any_of(book.begin(), book.end(),</a>
+<a name="ln155">                  [=](mon_spell_slot slot){return slot.spell == spell;});</a>
+<a name="ln156">}</a>
+<a name="ln157"> </a>
+<a name="ln158">/**</a>
+<a name="ln159"> * Is it possible that the given monster could be using the given book, from</a>
+<a name="ln160"> * what the player knows about each?</a>
+<a name="ln161"> *</a>
+<a name="ln162"> * @param book          A list of spells.</a>
+<a name="ln163"> * @param mon_owner     The monster being examined.</a>
+<a name="ln164"> * @return              Whether it's possible for the given monster to</a>
+<a name="ln165"> */</a>
+<a name="ln166">static bool _book_valid(const vector&lt;mon_spell_slot&gt; &amp;book,</a>
+<a name="ln167">                        const monster_info &amp;mi)</a>
+<a name="ln168">{</a>
+<a name="ln169">    if (!mi.props.exists(SEEN_SPELLS_KEY))</a>
+<a name="ln170">        return true;</a>
+<a name="ln171"> </a>
+<a name="ln172">    auto seen_spells = mi.props[SEEN_SPELLS_KEY].get_vector();</a>
+<a name="ln173"> </a>
+<a name="ln174">    // assumption: any monster with multiple true spellbooks will only ever</a>
+<a name="ln175">    // use one of them</a>
+<a name="ln176">    return all_of(seen_spells.begin(), seen_spells.end(),</a>
+<a name="ln177">                  [&amp;](int spell){return _spell_in_book((spell_type)spell, book);});</a>
+<a name="ln178">}</a>
+<a name="ln179"> </a>
+<a name="ln180">static void _split_by_silflag(unique_books &amp;books)</a>
+<a name="ln181">{</a>
+<a name="ln182">    unique_books result;</a>
+<a name="ln183"> </a>
+<a name="ln184">    for (auto book : books)</a>
+<a name="ln185">    {</a>
+<a name="ln186">        vector&lt;mon_spell_slot&gt; silflag;</a>
+<a name="ln187">        vector&lt;mon_spell_slot&gt; no_silflag;</a>
+<a name="ln188"> </a>
+<a name="ln189">        for (auto i : book)</a>
+<a name="ln190">        {</a>
+<a name="ln191">            if (i.flags &amp; MON_SPELL_NO_SILENT)</a>
+<a name="ln192">                silflag.push_back(i);</a>
+<a name="ln193">            else no_silflag.push_back(i);</a>
+<a name="ln194">        }</a>
+<a name="ln195"> </a>
+<a name="ln196">        if (!no_silflag.empty())</a>
+<a name="ln197">            result.push_back(no_silflag);</a>
+<a name="ln198">        if (!silflag.empty())</a>
+<a name="ln199">            result.push_back(silflag);</a>
+<a name="ln200">    }</a>
+<a name="ln201"> </a>
+<a name="ln202">    books = result;</a>
+<a name="ln203">}</a>
+<a name="ln204"> </a>
+<a name="ln205">/**</a>
+<a name="ln206"> * Append all spells of a given type that a given monster may know to the</a>
+<a name="ln207"> * provided vector.</a>
+<a name="ln208"> *</a>
+<a name="ln209"> * @param mi                The player's knowledge of a monster.</a>
+<a name="ln210"> * @param type              The type of spells to select.</a>
+<a name="ln211"> *                          (E.g. MON_SPELL_MAGICAL, MON_SPELL_WIZARD...)</a>
+<a name="ln212"> * @param[out] all_books    An output vector of &quot;spellbooks&quot;.</a>
+<a name="ln213"> */</a>
+<a name="ln214">static void _monster_spellbooks(const monster_info &amp;mi,</a>
+<a name="ln215">                                mon_spell_slot_flag type,</a>
+<a name="ln216">                                spellset &amp;all_books)</a>
+<a name="ln217">{</a>
+<a name="ln218">    unique_books books = get_unique_spells(mi, type);</a>
+<a name="ln219"> </a>
+<a name="ln220">    // Books of natural abilities get special treatment, because there should</a>
+<a name="ln221">    // be information about silence in the label(s).</a>
+<a name="ln222">    const bool ability_case =</a>
+<a name="ln223">        (bool) (type &amp; (MON_SPELL_MAGICAL | MON_SPELL_NATURAL));</a>
+<a name="ln224">    // We must split them now; later we'll label them separately.</a>
+<a name="ln225">    if (ability_case)</a>
+<a name="ln226">        _split_by_silflag(books);</a>
+<a name="ln227"> </a>
+<a name="ln228">    const size_t num_books = books.size();</a>
+<a name="ln229"> </a>
+<a name="ln230">    if (num_books == 0)</a>
+<a name="ln231">        return;</a>
+<a name="ln232"> </a>
+<a name="ln233">    const string set_name = type == MON_SPELL_WIZARD ? &quot;Book&quot; : &quot;Set&quot;;</a>
+<a name="ln234"> </a>
+<a name="ln235">    // filter out books we know this monster can't cast (conflicting books)</a>
+<a name="ln236">    std::vector&lt;size_t&gt; valid_books;</a>
+<a name="ln237">    bool filtered_books = false;</a>
+<a name="ln238">    for (size_t i = 0; i &lt; num_books; ++i)</a>
+<a name="ln239">    {</a>
+<a name="ln240">        if (num_books &lt;= 1 || _book_valid(books[i], mi))</a>
+<a name="ln241">            valid_books.emplace_back(i);</a>
+<a name="ln242">        else if (!_book_valid(books[i], mi))</a>
+<a name="ln243">            filtered_books = true;</a>
+<a name="ln244">    }</a>
+<a name="ln245"> </a>
+<a name="ln246">    // Loop through books and display spells/abilities for each of them</a>
+<a name="ln247">    for (size_t i = 0; i &lt; valid_books.size(); ++i)</a>
+<a name="ln248">    {</a>
+<a name="ln249">        const vector&lt;mon_spell_slot&gt; &amp;book_slots = books[valid_books[i]];</a>
+<a name="ln250">        spellbook_contents output_book;</a>
+<a name="ln251"> </a>
+<a name="ln252">        const bool has_silencable = any_of(begin(book_slots), end(book_slots),</a>
+<a name="ln253">            [](const mon_spell_slot&amp; slot)</a>
+<a name="ln254">            {</a>
+<a name="ln255">                return slot.flags &amp; MON_SPELL_NO_SILENT;</a>
+<a name="ln256">            });</a>
+<a name="ln257"> </a>
+<a name="ln258">        if (i == 0 || ability_case)</a>
+<a name="ln259">        {</a>
+<a name="ln260">            output_book.label +=</a>
+<a name="ln261">                &quot;\n&quot; +</a>
+<a name="ln262">                uppercase_first(mi.pronoun(PRONOUN_SUBJECTIVE)) +</a>
+<a name="ln263">                &quot; &quot; +</a>
+<a name="ln264">                _booktype_header(type, valid_books.size(), has_silencable,</a>
+<a name="ln265">                                 filtered_books, mi.pronoun(PRONOUN_OBJECTIVE),</a>
+<a name="ln266">                                 mi.pronoun_plurality());</a>
+<a name="ln267">        }</a>
+<a name="ln268">        else</a>
+<a name="ln269">        {</a>
+<a name="ln270">            output_book.label += make_stringf(&quot;\n%s %d:&quot;,</a>
+<a name="ln271">                                              set_name.c_str(), (int) i + 1);</a>
+<a name="ln272">        }</a>
+<a name="ln273"> </a>
+<a name="ln274">        // Does the monster have a spell that allows them to cast Abjuration?</a>
+<a name="ln275">        bool mons_abjure = false;</a>
+<a name="ln276"> </a>
+<a name="ln277">        for (const auto&amp; slot : book_slots)</a>
+<a name="ln278">        {</a>
+<a name="ln279">            const spell_type spell = slot.spell;</a>
+<a name="ln280">            if (!spell_is_soh_breath(spell))</a>
+<a name="ln281">            {</a>
+<a name="ln282">                output_book.spells.emplace_back(spell);</a>
+<a name="ln283">                if (get_spell_flags(spell) &amp; spflag::mons_abjure)</a>
+<a name="ln284">                    mons_abjure = true;</a>
+<a name="ln285">                continue;</a>
+<a name="ln286">            }</a>
+<a name="ln287"> </a>
+<a name="ln288">            const vector&lt;spell_type&gt; *breaths = soh_breath_spells(spell);</a>
+<a name="ln289">            ASSERT(breaths);</a>
+<a name="ln290">            for (auto breath : *breaths)</a>
+<a name="ln291">                output_book.spells.emplace_back(breath);</a>
+<a name="ln292">        }</a>
+<a name="ln293"> </a>
+<a name="ln294">        if (mons_abjure)</a>
+<a name="ln295">            output_book.spells.emplace_back(SPELL_ABJURATION);</a>
+<a name="ln296"> </a>
+<a name="ln297">        all_books.emplace_back(output_book);</a>
+<a name="ln298">    }</a>
+<a name="ln299">}</a>
+<a name="ln300"> </a>
+<a name="ln301">/**</a>
+<a name="ln302"> * Return a spellset containing the spells potentially given by the given</a>
+<a name="ln303"> * monster information.</a>
+<a name="ln304"> *</a>
+<a name="ln305"> * @param mi    The player's knowledge of a monster.</a>
+<a name="ln306"> * @return      The spells potentially castable by that monster (as far as</a>
+<a name="ln307"> *              the player knows).</a>
+<a name="ln308"> */</a>
+<a name="ln309">spellset monster_spellset(const monster_info &amp;mi)</a>
+<a name="ln310">{</a>
+<a name="ln311">    if (!mi.has_spells())</a>
+<a name="ln312">        return {};</a>
+<a name="ln313"> </a>
+<a name="ln314">    static const mon_spell_slot_flag book_flags[] =</a>
+<a name="ln315">    {</a>
+<a name="ln316">        MON_SPELL_NATURAL,</a>
+<a name="ln317">        MON_SPELL_MAGICAL,</a>
+<a name="ln318">        MON_SPELL_PRIEST,</a>
+<a name="ln319">        MON_SPELL_WIZARD,</a>
+<a name="ln320">    };</a>
+<a name="ln321"> </a>
+<a name="ln322">    spellset books;</a>
+<a name="ln323"> </a>
+<a name="ln324">    for (auto book_flag : book_flags)</a>
+<a name="ln325">        _monster_spellbooks(mi, book_flag, books);</a>
+<a name="ln326"> </a>
+<a name="ln327">    ASSERT(books.size());</a>
+<a name="ln328">    return books;</a>
+<a name="ln329">}</a>
+<a name="ln330"> </a>
+<a name="ln331"> </a>
+<a name="ln332">/**</a>
+<a name="ln333"> * Build a flat vector containing all unique spells in a given spellset.</a>
+<a name="ln334"> *</a>
+<a name="ln335"> * @param spellset      The spells in question.</a>
+<a name="ln336"> * @return              An ordered set of unique spells in the given set.</a>
+<a name="ln337"> *                      Guaranteed to be in the same order as in the spellset.</a>
+<a name="ln338"> */</a>
+<a name="ln339">static vector&lt;spell_type&gt; _spellset_contents(const spellset &amp;spells)</a>
+<a name="ln340">{</a>
+<a name="ln341">    // find unique spells (O(nlogn))</a>
+<a name="ln342">    set&lt;spell_type&gt; unique_spells;</a>
+<a name="ln343">    for (auto &amp;book : spells)</a>
+<a name="ln344">        for (auto spell : book.spells)</a>
+<a name="ln345">            unique_spells.insert(spell);</a>
+<a name="ln346"> </a>
+<a name="ln347">    // list spells in original order (O(nlogn)?)</a>
+<a name="ln348">    vector&lt;spell_type&gt; spell_list;</a>
+<a name="ln349">    for (auto &amp;book : spells)</a>
+<a name="ln350">    {</a>
+<a name="ln351">        for (auto spell : book.spells)</a>
+<a name="ln352">        {</a>
+<a name="ln353">            if (unique_spells.erase(spell) == 1)</a>
+<a name="ln354">                spell_list.emplace_back(spell);</a>
+<a name="ln355">        }</a>
+<a name="ln356">    }</a>
+<a name="ln357"> </a>
+<a name="ln358">    return spell_list;</a>
+<a name="ln359">}</a>
+<a name="ln360"> </a>
+<a name="ln361">/**</a>
+<a name="ln362"> * What spell should a given colour be listed with?</a>
+<a name="ln363"> *</a>
+<a name="ln364"> * @param spell         The spell in question.</a>
+<a name="ln365"> * @param source_item   The physical item holding the spells. May be null.</a>
+<a name="ln366"> */</a>
+<a name="ln367">static int _spell_colour(spell_type spell, const item_def* const source_item)</a>
+<a name="ln368">{</a>
+<a name="ln369">    if (!crawl_state.need_save)</a>
+<a name="ln370">        return COL_UNKNOWN;</a>
+<a name="ln371"> </a>
+<a name="ln372">    if (!source_item)</a>
+<a name="ln373">        return spell_highlight_by_utility(spell, COL_UNKNOWN);</a>
+<a name="ln374"> </a>
+<a name="ln375">    if (you.has_spell(spell))</a>
+<a name="ln376">        return COL_MEMORIZED;</a>
+<a name="ln377"> </a>
+<a name="ln378">    // this is kind of ugly.</a>
+<a name="ln379">    if (!you_can_memorise(spell)</a>
+<a name="ln380">        || you.experience_level &lt; spell_difficulty(spell)</a>
+<a name="ln381">        || player_spell_levels() &lt; spell_levels_required(spell))</a>
+<a name="ln382">    {</a>
+<a name="ln383">        return COL_USELESS;</a>
+<a name="ln384">    }</a>
+<a name="ln385"> </a>
+<a name="ln386">    if (god_hates_spell(spell, you.religion))</a>
+<a name="ln387">        return COL_FORBIDDEN;</a>
+<a name="ln388"> </a>
+<a name="ln389">    if (!you.has_spell(spell))</a>
+<a name="ln390">        return COL_UNMEMORIZED;</a>
+<a name="ln391"> </a>
+<a name="ln392">    return spell_highlight_by_utility(spell, COL_UNKNOWN);</a>
+<a name="ln393">}</a>
+<a name="ln394"> </a>
+<a name="ln395">/**</a>
+<a name="ln396"> * List the name(s) of the school(s) the given spell is in.</a>
+<a name="ln397"> *</a>
+<a name="ln398"> * XXX: This is almost certainly duplicating something somewhere. Also, it's</a>
+<a name="ln399"> * pretty ugly.</a>
+<a name="ln400"> *</a>
+<a name="ln401"> * @param spell     The spell in question.</a>
+<a name="ln402"> * @return          A '/'-separated list of spellschool names.</a>
+<a name="ln403"> */</a>
+<a name="ln404">static string _spell_schools(spell_type spell)</a>
+<a name="ln405">{</a>
+<a name="ln406">    string schools;</a>
+<a name="ln407"> </a>
+<a name="ln408">    for (const auto school_flag : spschools_type::range())</a>
+<a name="ln409">    {</a>
+<a name="ln410">        if (!spell_typematch(spell, school_flag))</a>
+<a name="ln411">            continue;</a>
+<a name="ln412"> </a>
+<a name="ln413">        if (!schools.empty())</a>
+<a name="ln414">            schools += &quot;/&quot;;</a>
+<a name="ln415">        schools += spelltype_long_name(school_flag);</a>
+<a name="ln416">    }</a>
+<a name="ln417"> </a>
+<a name="ln418">    return schools;</a>
+<a name="ln419">}</a>
+<a name="ln420"> </a>
+<a name="ln421">/**</a>
+<a name="ln422"> * Should spells from the given source be listed in two columns instead of</a>
+<a name="ln423"> * one?</a>
+<a name="ln424"> *</a>
+<a name="ln425"> * @param source_item   The source of the spells; a book, or nullptr in the</a>
+<a name="ln426"> *                      case of monster spellbooks.</a>
+<a name="ln427"> * @return              source_item == nullptr</a>
+<a name="ln428"> */</a>
+<a name="ln429">static bool _list_spells_doublecolumn(const item_def* const source_item)</a>
+<a name="ln430">{</a>
+<a name="ln431">    return !source_item;</a>
+<a name="ln432">}</a>
+<a name="ln433"> </a>
+<a name="ln434">/**</a>
+<a name="ln435"> * Produce a mapping from characters (used as indices) to spell types in</a>
+<a name="ln436"> * the given spellset.</a>
+<a name="ln437"> *</a>
+<a name="ln438"> * @param spells        A list of 'books' of spells.</a>
+<a name="ln439"> * @param source_item   The source of the spells; a book, or nullptr in the</a>
+<a name="ln440"> *                      case of monster spellbooks.</a>
+<a name="ln441"> * @return              A list of all unique spells in the given set, ordered</a>
+<a name="ln442"> *                      either in original order or column-major order, the</a>
+<a name="ln443"> *                      latter in the case of a double-column layout.</a>
+<a name="ln444"> */</a>
+<a name="ln445">vector&lt;pair&lt;spell_type,char&gt;&gt; map_chars_to_spells(const spellset &amp;spells,</a>
+<a name="ln446">                                       const item_def* const source_item)</a>
+<a name="ln447">{</a>
+<a name="ln448">    char next_ch = 'a';</a>
+<a name="ln449">    const vector&lt;spell_type&gt; flat_spells = _spellset_contents(spells);</a>
+<a name="ln450">    vector&lt;pair&lt;spell_type,char&gt;&gt; ret;</a>
+<a name="ln451">    if (!_list_spells_doublecolumn(source_item))</a>
+<a name="ln452">    {</a>
+<a name="ln453">        for (auto spell : flat_spells)</a>
+<a name="ln454">            ret.emplace_back(pair&lt;spell_type,char&gt;(spell, next_ch++));</a>
+<a name="ln455">    }</a>
+<a name="ln456">    else</a>
+<a name="ln457">    {</a>
+<a name="ln458">        for (size_t i = 0; i &lt; flat_spells.size(); i += 2)</a>
+<a name="ln459">            ret.emplace_back(pair&lt;spell_type,char&gt;(flat_spells[i], next_ch++));</a>
+<a name="ln460">        for (size_t i = 1; i &lt; flat_spells.size(); i += 2)</a>
+<a name="ln461">            ret.emplace_back(pair&lt;spell_type,char&gt;(flat_spells[i], next_ch++));</a>
+<a name="ln462">    }</a>
+<a name="ln463">    return ret;</a>
+<a name="ln464">}</a>
+<a name="ln465"> </a>
+<a name="ln466">static string _range_string(const spell_type &amp;spell, const monster_info *mon_owner, int hd)</a>
+<a name="ln467">{</a>
+<a name="ln468">    auto flags = get_spell_flags(spell);</a>
+<a name="ln469">    int pow = mons_power_for_hd(spell, hd);</a>
+<a name="ln470">    int range = spell_range(spell, pow, false);</a>
+<a name="ln471">    const bool has_range = mon_owner</a>
+<a name="ln472">                        &amp;&amp; range &gt; 0</a>
+<a name="ln473">                        &amp;&amp; !testbits(flags, spflag::selfench);</a>
+<a name="ln474">    if (!has_range)</a>
+<a name="ln475">        return &quot;&quot;;</a>
+<a name="ln476">    const bool in_range = has_range</a>
+<a name="ln477">                    &amp;&amp; crawl_state.need_save</a>
+<a name="ln478">                    &amp;&amp; in_bounds(mon_owner-&gt;pos)</a>
+<a name="ln479">                    &amp;&amp; grid_distance(you.pos(), mon_owner-&gt;pos) &lt;= range;</a>
+<a name="ln480">    const char *range_col = in_range ? &quot;lightred&quot; : &quot;lightgray&quot;;</a>
+<a name="ln481">    return make_stringf(&quot;(&lt;%s&gt;%d&lt;/%s&gt;)&quot;, range_col, range, range_col);</a>
+<a name="ln482">}</a>
+<a name="ln483"> </a>
+<a name="ln484">/**</a>
+<a name="ln485"> * Describe a given set of spells.</a>
+<a name="ln486"> *</a>
+<a name="ln487"> * @param book              A labeled set of spells, corresponding to a book</a>
+<a name="ln488"> *                          or monster spellbook.</a>
+<a name="ln489"> * @param spell_map         The letters to use for each spell.</a>
+<a name="ln490"> * @param source_item       The physical item holding the spells. May be null.</a>
+<a name="ln491"> * @param description[out]  An output string to append to.</a>
+<a name="ln492"> * @param mon_owner         If this spellset is being examined from a monster's</a>
+<a name="ln493"> *                          description, 'mon_owner' is that monster. Else,</a>
+<a name="ln494"> *                          it's null.</a>
+<a name="ln495"> */</a>
+<a name="ln496">static void _describe_book(const spellbook_contents &amp;book,</a>
+<a name="ln497">                           vector&lt;pair&lt;spell_type,char&gt;&gt; &amp;spell_map,</a>
+<a name="ln498">                           const item_def* const source_item,</a>
+<a name="ln499">                           formatted_string &amp;description,</a>
+<a name="ln500">                           const monster_info *mon_owner)</a>
+<a name="ln501">{</a>
+<a name="ln502">    description.textcolour(LIGHTGREY);</a>
+<a name="ln503"> </a>
+<a name="ln504">    description.cprintf(&quot;%s&quot;, book.label.c_str());</a>
+<a name="ln505"> </a>
+<a name="ln506">    // only display header for book spells</a>
+<a name="ln507">    if (source_item)</a>
+<a name="ln508">    {</a>
+<a name="ln509">        description.cprintf(</a>
+<a name="ln510">            &quot;\n Spells                           Type                      Level       Known&quot;);</a>
+<a name="ln511">    }</a>
+<a name="ln512">    description.cprintf(&quot;\n&quot;);</a>
+<a name="ln513"> </a>
+<a name="ln514">    // list spells in two columns, instead of one? (monster books)</a>
+<a name="ln515">    const bool doublecolumn = _list_spells_doublecolumn(source_item);</a>
+<a name="ln516"> </a>
+<a name="ln517">    bool first_line_element = true;</a>
+<a name="ln518">    const int hd = mon_owner ? mon_owner-&gt;spell_hd() : 0;</a>
+<a name="ln519">    for (auto spell : book.spells)</a>
+<a name="ln520">    {</a>
+<a name="ln521">        description.cprintf(&quot; &quot;);</a>
+<a name="ln522"> </a>
+<a name="ln523">        if (!mon_owner)</a>
+<a name="ln524">            description.textcolour(_spell_colour(spell, source_item));</a>
+<a name="ln525"> </a>
+<a name="ln526">        // don't crash if we have more spells than letters.</a>
+<a name="ln527">        auto entry = find_if(spell_map.begin(), spell_map.end(),</a>
+<a name="ln528">                [&amp;spell](const pair&lt;spell_type,char&gt;&amp; e)</a>
+<a name="ln529">                {</a>
+<a name="ln530">                    return e.first == spell;</a>
+<a name="ln531">                });</a>
+<a name="ln532">        const char spell_letter = entry != spell_map.end()</a>
+<a name="ln533">                                            ? entry-&gt;second : ' ';</a>
+<a name="ln534"> </a>
+<a name="ln535">        string range_str = _range_string(spell, mon_owner, hd);</a>
+<a name="ln536"> </a>
+<a name="ln537">        string hex_str = &quot;&quot;;</a>
+<a name="ln538"> </a>
+<a name="ln539">        if (hd &gt; 0 &amp;&amp; crawl_state.need_save</a>
+<a name="ln540">#ifndef DEBUG_DIAGNOSTICS</a>
+<a name="ln541">            &amp;&amp; mon_owner-&gt;attitude != ATT_FRIENDLY</a>
+<a name="ln542">#endif</a>
+<a name="ln543">            &amp;&amp; testbits(get_spell_flags(spell), spflag::MR_check))</a>
+<a name="ln544">        {</a>
+<a name="ln545">            if (you.immune_to_hex(spell))</a>
+<a name="ln546">                hex_str = &quot;(immune)&quot;;</a>
+<a name="ln547">            else</a>
+<a name="ln548">                hex_str = make_stringf(&quot;(%d%%)&quot;, hex_chance(spell, hd));</a>
+<a name="ln549">        }</a>
+<a name="ln550"> </a>
+<a name="ln551">        int hex_len = hex_str.length(), range_len = range_str.empty() ? 0 : 3;</a>
+<a name="ln552">        int hex_range_space = hex_len &amp;&amp; range_len ? 1 : 0;</a>
+<a name="ln553"> </a>
+<a name="ln554">        description += formatted_string::parse_string(</a>
+<a name="ln555">                make_stringf(&quot;%c - %s%s%s%s&quot;, spell_letter,</a>
+<a name="ln556">                chop_string(spell_title(spell),</a>
+<a name="ln557">                            29 - hex_len - range_len - hex_range_space).c_str(),</a>
+<a name="ln558">                hex_str.c_str(),</a>
+<a name="ln559">                hex_range_space ? &quot; &quot; : &quot;&quot;,</a>
+<a name="ln560">                range_str.c_str()));</a>
+<a name="ln561"> </a>
+<a name="ln562">        // only display type &amp; level for book spells</a>
+<a name="ln563">        if (doublecolumn)</a>
+<a name="ln564">        {</a>
+<a name="ln565">            // print monster spells in two columns</a>
+<a name="ln566">            if (first_line_element)</a>
+<a name="ln567">                description.cprintf(&quot;    &quot;);</a>
+<a name="ln568">            else</a>
+<a name="ln569">                description.cprintf(&quot;\n&quot;);</a>
+<a name="ln570">            first_line_element = !first_line_element;</a>
+<a name="ln571">            continue;</a>
+<a name="ln572">        }</a>
+<a name="ln573"> </a>
+<a name="ln574">        string schools =</a>
+<a name="ln575">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln576">            source_item-&gt;base_type == OBJ_RODS ? &quot;Evocations&quot;</a>
+<a name="ln577">                                               :</a>
+<a name="ln578">#endif</a>
+<a name="ln579">                         _spell_schools(spell);</a>
+<a name="ln580"> </a>
+<a name="ln581">        string known = &quot;&quot;;</a>
+<a name="ln582">        if (!mon_owner) {</a>
+<a name="ln583">            known = you.spell_library[spell] ? &quot;         yes&quot; : &quot;          no&quot;;</a>
+<a name="ln584">        }</a>
+<a name="ln585"> </a>
+<a name="ln586">        description.cprintf(&quot;%s%d%s\n&quot;,</a>
+<a name="ln587">                            chop_string(schools, 30).c_str(),</a>
+<a name="ln588">                            spell_difficulty(spell),</a>
+<a name="ln589">                            known.c_str());</a>
+<a name="ln590">    }</a>
+<a name="ln591"> </a>
+<a name="ln592">    // are we halfway through a column?</a>
+<a name="ln593">    if (doublecolumn &amp;&amp; book.spells.size() % 2)</a>
+<a name="ln594">        description.cprintf(&quot;\n&quot;);</a>
+<a name="ln595">}</a>
+<a name="ln596"> </a>
+<a name="ln597"> </a>
+<a name="ln598">/**</a>
+<a name="ln599"> * List a given set of spells.</a>
+<a name="ln600"> *</a>
+<a name="ln601"> * @param spells            The set of spells to be listed.</a>
+<a name="ln602"> * @param source_item       The physical item holding the spells. May be null.</a>
+<a name="ln603"> * @param description[out]  An output string to append to.</a>
+<a name="ln604"> * @param mon_owner         If this spellset is being examined from a monster's</a>
+<a name="ln605"> *                          description, 'mon_owner' is that monster. Else,</a>
+<a name="ln606"> *                          it's null.</a>
+<a name="ln607"> */</a>
+<a name="ln608">void describe_spellset(const spellset &amp;spells,</a>
+<a name="ln609">                       const item_def* const source_item,</a>
+<a name="ln610">                       formatted_string &amp;description,</a>
+<a name="ln611">                       const monster_info *mon_owner)</a>
+<a name="ln612">{</a>
+<a name="ln613">    auto spell_map = map_chars_to_spells(spells, source_item);</a>
+<a name="ln614">    for (auto book : spells)</a>
+<a name="ln615">        _describe_book(book, spell_map, source_item, description, mon_owner);</a>
+<a name="ln616">}</a>
+<a name="ln617"> </a>
+<a name="ln618">#ifdef USE_TILE_WEB</a>
+<a name="ln619">static void _write_book(const spellbook_contents &amp;book,</a>
+<a name="ln620">                           vector&lt;pair&lt;spell_type,char&gt;&gt; &amp;spell_map,</a>
+<a name="ln621">                           const item_def* const source_item,</a>
+<a name="ln622">                           const monster_info *mon_owner)</a>
+<a name="ln623">{</a>
+<a name="ln624">    tiles.json_open_object();</a>
+<a name="ln625">    tiles.json_write_string(&quot;label&quot;, book.label);</a>
+<a name="ln626">    const int hd = mon_owner ? mon_owner-&gt;spell_hd() : 0;</a>
+<a name="ln627">    tiles.json_open_array(&quot;spells&quot;);</a>
+<a name="ln628">    for (auto spell : book.spells)</a>
+<a name="ln629">    {</a>
+<a name="ln630">        tiles.json_open_object();</a>
+<a name="ln631">        tiles.json_write_string(&quot;title&quot;, spell_title(spell));</a>
+<a name="ln632">        tiles.json_write_int(&quot;colour&quot;, _spell_colour(spell, source_item));</a>
+<a name="ln633">        tiles.json_write_name(&quot;tile&quot;);</a>
+<a name="ln634">        tiles.write_tileidx(tileidx_spell(spell));</a>
+<a name="ln635"> </a>
+<a name="ln636">        // don't crash if we have more spells than letters.</a>
+<a name="ln637">        auto entry = find_if(spell_map.begin(), spell_map.end(),</a>
+<a name="ln638">                [&amp;spell](const pair&lt;spell_type,char&gt;&amp; e) { return e.first == spell; });</a>
+<a name="ln639">        const char spell_letter = entry != spell_map.end() ? entry-&gt;second : ' ';</a>
+<a name="ln640">        tiles.json_write_string(&quot;letter&quot;, string(1, spell_letter));</a>
+<a name="ln641"> </a>
+<a name="ln642">        string range_str = _range_string(spell, mon_owner, hd);</a>
+<a name="ln643">        if (range_str.size() &gt; 0)</a>
+<a name="ln644">            tiles.json_write_string(&quot;range_string&quot;, range_str);</a>
+<a name="ln645"> </a>
+<a name="ln646">        if (hd &gt; 0 &amp;&amp; crawl_state.need_save</a>
+<a name="ln647">#ifndef DEBUG_DIAGNOSTICS</a>
+<a name="ln648">            &amp;&amp; mon_owner-&gt;attitude != ATT_FRIENDLY</a>
+<a name="ln649">#endif</a>
+<a name="ln650">            &amp;&amp; (get_spell_flags(spell) &amp; spflag::MR_check))</a>
+<a name="ln651">        {</a>
+<a name="ln652">            if (you.immune_to_hex(spell))</a>
+<a name="ln653">                tiles.json_write_string(&quot;hex_chance&quot;, &quot;immune&quot;);</a>
+<a name="ln654">            else</a>
+<a name="ln655">                tiles.json_write_string(&quot;hex_chance&quot;,</a>
+<a name="ln656">                        make_stringf(&quot;%d%%&quot;, hex_chance(spell, hd)));</a>
+<a name="ln657">        }</a>
+<a name="ln658"> </a>
+<a name="ln659">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln660">        string schools = (source_item &amp;&amp; source_item-&gt;base_type == OBJ_RODS) ?</a>
+<a name="ln661">                &quot;Evocations&quot; : _spell_schools(spell);</a>
+<a name="ln662">#else</a>
+<a name="ln663">        string schools = _spell_schools(spell);</a>
+<a name="ln664">#endif</a>
+<a name="ln665">        tiles.json_write_string(&quot;schools&quot;, schools);</a>
+<a name="ln666">        tiles.json_write_int(&quot;level&quot;, spell_difficulty(spell));</a>
+<a name="ln667">        tiles.json_close_object();</a>
+<a name="ln668">    }</a>
+<a name="ln669">    tiles.json_close_array();</a>
+<a name="ln670">    tiles.json_close_object();</a>
+<a name="ln671">}</a>
+<a name="ln672"> </a>
+<a name="ln673">void write_spellset(const spellset &amp;spells,</a>
+<a name="ln674">                       const item_def* const source_item,</a>
+<a name="ln675">                       const monster_info *mon_owner)</a>
+<a name="ln676">{</a>
+<a name="ln677">    auto spell_map = map_chars_to_spells(spells, source_item);</a>
+<a name="ln678">    tiles.json_open_array(&quot;spellset&quot;);</a>
+<a name="ln679">    for (auto book : spells)</a>
+<a name="ln680">        _write_book(book, spell_map, source_item, mon_owner);</a>
+<a name="ln681">    tiles.json_close_array();</a>
+<a name="ln682">}</a>
+<a name="ln683">#endif</a>
+<a name="ln684"> </a>
+<a name="ln685">/**</a>
+<a name="ln686"> * Return a description of the spells in the given item.</a>
+<a name="ln687"> *</a>
+<a name="ln688"> * @param item      The book in question.</a>
+<a name="ln689"> * @return          A column-and-row listing of the spells in the given item,</a>
+<a name="ln690"> *                  including names, schools &amp; levels.</a>
+<a name="ln691"> */</a>
+<a name="ln692">string describe_item_spells(const item_def &amp;item)</a>
+<a name="ln693">{</a>
+<a name="ln694">    formatted_string description;</a>
+<a name="ln695">    describe_spellset(item_spellset(item), &amp;item, description);</a>
+<a name="ln696">    return description.tostring();</a>
+<a name="ln697">}</a>
+
+</code></pre>
+<div class="balloon" rel="101"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v786/" target="_blank">V786</a> It is odd that value 'type = MON_SPELL_WIZARD' is assigned to the 'is_spell' variable. The value range of 'is_spell' variable: [0, 1].</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

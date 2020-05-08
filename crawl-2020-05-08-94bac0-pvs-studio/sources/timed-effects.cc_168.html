@@ -1,0 +1,1354 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>timed-effects.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Gametime related functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;timed-effects.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;abyss.h&quot;</a>
+<a name="ln11">#include &quot;act-iter.h&quot;</a>
+<a name="ln12">#include &quot;areas.h&quot;</a>
+<a name="ln13">#include &quot;beam.h&quot;</a>
+<a name="ln14">#include &quot;cloud.h&quot;</a>
+<a name="ln15">#include &quot;coordit.h&quot;</a>
+<a name="ln16">#include &quot;database.h&quot;</a>
+<a name="ln17">#include &quot;dgn-shoals.h&quot;</a>
+<a name="ln18">#include &quot;dgn-event.h&quot;</a>
+<a name="ln19">#include &quot;env.h&quot;</a>
+<a name="ln20">#include &quot;exercise.h&quot;</a>
+<a name="ln21">#include &quot;externs.h&quot;</a>
+<a name="ln22">#include &quot;fprop.h&quot;</a>
+<a name="ln23">#include &quot;god-passive.h&quot;</a>
+<a name="ln24">#include &quot;items.h&quot;</a>
+<a name="ln25">#include &quot;libutil.h&quot;</a>
+<a name="ln26">#include &quot;mapmark.h&quot;</a>
+<a name="ln27">#include &quot;message.h&quot;</a>
+<a name="ln28">#include &quot;mgen-data.h&quot;</a>
+<a name="ln29">#include &quot;monster.h&quot;</a>
+<a name="ln30">#include &quot;mon-behv.h&quot;</a>
+<a name="ln31">#include &quot;mon-death.h&quot;</a>
+<a name="ln32">#include &quot;mon-pathfind.h&quot;</a>
+<a name="ln33">#include &quot;mon-place.h&quot;</a>
+<a name="ln34">#include &quot;mon-project.h&quot;</a>
+<a name="ln35">#include &quot;mutation.h&quot;</a>
+<a name="ln36">#include &quot;player.h&quot;</a>
+<a name="ln37">#include &quot;player-stats.h&quot;</a>
+<a name="ln38">#include &quot;random.h&quot;</a>
+<a name="ln39">#include &quot;rot.h&quot;</a>
+<a name="ln40">#include &quot;religion.h&quot;</a>
+<a name="ln41">#include &quot;skills.h&quot;</a>
+<a name="ln42">#include &quot;shout.h&quot;</a>
+<a name="ln43">#include &quot;state.h&quot;</a>
+<a name="ln44">#include &quot;spl-clouds.h&quot;</a>
+<a name="ln45">#include &quot;spl-miscast.h&quot;</a>
+<a name="ln46">#include &quot;stringutil.h&quot;</a>
+<a name="ln47">#include &quot;teleport.h&quot;</a>
+<a name="ln48">#include &quot;terrain.h&quot;</a>
+<a name="ln49">#include &quot;tileview.h&quot;</a>
+<a name="ln50">#include &quot;throw.h&quot;</a>
+<a name="ln51">#include &quot;travel.h&quot;</a>
+<a name="ln52">#include &quot;viewchar.h&quot;</a>
+<a name="ln53">#include &quot;unwind.h&quot;</a>
+<a name="ln54"> </a>
+<a name="ln55">/**</a>
+<a name="ln56"> * Choose a random, spooky hell effect message, print it, and make a loud noise</a>
+<a name="ln57"> * if appropriate. (1/6 chance of loud noise.)</a>
+<a name="ln58"> */</a>
+<a name="ln59">static void _hell_effect_noise()</a>
+<a name="ln60">{</a>
+<a name="ln61">    const bool loud = one_chance_in(6) &amp;&amp; !silenced(you.pos());</a>
+<a name="ln62">    string msg = getMiscString(loud ? &quot;hell_effect_noisy&quot;</a>
+<a name="ln63">                                    : &quot;hell_effect_quiet&quot;);</a>
+<a name="ln64">    if (msg.empty())</a>
+<a name="ln65">        msg = &quot;Something hellishly buggy happens.&quot;;</a>
+<a name="ln66"> </a>
+<a name="ln67">    mprf(MSGCH_HELL_EFFECT, &quot;%s&quot;, msg.c_str());</a>
+<a name="ln68">    if (loud)</a>
+<a name="ln69">        noisy(15, you.pos());</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">/**</a>
+<a name="ln73"> * Choose a random miscast effect (from a weighted list) &amp; apply it to the</a>
+<a name="ln74"> * player.</a>
+<a name="ln75"> */</a>
+<a name="ln76">static void _random_hell_miscast()</a>
+<a name="ln77">{</a>
+<a name="ln78">    const spschool which_miscast</a>
+<a name="ln79">        = random_choose_weighted(8, spschool::necromancy,</a>
+<a name="ln80">                                 4, spschool::summoning,</a>
+<a name="ln81">                                 2, spschool::conjuration,</a>
+<a name="ln82">                                 1, spschool::charms,</a>
+<a name="ln83">                                 1, spschool::hexes);</a>
+<a name="ln84"> </a>
+<a name="ln85">    miscast_effect(you, nullptr, {miscast_source::hell_effect}, which_miscast,</a>
+<a name="ln86">                   5, random2avg(40, 3), &quot;the effects of Hell&quot;);</a>
+<a name="ln87">}</a>
+<a name="ln88"> </a>
+<a name="ln89">/// The thematically appropriate hell effects for a given hell branch.</a>
+<a name="ln90">struct hell_effect_spec</a>
+<a name="ln91">{</a>
+<a name="ln92">    /// The type of greater demon to spawn from hell effects.</a>
+<a name="ln93">    vector&lt;monster_type&gt; fiend_types;</a>
+<a name="ln94">    /// The appropriate theme of miscast effects to toss at the player.</a>
+<a name="ln95">    spschool miscast_type;</a>
+<a name="ln96">    /// A weighted list of lesser creatures to spawn.</a>
+<a name="ln97">    vector&lt;pair&lt;monster_type, int&gt;&gt; minor_summons;</a>
+<a name="ln98">};</a>
+<a name="ln99"> </a>
+<a name="ln100">/// Hell effects for each branch of hell</a>
+<a name="ln101">static map&lt;branch_type, hell_effect_spec&gt; hell_effects_by_branch =</a>
+<a name="ln102">{</a>
+<a name="ln103">    { BRANCH_DIS, { {RANDOM_DEMON_GREATER}, spschool::earth, {</a>
+<a name="ln104">        { RANDOM_MONSTER, 100 }, // TODO</a>
+<a name="ln105">    }}},</a>
+<a name="ln106">    { BRANCH_GEHENNA, { {MONS_BRIMSTONE_FIEND}, spschool::fire, {</a>
+<a name="ln107">        { RANDOM_MONSTER, 100 }, // TODO</a>
+<a name="ln108">    }}},</a>
+<a name="ln109">    { BRANCH_COCYTUS, { {MONS_ICE_FIEND, MONS_SHARD_SHRIKE}, spschool::ice, {</a>
+<a name="ln110">        // total weight 100</a>
+<a name="ln111">        { MONS_ZOMBIE, 15 },</a>
+<a name="ln112">        { MONS_SKELETON, 10 },</a>
+<a name="ln113">        { MONS_SIMULACRUM, 10 },</a>
+<a name="ln114">        { MONS_FREEZING_WRAITH, 10 },</a>
+<a name="ln115">        { MONS_FLYING_SKULL, 10 },</a>
+<a name="ln116">        { MONS_TORMENTOR, 10 },</a>
+<a name="ln117">        { MONS_REAPER, 10 },</a>
+<a name="ln118">        { MONS_BONE_DRAGON, 5 },</a>
+<a name="ln119">        { MONS_ICE_DRAGON, 5 },</a>
+<a name="ln120">        { MONS_BLIZZARD_DEMON, 5 },</a>
+<a name="ln121">        { MONS_ICE_DEVIL, 5 },</a>
+<a name="ln122">    }}},</a>
+<a name="ln123">    { BRANCH_TARTARUS, { {MONS_TZITZIMITL}, spschool::necromancy, {</a>
+<a name="ln124">        { RANDOM_MONSTER, 100 }, // TODO</a>
+<a name="ln125">    }}},</a>
+<a name="ln126">};</a>
+<a name="ln127"> </a>
+<a name="ln128">/**</a>
+<a name="ln129"> * Either dump a fiend or a hell-appropriate miscast effect on the player.</a>
+<a name="ln130"> *</a>
+<a name="ln131"> * 40% chance of fiend, 60% chance of miscast.</a>
+<a name="ln132"> */</a>
+<a name="ln133">static void _themed_hell_summon_or_miscast()</a>
+<a name="ln134">{</a>
+<a name="ln135">    const hell_effect_spec *spec = map_find(hell_effects_by_branch,</a>
+<a name="ln136">                                            you.where_are_you);</a>
+<a name="ln137">    if (!spec)</a>
+<a name="ln138">        die(&quot;Attempting to call down a hell effect in a non-hellish branch.&quot;);</a>
+<a name="ln139"> </a>
+<a name="ln140">    if (x_chance_in_y(2, 5))</a>
+<a name="ln141">    {</a>
+<a name="ln142">        const monster_type fiend</a>
+<a name="ln143">            = spec-&gt;fiend_types[random2(spec-&gt;fiend_types.size())];</a>
+<a name="ln144">        create_monster(</a>
+<a name="ln145">                       mgen_data::hostile_at(fiend, true, you.pos())</a>
+<a name="ln146">                       .set_non_actor_summoner(&quot;the effects of Hell&quot;));</a>
+<a name="ln147">    }</a>
+<a name="ln148">    else</a>
+<a name="ln149">    {</a>
+<a name="ln150">        miscast_effect(you, nullptr, {miscast_source::hell_effect},</a>
+<a name="ln151">                      spec-&gt;miscast_type, 5, random2avg(40, 3),</a>
+<a name="ln152">                      &quot;the effects of Hell&quot;);</a>
+<a name="ln153">    }</a>
+<a name="ln154">}</a>
+<a name="ln155"> </a>
+<a name="ln156">/**</a>
+<a name="ln157"> * Try to summon at some number of random spawns from the current branch, to</a>
+<a name="ln158"> * harass the player &amp; give them easy xp/TSO piety. Occasionally, to kill them.</a>
+<a name="ln159"> *</a>
+<a name="ln160"> * Min zero, max five, average 1.67.</a>
+<a name="ln161"> *</a>
+<a name="ln162"> * Can and does summon bands as individual spawns.</a>
+<a name="ln163"> */</a>
+<a name="ln164">static void _minor_hell_summons()</a>
+<a name="ln165">{</a>
+<a name="ln166">    hell_effect_spec *spec = map_find(hell_effects_by_branch,</a>
+<a name="ln167">                                      you.where_are_you);</a>
+<a name="ln168">    if (!spec)</a>
+<a name="ln169">        die(&quot;Attempting to call down a hell effect in a non-hellish branch.&quot;);</a>
+<a name="ln170"> </a>
+<a name="ln171">    // Try to summon at least one and up to five random monsters. {dlb}</a>
+<a name="ln172">    mgen_data mg;</a>
+<a name="ln173">    mg.pos = you.pos();</a>
+<a name="ln174">    mg.foe = MHITYOU;</a>
+<a name="ln175">    mg.non_actor_summoner = &quot;the effects of Hell&quot;;</a>
+<a name="ln176">    create_monster(mg);</a>
+<a name="ln177"> </a>
+<a name="ln178">    for (int i = 0; i &lt; 4; ++i)</a>
+<a name="ln179">    {</a>
+<a name="ln180">        if (one_chance_in(3))</a>
+<a name="ln181">        {</a>
+<a name="ln182">            monster_type *type</a>
+<a name="ln183">                = random_choose_weighted(spec-&gt;minor_summons);</a>
+<a name="ln184">            ASSERT(type);</a>
+<a name="ln185">            mg.cls = *type;</a>
+<a name="ln186">            create_monster(mg);</a>
+<a name="ln187">        }</a>
+<a name="ln188">    }</a>
+<a name="ln189">}</a>
+<a name="ln190"> </a>
+<a name="ln191">/// Nasty things happen to people who spend too long in Hell.</a>
+<a name="ln192">static void _hell_effects(int /*time_delta*/)</a>
+<a name="ln193">{</a>
+<a name="ln194">    if (!player_in_hell())</a>
+<a name="ln195">        return;</a>
+<a name="ln196"> </a>
+<a name="ln197">    // 50% chance at max piety</a>
+<a name="ln198">    if (have_passive(passive_t::resist_hell_effects)</a>
+<a name="ln199">        &amp;&amp; x_chance_in_y(you.piety, MAX_PIETY * 2) || is_sanctuary(you.pos()))</a>
+<a name="ln200">    {</a>
+<a name="ln201">        simple_god_message(&quot;'s power protects you from the chaos of Hell!&quot;);</a>
+<a name="ln202">        return;</a>
+<a name="ln203">    }</a>
+<a name="ln204"> </a>
+<a name="ln205">    _hell_effect_noise();</a>
+<a name="ln206"> </a>
+<a name="ln207">    if (one_chance_in(3))</a>
+<a name="ln208">        _random_hell_miscast();</a>
+<a name="ln209">    else if (x_chance_in_y(5, 9))</a>
+<a name="ln210">        _themed_hell_summon_or_miscast();</a>
+<a name="ln211"> </a>
+<a name="ln212">    if (one_chance_in(3))   // NB: No &quot;else&quot;</a>
+<a name="ln213">        _minor_hell_summons();</a>
+<a name="ln214">}</a>
+<a name="ln215"> </a>
+<a name="ln216">static void _handle_magic_contamination()</a>
+<a name="ln217">{</a>
+<a name="ln218">    int added_contamination = 0;</a>
+<a name="ln219"> </a>
+<a name="ln220">    // Scale has been increased by a factor of 1000, but the effect now happens</a>
+<a name="ln221">    // every turn instead of every 20 turns, so everything has been multiplied</a>
+<a name="ln222">    // by 50 and scaled to you.time_taken.</a>
+<a name="ln223"> </a>
+<a name="ln224">    //Increase contamination each turn while invisible</a>
+<a name="ln225">    if (you.duration[DUR_INVIS])</a>
+<a name="ln226">        added_contamination += INVIS_CONTAM_PER_TURN;</a>
+<a name="ln227">    //If not invisible, normal dissipation</a>
+<a name="ln228">    else</a>
+<a name="ln229">        added_contamination -= 25;</a>
+<a name="ln230"> </a>
+<a name="ln231">    // The Orb halves dissipation (well a bit more, I had to round it),</a>
+<a name="ln232">    // but won't cause glow on its own -- otherwise it'd spam the player</a>
+<a name="ln233">    // with messages about contamination oscillating near zero.</a>
+<a name="ln234">    if (you.magic_contamination &amp;&amp; player_has_orb())</a>
+<a name="ln235">        added_contamination += 13;</a>
+<a name="ln236"> </a>
+<a name="ln237">    // Scaling to turn length</a>
+<a name="ln238">    added_contamination = div_rand_round(added_contamination * you.time_taken,</a>
+<a name="ln239">                                         BASELINE_DELAY);</a>
+<a name="ln240"> </a>
+<a name="ln241">    contaminate_player(added_contamination, false);</a>
+<a name="ln242">}</a>
+<a name="ln243"> </a>
+<a name="ln244">// Bad effects from magic contamination.</a>
+<a name="ln245">static void _magic_contamination_effects()</a>
+<a name="ln246">{</a>
+<a name="ln247">    mprf(MSGCH_WARN, &quot;Your body shudders with the violent release &quot;</a>
+<a name="ln248">                     &quot;of wild energies!&quot;);</a>
+<a name="ln249"> </a>
+<a name="ln250">    const int contam = you.magic_contamination;</a>
+<a name="ln251"> </a>
+<a name="ln252">    // For particularly violent releases, make a little boom.</a>
+<a name="ln253">    if (contam &gt; 10000 &amp;&amp; coinflip())</a>
+<a name="ln254">    {</a>
+<a name="ln255">        bolt beam;</a>
+<a name="ln256"> </a>
+<a name="ln257">        beam.flavour      = BEAM_RANDOM;</a>
+<a name="ln258">        beam.glyph        = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln259">        beam.damage       = dice_def(3, div_rand_round(contam, 2000));</a>
+<a name="ln260">        beam.target       = you.pos();</a>
+<a name="ln261">        beam.name         = &quot;magical storm&quot;;</a>
+<a name="ln262">        //XXX: Should this be MID_PLAYER?</a>
+<a name="ln263">        beam.source_id    = MID_NOBODY;</a>
+<a name="ln264">        beam.aux_source   = &quot;a magical explosion&quot;;</a>
+<a name="ln265">        beam.ex_size      = max(1, min(LOS_RADIUS,</a>
+<a name="ln266">                                       div_rand_round(contam, 15000)));</a>
+<a name="ln267">        beam.ench_power   = div_rand_round(contam, 200);</a>
+<a name="ln268">        beam.is_explosion = true;</a>
+<a name="ln269"> </a>
+<a name="ln270">        beam.explode();</a>
+<a name="ln271">    }</a>
+<a name="ln272"> </a>
+<a name="ln273">    const mutation_permanence_class mutclass = MUTCLASS_NORMAL;</a>
+<a name="ln274"> </a>
+<a name="ln275">    // We want to warp the player, not do good stuff!</a>
+<a name="ln276">    mutate(one_chance_in(5) ? RANDOM_MUTATION : RANDOM_BAD_MUTATION,</a>
+<a name="ln277">           &quot;mutagenic glow&quot;, true, coinflip(), false, false, mutclass);</a>
+<a name="ln278"> </a>
+<a name="ln279">    // we're meaner now, what with explosions and whatnot, but</a>
+<a name="ln280">    // we dial down the contamination a little faster if its actually</a>
+<a name="ln281">    // mutating you.  -- GDL</a>
+<a name="ln282">    contaminate_player(-(random2(contam / 4) + 1000));</a>
+<a name="ln283">}</a>
+<a name="ln284">// Checks if the player should be hit with magic contaimination effects,</a>
+<a name="ln285">// then actually does it if they should be.</a>
+<a name="ln286">static void _handle_magic_contamination(int /*time_delta*/)</a>
+<a name="ln287">{</a>
+<a name="ln288">    // [ds] Move magic contamination effects closer to b26 again.</a>
+<a name="ln289">    const bool glow_effect = player_severe_contamination()</a>
+<a name="ln290">                             &amp;&amp; x_chance_in_y(you.magic_contamination, 12000);</a>
+<a name="ln291"> </a>
+<a name="ln292">    if (glow_effect)</a>
+<a name="ln293">    {</a>
+<a name="ln294">        if (is_sanctuary(you.pos()))</a>
+<a name="ln295">        {</a>
+<a name="ln296">            mprf(MSGCH_GOD, &quot;Your body momentarily shudders from a surge of wild &quot;</a>
+<a name="ln297">                            &quot;energies until Zin's power calms it.&quot;);</a>
+<a name="ln298">        }</a>
+<a name="ln299">        else</a>
+<a name="ln300">            _magic_contamination_effects();</a>
+<a name="ln301">    }</a>
+<a name="ln302">}</a>
+<a name="ln303"> </a>
+<a name="ln304">// Exercise armour *xor* stealth skill: {dlb}</a>
+<a name="ln305">static void _wait_practice(int /*time_delta*/)</a>
+<a name="ln306">{</a>
+<a name="ln307">    practise_waiting();</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">// Update the abyss speed. This place is unstable and the speed can</a>
+<a name="ln311">// fluctuate. It's not a constant increase.</a>
+<a name="ln312">static void _abyss_speed(int /*time_delta*/)</a>
+<a name="ln313">{</a>
+<a name="ln314">    if (!player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln315">        return;</a>
+<a name="ln316"> </a>
+<a name="ln317">    if (have_passive(passive_t::slow_abyss) &amp;&amp; coinflip())</a>
+<a name="ln318">        ; // Speed change less often for Chei.</a>
+<a name="ln319">    else if (coinflip() &amp;&amp; you.abyss_speed &lt; 100)</a>
+<a name="ln320">        ++you.abyss_speed;</a>
+<a name="ln321">    else if (one_chance_in(5) &amp;&amp; you.abyss_speed &gt; 0)</a>
+<a name="ln322">        --you.abyss_speed;</a>
+<a name="ln323">}</a>
+<a name="ln324"> </a>
+<a name="ln325">static void _jiyva_effects(int /*time_delta*/)</a>
+<a name="ln326">{</a>
+<a name="ln327">    if (have_passive(passive_t::jellies_army) &amp;&amp; one_chance_in(10))</a>
+<a name="ln328">    {</a>
+<a name="ln329">        int total_jellies = 1 + random2(5);</a>
+<a name="ln330">        bool success = false;</a>
+<a name="ln331">        for (int num_jellies = total_jellies; num_jellies &gt; 0; num_jellies--)</a>
+<a name="ln332">        {</a>
+<a name="ln333">            // Spread jellies around the level.</a>
+<a name="ln334">            coord_def newpos;</a>
+<a name="ln335">            do</a>
+<a name="ln336">            {</a>
+<a name="ln337">                newpos = random_in_bounds();</a>
+<a name="ln338">            }</a>
+<a name="ln339">            while (grd(newpos) != DNGN_FLOOR</a>
+<a name="ln340">                       &amp;&amp; grd(newpos) != DNGN_SHALLOW_WATER</a>
+<a name="ln341">                   || monster_at(newpos)</a>
+<a name="ln342">                   || cloud_at(newpos)</a>
+<a name="ln343">                   || testbits(env.pgrid(newpos), FPROP_NO_JIYVA));</a>
+<a name="ln344"> </a>
+<a name="ln345">            mgen_data mg(MONS_JELLY, BEH_STRICT_NEUTRAL, newpos);</a>
+<a name="ln346">            mg.god = GOD_JIYVA;</a>
+<a name="ln347">            mg.non_actor_summoner = &quot;Jiyva&quot;;</a>
+<a name="ln348"> </a>
+<a name="ln349">            if (create_monster(mg))</a>
+<a name="ln350">                success = true;</a>
+<a name="ln351">        }</a>
+<a name="ln352"> </a>
+<a name="ln353">        if (success &amp;&amp; !silenced(you.pos()))</a>
+<a name="ln354">        {</a>
+<a name="ln355">            switch (random2(3))</a>
+<a name="ln356">            {</a>
+<a name="ln357">                case 0:</a>
+<a name="ln358">                    simple_god_message(&quot; gurgles merrily.&quot;);</a>
+<a name="ln359">                    break;</a>
+<a name="ln360">                case 1:</a>
+<a name="ln361">                    mprf(MSGCH_SOUND, &quot;You hear %s splatter%s.&quot;,</a>
+<a name="ln362">                         total_jellies &gt; 1 ? &quot;a series of&quot; : &quot;a&quot;,</a>
+<a name="ln363">                         total_jellies &gt; 1 ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln364">                    break;</a>
+<a name="ln365">                case 2:</a>
+<a name="ln366">                    simple_god_message(&quot; says: Divide and consume!&quot;);</a>
+<a name="ln367">                    break;</a>
+<a name="ln368">            }</a>
+<a name="ln369">        }</a>
+<a name="ln370">    }</a>
+<a name="ln371"> </a>
+<a name="ln372">    if (have_passive(passive_t::fluid_stats)</a>
+<a name="ln373">        &amp;&amp; x_chance_in_y(you.piety / 4, MAX_PIETY)</a>
+<a name="ln374">        &amp;&amp; !player_under_penance() &amp;&amp; one_chance_in(4))</a>
+<a name="ln375">    {</a>
+<a name="ln376">        jiyva_stat_action();</a>
+<a name="ln377">    }</a>
+<a name="ln378"> </a>
+<a name="ln379">    if (have_passive(passive_t::jelly_eating) &amp;&amp; one_chance_in(25))</a>
+<a name="ln380">        jiyva_eat_offlevel_items();</a>
+<a name="ln381">}</a>
+<a name="ln382"> </a>
+<a name="ln383">static void _evolve(int /*time_delta*/)</a>
+<a name="ln384">{</a>
+<a name="ln385">    if (int lev = you.get_mutation_level(MUT_EVOLUTION))</a>
+<a name="ln386">        if (one_chance_in(2 / lev)</a>
+<a name="ln387">            &amp;&amp; you.attribute[ATTR_EVOL_XP] * (1 + random2(10))</a>
+<a name="ln388">               &gt; (int)exp_needed(you.experience_level + 1))</a>
+<a name="ln389">        {</a>
+<a name="ln390">            you.attribute[ATTR_EVOL_XP] = 0;</a>
+<a name="ln391">            mpr(&quot;You feel a genetic drift.&quot;);</a>
+<a name="ln392">            bool evol = one_chance_in(5) ?</a>
+<a name="ln393">                delete_mutation(RANDOM_BAD_MUTATION, &quot;evolution&quot;, false) :</a>
+<a name="ln394">                mutate(random_choose(RANDOM_GOOD_MUTATION, RANDOM_MUTATION),</a>
+<a name="ln395">                       &quot;evolution&quot;, false, false, false, false, MUTCLASS_NORMAL);</a>
+<a name="ln396">            // it would kill itself anyway, but let's speed that up</a>
+<a name="ln397">            if (one_chance_in(10)</a>
+<a name="ln398">                &amp;&amp; (!you.rmut_from_item()</a>
+<a name="ln399">                    || one_chance_in(10)))</a>
+<a name="ln400">            {</a>
+<a name="ln401">                const string reason = (you.get_mutation_level(MUT_EVOLUTION) == 1)</a>
+<a name="ln402">                                    ? &quot;end of evolution&quot;</a>
+<a name="ln403">                                    : &quot;decline of evolution&quot;;</a>
+<a name="ln404">                evol |= delete_mutation(MUT_EVOLUTION, reason, false);</a>
+<a name="ln405">            }</a>
+<a name="ln406">            // interrupt the player only if something actually happened</a>
+<a name="ln407">            if (evol)</a>
+<a name="ln408">                more();</a>
+<a name="ln409">        }</a>
+<a name="ln410">}</a>
+<a name="ln411"> </a>
+<a name="ln412">// Get around C++ dividing integers towards 0.</a>
+<a name="ln413">static int _div(int num, int denom)</a>
+<a name="ln414">{</a>
+<a name="ln415">    div_t res = div(num, denom);</a>
+<a name="ln416">    return res.rem &gt;= 0 ? res.quot : res.quot - 1;</a>
+<a name="ln417">}</a>
+<a name="ln418"> </a>
+<a name="ln419">struct timed_effect</a>
+<a name="ln420">{</a>
+<a name="ln421">    void              (*trigger)(int);</a>
+<a name="ln422">    int               min_time;</a>
+<a name="ln423">    int               max_time;</a>
+<a name="ln424">    bool              arena;</a>
+<a name="ln425">};</a>
+<a name="ln426"> </a>
+<a name="ln427">// If you add an entry to this list, remember to add a matching entry</a>
+<a name="ln428">// to timed_effect_type in timef-effect-type.h!</a>
+<a name="ln429">static struct timed_effect timed_effects[] =</a>
+<a name="ln430">{</a>
+<a name="ln431">    { rot_floor_items,               200,   200, true  },</a>
+<a name="ln432">    { _hell_effects,                 200,   600, false },</a>
+<a name="ln433">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln434">    { nullptr,                         0,     0, false },</a>
+<a name="ln435">#endif</a>
+<a name="ln436">    { _handle_magic_contamination,   200,   600, false },</a>
+<a name="ln437">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln438">    { nullptr,                         0,     0, false },</a>
+<a name="ln439">#endif</a>
+<a name="ln440">    { handle_god_time,               100,   300, false },</a>
+<a name="ln441">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln442">    { nullptr,                                0,     0, false },</a>
+<a name="ln443">#endif</a>
+<a name="ln444">    { rot_inventory_food,            100,   300, false },</a>
+<a name="ln445">    { _wait_practice,                100,   300, false },</a>
+<a name="ln446">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln447">    { nullptr,                         0,     0, false },</a>
+<a name="ln448">#endif</a>
+<a name="ln449">    { _abyss_speed,                  100,   300, false },</a>
+<a name="ln450">    { _jiyva_effects,                100,   300, false },</a>
+<a name="ln451">    { _evolve,                      5000, 15000, false },</a>
+<a name="ln452">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln453">    { nullptr,                         0,     0, false },</a>
+<a name="ln454">#endif</a>
+<a name="ln455">};</a>
+<a name="ln456"> </a>
+<a name="ln457">// Do various time related actions...</a>
+<a name="ln458">void handle_time()</a>
+<a name="ln459">{</a>
+<a name="ln460">    int base_time = you.elapsed_time % 200;</a>
+<a name="ln461">    int old_time = base_time - you.time_taken;</a>
+<a name="ln462"> </a>
+<a name="ln463">    // The checks below assume the function is called at least</a>
+<a name="ln464">    // once every 50 elapsed time units.</a>
+<a name="ln465"> </a>
+<a name="ln466">    // Every 5 turns, spawn random monsters</a>
+<a name="ln467">    if (_div(base_time, 50) &gt; _div(old_time, 50))</a>
+<a name="ln468">    {</a>
+<a name="ln469">        spawn_random_monsters();</a>
+<a name="ln470">        if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln471">          for (int i = 1; i &lt; you.depth; ++i)</a>
+<a name="ln472">                if (x_chance_in_y(i, 5))</a>
+<a name="ln473">                    spawn_random_monsters();</a>
+<a name="ln474">    }</a>
+<a name="ln475"> </a>
+<a name="ln476">    // Abyss maprot.</a>
+<a name="ln477">    if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln478">        forget_map(true);</a>
+<a name="ln479"> </a>
+<a name="ln480">    // Magic contamination from spells and Orb.</a>
+<a name="ln481">    if (!crawl_state.game_is_arena())</a>
+<a name="ln482">        _handle_magic_contamination();</a>
+<a name="ln483"> </a>
+<a name="ln484">    for (unsigned int i = 0; i &lt; ARRAYSZ(timed_effects); i++)</a>
+<a name="ln485">    {</a>
+<a name="ln486">        if (crawl_state.game_is_arena() &amp;&amp; !timed_effects[i].arena)</a>
+<a name="ln487">            continue;</a>
+<a name="ln488"> </a>
+<a name="ln489">        if (!timed_effects[i].trigger)</a>
+<a name="ln490">        {</a>
+<a name="ln491">            if (you.next_timer_effect[i] &lt; INT_MAX)</a>
+<a name="ln492">                you.next_timer_effect[i] = INT_MAX;</a>
+<a name="ln493">            continue;</a>
+<a name="ln494">        }</a>
+<a name="ln495"> </a>
+<a name="ln496">        if (you.elapsed_time &gt;= you.next_timer_effect[i])</a>
+<a name="ln497">        {</a>
+<a name="ln498">            int time_delta = you.elapsed_time - you.last_timer_effect[i];</a>
+<a name="ln499">            (timed_effects[i].trigger)(time_delta);</a>
+<a name="ln500">            you.last_timer_effect[i] = you.next_timer_effect[i];</a>
+<a name="ln501">            you.next_timer_effect[i] =</a>
+<a name="ln502">                you.last_timer_effect[i]</a>
+<a name="ln503">                + random_range(timed_effects[i].min_time,</a>
+<a name="ln504">                               timed_effects[i].max_time);</a>
+<a name="ln505">        }</a>
+<a name="ln506">    }</a>
+<a name="ln507">}</a>
+<a name="ln508"> </a>
+<a name="ln509">/**</a>
+<a name="ln510"> * Return the number of turns it takes for monsters to forget about the player</a>
+<a name="ln511"> * 50% of the time.</a>
+<a name="ln512"> *</a>
+<a name="ln513"> * @param   The intelligence of the monster.</a>
+<a name="ln514"> * @return  An average number of turns before the monster forgets.</a>
+<a name="ln515"> */</a>
+<a name="ln516">static int _mon_forgetfulness_time(mon_intel_type intelligence)</a>
+<a name="ln517">{</a>
+<a name="ln518">    switch (intelligence)</a>
+<a name="ln519">    {</a>
+<a name="ln520">        case I_HUMAN:</a>
+<a name="ln521">            return 600;</a>
+<a name="ln522">        case I_ANIMAL:</a>
+<a name="ln523">            return 300;</a>
+<a name="ln524">        case I_BRAINLESS:</a>
+<a name="ln525">            return 150;</a>
+<a name="ln526">        default:</a>
+<a name="ln527">            die(&quot;Invalid intelligence type!&quot;);</a>
+<a name="ln528">    }</a>
+<a name="ln529">}</a>
+<a name="ln530"> </a>
+<a name="ln531">/**</a>
+<a name="ln532"> * Make monsters forget about the player after enough time passes off-level.</a>
+<a name="ln533"> *</a>
+<a name="ln534"> * @param mon           The monster in question.</a>
+<a name="ln535"> * @param mon_turns     Monster turns. (Turns * monster speed)</a>
+<a name="ln536"> * @return              Whether the monster forgot about the player.</a>
+<a name="ln537"> */</a>
+<a name="ln538">static bool _monster_forget(monster* mon, int mon_turns)</a>
+<a name="ln539">{</a>
+<a name="ln540">    // After x turns, half of the monsters will have forgotten about the</a>
+<a name="ln541">    // player. A given monster has a 95% chance of forgetting the player after</a>
+<a name="ln542">    // 4*x turns.</a>
+<a name="ln543">    const int forgetfulness_time = _mon_forgetfulness_time(mons_intel(*mon));</a>
+<a name="ln544">    const int forget_chances = mon_turns / forgetfulness_time;</a>
+<a name="ln545">    // n.b. this is an integer division, so if range &lt; forgetfulness_time</a>
+<a name="ln546">    // nothing happens</a>
+<a name="ln547"> </a>
+<a name="ln548">    if (bernoulli(forget_chances, 0.5))</a>
+<a name="ln549">    {</a>
+<a name="ln550">        mon-&gt;behaviour = BEH_WANDER;</a>
+<a name="ln551">        mon-&gt;foe = MHITNOT;</a>
+<a name="ln552">        mon-&gt;target = random_in_bounds();</a>
+<a name="ln553">        return true;</a>
+<a name="ln554">    }</a>
+<a name="ln555"> </a>
+<a name="ln556">    return false;</a>
+<a name="ln557">}</a>
+<a name="ln558"> </a>
+<a name="ln559">/**</a>
+<a name="ln560"> * Make ranged monsters flee from the player during their time offlevel.</a>
+<a name="ln561"> *</a>
+<a name="ln562"> * @param mon           The monster in question.</a>
+<a name="ln563"> */</a>
+<a name="ln564">static void _monster_flee(monster *mon)</a>
+<a name="ln565">{</a>
+<a name="ln566">    mon-&gt;behaviour = BEH_FLEE;</a>
+<a name="ln567">    dprf(&quot;backing off...&quot;);</a>
+<a name="ln568"> </a>
+<a name="ln569">    if (mon-&gt;pos() != mon-&gt;target)</a>
+<a name="ln570">        return;</a>
+<a name="ln571">    // If the monster is on the target square, fleeing won't work.</a>
+<a name="ln572"> </a>
+<a name="ln573">    if (in_bounds(env.old_player_pos) &amp;&amp; env.old_player_pos != mon-&gt;pos())</a>
+<a name="ln574">    {</a>
+<a name="ln575">        // Flee from player's old position if different.</a>
+<a name="ln576">        mon-&gt;target = env.old_player_pos;</a>
+<a name="ln577">        return;</a>
+<a name="ln578">    }</a>
+<a name="ln579"> </a>
+<a name="ln580">    // Randomise the target so we have a direction to flee.</a>
+<a name="ln581">    coord_def mshift;</a>
+<a name="ln582">    mshift.x = random2(3) - 1;</a>
+<a name="ln583">    mshift.y = random2(3) - 1;</a>
+<a name="ln584"> </a>
+<a name="ln585">    // Bounds check: don't let fleeing monsters try to run off the grid.</a>
+<a name="ln586">    const coord_def s = mon-&gt;target + mshift;</a>
+<a name="ln587">    if (!in_bounds_x(s.x))</a>
+<a name="ln588">        mshift.x = 0;</a>
+<a name="ln589">    if (!in_bounds_y(s.y))</a>
+<a name="ln590">        mshift.y = 0;</a>
+<a name="ln591"> </a>
+<a name="ln592">    mon-&gt;target.x += mshift.x;</a>
+<a name="ln593">    mon-&gt;target.y += mshift.y;</a>
+<a name="ln594"> </a>
+<a name="ln595">    return;</a>
+<a name="ln596">}</a>
+<a name="ln597"> </a>
+<a name="ln598">/**</a>
+<a name="ln599"> * Make a monster take a number of moves toward (or away from, if fleeing)</a>
+<a name="ln600"> * their current target, very crudely.</a>
+<a name="ln601"> *</a>
+<a name="ln602"> * @param mon       The mon in question.</a>
+<a name="ln603"> * @param moves     The number of moves to take.</a>
+<a name="ln604"> */</a>
+<a name="ln605">static void _catchup_monster_move(monster* mon, int moves)</a>
+<a name="ln606">{</a>
+<a name="ln607">    coord_def pos(mon-&gt;pos());</a>
+<a name="ln608"> </a>
+<a name="ln609">    // Dirt simple movement.</a>
+<a name="ln610">    for (int i = 0; i &lt; moves; ++i)</a>
+<a name="ln611">    {</a>
+<a name="ln612">        coord_def inc(mon-&gt;target - pos);</a>
+<a name="ln613">        inc = coord_def(sgn(inc.x), sgn(inc.y));</a>
+<a name="ln614"> </a>
+<a name="ln615">        if (mons_is_retreating(*mon))</a>
+<a name="ln616">            inc *= -1;</a>
+<a name="ln617"> </a>
+<a name="ln618">        // Bounds check: don't let shifting monsters try to run off the</a>
+<a name="ln619">        // grid.</a>
+<a name="ln620">        const coord_def s = pos + inc;</a>
+<a name="ln621">        if (!in_bounds_x(s.x))</a>
+<a name="ln622">            inc.x = 0;</a>
+<a name="ln623">        if (!in_bounds_y(s.y))</a>
+<a name="ln624">            inc.y = 0;</a>
+<a name="ln625"> </a>
+<a name="ln626">        if (inc.origin())</a>
+<a name="ln627">            break;</a>
+<a name="ln628"> </a>
+<a name="ln629">        const coord_def next(pos + inc);</a>
+<a name="ln630">        const dungeon_feature_type feat = grd(next);</a>
+<a name="ln631">        if (feat_is_solid(feat)</a>
+<a name="ln632">            || monster_at(next)</a>
+<a name="ln633">            || !monster_habitable_grid(mon, feat))</a>
+<a name="ln634">        {</a>
+<a name="ln635">            break;</a>
+<a name="ln636">        }</a>
+<a name="ln637"> </a>
+<a name="ln638">        pos = next;</a>
+<a name="ln639">    }</a>
+<a name="ln640"> </a>
+<a name="ln641">    if (!mon-&gt;shift(pos))</a>
+<a name="ln642">        mon-&gt;shift(mon-&gt;pos());</a>
+<a name="ln643">}</a>
+<a name="ln644"> </a>
+<a name="ln645">/**</a>
+<a name="ln646"> * Move monsters around to fake them walking around while player was</a>
+<a name="ln647"> * off-level.</a>
+<a name="ln648"> *</a>
+<a name="ln649"> * Does not account for monster move speeds.</a>
+<a name="ln650"> *</a>
+<a name="ln651"> * Also make them forget about the player over time.</a>
+<a name="ln652"> *</a>
+<a name="ln653"> * @param mon       The monster under consideration</a>
+<a name="ln654"> * @param turns     The number of offlevel player turns to simulate.</a>
+<a name="ln655"> */</a>
+<a name="ln656">static void _catchup_monster_moves(monster* mon, int turns)</a>
+<a name="ln657">{</a>
+<a name="ln658">    // Summoned monsters might have disappeared.</a>
+<a name="ln659">    if (!mon-&gt;alive())</a>
+<a name="ln660">        return;</a>
+<a name="ln661"> </a>
+<a name="ln662">    // Ball lightning dissapates harmlessly out of LOS</a>
+<a name="ln663">    if (mon-&gt;type == MONS_BALL_LIGHTNING &amp;&amp; mon-&gt;summoner == MID_PLAYER)</a>
+<a name="ln664">    {</a>
+<a name="ln665">        monster_die(*mon, KILL_RESET, NON_MONSTER);</a>
+<a name="ln666">        return;</a>
+<a name="ln667">    }</a>
+<a name="ln668"> </a>
+<a name="ln669">    // Expire friendly summons</a>
+<a name="ln670">    if (mon-&gt;friendly() &amp;&amp; mon-&gt;is_summoned() &amp;&amp; !mon-&gt;is_perm_summoned())</a>
+<a name="ln671">    {</a>
+<a name="ln672">        // You might still see them disappear if you were quick</a>
+<a name="ln673">        if (turns &gt; 2)</a>
+<a name="ln674">            monster_die(*mon, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln675">        else</a>
+<a name="ln676">        {</a>
+<a name="ln677">            mon_enchant abj  = mon-&gt;get_ench(ENCH_ABJ);</a>
+<a name="ln678">            abj.duration = 0;</a>
+<a name="ln679">            mon-&gt;update_ench(abj);</a>
+<a name="ln680">        }</a>
+<a name="ln681">        return;</a>
+<a name="ln682">    }</a>
+<a name="ln683"> </a>
+<a name="ln684">    // Don't move non-land or stationary monsters around.</a>
+<a name="ln685">    if (mons_primary_habitat(*mon) != HT_LAND</a>
+<a name="ln686">        || mons_is_zombified(*mon)</a>
+<a name="ln687">           &amp;&amp; mons_class_primary_habitat(mon-&gt;base_monster) != HT_LAND</a>
+<a name="ln688">        || mon-&gt;is_stationary())</a>
+<a name="ln689">    {</a>
+<a name="ln690">        return;</a>
+<a name="ln691">    }</a>
+<a name="ln692"> </a>
+<a name="ln693">    // special movement code for ioods</a>
+<a name="ln694">    if (mons_is_projectile(*mon))</a>
+<a name="ln695">    {</a>
+<a name="ln696">        iood_catchup(mon, turns);</a>
+<a name="ln697">        return;</a>
+<a name="ln698">    }</a>
+<a name="ln699"> </a>
+<a name="ln700">    // Let sleeping monsters lie.</a>
+<a name="ln701">    if (mon-&gt;asleep() || mon-&gt;paralysed())</a>
+<a name="ln702">        return;</a>
+<a name="ln703"> </a>
+<a name="ln704"> </a>
+<a name="ln705"> </a>
+<a name="ln706">    const int mon_turns = (turns * mon-&gt;speed) / 10;</a>
+<a name="ln707">    const int moves = min(mon_turns, 50);</a>
+<a name="ln708"> </a>
+<a name="ln709">    // probably too annoying even for DEBUG_DIAGNOSTICS</a>
+<a name="ln710">    dprf(&quot;mon #%d: range %d; &quot;</a>
+<a name="ln711">         &quot;pos (%d,%d); targ %d(%d,%d); flags %&quot; PRIx64,</a>
+<a name="ln712">         mon-&gt;mindex(), mon_turns, mon-&gt;pos().x, mon-&gt;pos().y,</a>
+<a name="ln713">         mon-&gt;foe, mon-&gt;target.x, mon-&gt;target.y, mon-&gt;flags.flags);</a>
+<a name="ln714"> </a>
+<a name="ln715">    if (mon_turns &lt;= 0)</a>
+<a name="ln716">        return;</a>
+<a name="ln717"> </a>
+<a name="ln718"> </a>
+<a name="ln719">    // did the monster forget about the player?</a>
+<a name="ln720">    const bool forgot = _monster_forget(mon, mon_turns);</a>
+<a name="ln721"> </a>
+<a name="ln722">    // restore behaviour later if we start fleeing</a>
+<a name="ln723">    unwind_var&lt;beh_type&gt; saved_beh(mon-&gt;behaviour);</a>
+<a name="ln724"> </a>
+<a name="ln725">    if (!forgot &amp;&amp; mons_has_ranged_attack(*mon))</a>
+<a name="ln726">    {</a>
+<a name="ln727">        // If we're doing short time movement and the monster has a</a>
+<a name="ln728">        // ranged attack (missile or spell), then the monster will</a>
+<a name="ln729">        // flee to gain distance if it's &quot;too close&quot;, else it will</a>
+<a name="ln730">        // just shift its position rather than charge the player. -- bwr</a>
+<a name="ln731">        if (grid_distance(mon-&gt;pos(), mon-&gt;target) &gt;= 3)</a>
+<a name="ln732">        {</a>
+<a name="ln733">            mon-&gt;shift(mon-&gt;pos());</a>
+<a name="ln734">            dprf(&quot;shifted to (%d, %d)&quot;, mon-&gt;pos().x, mon-&gt;pos().y);</a>
+<a name="ln735">            return;</a>
+<a name="ln736">        }</a>
+<a name="ln737"> </a>
+<a name="ln738">        _monster_flee(mon);</a>
+<a name="ln739">    }</a>
+<a name="ln740"> </a>
+<a name="ln741">    _catchup_monster_move(mon, moves);</a>
+<a name="ln742"> </a>
+<a name="ln743">    dprf(&quot;moved to (%d, %d)&quot;, mon-&gt;pos().x, mon-&gt;pos().y);</a>
+<a name="ln744">}</a>
+<a name="ln745"> </a>
+<a name="ln746">/**</a>
+<a name="ln747"> * Update a monster's enchantments when the player returns</a>
+<a name="ln748"> * to the level.</a>
+<a name="ln749"> *</a>
+<a name="ln750"> * Management for enchantments... problems with this are the oddities</a>
+<a name="ln751"> * (monster dying from poison several thousands of turns later), and</a>
+<a name="ln752"> * game balance.</a>
+<a name="ln753"> *</a>
+<a name="ln754"> * Consider: Poison/Sticky Flame a monster at range and leave, monster</a>
+<a name="ln755"> * dies but can't leave level to get to player (implied game balance of</a>
+<a name="ln756"> * the delayed damage is that the monster could be a danger before</a>
+<a name="ln757"> * it dies). This could be fixed by keeping some monsters active</a>
+<a name="ln758"> * off level and allowing them to take stairs (a very serious change).</a>
+<a name="ln759"> *</a>
+<a name="ln760"> * Compare this to the current abuse where the player gets</a>
+<a name="ln761"> * effectively extended duration of these effects (although only</a>
+<a name="ln762"> * the actual effects only occur on level, the player can leave</a>
+<a name="ln763"> * and heal up without having the effect disappear).</a>
+<a name="ln764"> *</a>
+<a name="ln765"> * This is a simple compromise between the two... the enchantments</a>
+<a name="ln766"> * go away, but the effects don't happen off level.  -- bwr</a>
+<a name="ln767"> *</a>
+<a name="ln768"> * @param levels XXX: sometimes the missing aut/10, sometimes aut/100</a>
+<a name="ln769"> */</a>
+<a name="ln770">void monster::timeout_enchantments(int levels)</a>
+<a name="ln771">{</a>
+<a name="ln772">    if (enchantments.empty())</a>
+<a name="ln773">        return;</a>
+<a name="ln774"> </a>
+<a name="ln775">    const mon_enchant_list ec = enchantments;</a>
+<a name="ln776">    for (auto &amp;entry : ec)</a>
+<a name="ln777">    {</a>
+<a name="ln778">        switch (entry.first)</a>
+<a name="ln779">        {</a>
+<a name="ln780">        case ENCH_POISON: case ENCH_CORONA:</a>
+<a name="ln781">        case ENCH_STICKY_FLAME: case ENCH_ABJ: case ENCH_SHORT_LIVED:</a>
+<a name="ln782">        case ENCH_HASTE: case ENCH_MIGHT: case ENCH_FEAR:</a>
+<a name="ln783">        case ENCH_CHARM: case ENCH_SLEEP_WARY: case ENCH_SICK:</a>
+<a name="ln784">        case ENCH_PARALYSIS: case ENCH_PETRIFYING:</a>
+<a name="ln785">        case ENCH_PETRIFIED: case ENCH_SWIFT: case ENCH_SILENCE:</a>
+<a name="ln786">        case ENCH_LOWERED_MR: case ENCH_SOUL_RIPE: case ENCH_ANTIMAGIC:</a>
+<a name="ln787">        case ENCH_FEAR_INSPIRING: case ENCH_REGENERATION: case ENCH_RAISED_MR:</a>
+<a name="ln788">        case ENCH_MIRROR_DAMAGE: case ENCH_LIQUEFYING:</a>
+<a name="ln789">        case ENCH_SILVER_CORONA: case ENCH_DAZED: case ENCH_FAKE_ABJURATION:</a>
+<a name="ln790">        case ENCH_BREATH_WEAPON: case ENCH_WRETCHED:</a>
+<a name="ln791">        case ENCH_SCREAMED: case ENCH_BLIND: case ENCH_WORD_OF_RECALL:</a>
+<a name="ln792">        case ENCH_INJURY_BOND: case ENCH_FLAYED: case ENCH_BARBS:</a>
+<a name="ln793">        case ENCH_AGILE: case ENCH_FROZEN:</a>
+<a name="ln794">        case ENCH_BLACK_MARK: case ENCH_SAP_MAGIC: case ENCH_NEUTRAL_BRIBED:</a>
+<a name="ln795">        case ENCH_FRIENDLY_BRIBED: case ENCH_CORROSION: case ENCH_GOLD_LUST:</a>
+<a name="ln796">        case ENCH_RESISTANCE: case ENCH_HEXED: case ENCH_IDEALISED:</a>
+<a name="ln797">        case ENCH_BOUND_SOUL: case ENCH_STILL_WINDS: case ENCH_RING_OF_THUNDER:</a>
+<a name="ln798">            lose_ench_levels(entry.second, levels);</a>
+<a name="ln799">            break;</a>
+<a name="ln800"> </a>
+<a name="ln801">        case ENCH_SLOW:</a>
+<a name="ln802">            if (torpor_slowed())</a>
+<a name="ln803">            {</a>
+<a name="ln804">                lose_ench_levels(entry.second,</a>
+<a name="ln805">                                 min(levels, entry.second.degree - 1));</a>
+<a name="ln806">            }</a>
+<a name="ln807">            else</a>
+<a name="ln808">            {</a>
+<a name="ln809">                lose_ench_levels(entry.second, levels);</a>
+<a name="ln810">                if (props.exists(TORPOR_SLOWED_KEY))</a>
+<a name="ln811">                    props.erase(TORPOR_SLOWED_KEY);</a>
+<a name="ln812">            }</a>
+<a name="ln813">            break;</a>
+<a name="ln814"> </a>
+<a name="ln815">        case ENCH_INVIS:</a>
+<a name="ln816">            if (!mons_class_flag(type, M_INVIS))</a>
+<a name="ln817">                lose_ench_levels(entry.second, levels);</a>
+<a name="ln818">            break;</a>
+<a name="ln819"> </a>
+<a name="ln820">        case ENCH_INSANE:</a>
+<a name="ln821">        case ENCH_BERSERK:</a>
+<a name="ln822">        case ENCH_INNER_FLAME:</a>
+<a name="ln823">        case ENCH_MERFOLK_AVATAR_SONG:</a>
+<a name="ln824">        case ENCH_INFESTATION:</a>
+<a name="ln825">            del_ench(entry.first);</a>
+<a name="ln826">            break;</a>
+<a name="ln827"> </a>
+<a name="ln828">        case ENCH_FATIGUE:</a>
+<a name="ln829">            del_ench(entry.first);</a>
+<a name="ln830">            del_ench(ENCH_SLOW);</a>
+<a name="ln831">            break;</a>
+<a name="ln832"> </a>
+<a name="ln833">        case ENCH_TP:</a>
+<a name="ln834">            teleport(true);</a>
+<a name="ln835">            del_ench(entry.first);</a>
+<a name="ln836">            break;</a>
+<a name="ln837"> </a>
+<a name="ln838">        case ENCH_CONFUSION:</a>
+<a name="ln839">            if (!mons_class_flag(type, M_CONFUSED))</a>
+<a name="ln840">                del_ench(entry.first);</a>
+<a name="ln841">            // That triggered a behaviour_event, which could have made a</a>
+<a name="ln842">            // pacified monster leave the level.</a>
+<a name="ln843">            if (alive() &amp;&amp; !is_stationary())</a>
+<a name="ln844">                monster_blink(this, true);</a>
+<a name="ln845">            break;</a>
+<a name="ln846"> </a>
+<a name="ln847">        case ENCH_HELD:</a>
+<a name="ln848">            del_ench(entry.first);</a>
+<a name="ln849">            break;</a>
+<a name="ln850"> </a>
+<a name="ln851">        case ENCH_TIDE:</a>
+<a name="ln852">        {</a>
+<a name="ln853">            const int actdur = speed_to_duration(speed) * levels;</a>
+<a name="ln854">            lose_ench_duration(entry.first, actdur);</a>
+<a name="ln855">            break;</a>
+<a name="ln856">        }</a>
+<a name="ln857"> </a>
+<a name="ln858">        case ENCH_SLOWLY_DYING:</a>
+<a name="ln859">        {</a>
+<a name="ln860">            const int actdur = speed_to_duration(speed) * levels;</a>
+<a name="ln861">            if (lose_ench_duration(entry.first, actdur))</a>
+<a name="ln862">                monster_die(*this, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln863">            break;</a>
+<a name="ln864">        }</a>
+<a name="ln865"> </a>
+<a name="ln866">        default:</a>
+<a name="ln867">            break;</a>
+<a name="ln868">        }</a>
+<a name="ln869"> </a>
+<a name="ln870">        if (!alive())</a>
+<a name="ln871">            break;</a>
+<a name="ln872">    }</a>
+<a name="ln873">}</a>
+<a name="ln874"> </a>
+<a name="ln875">/**</a>
+<a name="ln876"> * Update the level upon the player's return.</a>
+<a name="ln877"> *</a>
+<a name="ln878"> * @param elapsedTime how long the player was away.</a>
+<a name="ln879"> */</a>
+<a name="ln880">void update_level(int elapsedTime)</a>
+<a name="ln881">{</a>
+<a name="ln882">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln883"> </a>
+<a name="ln884">    const int turns = elapsedTime / 10;</a>
+<a name="ln885"> </a>
+<a name="ln886">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln887">    int mons_total = 0;</a>
+<a name="ln888"> </a>
+<a name="ln889">    dprf(&quot;turns: %d&quot;, turns);</a>
+<a name="ln890">#endif</a>
+<a name="ln891"> </a>
+<a name="ln892">    rot_floor_items(elapsedTime);</a>
+<a name="ln893">    shoals_apply_tides(turns, true);</a>
+<a name="ln894">    timeout_tombs(turns);</a>
+<a name="ln895"> </a>
+<a name="ln896">    if (env.sanctuary_time)</a>
+<a name="ln897">    {</a>
+<a name="ln898">        if (turns &gt;= env.sanctuary_time)</a>
+<a name="ln899">            remove_sanctuary();</a>
+<a name="ln900">        else</a>
+<a name="ln901">            env.sanctuary_time -= turns;</a>
+<a name="ln902">    }</a>
+<a name="ln903"> </a>
+<a name="ln904">    dungeon_events.fire_event(</a>
+<a name="ln905">        dgn_event(DET_TURN_ELAPSED, coord_def(0, 0), turns * 10));</a>
+<a name="ln906"> </a>
+<a name="ln907">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln908">    {</a>
+<a name="ln909">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln910">        mons_total++;</a>
+<a name="ln911">#endif</a>
+<a name="ln912"> </a>
+<a name="ln913">        if (!update_monster(**mi, turns))</a>
+<a name="ln914">            continue;</a>
+<a name="ln915">    }</a>
+<a name="ln916"> </a>
+<a name="ln917">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln918">    dprf(&quot;total monsters on level = %d&quot;, mons_total);</a>
+<a name="ln919">#endif</a>
+<a name="ln920"> </a>
+<a name="ln921">    delete_all_clouds();</a>
+<a name="ln922">}</a>
+<a name="ln923"> </a>
+<a name="ln924">/**</a>
+<a name="ln925"> * Update the monster upon the player's return</a>
+<a name="ln926"> *</a>
+<a name="ln927"> * @param mon   The monster to update.</a>
+<a name="ln928"> * @param turns How many turns (not auts) since the monster left the player</a>
+<a name="ln929"> * @returns     Returns nullptr if monster was destroyed by the update;</a>
+<a name="ln930"> *              Returns the updated monster if it still exists.</a>
+<a name="ln931"> */</a>
+<a name="ln932">monster* update_monster(monster&amp; mon, int turns)</a>
+<a name="ln933">{</a>
+<a name="ln934">    // Pacified monsters often leave the level now.</a>
+<a name="ln935">    if (mon.pacified() &amp;&amp; turns &gt; random2(40) + 21)</a>
+<a name="ln936">    {</a>
+<a name="ln937">        make_mons_leave_level(&amp;mon);</a>
+<a name="ln938">        return nullptr;</a>
+<a name="ln939">    }</a>
+<a name="ln940"> </a>
+<a name="ln941">    // Ignore monsters flagged to skip their next action</a>
+<a name="ln942">    if (mon.flags &amp; MF_JUST_SUMMONED)</a>
+<a name="ln943">        return &amp;mon;</a>
+<a name="ln944"> </a>
+<a name="ln945">    // XXX: Allow some spellcasting (like Healing and Teleport)? - bwr</a>
+<a name="ln946">    // const bool healthy = (mon-&gt;hit_points * 2 &gt; mon-&gt;max_hit_points);</a>
+<a name="ln947"> </a>
+<a name="ln948">    mon.heal(div_rand_round(turns * mon.off_level_regen_rate(), 100));</a>
+<a name="ln949"> </a>
+<a name="ln950">    // Handle nets specially to remove the trapping property of the net.</a>
+<a name="ln951">    if (mon.caught())</a>
+<a name="ln952">        mon.del_ench(ENCH_HELD, true);</a>
+<a name="ln953"> </a>
+<a name="ln954">    _catchup_monster_moves(&amp;mon, turns);</a>
+<a name="ln955"> </a>
+<a name="ln956">    mon.foe_memory = max(mon.foe_memory - turns, 0);</a>
+<a name="ln957"> </a>
+<a name="ln958">    // FIXME:  Convert literal string 10 to constant to convert to auts</a>
+<a name="ln959">    if (turns &gt;= 10 &amp;&amp; mon.alive())</a>
+<a name="ln960">        mon.timeout_enchantments(turns / 10);</a>
+<a name="ln961"> </a>
+<a name="ln962">    return &amp;mon;</a>
+<a name="ln963">}</a>
+<a name="ln964"> </a>
+<a name="ln965">static void _drop_tomb(const coord_def&amp; pos, bool premature, bool zin)</a>
+<a name="ln966">{</a>
+<a name="ln967">    int count = 0;</a>
+<a name="ln968">    monster* mon = monster_at(pos);</a>
+<a name="ln969"> </a>
+<a name="ln970">    // Don't wander on duty!</a>
+<a name="ln971">    if (mon)</a>
+<a name="ln972">        mon-&gt;behaviour = BEH_SEEK;</a>
+<a name="ln973"> </a>
+<a name="ln974">    bool seen_change = false;</a>
+<a name="ln975">    for (adjacent_iterator ai(pos); ai; ++ai)</a>
+<a name="ln976">    {</a>
+<a name="ln977">        // &quot;Normal&quot; tomb (card or monster spell)</a>
+<a name="ln978">        if (!zin &amp;&amp; revert_terrain_change(*ai, TERRAIN_CHANGE_TOMB))</a>
+<a name="ln979">        {</a>
+<a name="ln980">            count++;</a>
+<a name="ln981">            if (you.see_cell(*ai))</a>
+<a name="ln982">                seen_change = true;</a>
+<a name="ln983">        }</a>
+<a name="ln984">        // Zin's Imprison.</a>
+<a name="ln985">        else if (zin &amp;&amp; revert_terrain_change(*ai, TERRAIN_CHANGE_IMPRISON))</a>
+<a name="ln986">        {</a>
+<a name="ln987">            for (map_marker *mark : env.markers.get_markers_at(*ai))</a>
+<a name="ln988">            {</a>
+<a name="ln989">                if (mark-&gt;property(&quot;feature_description&quot;)</a>
+<a name="ln990">                    == &quot;a gleaming silver wall&quot;)</a>
+<a name="ln991">                {</a>
+<a name="ln992">                    env.markers.remove(mark);</a>
+<a name="ln993">                }</a>
+<a name="ln994">            }</a>
+<a name="ln995"> </a>
+<a name="ln996">            env.grid_colours(*ai) = 0;</a>
+<a name="ln997">            tile_clear_flavour(*ai);</a>
+<a name="ln998">            tile_init_flavour(*ai);</a>
+<a name="ln999">            count++;</a>
+<a name="ln1000">            if (you.see_cell(*ai))</a>
+<a name="ln1001">                seen_change = true;</a>
+<a name="ln1002">        }</a>
+<a name="ln1003">    }</a>
+<a name="ln1004"> </a>
+<a name="ln1005">    if (count)</a>
+<a name="ln1006">    {</a>
+<a name="ln1007">        if (seen_change &amp;&amp; !zin)</a>
+<a name="ln1008">            mprf(&quot;The walls disappear%s!&quot;, premature ? &quot; prematurely&quot; : &quot;&quot;);</a>
+<a name="ln1009">        else if (seen_change &amp;&amp; zin)</a>
+<a name="ln1010">        {</a>
+<a name="ln1011">            mprf(&quot;Zin %s %s %s.&quot;,</a>
+<a name="ln1012">                 (mon) ? &quot;releases&quot;</a>
+<a name="ln1013">                       : &quot;dismisses&quot;,</a>
+<a name="ln1014">                 (mon) ? mon-&gt;name(DESC_THE).c_str()</a>
+<a name="ln1015">                       : &quot;the silver walls,&quot;,</a>
+<a name="ln1016">                 (mon) ? make_stringf(&quot;from %s prison&quot;,</a>
+<a name="ln1017">                             mon-&gt;pronoun(PRONOUN_POSSESSIVE).c_str()).c_str()</a>
+<a name="ln1018">                       : &quot;but there is nothing inside them&quot;);</a>
+<a name="ln1019">        }</a>
+<a name="ln1020">        else</a>
+<a name="ln1021">        {</a>
+<a name="ln1022">            if (!silenced(you.pos()))</a>
+<a name="ln1023">                mprf(MSGCH_SOUND, &quot;You hear a deep rumble.&quot;);</a>
+<a name="ln1024">            else</a>
+<a name="ln1025">                mpr(&quot;You feel the ground shudder.&quot;);</a>
+<a name="ln1026">        }</a>
+<a name="ln1027">    }</a>
+<a name="ln1028">}</a>
+<a name="ln1029"> </a>
+<a name="ln1030">static vector&lt;map_malign_gateway_marker*&gt; _get_malign_gateways()</a>
+<a name="ln1031">{</a>
+<a name="ln1032">    vector&lt;map_malign_gateway_marker*&gt; mm_markers;</a>
+<a name="ln1033"> </a>
+<a name="ln1034">    for (map_marker *mark : env.markers.get_all(MAT_MALIGN))</a>
+<a name="ln1035">    {</a>
+<a name="ln1036">        if (mark-&gt;get_type() != MAT_MALIGN)</a>
+<a name="ln1037">            continue;</a>
+<a name="ln1038"> </a>
+<a name="ln1039">        map_malign_gateway_marker *mmark = dynamic_cast&lt;map_malign_gateway_marker*&gt;(mark);</a>
+<a name="ln1040"> </a>
+<a name="ln1041">        mm_markers.push_back(mmark);</a>
+<a name="ln1042">    }</a>
+<a name="ln1043"> </a>
+<a name="ln1044">    return mm_markers;</a>
+<a name="ln1045">}</a>
+<a name="ln1046"> </a>
+<a name="ln1047">int count_malign_gateways()</a>
+<a name="ln1048">{</a>
+<a name="ln1049">    return _get_malign_gateways().size();</a>
+<a name="ln1050">}</a>
+<a name="ln1051"> </a>
+<a name="ln1052">void timeout_malign_gateways(int duration)</a>
+<a name="ln1053">{</a>
+<a name="ln1054">    // Passing 0 should allow us to just touch the gateway and see</a>
+<a name="ln1055">    // if it should decay. This, in theory, should resolve the one</a>
+<a name="ln1056">    // turn delay between it timing out and being recastable. -due</a>
+<a name="ln1057">    for (map_malign_gateway_marker *mmark : _get_malign_gateways())</a>
+<a name="ln1058">    {</a>
+<a name="ln1059">        if (duration)</a>
+<a name="ln1060">            mmark-&gt;duration -= duration;</a>
+<a name="ln1061"> </a>
+<a name="ln1062">        if (mmark-&gt;duration &gt; 0)</a>
+<a name="ln1063">        {</a>
+<a name="ln1064">            const int pow = 3 + random2(10);</a>
+<a name="ln1065">            const int size = 2 + random2(5);</a>
+<a name="ln1066">            big_cloud(CLOUD_TLOC_ENERGY, 0, mmark-&gt;pos, pow, size);</a>
+<a name="ln1067">        }</a>
+<a name="ln1068">        else</a>
+<a name="ln1069">        {</a>
+<a name="ln1070">            monster* mons = monster_at(mmark-&gt;pos);</a>
+<a name="ln1071">            if (mmark-&gt;monster_summoned &amp;&amp; !mons)</a>
+<a name="ln1072">            {</a>
+<a name="ln1073">                // The marker hangs around until later.</a>
+<a name="ln1074">                if (env.grid(mmark-&gt;pos) == DNGN_MALIGN_GATEWAY)</a>
+<a name="ln1075">                    env.grid(mmark-&gt;pos) = DNGN_FLOOR;</a>
+<a name="ln1076"> </a>
+<a name="ln1077">                env.markers.remove(mmark);</a>
+<a name="ln1078">            }</a>
+<a name="ln1079">            else if (!mmark-&gt;monster_summoned &amp;&amp; !mons)</a>
+<a name="ln1080">            {</a>
+<a name="ln1081">                bool is_player = mmark-&gt;is_player;</a>
+<a name="ln1082">                actor* caster = 0;</a>
+<a name="ln1083">                if (is_player)</a>
+<a name="ln1084">                    caster = &amp;you;</a>
+<a name="ln1085"> </a>
+<a name="ln1086">                mgen_data mg = mgen_data(MONS_ELDRITCH_TENTACLE,</a>
+<a name="ln1087">                                         mmark-&gt;behaviour,</a>
+<a name="ln1088">                                         mmark-&gt;pos,</a>
+<a name="ln1089">                                         MHITNOT,</a>
+<a name="ln1090">                                         MG_FORCE_PLACE);</a>
+<a name="ln1091">                mg.set_summoned(caster, 0, 0, mmark-&gt;god);</a>
+<a name="ln1092">                if (!is_player)</a>
+<a name="ln1093">                    mg.non_actor_summoner = mmark-&gt;summoner_string;</a>
+<a name="ln1094"> </a>
+<a name="ln1095">                if (monster *tentacle = create_monster(mg))</a>
+<a name="ln1096">                {</a>
+<a name="ln1097">                    tentacle-&gt;flags |= MF_NO_REWARD;</a>
+<a name="ln1098">                    tentacle-&gt;add_ench(ENCH_PORTAL_TIMER);</a>
+<a name="ln1099">                    int dur = random2avg(mmark-&gt;power, 6);</a>
+<a name="ln1100">                    dur -= random2(4); // sequence point between random calls</a>
+<a name="ln1101">                    dur *= 10;</a>
+<a name="ln1102">                    mon_enchant kduration = mon_enchant(ENCH_PORTAL_PACIFIED, 4,</a>
+<a name="ln1103">                        caster, dur);</a>
+<a name="ln1104">                    tentacle-&gt;props[&quot;base_position&quot;].get_coord()</a>
+<a name="ln1105">                                        = tentacle-&gt;pos();</a>
+<a name="ln1106">                    tentacle-&gt;add_ench(kduration);</a>
+<a name="ln1107"> </a>
+<a name="ln1108">                    mmark-&gt;monster_summoned = true;</a>
+<a name="ln1109">                }</a>
+<a name="ln1110">            }</a>
+<a name="ln1111">        }</a>
+<a name="ln1112">    }</a>
+<a name="ln1113">}</a>
+<a name="ln1114"> </a>
+<a name="ln1115">void timeout_tombs(int duration)</a>
+<a name="ln1116">{</a>
+<a name="ln1117">    if (!duration)</a>
+<a name="ln1118">        return;</a>
+<a name="ln1119"> </a>
+<a name="ln1120">    for (map_marker *mark : env.markers.get_all(MAT_TOMB))</a>
+<a name="ln1121">    {</a>
+<a name="ln1122">        if (mark-&gt;get_type() != MAT_TOMB)</a>
+<a name="ln1123">            continue;</a>
+<a name="ln1124"> </a>
+<a name="ln1125">        map_tomb_marker *cmark = dynamic_cast&lt;map_tomb_marker*&gt;(mark);</a>
+<a name="ln1126">        cmark-&gt;duration -= duration;</a>
+<a name="ln1127"> </a>
+<a name="ln1128">        // Empty tombs disappear early.</a>
+<a name="ln1129">        monster* mon_entombed = monster_at(cmark-&gt;pos);</a>
+<a name="ln1130">        bool empty_tomb = !(mon_entombed || you.pos() == cmark-&gt;pos);</a>
+<a name="ln1131">        bool zin = (cmark-&gt;source == -GOD_ZIN);</a>
+<a name="ln1132"> </a>
+<a name="ln1133">        if (cmark-&gt;duration &lt;= 0 || empty_tomb)</a>
+<a name="ln1134">        {</a>
+<a name="ln1135">            _drop_tomb(cmark-&gt;pos, empty_tomb, zin);</a>
+<a name="ln1136"> </a>
+<a name="ln1137">            monster* mon_src =</a>
+<a name="ln1138">                !invalid_monster_index(cmark-&gt;source) ? &amp;menv[cmark-&gt;source]</a>
+<a name="ln1139">                                                      : nullptr;</a>
+<a name="ln1140">            // A monster's Tomb of Doroklohe spell.</a>
+<a name="ln1141">            if (mon_src</a>
+<a name="ln1142">                &amp;&amp; mon_src == mon_entombed)</a>
+<a name="ln1143">            {</a>
+<a name="ln1144">                mon_src-&gt;lose_energy(EUT_SPELL);</a>
+<a name="ln1145">            }</a>
+<a name="ln1146"> </a>
+<a name="ln1147">            env.markers.remove(cmark);</a>
+<a name="ln1148">        }</a>
+<a name="ln1149">    }</a>
+<a name="ln1150">}</a>
+<a name="ln1151"> </a>
+<a name="ln1152">void timeout_terrain_changes(int duration, bool force)</a>
+<a name="ln1153">{</a>
+<a name="ln1154">    if (!duration &amp;&amp; !force)</a>
+<a name="ln1155">        return;</a>
+<a name="ln1156"> </a>
+<a name="ln1157">    int num_seen[NUM_TERRAIN_CHANGE_TYPES] = {0};</a>
+<a name="ln1158"> </a>
+<a name="ln1159">    for (map_marker *mark : env.markers.get_all(MAT_TERRAIN_CHANGE))</a>
+<a name="ln1160">    {</a>
+<a name="ln1161">        map_terrain_change_marker *marker =</a>
+<a name="ln1162">                dynamic_cast&lt;map_terrain_change_marker*&gt;(mark);</a>
+<a name="ln1163"> </a>
+<a name="ln1164">        if (marker-&gt;duration != INFINITE_DURATION)</a>
+<a name="ln1165">            marker-&gt;duration -= duration;</a>
+<a name="ln1166"> </a>
+<a name="ln1167">        if (marker-&gt;change_type == TERRAIN_CHANGE_DOOR_SEAL</a>
+<a name="ln1168">            &amp;&amp; !feat_is_sealed(grd(marker-&gt;pos)))</a>
+<a name="ln1169">        {</a>
+<a name="ln1170">            // TODO: could this be done inside `revert_terrain_change`? The</a>
+<a name="ln1171">            // two things to test are corrupting sealed doors, and destroying</a>
+<a name="ln1172">            // sealed doors. See 7aedcd24e1be3ed58fef9542786c1a194e4c07d0 and</a>
+<a name="ln1173">            // 6c286a4f22bcba4cfcb36053eb066367874be752.</a>
+<a name="ln1174">            if (marker-&gt;duration &lt;= 0)</a>
+<a name="ln1175">                env.markers.remove(marker); // deletes `marker`</a>
+<a name="ln1176">            continue;</a>
+<a name="ln1177">        }</a>
+<a name="ln1178"> </a>
+<a name="ln1179">        if (marker-&gt;change_type == TERRAIN_CHANGE_BOG</a>
+<a name="ln1180">            &amp;&amp; !you.see_cell(marker-&gt;pos))</a>
+<a name="ln1181">        {</a>
+<a name="ln1182">            marker-&gt;duration = 0;</a>
+<a name="ln1183">        }</a>
+<a name="ln1184"> </a>
+<a name="ln1185">        monster* mon_src = monster_by_mid(marker-&gt;mon_num);</a>
+<a name="ln1186">        if (marker-&gt;duration &lt;= 0</a>
+<a name="ln1187">            || (marker-&gt;mon_num != 0</a>
+<a name="ln1188">                &amp;&amp; (!mon_src || !mon_src-&gt;alive() || mon_src-&gt;pacified())))</a>
+<a name="ln1189">        {</a>
+<a name="ln1190">            if (you.see_cell(marker-&gt;pos))</a>
+<a name="ln1191">                num_seen[marker-&gt;change_type]++;</a>
+<a name="ln1192">            // will delete `marker`.</a>
+<a name="ln1193">            revert_terrain_change(marker-&gt;pos, marker-&gt;change_type);</a>
+<a name="ln1194">        }</a>
+<a name="ln1195">    }</a>
+<a name="ln1196"> </a>
+<a name="ln1197">    if (num_seen[TERRAIN_CHANGE_DOOR_SEAL] &gt; 1)</a>
+<a name="ln1198">        mpr(&quot;The runic seals fade away.&quot;);</a>
+<a name="ln1199">    else if (num_seen[TERRAIN_CHANGE_DOOR_SEAL] &gt; 0)</a>
+<a name="ln1200">        mpr(&quot;The runic seal fades away.&quot;);</a>
+<a name="ln1201">}</a>
+<a name="ln1202"> </a>
+<a name="ln1203">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1204">// Living breathing dungeon stuff.</a>
+<a name="ln1205">//</a>
+<a name="ln1206"> </a>
+<a name="ln1207">static vector&lt;coord_def&gt; sfx_seeds;</a>
+<a name="ln1208"> </a>
+<a name="ln1209">void setup_environment_effects()</a>
+<a name="ln1210">{</a>
+<a name="ln1211">    sfx_seeds.clear();</a>
+<a name="ln1212"> </a>
+<a name="ln1213">    for (int x = X_BOUND_1; x &lt;= X_BOUND_2; ++x)</a>
+<a name="ln1214">    {</a>
+<a name="ln1215">        for (int y = Y_BOUND_1; y &lt;= Y_BOUND_2; ++y)</a>
+<a name="ln1216">        {</a>
+<a name="ln1217">            if (!in_bounds(x, y))</a>
+<a name="ln1218">                continue;</a>
+<a name="ln1219"> </a>
+<a name="ln1220">            const int grid = grd[x][y];</a>
+<a name="ln1221">            if (grid == DNGN_LAVA</a>
+<a name="ln1222">                    || (grid == DNGN_SHALLOW_WATER</a>
+<a name="ln1223">                        &amp;&amp; player_in_branch(BRANCH_SWAMP)))</a>
+<a name="ln1224">            {</a>
+<a name="ln1225">                const coord_def c(x, y);</a>
+<a name="ln1226">                sfx_seeds.push_back(c);</a>
+<a name="ln1227">            }</a>
+<a name="ln1228">        }</a>
+<a name="ln1229">    }</a>
+<a name="ln1230">    dprf(&quot;%u environment effect seeds&quot;, (unsigned int)sfx_seeds.size());</a>
+<a name="ln1231">}</a>
+<a name="ln1232"> </a>
+<a name="ln1233">static void apply_environment_effect(const coord_def &amp;c)</a>
+<a name="ln1234">{</a>
+<a name="ln1235">    const dungeon_feature_type grid = grd(c);</a>
+<a name="ln1236">    // Don't apply if if the feature doesn't want it.</a>
+<a name="ln1237">    if (testbits(env.pgrid(c), FPROP_NO_CLOUD_GEN))</a>
+<a name="ln1238">        return;</a>
+<a name="ln1239">    if (grid == DNGN_LAVA)</a>
+<a name="ln1240">        check_place_cloud(CLOUD_BLACK_SMOKE, c, random_range(4, 8), 0);</a>
+<a name="ln1241">    else if (one_chance_in(3) &amp;&amp; grid == DNGN_SHALLOW_WATER)</a>
+<a name="ln1242">        check_place_cloud(CLOUD_MIST,        c, random_range(2, 5), 0);</a>
+<a name="ln1243">}</a>
+<a name="ln1244"> </a>
+<a name="ln1245">static const int Base_Sfx_Chance = 5;</a>
+<a name="ln1246">void run_environment_effects()</a>
+<a name="ln1247">{</a>
+<a name="ln1248">    if (!you.time_taken)</a>
+<a name="ln1249">        return;</a>
+<a name="ln1250"> </a>
+<a name="ln1251">    dungeon_events.fire_event(DET_TURN_ELAPSED);</a>
+<a name="ln1252"> </a>
+<a name="ln1253">    // Each square in sfx_seeds has this chance of doing something special</a>
+<a name="ln1254">    // per turn.</a>
+<a name="ln1255">    const int sfx_chance = Base_Sfx_Chance * you.time_taken / 10;</a>
+<a name="ln1256">    const int nseeds = sfx_seeds.size();</a>
+<a name="ln1257"> </a>
+<a name="ln1258">    // If there are a large number of seeds, speed things up by fudging the</a>
+<a name="ln1259">    // numbers.</a>
+<a name="ln1260">    if (nseeds &gt; 50)</a>
+<a name="ln1261">    {</a>
+<a name="ln1262">        int nsels = div_rand_round(sfx_seeds.size() * sfx_chance, 100);</a>
+<a name="ln1263">        if (one_chance_in(5))</a>
+<a name="ln1264">            nsels += random2(nsels * 3);</a>
+<a name="ln1265"> </a>
+<a name="ln1266">        for (int i = 0; i &lt; nsels; ++i)</a>
+<a name="ln1267">            apply_environment_effect(sfx_seeds[ random2(nseeds) ]);</a>
+<a name="ln1268">    }</a>
+<a name="ln1269">    else</a>
+<a name="ln1270">    {</a>
+<a name="ln1271">        for (int i = 0; i &lt; nseeds; ++i)</a>
+<a name="ln1272">        {</a>
+<a name="ln1273">            if (random2(100) &gt;= sfx_chance)</a>
+<a name="ln1274">                continue;</a>
+<a name="ln1275"> </a>
+<a name="ln1276">            apply_environment_effect(sfx_seeds[i]);</a>
+<a name="ln1277">        }</a>
+<a name="ln1278">    }</a>
+<a name="ln1279"> </a>
+<a name="ln1280">    run_corruption_effects(you.time_taken);</a>
+<a name="ln1281">    shoals_apply_tides(div_rand_round(you.time_taken, BASELINE_DELAY),</a>
+<a name="ln1282">                       false);</a>
+<a name="ln1283">    timeout_tombs(you.time_taken);</a>
+<a name="ln1284">    timeout_malign_gateways(you.time_taken);</a>
+<a name="ln1285">    timeout_terrain_changes(you.time_taken);</a>
+<a name="ln1286">    run_cloud_spreaders(you.time_taken);</a>
+<a name="ln1287">}</a>
+<a name="ln1288"> </a>
+<a name="ln1289">// Converts a movement speed to a duration. i.e., answers the</a>
+<a name="ln1290">// question: if the monster is so fast, how much time has it spent in</a>
+<a name="ln1291">// its last movement?</a>
+<a name="ln1292">//</a>
+<a name="ln1293">// If speed is 10 (normal),    one movement is a duration of 10.</a>
+<a name="ln1294">// If speed is 1  (very slow), each movement is a duration of 100.</a>
+<a name="ln1295">// If speed is 15 (50% faster than normal), each movement is a duration of</a>
+<a name="ln1296">// 6.6667.</a>
+<a name="ln1297">int speed_to_duration(int speed)</a>
+<a name="ln1298">{</a>
+<a name="ln1299">    if (speed &lt; 1)</a>
+<a name="ln1300">        speed = 10;</a>
+<a name="ln1301">    else if (speed &gt; 100)</a>
+<a name="ln1302">        speed = 100;</a>
+<a name="ln1303"> </a>
+<a name="ln1304">    return div_rand_round(100, speed);</a>
+<a name="ln1305">}</a>
+
+</code></pre>
+<div class="balloon" rel="686"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="825"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 825, 848</p></div>
+<div class="balloon" rel="1126"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'cmark'.</p></div>
+<div class="balloon" rel="1164"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'marker'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

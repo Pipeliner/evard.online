@@ -1,0 +1,742 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>l-mons.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*** Dungeon building monster functions (dlua only).</a>
+<a name="ln2"> * @module mons</a>
+<a name="ln3"> */</a>
+<a name="ln4">#include &quot;AppHdr.h&quot;</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;l-libs.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;areas.h&quot;</a>
+<a name="ln9">#include &quot;cluautil.h&quot;</a>
+<a name="ln10">#include &quot;database.h&quot;</a>
+<a name="ln11">#include &quot;dlua.h&quot;</a>
+<a name="ln12">#include &quot;items.h&quot;</a>
+<a name="ln13">#include &quot;libutil.h&quot;</a>
+<a name="ln14">#include &quot;mon-act.h&quot;</a>
+<a name="ln15">#include &quot;mon-behv.h&quot;</a>
+<a name="ln16">#include &quot;mon-death.h&quot;</a>
+<a name="ln17">#include &quot;mon-pick.h&quot;</a>
+<a name="ln18">#include &quot;mon-speak.h&quot;</a>
+<a name="ln19">#include &quot;monster.h&quot;</a>
+<a name="ln20">#include &quot;mon-util.h&quot;</a>
+<a name="ln21">#include &quot;stringutil.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">#define WRAPPED_MONSTER(ls, name)                                       \</a>
+<a name="ln24">    MonsterWrap *___mw = clua_get_userdata&lt; MonsterWrap &gt;(ls, MONS_METATABLE); \</a>
+<a name="ln25">    if (!___mw                                                          \</a>
+<a name="ln26">        || !___mw-&gt;mons                                              \</a>
+<a name="ln27">        || CLua::get_vm(ls).managed_vm &amp;&amp; ___mw-&gt;turn != you.num_turns) \</a>
+<a name="ln28">    {                                                                \</a>
+<a name="ln29">        luaL_argerror(ls, 1, &quot;Invalid monster wrapper&quot;);             \</a>
+<a name="ln30">    } \</a>
+<a name="ln31">    monster *name(___mw ? ___mw-&gt;mons : nullptr)</a>
+<a name="ln32"> </a>
+<a name="ln33">void push_monster(lua_State *ls, monster* mons)</a>
+<a name="ln34">{</a>
+<a name="ln35">    MonsterWrap *mw = clua_new_userdata&lt; MonsterWrap &gt;(ls, MONS_METATABLE);</a>
+<a name="ln36">    mw-&gt;turn = you.num_turns;</a>
+<a name="ln37">    mw-&gt;mons = mons;</a>
+<a name="ln38">}</a>
+<a name="ln39"> </a>
+<a name="ln40">#define MDEF(name)                                                      \</a>
+<a name="ln41">    static int l_mons_##name(lua_State *ls, monster* mons)             \</a>
+<a name="ln42"> </a>
+<a name="ln43">#define MDEFN(name, closure)                    \</a>
+<a name="ln44">    static int l_mons_##name(lua_State *ls, monster* mons) \</a>
+<a name="ln45">    {                                                                   \</a>
+<a name="ln46">    lua_pushlightuserdata(ls, mons);                                    \</a>
+<a name="ln47">    lua_pushcclosure(ls, l_mons_##closure, 1);                          \</a>
+<a name="ln48">    return 1;                                                         \</a>
+<a name="ln49">    }</a>
+<a name="ln50"> </a>
+<a name="ln51">MDEF(name)</a>
+<a name="ln52">{</a>
+<a name="ln53">    PLUARET(string, mons-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln54">}</a>
+<a name="ln55"> </a>
+<a name="ln56">MDEF(unique)</a>
+<a name="ln57">{</a>
+<a name="ln58">    PLUARET(boolean, mons_is_unique(mons-&gt;type));</a>
+<a name="ln59">}</a>
+<a name="ln60"> </a>
+<a name="ln61">MDEF(base_name)</a>
+<a name="ln62">{</a>
+<a name="ln63">    PLUARET(string, mons-&gt;base_name(DESC_PLAIN, true).c_str());</a>
+<a name="ln64">}</a>
+<a name="ln65"> </a>
+<a name="ln66">MDEF(full_name)</a>
+<a name="ln67">{</a>
+<a name="ln68">    PLUARET(string, mons-&gt;full_name(DESC_PLAIN).c_str());</a>
+<a name="ln69">}</a>
+<a name="ln70"> </a>
+<a name="ln71">MDEF(db_name)</a>
+<a name="ln72">{</a>
+<a name="ln73">    PLUARET(string, mons-&gt;name(DESC_DBNAME, true).c_str());</a>
+<a name="ln74">}</a>
+<a name="ln75"> </a>
+<a name="ln76">MDEF(type_name)</a>
+<a name="ln77">{</a>
+<a name="ln78">    PLUARET(string, mons_type_name(mons-&gt;type, DESC_PLAIN).c_str());</a>
+<a name="ln79">}</a>
+<a name="ln80"> </a>
+<a name="ln81">MDEF(entry_name)</a>
+<a name="ln82">{</a>
+<a name="ln83">    ASSERT_DLUA;</a>
+<a name="ln84"> </a>
+<a name="ln85">    const monsterentry *me = get_monster_data(mons-&gt;type);</a>
+<a name="ln86">    if (me)</a>
+<a name="ln87">        lua_pushstring(ls, me-&gt;name);</a>
+<a name="ln88">    else</a>
+<a name="ln89">        lua_pushnil(ls);</a>
+<a name="ln90"> </a>
+<a name="ln91">    return 1;</a>
+<a name="ln92">}</a>
+<a name="ln93"> </a>
+<a name="ln94">MDEF(x)</a>
+<a name="ln95">{</a>
+<a name="ln96">    PLUARET(number, int(mons-&gt;pos().x) - int(you.pos().x));</a>
+<a name="ln97">}</a>
+<a name="ln98"> </a>
+<a name="ln99">MDEF(y)</a>
+<a name="ln100">{</a>
+<a name="ln101">    PLUARET(number, int(mons-&gt;pos().y) - int(you.pos().y));</a>
+<a name="ln102">}</a>
+<a name="ln103"> </a>
+<a name="ln104">MDEF(hp)</a>
+<a name="ln105">{</a>
+<a name="ln106">    PLUARET(number, int(mons-&gt;hit_points));</a>
+<a name="ln107">}</a>
+<a name="ln108"> </a>
+<a name="ln109">static const char* _behaviour_name(beh_type beh);</a>
+<a name="ln110">MDEF(beh)</a>
+<a name="ln111">{</a>
+<a name="ln112">    PLUARET(string, _behaviour_name(mons-&gt;behaviour));</a>
+<a name="ln113">}</a>
+<a name="ln114"> </a>
+<a name="ln115">MDEF(energy)</a>
+<a name="ln116">{</a>
+<a name="ln117">    // XXX: fix this after speed_increment clean up</a>
+<a name="ln118">    PLUARET(number, (mons-&gt;speed_increment - 79));</a>
+<a name="ln119">}</a>
+<a name="ln120"> </a>
+<a name="ln121">MDEF(in_local_population)</a>
+<a name="ln122">{</a>
+<a name="ln123">    // TODO: should this be in moninf? need a mons for the native check...</a>
+<a name="ln124">    // The nativity check is because there are various cases where monsters are</a>
+<a name="ln125">    // not in the population tables, but should be considered native, e.g.</a>
+<a name="ln126">    // vault gaurds in vaults, orb guardians in zot 5</a>
+<a name="ln127">    PLUARET(boolean,</a>
+<a name="ln128">        mons_is_native_in_branch(*mons, you.where_are_you)</a>
+<a name="ln129">     || monster_in_population(you.where_are_you, mons-&gt;type)</a>
+<a name="ln130">     || monster_in_population(you.where_are_you, mons-&gt;mons_species(false))</a>
+<a name="ln131">     || monster_in_population(you.where_are_you, mons-&gt;mons_species(true)));</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">LUAFN(l_mons_add_energy)</a>
+<a name="ln135">{</a>
+<a name="ln136">    ASSERT_DLUA;</a>
+<a name="ln137">    monster* mons = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln138">    mons-&gt;speed_increment += luaL_safe_checkint(ls, 1);</a>
+<a name="ln139">    return 0;</a>
+<a name="ln140">}</a>
+<a name="ln141">MDEFN(add_energy, add_energy)</a>
+<a name="ln142"> </a>
+<a name="ln143">#define LUANAMEFN(name, expr)                     \</a>
+<a name="ln144">    static int l_mons_##name##_fn(lua_State *ls) {      \</a>
+<a name="ln145">       ASSERT_DLUA;                              \</a>
+<a name="ln146">       const monster* mons =                                    \</a>
+<a name="ln147">           clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1)); \</a>
+<a name="ln148">       const description_level_type dtype =                          \</a>
+<a name="ln149">           lua_isstring(ls, 1)?                                      \</a>
+<a name="ln150">           description_type_by_name(luaL_checkstring(ls, 1))         \</a>
+<a name="ln151">           : DESC_PLAIN;                                             \</a>
+<a name="ln152">       PLUARET(string, expr.c_str());             \</a>
+<a name="ln153">    }                                             \</a>
+<a name="ln154">    MDEFN(name, name##_fn)                        \</a>
+<a name="ln155"> </a>
+<a name="ln156">LUANAMEFN(mname, mons-&gt;name(dtype, true))</a>
+<a name="ln157">LUANAMEFN(mfull_name, mons-&gt;full_name(dtype))</a>
+<a name="ln158">LUANAMEFN(mbase_name, mons-&gt;base_name(dtype, true))</a>
+<a name="ln159"> </a>
+<a name="ln160">MDEF(hd)</a>
+<a name="ln161">{</a>
+<a name="ln162">    PLUARET(number, mons-&gt;get_hit_dice());</a>
+<a name="ln163">}</a>
+<a name="ln164"> </a>
+<a name="ln165">MDEF(targetx)</a>
+<a name="ln166">{</a>
+<a name="ln167">    PLUARET(number, mons-&gt;target.x);</a>
+<a name="ln168">}</a>
+<a name="ln169"> </a>
+<a name="ln170">MDEF(targety)</a>
+<a name="ln171">{</a>
+<a name="ln172">    PLUARET(number, mons-&gt;target.y);</a>
+<a name="ln173">}</a>
+<a name="ln174"> </a>
+<a name="ln175">MDEF(shapeshifter)</a>
+<a name="ln176">{</a>
+<a name="ln177">    ASSERT_DLUA;</a>
+<a name="ln178">    if (mons-&gt;has_ench(ENCH_GLOWING_SHAPESHIFTER))</a>
+<a name="ln179">        lua_pushstring(ls, &quot;glowing shapeshifter&quot;);</a>
+<a name="ln180">    else if (mons-&gt;has_ench(ENCH_SHAPESHIFTER))</a>
+<a name="ln181">        lua_pushstring(ls, &quot;shapeshifter&quot;);</a>
+<a name="ln182">    else</a>
+<a name="ln183">        lua_pushnil(ls);</a>
+<a name="ln184">    return 1;</a>
+<a name="ln185">}</a>
+<a name="ln186"> </a>
+<a name="ln187">MDEF(dancing_weapon)</a>
+<a name="ln188">{</a>
+<a name="ln189">    ASSERT_DLUA;</a>
+<a name="ln190"> </a>
+<a name="ln191">    if (mons_genus(mons-&gt;type) == MONS_DANCING_WEAPON)</a>
+<a name="ln192">        lua_pushstring(ls, &quot;dancing weapon&quot;);</a>
+<a name="ln193">    else</a>
+<a name="ln194">        lua_pushnil(ls);</a>
+<a name="ln195"> </a>
+<a name="ln196">    return 1;</a>
+<a name="ln197">}</a>
+<a name="ln198"> </a>
+<a name="ln199">MDEF(wont_attack)</a>
+<a name="ln200">{</a>
+<a name="ln201">    ASSERT_DLUA;</a>
+<a name="ln202">    lua_pushboolean(ls, mons-&gt;wont_attack());</a>
+<a name="ln203">    return 1;</a>
+<a name="ln204">}</a>
+<a name="ln205"> </a>
+<a name="ln206">static const char *_monuse_names[] =</a>
+<a name="ln207">{</a>
+<a name="ln208">    &quot;nothing&quot;, &quot;open_doors&quot;, &quot;starting_equipment&quot;, &quot;weapons_armour&quot;</a>
+<a name="ln209">};</a>
+<a name="ln210"> </a>
+<a name="ln211">static const char *_monuse_to_str(mon_itemuse_type utyp)</a>
+<a name="ln212">{</a>
+<a name="ln213">    COMPILE_CHECK(ARRAYSZ(_monuse_names) == NUM_MONUSE);</a>
+<a name="ln214">    return _monuse_names[utyp];</a>
+<a name="ln215">}</a>
+<a name="ln216"> </a>
+<a name="ln217">MDEF(muse)</a>
+<a name="ln218">{</a>
+<a name="ln219">    if (const monsterentry *me = mons-&gt;find_monsterentry())</a>
+<a name="ln220">        PLUARET(string, _monuse_to_str(me-&gt;gmon_use));</a>
+<a name="ln221">    return 0;</a>
+<a name="ln222">}</a>
+<a name="ln223"> </a>
+<a name="ln224">static int l_mons_get_inventory(lua_State *ls)</a>
+<a name="ln225">{</a>
+<a name="ln226">    monster* mons = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln227">    lua_newtable(ls);</a>
+<a name="ln228">    int index = 0;</a>
+<a name="ln229">    for (mon_inv_iterator ii(*mons); ii; ++ii)</a>
+<a name="ln230">    {</a>
+<a name="ln231">        if (ii-&gt;defined())</a>
+<a name="ln232">        {</a>
+<a name="ln233">            clua_push_item(ls, &amp;*ii);</a>
+<a name="ln234">            lua_rawseti(ls, -2, ++index);</a>
+<a name="ln235">        }</a>
+<a name="ln236">    }</a>
+<a name="ln237">    return 1;</a>
+<a name="ln238">}</a>
+<a name="ln239">MDEFN(inventory, get_inventory)</a>
+<a name="ln240"> </a>
+<a name="ln241">static int l_mons_do_dismiss(lua_State *ls)</a>
+<a name="ln242">{</a>
+<a name="ln243">    // dismiss is only callable from dlua, not from managed VMs (i.e.</a>
+<a name="ln244">    // end-user scripts cannot dismiss monsters).</a>
+<a name="ln245">    ASSERT_DLUA;</a>
+<a name="ln246">    monster* mons = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln247"> </a>
+<a name="ln248">    if (mons-&gt;alive())</a>
+<a name="ln249">    {</a>
+<a name="ln250">        mons-&gt;flags |= MF_HARD_RESET;</a>
+<a name="ln251">        monster_die(*mons, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln252">    }</a>
+<a name="ln253">    return 0;</a>
+<a name="ln254">}</a>
+<a name="ln255">MDEFN(dismiss, do_dismiss)</a>
+<a name="ln256"> </a>
+<a name="ln257">static int l_mons_set_hp(lua_State *ls)</a>
+<a name="ln258">{</a>
+<a name="ln259">    ASSERT_DLUA;</a>
+<a name="ln260"> </a>
+<a name="ln261">    monster* mons =</a>
+<a name="ln262">        clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln263"> </a>
+<a name="ln264">    int hp = luaL_safe_checkint(ls, 1);</a>
+<a name="ln265">    if (hp &lt;= 0)</a>
+<a name="ln266">    {</a>
+<a name="ln267">        luaL_argerror(ls, 1, &quot;hp must be positive&quot;);</a>
+<a name="ln268">        return 0;</a>
+<a name="ln269">    }</a>
+<a name="ln270">    hp = min(hp, mons-&gt;max_hit_points);</a>
+<a name="ln271">    mons-&gt;hit_points = min(hp, MAX_MONSTER_HP);</a>
+<a name="ln272">    return 0;</a>
+<a name="ln273">}</a>
+<a name="ln274">MDEFN(set_hp, set_hp)</a>
+<a name="ln275"> </a>
+<a name="ln276">static int l_mons_set_max_hp(lua_State *ls)</a>
+<a name="ln277">{</a>
+<a name="ln278">    ASSERT_DLUA;</a>
+<a name="ln279"> </a>
+<a name="ln280">    monster* mons =</a>
+<a name="ln281">        clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln282"> </a>
+<a name="ln283">    int maxhp = luaL_safe_checkint(ls, 1);</a>
+<a name="ln284">    if (maxhp &lt;= 0)</a>
+<a name="ln285">    {</a>
+<a name="ln286">        luaL_argerror(ls, 1, &quot;maxhp must be positive&quot;);</a>
+<a name="ln287">        return 0;</a>
+<a name="ln288">    }</a>
+<a name="ln289">    mons-&gt;max_hit_points = min(maxhp, MAX_MONSTER_HP);</a>
+<a name="ln290">    mons-&gt;hit_points = mons-&gt;max_hit_points;</a>
+<a name="ln291">    return 0;</a>
+<a name="ln292">}</a>
+<a name="ln293">MDEFN(set_max_hp, set_max_hp)</a>
+<a name="ln294"> </a>
+<a name="ln295">// Run the monster AI code.</a>
+<a name="ln296">static int l_mons_do_run_ai(lua_State *ls)</a>
+<a name="ln297">{</a>
+<a name="ln298">    ASSERT_DLUA;</a>
+<a name="ln299">    monster* mons = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln300">    if (mons-&gt;alive())</a>
+<a name="ln301">        handle_monster_move(mons);</a>
+<a name="ln302">    return 0;</a>
+<a name="ln303">}</a>
+<a name="ln304">MDEFN(run_ai, do_run_ai)</a>
+<a name="ln305"> </a>
+<a name="ln306">static int l_mons_do_handle_behaviour(lua_State *ls)</a>
+<a name="ln307">{</a>
+<a name="ln308">    ASSERT_DLUA;</a>
+<a name="ln309">    monster* mons = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln310">    if (mons-&gt;alive())</a>
+<a name="ln311">        handle_behaviour(mons);</a>
+<a name="ln312">    return 0;</a>
+<a name="ln313">}</a>
+<a name="ln314">MDEFN(handle_behaviour, do_handle_behaviour)</a>
+<a name="ln315"> </a>
+<a name="ln316">static int l_mons_do_random_teleport(lua_State *ls)</a>
+<a name="ln317">{</a>
+<a name="ln318">    // We should only be able to teleport monsters from dlua.</a>
+<a name="ln319">    ASSERT_DLUA;</a>
+<a name="ln320"> </a>
+<a name="ln321">    monster* mons = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln322"> </a>
+<a name="ln323">    if (mons-&gt;alive())</a>
+<a name="ln324">        mons-&gt;teleport(true);</a>
+<a name="ln325"> </a>
+<a name="ln326">    return 0;</a>
+<a name="ln327">}</a>
+<a name="ln328"> </a>
+<a name="ln329">MDEFN(random_teleport, do_random_teleport)</a>
+<a name="ln330"> </a>
+<a name="ln331">MDEF(experience)</a>
+<a name="ln332">{</a>
+<a name="ln333">    ASSERT_DLUA;</a>
+<a name="ln334">    PLUARET(number, exper_value(*mons));</a>
+<a name="ln335">}</a>
+<a name="ln336"> </a>
+<a name="ln337">static int l_mons_do_set_prop(lua_State *ls)</a>
+<a name="ln338">{</a>
+<a name="ln339">    // We should only be able to set properties from dlua.</a>
+<a name="ln340">    ASSERT_DLUA;</a>
+<a name="ln341"> </a>
+<a name="ln342">    monster* mons =</a>
+<a name="ln343">        clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln344"> </a>
+<a name="ln345">    const char *prop_name = luaL_checkstring(ls, 1);</a>
+<a name="ln346"> </a>
+<a name="ln347">    if (lua_isnoneornil(ls, 2))</a>
+<a name="ln348">        mons-&gt;props.erase(prop_name);</a>
+<a name="ln349">    else if (lua_isboolean(ls, 2))</a>
+<a name="ln350">        mons-&gt;props[prop_name] = (bool) lua_toboolean(ls, 2);</a>
+<a name="ln351">    // NOTE: number has to be before string, or numbers will get converted</a>
+<a name="ln352">    // into strings.</a>
+<a name="ln353">    else if (lua_isnumber(ls, 2))</a>
+<a name="ln354">        mons-&gt;props[prop_name].get_int() = luaL_safe_checklong(ls, 2);</a>
+<a name="ln355">    else if (lua_isstring(ls, 2))</a>
+<a name="ln356">        mons-&gt;props[prop_name] = lua_tostring(ls, 2);</a>
+<a name="ln357">    else if (lua_isfunction(ls, 2))</a>
+<a name="ln358">    {</a>
+<a name="ln359">        dlua_chunk chunk(ls);</a>
+<a name="ln360">        mons-&gt;props[prop_name] = chunk;</a>
+<a name="ln361">    }</a>
+<a name="ln362">    else</a>
+<a name="ln363">    {</a>
+<a name="ln364">        string err</a>
+<a name="ln365">            = make_stringf(&quot;Don't know how to set monster property of the &quot;</a>
+<a name="ln366">                           &quot;given value type for property '%s'&quot;, prop_name);</a>
+<a name="ln367">        luaL_argerror(ls, 2, err.c_str());</a>
+<a name="ln368">    }</a>
+<a name="ln369"> </a>
+<a name="ln370">    return 0;</a>
+<a name="ln371">}</a>
+<a name="ln372"> </a>
+<a name="ln373">MDEFN(set_prop, do_set_prop)</a>
+<a name="ln374"> </a>
+<a name="ln375">static int l_mons_do_get_prop(lua_State *ls)</a>
+<a name="ln376">{</a>
+<a name="ln377">    // We should only be able to set properties from dlua.</a>
+<a name="ln378">    ASSERT_DLUA;</a>
+<a name="ln379"> </a>
+<a name="ln380">    monster* mons =</a>
+<a name="ln381">        clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln382"> </a>
+<a name="ln383">    const char *prop_name = luaL_checkstring(ls, 1);</a>
+<a name="ln384"> </a>
+<a name="ln385">    if (!mons-&gt;props.exists(prop_name))</a>
+<a name="ln386">    {</a>
+<a name="ln387">        if (lua_isboolean(ls, 2))</a>
+<a name="ln388">        {</a>
+<a name="ln389">            string err = make_stringf(&quot;Don't have a property called '%s'.&quot;, prop_name);</a>
+<a name="ln390">            luaL_argerror(ls, 2, err.c_str());</a>
+<a name="ln391">        }</a>
+<a name="ln392"> </a>
+<a name="ln393">        return 0;</a>
+<a name="ln394">    }</a>
+<a name="ln395"> </a>
+<a name="ln396">    CrawlStoreValue prop = mons-&gt;props[prop_name];</a>
+<a name="ln397">    int num_pushed = 1;</a>
+<a name="ln398"> </a>
+<a name="ln399">    switch (prop.get_type())</a>
+<a name="ln400">    {</a>
+<a name="ln401">    case SV_NONE: lua_pushnil(ls); break;</a>
+<a name="ln402">    case SV_BOOL: lua_pushboolean(ls, prop.get_bool()); break;</a>
+<a name="ln403">    case SV_BYTE: lua_pushboolean(ls, prop.get_byte()); break;</a>
+<a name="ln404">    case SV_SHORT: lua_pushnumber(ls, prop.get_short()); break;</a>
+<a name="ln405">    case SV_INT: lua_pushnumber(ls, prop.get_int()); break;</a>
+<a name="ln406">    case SV_FLOAT: lua_pushnumber(ls, prop.get_float()); break;</a>
+<a name="ln407">    case SV_STR: lua_pushstring(ls, prop.get_string().c_str()); break;</a>
+<a name="ln408">    case SV_COORD:</a>
+<a name="ln409">        num_pushed++;</a>
+<a name="ln410">        lua_pushnumber(ls, prop.get_coord().x);</a>
+<a name="ln411">        lua_pushnumber(ls, prop.get_coord().y);</a>
+<a name="ln412">        break;</a>
+<a name="ln413">    default:</a>
+<a name="ln414">        // Do nothing for some things.</a>
+<a name="ln415">        lua_pushnil(ls);</a>
+<a name="ln416">        break;</a>
+<a name="ln417">    }</a>
+<a name="ln418"> </a>
+<a name="ln419">    return num_pushed;</a>
+<a name="ln420">}</a>
+<a name="ln421"> </a>
+<a name="ln422">MDEFN(get_prop, do_get_prop)</a>
+<a name="ln423"> </a>
+<a name="ln424">static int l_mons_do_has_prop(lua_State *ls)</a>
+<a name="ln425">{</a>
+<a name="ln426">    // We should only be able to get properties from dlua.</a>
+<a name="ln427">    ASSERT_DLUA;</a>
+<a name="ln428"> </a>
+<a name="ln429">    monster* mons =</a>
+<a name="ln430">        clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln431"> </a>
+<a name="ln432">    const char *prop_name = luaL_checkstring(ls, 1);</a>
+<a name="ln433"> </a>
+<a name="ln434">    lua_pushboolean(ls, mons-&gt;props.exists(prop_name));</a>
+<a name="ln435">    return 1;</a>
+<a name="ln436">}</a>
+<a name="ln437"> </a>
+<a name="ln438">MDEFN(has_prop, do_has_prop)</a>
+<a name="ln439"> </a>
+<a name="ln440">static int l_mons_do_add_ench(lua_State *ls)</a>
+<a name="ln441">{</a>
+<a name="ln442">    ASSERT_DLUA;</a>
+<a name="ln443"> </a>
+<a name="ln444">    monster* mons =</a>
+<a name="ln445">        clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln446"> </a>
+<a name="ln447">    const char *ench_name = luaL_checkstring(ls, 1);</a>
+<a name="ln448">    enchant_type met = name_to_ench(ench_name);</a>
+<a name="ln449">    if (!met)</a>
+<a name="ln450">    {</a>
+<a name="ln451">        string err = make_stringf(&quot;No such enchantment: %s&quot;, ench_name);</a>
+<a name="ln452">        luaL_argerror(ls, 1, err.c_str());</a>
+<a name="ln453">        return 0;</a>
+<a name="ln454">    }</a>
+<a name="ln455"> </a>
+<a name="ln456">    mons-&gt;add_ench(mon_enchant(met, luaL_safe_checkint(ls, 2), 0,</a>
+<a name="ln457">                               luaL_safe_checkint(ls, 3)));</a>
+<a name="ln458">    return 0;</a>
+<a name="ln459">}</a>
+<a name="ln460"> </a>
+<a name="ln461">MDEFN(add_ench, do_add_ench)</a>
+<a name="ln462"> </a>
+<a name="ln463">static int l_mons_do_del_ench(lua_State *ls)</a>
+<a name="ln464">{</a>
+<a name="ln465">    ASSERT_DLUA;</a>
+<a name="ln466"> </a>
+<a name="ln467">    monster* mons =</a>
+<a name="ln468">        clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln469"> </a>
+<a name="ln470">    const char *ench_name = luaL_checkstring(ls, 1);</a>
+<a name="ln471">    enchant_type met = name_to_ench(ench_name);</a>
+<a name="ln472">    if (!met)</a>
+<a name="ln473">    {</a>
+<a name="ln474">        string err = make_stringf(&quot;No such enchantment: %s&quot;, ench_name);</a>
+<a name="ln475">        luaL_argerror(ls, 1, err.c_str());</a>
+<a name="ln476">        return 0;</a>
+<a name="ln477">    }</a>
+<a name="ln478"> </a>
+<a name="ln479">    mons-&gt;del_ench(met);</a>
+<a name="ln480">    return 0;</a>
+<a name="ln481">}</a>
+<a name="ln482"> </a>
+<a name="ln483">MDEFN(del_ench, do_del_ench)</a>
+<a name="ln484"> </a>
+<a name="ln485">MDEF(you_can_see)</a>
+<a name="ln486">{</a>
+<a name="ln487">    ASSERT_DLUA;</a>
+<a name="ln488">    PLUARET(boolean, you.can_see(*mons));</a>
+<a name="ln489">}</a>
+<a name="ln490"> </a>
+<a name="ln491">static int l_mons_do_speak(lua_State *ls)</a>
+<a name="ln492">{</a>
+<a name="ln493">    // We should only be able to get monsters to speak from dlua.</a>
+<a name="ln494">    ASSERT_DLUA;</a>
+<a name="ln495"> </a>
+<a name="ln496">    monster* mons = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln497"> </a>
+<a name="ln498">    const char *speech_key = luaL_checkstring(ls, 1);</a>
+<a name="ln499"> </a>
+<a name="ln500">    mons_speaks_msg(mons, getSpeakString(speech_key), MSGCH_TALK,</a>
+<a name="ln501">                    silenced(mons-&gt;pos()));</a>
+<a name="ln502"> </a>
+<a name="ln503">    return 0;</a>
+<a name="ln504">}</a>
+<a name="ln505"> </a>
+<a name="ln506">MDEFN(speak, do_speak)</a>
+<a name="ln507"> </a>
+<a name="ln508">static int l_mons_do_get_info(lua_State *ls)</a>
+<a name="ln509">{</a>
+<a name="ln510">    // for a non-dlua version, see monster.get_monster_at</a>
+<a name="ln511">    ASSERT_DLUA;</a>
+<a name="ln512">    monster* m = clua_get_lightuserdata&lt;monster&gt;(ls, lua_upvalueindex(1));</a>
+<a name="ln513">    monster_info mi(m);</a>
+<a name="ln514">    lua_push_moninf(ls, &amp;mi);</a>
+<a name="ln515">    return 1;</a>
+<a name="ln516">}</a>
+<a name="ln517"> </a>
+<a name="ln518">MDEFN(get_info, do_get_info)</a>
+<a name="ln519"> </a>
+<a name="ln520">struct MonsAccessor</a>
+<a name="ln521">{</a>
+<a name="ln522">    const char *attribute;</a>
+<a name="ln523">    int (*accessor)(lua_State *ls, monster* mons);</a>
+<a name="ln524">};</a>
+<a name="ln525"> </a>
+<a name="ln526">static MonsAccessor mons_attrs[] =</a>
+<a name="ln527">{</a>
+<a name="ln528">    { &quot;name&quot;,           l_mons_name      },</a>
+<a name="ln529">    { &quot;base_name&quot;,      l_mons_base_name },</a>
+<a name="ln530">    { &quot;full_name&quot;,      l_mons_full_name },</a>
+<a name="ln531">    { &quot;db_name&quot;,        l_mons_db_name   },</a>
+<a name="ln532">    { &quot;type_name&quot;,      l_mons_type_name },</a>
+<a name="ln533">    { &quot;entry_name&quot;,     l_mons_entry_name },</a>
+<a name="ln534">    { &quot;unique&quot;   ,      l_mons_unique },</a>
+<a name="ln535">    { &quot;shapeshifter&quot;,   l_mons_shapeshifter },</a>
+<a name="ln536">    { &quot;dancing_weapon&quot;, l_mons_dancing_weapon },</a>
+<a name="ln537">    { &quot;wont_attack&quot;,    l_mons_wont_attack },</a>
+<a name="ln538"> </a>
+<a name="ln539">    { &quot;x&quot;   , l_mons_x    },</a>
+<a name="ln540">    { &quot;y&quot;   , l_mons_y    },</a>
+<a name="ln541">    { &quot;hd&quot;  , l_mons_hd   },</a>
+<a name="ln542">    { &quot;beh&quot; , l_mons_beh  },</a>
+<a name="ln543">    { &quot;muse&quot;, l_mons_muse },</a>
+<a name="ln544">    { &quot;hp&quot;  , l_mons_hp   },</a>
+<a name="ln545"> </a>
+<a name="ln546">    { &quot;targetx&quot;, l_mons_targetx },</a>
+<a name="ln547">    { &quot;targety&quot;, l_mons_targety },</a>
+<a name="ln548"> </a>
+<a name="ln549">    { &quot;mname&quot;,           l_mons_mname           },</a>
+<a name="ln550">    { &quot;mfull_name&quot;,      l_mons_mfull_name      },</a>
+<a name="ln551">    { &quot;mbase_name&quot;,      l_mons_mbase_name      },</a>
+<a name="ln552">    { &quot;energy&quot;,          l_mons_energy          },</a>
+<a name="ln553">    { &quot;add_energy&quot;,      l_mons_add_energy      },</a>
+<a name="ln554">    { &quot;dismiss&quot;,         l_mons_dismiss         },</a>
+<a name="ln555">    { &quot;set_hp&quot;,          l_mons_set_hp          },</a>
+<a name="ln556">    { &quot;set_max_hp&quot;,      l_mons_set_max_hp      },</a>
+<a name="ln557">    { &quot;run_ai&quot;,          l_mons_run_ai          },</a>
+<a name="ln558">    { &quot;handle_behaviour&quot;,l_mons_handle_behaviour },</a>
+<a name="ln559">    { &quot;experience&quot;,      l_mons_experience      },</a>
+<a name="ln560">    { &quot;random_teleport&quot;, l_mons_random_teleport },</a>
+<a name="ln561">    { &quot;set_prop&quot;,        l_mons_set_prop        },</a>
+<a name="ln562">    { &quot;get_prop&quot;,        l_mons_get_prop        },</a>
+<a name="ln563">    { &quot;has_prop&quot;,        l_mons_has_prop        },</a>
+<a name="ln564">    { &quot;add_ench&quot;,        l_mons_add_ench        },</a>
+<a name="ln565">    { &quot;del_ench&quot;,        l_mons_del_ench        },</a>
+<a name="ln566">    { &quot;you_can_see&quot;,     l_mons_you_can_see     },</a>
+<a name="ln567">    { &quot;get_inventory&quot;,   l_mons_inventory       },</a>
+<a name="ln568">    { &quot;in_local_population&quot;, l_mons_in_local_population },</a>
+<a name="ln569"> </a>
+<a name="ln570">    { &quot;speak&quot;,           l_mons_speak           },</a>
+<a name="ln571">    { &quot;get_info&quot;,        l_mons_get_info        }</a>
+<a name="ln572">};</a>
+<a name="ln573"> </a>
+<a name="ln574">static int monster_get(lua_State *ls)</a>
+<a name="ln575">{</a>
+<a name="ln576">    WRAPPED_MONSTER(ls, mons);</a>
+<a name="ln577"> </a>
+<a name="ln578">    const char *attr = luaL_checkstring(ls, 2);</a>
+<a name="ln579">    if (!attr)</a>
+<a name="ln580">        return 0;</a>
+<a name="ln581"> </a>
+<a name="ln582">    for (const MonsAccessor &amp;ma : mons_attrs)</a>
+<a name="ln583">        if (!strcmp(attr, ma.attribute))</a>
+<a name="ln584">            return ma.accessor(ls, mons);</a>
+<a name="ln585"> </a>
+<a name="ln586">    return 0;</a>
+<a name="ln587">}</a>
+<a name="ln588"> </a>
+<a name="ln589">static const char *_monster_behaviour_names[] =</a>
+<a name="ln590">{</a>
+<a name="ln591">    &quot;sleep&quot;,</a>
+<a name="ln592">    &quot;wander&quot;,</a>
+<a name="ln593">    &quot;seek&quot;,</a>
+<a name="ln594">    &quot;flee&quot;,</a>
+<a name="ln595">    &quot;cornered&quot;,</a>
+<a name="ln596">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln597">    &quot;panic&quot;,</a>
+<a name="ln598">    &quot;lurk&quot;,</a>
+<a name="ln599">#endif</a>
+<a name="ln600">    &quot;retreat&quot;,</a>
+<a name="ln601">    &quot;withdraw&quot;,</a>
+<a name="ln602">};</a>
+<a name="ln603"> </a>
+<a name="ln604">static const char* _behaviour_name(beh_type beh)</a>
+<a name="ln605">{</a>
+<a name="ln606">    if (0 &lt;= beh &amp;&amp; beh &lt; NUM_BEHAVIOURS)</a>
+<a name="ln607">        return _monster_behaviour_names[beh];</a>
+<a name="ln608">    else</a>
+<a name="ln609">        return &quot;invalid&quot;;</a>
+<a name="ln610">}</a>
+<a name="ln611"> </a>
+<a name="ln612">static beh_type behaviour_by_name(const string &amp;name)</a>
+<a name="ln613">{</a>
+<a name="ln614">    COMPILE_CHECK(ARRAYSZ(_monster_behaviour_names) == NUM_BEHAVIOURS);</a>
+<a name="ln615"> </a>
+<a name="ln616">    for (unsigned i = 0; i &lt; NUM_BEHAVIOURS; ++i)</a>
+<a name="ln617">        if (name == _monster_behaviour_names[i])</a>
+<a name="ln618">            return static_cast&lt;beh_type&gt;(i);</a>
+<a name="ln619"> </a>
+<a name="ln620">    return NUM_BEHAVIOURS;</a>
+<a name="ln621">}</a>
+<a name="ln622"> </a>
+<a name="ln623">static int monster_set(lua_State *ls)</a>
+<a name="ln624">{</a>
+<a name="ln625">    // Changing monster behaviour is for the dungeon builder only,</a>
+<a name="ln626">    // never for user scripts.</a>
+<a name="ln627">    ASSERT_DLUA;</a>
+<a name="ln628"> </a>
+<a name="ln629">    MonsterWrap *mw = clua_get_userdata&lt; MonsterWrap &gt;(ls, MONS_METATABLE);</a>
+<a name="ln630">    if (!mw || !mw-&gt;mons)</a>
+<a name="ln631">        return 0;</a>
+<a name="ln632"> </a>
+<a name="ln633">    const char *attr = luaL_checkstring(ls, 2);</a>
+<a name="ln634">    if (!attr)</a>
+<a name="ln635">        return 0;</a>
+<a name="ln636"> </a>
+<a name="ln637">    if (!strcmp(attr, &quot;beh&quot;))</a>
+<a name="ln638">    {</a>
+<a name="ln639">        const beh_type beh =</a>
+<a name="ln640">            lua_isnumber(ls, 3) ? static_cast&lt;beh_type&gt;(luaL_safe_checkint(ls, 3)) :</a>
+<a name="ln641">            lua_isstring(ls, 3) ? behaviour_by_name(lua_tostring(ls, 3))</a>
+<a name="ln642">                                : NUM_BEHAVIOURS;</a>
+<a name="ln643"> </a>
+<a name="ln644">        if (beh != NUM_BEHAVIOURS)</a>
+<a name="ln645">            mw-&gt;mons-&gt;behaviour = beh;</a>
+<a name="ln646">    }</a>
+<a name="ln647">    else if (!strcmp(attr, &quot;targetx&quot;))</a>
+<a name="ln648">        mw-&gt;mons-&gt;target.x = luaL_safe_checkint(ls, 3);</a>
+<a name="ln649">    else if (!strcmp(attr, &quot;targety&quot;))</a>
+<a name="ln650">        mw-&gt;mons-&gt;target.y = luaL_safe_checkint(ls, 3);</a>
+<a name="ln651"> </a>
+<a name="ln652">    return 0;</a>
+<a name="ln653">}</a>
+<a name="ln654"> </a>
+<a name="ln655">static int mons_behaviour(lua_State *ls)</a>
+<a name="ln656">{</a>
+<a name="ln657">    if (lua_gettop(ls) &lt; 1)</a>
+<a name="ln658">        return 0;</a>
+<a name="ln659"> </a>
+<a name="ln660">    if (lua_isnumber(ls, 1))</a>
+<a name="ln661">    {</a>
+<a name="ln662">        lua_pushvalue(ls, 1);</a>
+<a name="ln663">        return 1;</a>
+<a name="ln664">    }</a>
+<a name="ln665">    else if (lua_isstring(ls, 1))</a>
+<a name="ln666">    {</a>
+<a name="ln667">        const beh_type beh = behaviour_by_name(lua_tostring(ls, 1));</a>
+<a name="ln668">        if (beh != NUM_BEHAVIOURS)</a>
+<a name="ln669">        {</a>
+<a name="ln670">            lua_pushnumber(ls, beh);</a>
+<a name="ln671">            return 1;</a>
+<a name="ln672">        }</a>
+<a name="ln673">    }</a>
+<a name="ln674">    return 0;</a>
+<a name="ln675">}</a>
+<a name="ln676"> </a>
+<a name="ln677">static const struct luaL_reg mons_lib[] =</a>
+<a name="ln678">{</a>
+<a name="ln679">    { &quot;behaviour&quot;, mons_behaviour },</a>
+<a name="ln680">    { nullptr, nullptr }</a>
+<a name="ln681">};</a>
+<a name="ln682"> </a>
+<a name="ln683">void dluaopen_monsters(lua_State *ls)</a>
+<a name="ln684">{</a>
+<a name="ln685">    lua_stack_cleaner stack_clean(ls);</a>
+<a name="ln686">    luaL_newmetatable(ls, MONS_METATABLE);</a>
+<a name="ln687">    lua_pushstring(ls, &quot;__index&quot;);</a>
+<a name="ln688">    lua_pushcfunction(ls, monster_get);</a>
+<a name="ln689">    lua_settable(ls, -3);</a>
+<a name="ln690"> </a>
+<a name="ln691">    lua_pushstring(ls, &quot;__newindex&quot;);</a>
+<a name="ln692">    lua_pushcfunction(ls, monster_set);</a>
+<a name="ln693">    lua_settable(ls, -3);</a>
+<a name="ln694">    luaL_register(ls, &quot;mons&quot;, mons_lib);</a>
+<a name="ln695">}</a>
+
+</code></pre>
+<div class="balloon" rel="576"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="606"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1016/" target="_blank">V1016</a> Expression '0 <= beh' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

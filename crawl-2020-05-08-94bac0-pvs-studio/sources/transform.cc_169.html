@@ -1,0 +1,2156 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>transform.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Misc function related to player transformations.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;transform.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cstdio&gt;</a>
+<a name="ln11">#include &lt;cstring&gt;</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;artefact.h&quot;</a>
+<a name="ln14">#include &quot;art-enum.h&quot;</a>
+<a name="ln15">#include &quot;delay.h&quot;</a>
+<a name="ln16">#include &quot;english.h&quot;</a>
+<a name="ln17">#include &quot;env.h&quot;</a>
+<a name="ln18">#include &quot;god-item.h&quot;</a>
+<a name="ln19">#include &quot;god-passive.h&quot; // passive_t::resist_polymorph</a>
+<a name="ln20">#include &quot;invent.h&quot; // check_old_item_warning</a>
+<a name="ln21">#include &quot;item-use.h&quot;</a>
+<a name="ln22">#include &quot;item-name.h&quot;</a>
+<a name="ln23">#include &quot;item-prop.h&quot;</a>
+<a name="ln24">#include &quot;items.h&quot;</a>
+<a name="ln25">#include &quot;message.h&quot;</a>
+<a name="ln26">#include &quot;mon-death.h&quot;</a>
+<a name="ln27">#include &quot;mutation.h&quot;</a>
+<a name="ln28">#include &quot;output.h&quot;</a>
+<a name="ln29">#include &quot;player-equip.h&quot;</a>
+<a name="ln30">#include &quot;player-stats.h&quot;</a>
+<a name="ln31">#include &quot;prompt.h&quot;</a>
+<a name="ln32">#include &quot;religion.h&quot;</a>
+<a name="ln33">#include &quot;spl-cast.h&quot;</a>
+<a name="ln34">#include &quot;state.h&quot;</a>
+<a name="ln35">#include &quot;stringutil.h&quot;</a>
+<a name="ln36">#include &quot;terrain.h&quot;</a>
+<a name="ln37">#include &quot;traps.h&quot;</a>
+<a name="ln38">#include &quot;xom.h&quot;</a>
+<a name="ln39"> </a>
+<a name="ln40">// transform slot enums into flags</a>
+<a name="ln41">#define SLOTF(s) (1 &lt;&lt; s)</a>
+<a name="ln42"> </a>
+<a name="ln43">static const int EQF_NONE = 0;</a>
+<a name="ln44">// &quot;hand&quot; slots (not rings)</a>
+<a name="ln45">static const int EQF_HANDS = SLOTF(EQ_WEAPON) | SLOTF(EQ_SHIELD)</a>
+<a name="ln46">                             | SLOTF(EQ_GLOVES);</a>
+<a name="ln47">// core body slots (statue form)</a>
+<a name="ln48">static const int EQF_STATUE = SLOTF(EQ_GLOVES) | SLOTF(EQ_BOOTS)</a>
+<a name="ln49">                              | SLOTF(EQ_BODY_ARMOUR);</a>
+<a name="ln50">// more core body slots (Lear's Hauberk)</a>
+<a name="ln51">static const int EQF_LEAR = EQF_STATUE | SLOTF(EQ_HELMET);</a>
+<a name="ln52">// everything you can (W)ear</a>
+<a name="ln53">static const int EQF_WEAR = EQF_LEAR | SLOTF(EQ_CLOAK) | SLOTF(EQ_SHIELD);</a>
+<a name="ln54">// everything but jewellery</a>
+<a name="ln55">static const int EQF_PHYSICAL = EQF_HANDS | EQF_WEAR;</a>
+<a name="ln56">// all rings (except for the macabre finger amulet's)</a>
+<a name="ln57">static const int EQF_RINGS = SLOTF(EQ_LEFT_RING) | SLOTF(EQ_RIGHT_RING)</a>
+<a name="ln58">                             | SLOTF(EQ_RING_ONE) | SLOTF(EQ_RING_TWO)</a>
+<a name="ln59">                             | SLOTF(EQ_RING_THREE) | SLOTF(EQ_RING_FOUR)</a>
+<a name="ln60">                             | SLOTF(EQ_RING_FIVE) | SLOTF(EQ_RING_SIX)</a>
+<a name="ln61">                             | SLOTF(EQ_RING_SEVEN) | SLOTF(EQ_RING_EIGHT);</a>
+<a name="ln62">// amulet &amp; pal</a>
+<a name="ln63">static const int EQF_AMULETS = SLOTF(EQ_AMULET) | SLOTF(EQ_RING_AMULET);</a>
+<a name="ln64">// everything</a>
+<a name="ln65">static const int EQF_ALL = EQF_PHYSICAL | EQF_RINGS | EQF_AMULETS;</a>
+<a name="ln66"> </a>
+<a name="ln67">static const FormAttackVerbs DEFAULT_VERBS = FormAttackVerbs(nullptr, nullptr,</a>
+<a name="ln68">                                                             nullptr, nullptr);</a>
+<a name="ln69">static const FormAttackVerbs ANIMAL_VERBS = FormAttackVerbs(&quot;hit&quot;, &quot;bite&quot;,</a>
+<a name="ln70">                                                            &quot;maul&quot;, &quot;maul&quot;);</a>
+<a name="ln71"> </a>
+<a name="ln72">static const FormDuration DEFAULT_DURATION = FormDuration(20, PS_DOUBLE, 100);</a>
+<a name="ln73">static const FormDuration BAD_DURATION = FormDuration(15, PS_ONE_AND_A_HALF,</a>
+<a name="ln74">                                                      100);</a>
+<a name="ln75"> </a>
+<a name="ln76">// Class form_entry and the formdata array</a>
+<a name="ln77">#include &quot;form-data.h&quot;</a>
+<a name="ln78"> </a>
+<a name="ln79">static const form_entry &amp;_find_form_entry(transformation form)</a>
+<a name="ln80">{</a>
+<a name="ln81">    for (const form_entry &amp;entry : formdata)</a>
+<a name="ln82">        if (entry.tran == form)</a>
+<a name="ln83">            return entry;</a>
+<a name="ln84">    die(&quot;No formdata entry found for form %d&quot;, (int)form);</a>
+<a name="ln85">}</a>
+<a name="ln86"> </a>
+<a name="ln87">Form::Form(const form_entry &amp;fe)</a>
+<a name="ln88">    : short_name(fe.short_name), wiz_name(fe.wiz_name),</a>
+<a name="ln89">      duration(fe.duration),</a>
+<a name="ln90">      str_mod(fe.str_mod), dex_mod(fe.dex_mod),</a>
+<a name="ln91">      blocked_slots(fe.blocked_slots), size(fe.size), hp_mod(fe.hp_mod),</a>
+<a name="ln92">      can_cast(fe.can_cast), spellcasting_penalty(fe.spellcasting_penalty),</a>
+<a name="ln93">      unarmed_hit_bonus(fe.unarmed_hit_bonus), uc_colour(fe.uc_colour),</a>
+<a name="ln94">      uc_attack_verbs(fe.uc_attack_verbs),</a>
+<a name="ln95">      can_bleed(fe.can_bleed), breathes(fe.breathes),</a>
+<a name="ln96">      keeps_mutations(fe.keeps_mutations),</a>
+<a name="ln97">      shout_verb(fe.shout_verb),</a>
+<a name="ln98">      shout_volume_modifier(fe.shout_volume_modifier),</a>
+<a name="ln99">      hand_name(fe.hand_name), foot_name(fe.foot_name),</a>
+<a name="ln100">      flesh_equivalent(fe.flesh_equivalent),</a>
+<a name="ln101">      long_name(fe.long_name), description(fe.description),</a>
+<a name="ln102">      resists(fe.resists),</a>
+<a name="ln103">      base_unarmed_damage(fe.base_unarmed_damage),</a>
+<a name="ln104">      can_fly(fe.can_fly), can_swim(fe.can_swim),</a>
+<a name="ln105">      flat_ac(fe.flat_ac), power_ac(fe.power_ac), xl_ac(fe.xl_ac),</a>
+<a name="ln106">      uc_brand(fe.uc_brand), uc_attack(fe.uc_attack),</a>
+<a name="ln107">      prayer_action(fe.prayer_action), equivalent_mons(fe.equivalent_mons)</a>
+<a name="ln108">{ }</a>
+<a name="ln109"> </a>
+<a name="ln110">Form::Form(transformation tran)</a>
+<a name="ln111">    : Form(_find_form_entry(tran))</a>
+<a name="ln112">{ }</a>
+<a name="ln113">/**</a>
+<a name="ln114"> * Is the given equipment slot available for use in this form?</a>
+<a name="ln115"> *</a>
+<a name="ln116"> * @param slot      The equipment slot in question. (May be a weird fake</a>
+<a name="ln117"> *                  slot - EQ_STAFF or EQ_ALL_ARMOUR.)</a>
+<a name="ln118"> * @return          Whether at least some items can be worn in this slot in</a>
+<a name="ln119"> *                  this form.</a>
+<a name="ln120"> *                  (The player's race, or mutations, may still block the</a>
+<a name="ln121"> *                  slot, or it may be restricted to subtypes.)</a>
+<a name="ln122"> */</a>
+<a name="ln123">bool Form::slot_available(int slot) const</a>
+<a name="ln124">{</a>
+<a name="ln125">    if (slot == EQ_ALL_ARMOUR)</a>
+<a name="ln126">        return !all_blocked(EQF_WEAR);</a>
+<a name="ln127">    if (slot == EQ_RINGS || slot == EQ_RINGS_PLUS)</a>
+<a name="ln128">        return !all_blocked(EQF_RINGS);</a>
+<a name="ln129"> </a>
+<a name="ln130">    if (slot == EQ_STAFF)</a>
+<a name="ln131">        slot = EQ_WEAPON;</a>
+<a name="ln132">    return !(blocked_slots &amp; SLOTF(slot));</a>
+<a name="ln133">}</a>
+<a name="ln134"> </a>
+<a name="ln135">/**</a>
+<a name="ln136"> * Can the player wear the given item while in this form?</a>
+<a name="ln137"> *</a>
+<a name="ln138"> * Does not take mutations into account.</a>
+<a name="ln139"> *</a>
+<a name="ln140"> * @param item  The item in question</a>
+<a name="ln141"> * @return      Whether this form prevents the player from wearing the</a>
+<a name="ln142"> *              item. (Other things may also prevent it, of course)</a>
+<a name="ln143"> */</a>
+<a name="ln144">bool Form::can_wear_item(const item_def&amp; item) const</a>
+<a name="ln145">{</a>
+<a name="ln146">    if (item.base_type == OBJ_JEWELLERY)</a>
+<a name="ln147">    {</a>
+<a name="ln148">        if (jewellery_is_amulet(item))</a>
+<a name="ln149">            return slot_available(EQ_AMULET);</a>
+<a name="ln150">        return !all_blocked(EQF_RINGS);</a>
+<a name="ln151">    }</a>
+<a name="ln152"> </a>
+<a name="ln153">    if (is_unrandom_artefact(item, UNRAND_LEAR))</a>
+<a name="ln154">        return !(blocked_slots &amp; EQF_LEAR); // ok if no body slots blocked</a>
+<a name="ln155"> </a>
+<a name="ln156">    return slot_available(get_armour_slot(item));</a>
+<a name="ln157">}</a>
+<a name="ln158"> </a>
+<a name="ln159">/**</a>
+<a name="ln160"> * Get the bonus to form duration granted for a given (spell)power.</a>
+<a name="ln161"> *</a>
+<a name="ln162"> * @param pow               The spellpower/equivalent of the form.</a>
+<a name="ln163"> * @return                  A bonus to form duration.</a>
+<a name="ln164"> */</a>
+<a name="ln165">int FormDuration::power_bonus(int pow) const</a>
+<a name="ln166">{</a>
+<a name="ln167">    switch (scaling_type)</a>
+<a name="ln168">    {</a>
+<a name="ln169">        case PS_NONE:</a>
+<a name="ln170">            return 0;</a>
+<a name="ln171">        case PS_SINGLE:</a>
+<a name="ln172">            return random2(pow);</a>
+<a name="ln173">        case PS_ONE_AND_A_HALF:</a>
+<a name="ln174">            return random2(pow) + random2(pow/2);</a>
+<a name="ln175">        case PS_DOUBLE:</a>
+<a name="ln176">            return random2(pow) + random2(pow);</a>
+<a name="ln177">        default:</a>
+<a name="ln178">            die(&quot;Unknown scaling type!&quot;);</a>
+<a name="ln179">            return -1;</a>
+<a name="ln180">    }</a>
+<a name="ln181">}</a>
+<a name="ln182"> </a>
+<a name="ln183">/**</a>
+<a name="ln184"> * Get the duration for this form, when newly entered.</a>
+<a name="ln185"> *</a>
+<a name="ln186"> * @param pow   The power of the effect creating this form. (Spellpower, etc.)</a>
+<a name="ln187"> * @return      The duration of the form. (XXX: in turns...?)</a>
+<a name="ln188"> */</a>
+<a name="ln189">int Form::get_duration(int pow) const</a>
+<a name="ln190">{</a>
+<a name="ln191">    return min(duration.base + duration.power_bonus(pow), duration.max);</a>
+<a name="ln192">}</a>
+<a name="ln193"> </a>
+<a name="ln194">/**</a>
+<a name="ln195"> * Get a verbose description for the form.</a>
+<a name="ln196"> *</a>
+<a name="ln197"> * @param past_tense     Whether the description should be in past or present</a>
+<a name="ln198"> *                       tense.</a>
+<a name="ln199"> * @return               A description for the form.</a>
+<a name="ln200"> */</a>
+<a name="ln201">string Form::get_description(bool past_tense) const</a>
+<a name="ln202">{</a>
+<a name="ln203">    return make_stringf(&quot;You %s %s&quot;,</a>
+<a name="ln204">                        past_tense ? &quot;were&quot; : &quot;are&quot;,</a>
+<a name="ln205">                        description.c_str());</a>
+<a name="ln206">}</a>
+<a name="ln207"> </a>
+<a name="ln208">/**</a>
+<a name="ln209"> * Get a message for transforming into this form, based on your current</a>
+<a name="ln210"> * situation (e.g. in water...)</a>
+<a name="ln211"> *</a>
+<a name="ln212"> * @return The message for turning into this form.</a>
+<a name="ln213"> */</a>
+<a name="ln214">string Form::transform_message(transformation previous_trans) const</a>
+<a name="ln215">{</a>
+<a name="ln216">    // XXX: refactor this into a second function (and also rethink the logic)</a>
+<a name="ln217">    string start = &quot;Buggily, y&quot;;</a>
+<a name="ln218">    if (you.in_water() &amp;&amp; player_can_fly())</a>
+<a name="ln219">        start = &quot;You fly out of the water as y&quot;;</a>
+<a name="ln220">    else if (get_form(previous_trans)-&gt;player_can_fly()</a>
+<a name="ln221">             &amp;&amp; player_can_swim()</a>
+<a name="ln222">             &amp;&amp; feat_is_water(grd(you.pos())))</a>
+<a name="ln223">        start = &quot;As you dive into the water, y&quot;;</a>
+<a name="ln224">    else</a>
+<a name="ln225">        start = &quot;Y&quot;;</a>
+<a name="ln226"> </a>
+<a name="ln227">    return make_stringf(&quot;%sou turn into %s&quot;, start.c_str(),</a>
+<a name="ln228">                        get_transform_description().c_str());</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">/**</a>
+<a name="ln232"> * Get a message for untransforming from this form.</a>
+<a name="ln233"> *</a>
+<a name="ln234"> * @return &quot;Your transform has ended.&quot;</a>
+<a name="ln235"> */</a>
+<a name="ln236">string Form::get_untransform_message() const</a>
+<a name="ln237">{</a>
+<a name="ln238">    return &quot;Your transformation has ended.&quot;;</a>
+<a name="ln239">}</a>
+<a name="ln240"> </a>
+<a name="ln241">/**</a>
+<a name="ln242"> * What AC bonus does the player get while in this form?</a>
+<a name="ln243"> *</a>
+<a name="ln244"> * Many forms are power-dependent, so the answer given may be strange if the</a>
+<a name="ln245"> * player isn't currently in the form in question.</a>
+<a name="ln246"> *</a>
+<a name="ln247"> * @return  The AC bonus currently granted by the form, multiplied by 100 to</a>
+<a name="ln248"> *          allow for pseudo-decimal flexibility (&amp; to match</a>
+<a name="ln249"> *          player::armour_class())</a>
+<a name="ln250"> */</a>
+<a name="ln251">int Form::get_ac_bonus() const</a>
+<a name="ln252">{</a>
+<a name="ln253">    return flat_ac * 100</a>
+<a name="ln254">           + power_ac * you.props[TRANSFORM_POW_KEY].get_int()</a>
+<a name="ln255">           + xl_ac * you.experience_level;</a>
+<a name="ln256">}</a>
+<a name="ln257"> </a>
+<a name="ln258">/**</a>
+<a name="ln259"> * (freeze)</a>
+<a name="ln260"> */</a>
+<a name="ln261">static string _brand_suffix(brand_type brand)</a>
+<a name="ln262">{</a>
+<a name="ln263">    if (brand == SPWPN_NORMAL)</a>
+<a name="ln264">        return &quot;&quot;;</a>
+<a name="ln265">    return make_stringf(&quot; (%s)&quot;, brand_type_name(brand, true));</a>
+<a name="ln266">}</a>
+<a name="ln267"> </a>
+<a name="ln268">/**</a>
+<a name="ln269"> * What name should be used for the player's means of unarmed attack while</a>
+<a name="ln270"> * in this form?</a>
+<a name="ln271"> *</a>
+<a name="ln272"> * (E.g. for display in the top-right of the UI.)</a>
+<a name="ln273"> *</a>
+<a name="ln274"> * @param   The player's UC weapon when not in a form (claws, etc)</a>
+<a name="ln275"> * @return  A string describing the form's UC attack 'weapon'.</a>
+<a name="ln276"> */</a>
+<a name="ln277">string Form::get_uc_attack_name(string default_name) const</a>
+<a name="ln278">{</a>
+<a name="ln279">    const string brand_suffix = _brand_suffix(get_uc_brand());</a>
+<a name="ln280">    if (uc_attack.empty())</a>
+<a name="ln281">        return default_name + brand_suffix;</a>
+<a name="ln282">    return uc_attack + brand_suffix;</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">/**</a>
+<a name="ln286"> * How many levels of resistance against fire does this form provide?</a>
+<a name="ln287"> */</a>
+<a name="ln288">int Form::res_fire() const</a>
+<a name="ln289">{</a>
+<a name="ln290">    return get_resist(resists, MR_RES_FIRE);</a>
+<a name="ln291">}</a>
+<a name="ln292"> </a>
+<a name="ln293">/**</a>
+<a name="ln294"> * How many levels of resistance against cold does this form provide?</a>
+<a name="ln295"> */</a>
+<a name="ln296">int Form::res_cold() const</a>
+<a name="ln297">{</a>
+<a name="ln298">    return get_resist(resists, MR_RES_COLD);</a>
+<a name="ln299">}</a>
+<a name="ln300"> </a>
+<a name="ln301">/**</a>
+<a name="ln302"> * How many levels of resistance against negative energy does this form give?</a>
+<a name="ln303"> */</a>
+<a name="ln304">int Form::res_neg() const</a>
+<a name="ln305">{</a>
+<a name="ln306">    return get_resist(resists, MR_RES_NEG);</a>
+<a name="ln307">}</a>
+<a name="ln308"> </a>
+<a name="ln309">/**</a>
+<a name="ln310"> * Does this form provide resistance to electricity?</a>
+<a name="ln311"> */</a>
+<a name="ln312">bool Form::res_elec() const</a>
+<a name="ln313">{</a>
+<a name="ln314">    return get_resist(resists, MR_RES_ELEC);</a>
+<a name="ln315">}</a>
+<a name="ln316"> </a>
+<a name="ln317">/**</a>
+<a name="ln318"> * How many levels of resistance against poison does this form give?</a>
+<a name="ln319"> */</a>
+<a name="ln320">int Form::res_pois() const</a>
+<a name="ln321">{</a>
+<a name="ln322">    return get_resist(resists, MR_RES_POISON);</a>
+<a name="ln323">}</a>
+<a name="ln324"> </a>
+<a name="ln325">/**</a>
+<a name="ln326"> * Does this form provide resistance to rotting?</a>
+<a name="ln327"> */</a>
+<a name="ln328">bool Form::res_rot() const</a>
+<a name="ln329">{</a>
+<a name="ln330">    return get_resist(resists, MR_RES_ROTTING);</a>
+<a name="ln331">}</a>
+<a name="ln332"> </a>
+<a name="ln333">/**</a>
+<a name="ln334"> * Does this form provide resistance against acid?</a>
+<a name="ln335"> */</a>
+<a name="ln336">bool Form::res_acid() const</a>
+<a name="ln337">{</a>
+<a name="ln338">    return get_resist(resists, MR_RES_ACID);</a>
+<a name="ln339">}</a>
+<a name="ln340"> </a>
+<a name="ln341">/**</a>
+<a name="ln342"> * Does this form provide resistance to sticky flame?</a>
+<a name="ln343"> */</a>
+<a name="ln344">bool Form::res_sticky_flame() const</a>
+<a name="ln345">{</a>
+<a name="ln346">    return get_resist(resists, MR_RES_STICKY_FLAME);</a>
+<a name="ln347">}</a>
+<a name="ln348"> </a>
+<a name="ln349">/**</a>
+<a name="ln350"> * Does this form provide resistance to petrification?</a>
+<a name="ln351"> */</a>
+<a name="ln352">bool Form::res_petrify() const</a>
+<a name="ln353">{</a>
+<a name="ln354">    return get_resist(resists, MR_RES_PETRIFY);</a>
+<a name="ln355">}</a>
+<a name="ln356"> </a>
+<a name="ln357"> </a>
+<a name="ln358">/**</a>
+<a name="ln359"> * Does this form enable flight?</a>
+<a name="ln360"> *</a>
+<a name="ln361"> * @return Whether this form allows flight for characters which don't already</a>
+<a name="ln362"> *         have access to it.</a>
+<a name="ln363"> */</a>
+<a name="ln364">bool Form::enables_flight() const</a>
+<a name="ln365">{</a>
+<a name="ln366">    return can_fly == FC_ENABLE;</a>
+<a name="ln367">}</a>
+<a name="ln368"> </a>
+<a name="ln369">/**</a>
+<a name="ln370"> * Does this form disable flight?</a>
+<a name="ln371"> *</a>
+<a name="ln372"> * @return Whether flight is always impossible while in this form.</a>
+<a name="ln373"> */</a>
+<a name="ln374">bool Form::forbids_flight() const</a>
+<a name="ln375">{</a>
+<a name="ln376">    return can_fly == FC_FORBID;</a>
+<a name="ln377">}</a>
+<a name="ln378"> </a>
+<a name="ln379">/**</a>
+<a name="ln380"> * Does this form disable swimming?</a>
+<a name="ln381"> *</a>
+<a name="ln382"> * @return Whether swimming is always impossible while in this form.</a>
+<a name="ln383"> */</a>
+<a name="ln384">bool Form::forbids_swimming() const</a>
+<a name="ln385">{</a>
+<a name="ln386">    return can_swim == FC_FORBID;</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389">/**</a>
+<a name="ln390"> * Can the player fly, if in this form?</a>
+<a name="ln391"> *</a>
+<a name="ln392"> * DOES consider player state besides form.</a>
+<a name="ln393"> * @return  Whether the player will be able to fly in this form.</a>
+<a name="ln394"> */</a>
+<a name="ln395">bool Form::player_can_fly() const</a>
+<a name="ln396">{</a>
+<a name="ln397">    return !forbids_flight()</a>
+<a name="ln398">           &amp;&amp; (enables_flight()</a>
+<a name="ln399">               || you.racial_permanent_flight() &amp;&amp; you.permanent_flight());</a>
+<a name="ln400">}</a>
+<a name="ln401"> </a>
+<a name="ln402">/**</a>
+<a name="ln403"> * Can the player swim, if in this form?</a>
+<a name="ln404"> *</a>
+<a name="ln405"> * DOES consider player state besides form.</a>
+<a name="ln406"> * @return  Whether the player will be able to swim in this form.</a>
+<a name="ln407"> */</a>
+<a name="ln408">bool Form::player_can_swim() const</a>
+<a name="ln409">{</a>
+<a name="ln410">    const size_type player_size = size == SIZE_CHARACTER ?</a>
+<a name="ln411">                                          you.body_size(PSIZE_BODY, true) :</a>
+<a name="ln412">                                          size;</a>
+<a name="ln413">    return can_swim == FC_ENABLE</a>
+<a name="ln414">           || species_can_swim(you.species) &amp;&amp; can_swim != FC_FORBID</a>
+<a name="ln415">           || player_size &gt;= SIZE_GIANT;</a>
+<a name="ln416">}</a>
+<a name="ln417"> </a>
+<a name="ln418">/**</a>
+<a name="ln419"> * Are all of the given equipment slots blocked while in this form?</a>
+<a name="ln420"> *</a>
+<a name="ln421"> * @param slotflags     A set of flags, corresponding to the union of</a>
+<a name="ln422"> (1 &lt;&lt; the slot enum) for each slot in question.</a>
+<a name="ln423"> * @return              Whether all of the given slots are blocked.</a>
+<a name="ln424"> */</a>
+<a name="ln425">bool Form::all_blocked(int slotflags) const</a>
+<a name="ln426">{</a>
+<a name="ln427">    return slotflags == (blocked_slots &amp; slotflags);</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">/**</a>
+<a name="ln431"> * What message should be printed when the player prays at an altar?</a>
+<a name="ln432"> * To be inserted into &quot;You %s the altar of foo.&quot;</a>
+<a name="ln433"> *</a>
+<a name="ln434"> * If the form has a valid custom action, print that; otherwise, default to the</a>
+<a name="ln435"> * 'flying' or species-specific actions, as appropriate.</a>
+<a name="ln436"> *</a>
+<a name="ln437"> * @return  An action to be printed when the player prays at an altar.</a>
+<a name="ln438"> *          E.g., &quot;perch on&quot;, &quot;crawl onto&quot;, &quot;sway towards&quot;, etc.</a>
+<a name="ln439"> */</a>
+<a name="ln440">string Form::player_prayer_action() const</a>
+<a name="ln441">{</a>
+<a name="ln442">    // If the form is naturally flying &amp; specifies an action, use that.</a>
+<a name="ln443">    if (can_fly == FC_ENABLE &amp;&amp; !prayer_action.empty())</a>
+<a name="ln444">        return prayer_action;</a>
+<a name="ln445">    // Otherwise, if you're flying, use the generic flying action.</a>
+<a name="ln446">    // XXX: if we ever get a default-permaflying species again that wants to</a>
+<a name="ln447">    // have a separate verb, we'll want to check for that right here.</a>
+<a name="ln448">    if (you.airborne())</a>
+<a name="ln449">        return &quot;hover solemnly before&quot;;</a>
+<a name="ln450">    // Otherwise, if you have a verb, use that...</a>
+<a name="ln451">    if (!prayer_action.empty())</a>
+<a name="ln452">        return prayer_action;</a>
+<a name="ln453">    // Finally, default to your species' verb.</a>
+<a name="ln454">    return species_prayer_action(you.species);</a>
+<a name="ln455">}</a>
+<a name="ln456"> </a>
+<a name="ln457">class FormNone : public Form</a>
+<a name="ln458">{</a>
+<a name="ln459">private:</a>
+<a name="ln460">    FormNone() : Form(transformation::none) { }</a>
+<a name="ln461">    DISALLOW_COPY_AND_ASSIGN(FormNone);</a>
+<a name="ln462">public:</a>
+<a name="ln463">    static const FormNone &amp;instance() { static FormNone inst; return inst; }</a>
+<a name="ln464"> </a>
+<a name="ln465">    /**</a>
+<a name="ln466">     * Get a string describing the form you're turning into. (If not the same</a>
+<a name="ln467">     * as the one used to describe this form in @.</a>
+<a name="ln468">     */</a>
+<a name="ln469">    string get_transform_description() const override { return &quot;your old self.&quot;; }</a>
+<a name="ln470">};</a>
+<a name="ln471"> </a>
+<a name="ln472">class FormSpider : public Form</a>
+<a name="ln473">{</a>
+<a name="ln474">private:</a>
+<a name="ln475">    FormSpider() : Form(transformation::spider) { }</a>
+<a name="ln476">    DISALLOW_COPY_AND_ASSIGN(FormSpider);</a>
+<a name="ln477">public:</a>
+<a name="ln478">    static const FormSpider &amp;instance() { static FormSpider inst; return inst; }</a>
+<a name="ln479">};</a>
+<a name="ln480"> </a>
+<a name="ln481">class FormBlade : public Form</a>
+<a name="ln482">{</a>
+<a name="ln483">private:</a>
+<a name="ln484">    FormBlade() : Form(transformation::blade_hands) { }</a>
+<a name="ln485">    DISALLOW_COPY_AND_ASSIGN(FormBlade);</a>
+<a name="ln486">public:</a>
+<a name="ln487">    static const FormBlade &amp;instance() { static FormBlade inst; return inst; }</a>
+<a name="ln488"> </a>
+<a name="ln489">    /**</a>
+<a name="ln490">     * % screen description</a>
+<a name="ln491">     */</a>
+<a name="ln492">    string get_long_name() const override</a>
+<a name="ln493">    {</a>
+<a name="ln494">        return &quot;blade &quot; + blade_parts(true);</a>
+<a name="ln495">    }</a>
+<a name="ln496"> </a>
+<a name="ln497">    /**</a>
+<a name="ln498">     * @ description</a>
+<a name="ln499">     */</a>
+<a name="ln500">    string get_description(bool past_tense) const override</a>
+<a name="ln501">    {</a>
+<a name="ln502">        return make_stringf(&quot;You %s blades for %s.&quot;,</a>
+<a name="ln503">                            past_tense ? &quot;had&quot; : &quot;have&quot;,</a>
+<a name="ln504">                            blade_parts().c_str());</a>
+<a name="ln505">    }</a>
+<a name="ln506"> </a>
+<a name="ln507">    /**</a>
+<a name="ln508">     * Get a message for transforming into this form.</a>
+<a name="ln509">     */</a>
+<a name="ln510">    string transform_message(transformation /*previous_trans*/) const override</a>
+<a name="ln511">    {</a>
+<a name="ln512">        const bool singular = you.get_mutation_level(MUT_MISSING_HAND);</a>
+<a name="ln513"> </a>
+<a name="ln514">        // XXX: a little ugly</a>
+<a name="ln515">        return make_stringf(&quot;Your %s turn%s into%s razor-sharp scythe blade%s.&quot;,</a>
+<a name="ln516">                            blade_parts().c_str(), singular ? &quot;s&quot; : &quot;&quot;,</a>
+<a name="ln517">                            singular ? &quot; a&quot; : &quot;&quot;, singular ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln518">    }</a>
+<a name="ln519"> </a>
+<a name="ln520">    /**</a>
+<a name="ln521">     * Get a message for untransforming from this form.</a>
+<a name="ln522">     */</a>
+<a name="ln523">    string get_untransform_message() const override</a>
+<a name="ln524">    {</a>
+<a name="ln525">        const bool singular = you.get_mutation_level(MUT_MISSING_HAND);</a>
+<a name="ln526"> </a>
+<a name="ln527">        // XXX: a little ugly</a>
+<a name="ln528">        return make_stringf(&quot;Your %s revert%s to %s normal proportions.&quot;,</a>
+<a name="ln529">                            blade_parts().c_str(), singular ? &quot;s&quot; : &quot;&quot;,</a>
+<a name="ln530">                            singular ? &quot;its&quot; : &quot;their&quot;);</a>
+<a name="ln531">    }</a>
+<a name="ln532"> </a>
+<a name="ln533">    bool can_offhand_punch() const override { return true; }</a>
+<a name="ln534"> </a>
+<a name="ln535">    /**</a>
+<a name="ln536">     * Get the name displayed in the UI for the form's unarmed-combat 'weapon'.</a>
+<a name="ln537">     */</a>
+<a name="ln538">    string get_uc_attack_name(string /*default_name*/) const override</a>
+<a name="ln539">    {</a>
+<a name="ln540">        return &quot;Blade &quot; + blade_parts(true);</a>
+<a name="ln541">    }</a>
+<a name="ln542">};</a>
+<a name="ln543"> </a>
+<a name="ln544">class FormStatue : public Form</a>
+<a name="ln545">{</a>
+<a name="ln546">private:</a>
+<a name="ln547">    FormStatue() : Form(transformation::statue) { }</a>
+<a name="ln548">    DISALLOW_COPY_AND_ASSIGN(FormStatue);</a>
+<a name="ln549">public:</a>
+<a name="ln550">    static const FormStatue &amp;instance() { static FormStatue inst; return inst; }</a>
+<a name="ln551"> </a>
+<a name="ln552">    /**</a>
+<a name="ln553">     * Get a message for transforming into this form.</a>
+<a name="ln554">     */</a>
+<a name="ln555">    string transform_message(transformation previous_trans) const override</a>
+<a name="ln556">    {</a>
+<a name="ln557">        if (you.species == SP_DEEP_DWARF &amp;&amp; one_chance_in(10))</a>
+<a name="ln558">            return &quot;You inwardly fear your resemblance to a lawn ornament.&quot;;</a>
+<a name="ln559">        else if (you.species == SP_GARGOYLE)</a>
+<a name="ln560">            return &quot;Your body stiffens and grows slower.&quot;;</a>
+<a name="ln561">        else</a>
+<a name="ln562">            return Form::transform_message(previous_trans);</a>
+<a name="ln563">    }</a>
+<a name="ln564"> </a>
+<a name="ln565">    /**</a>
+<a name="ln566">     * Get a string describing the form you're turning into. (If not the same</a>
+<a name="ln567">     * as the one used to describe this form in @.</a>
+<a name="ln568">     */</a>
+<a name="ln569">    string get_transform_description() const override</a>
+<a name="ln570">    {</a>
+<a name="ln571">        return &quot;a living statue of rough stone.&quot;;</a>
+<a name="ln572">    }</a>
+<a name="ln573"> </a>
+<a name="ln574">    /**</a>
+<a name="ln575">     * Get a message for untransforming from this form.</a>
+<a name="ln576">     */</a>
+<a name="ln577">    string get_untransform_message() const override</a>
+<a name="ln578">    {</a>
+<a name="ln579">        // This only handles lava orcs going statue -&gt; stoneskin.</a>
+<a name="ln580">        if (you.species == SP_GARGOYLE)</a>
+<a name="ln581">            return &quot;You revert to a slightly less stony form.&quot;;</a>
+<a name="ln582">        return &quot;You revert to your normal fleshy form.&quot;;</a>
+<a name="ln583">    }</a>
+<a name="ln584"> </a>
+<a name="ln585">    /**</a>
+<a name="ln586">     * Get the name displayed in the UI for the form's unarmed-combat 'weapon'.</a>
+<a name="ln587">     */</a>
+<a name="ln588">    string get_uc_attack_name(string /*default_name*/) const override</a>
+<a name="ln589">    {</a>
+<a name="ln590">        if (you.has_usable_claws(true))</a>
+<a name="ln591">            return &quot;Stone claws&quot;;</a>
+<a name="ln592">        if (you.has_usable_tentacles(true))</a>
+<a name="ln593">            return &quot;Stone tentacles&quot;;</a>
+<a name="ln594"> </a>
+<a name="ln595">        const bool singular = you.get_mutation_level(MUT_MISSING_HAND);</a>
+<a name="ln596">        return make_stringf(&quot;Stone fist%s&quot;, singular ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln597">    }</a>
+<a name="ln598">};</a>
+<a name="ln599"> </a>
+<a name="ln600">class FormIce : public Form</a>
+<a name="ln601">{</a>
+<a name="ln602">private:</a>
+<a name="ln603">    FormIce() : Form(transformation::ice_beast) { }</a>
+<a name="ln604">    DISALLOW_COPY_AND_ASSIGN(FormIce);</a>
+<a name="ln605">public:</a>
+<a name="ln606">    static const FormIce &amp;instance() { static FormIce inst; return inst; }</a>
+<a name="ln607"> </a>
+<a name="ln608">    /**</a>
+<a name="ln609">     * Get a message for untransforming from this form.</a>
+<a name="ln610">     */</a>
+<a name="ln611">    string get_untransform_message() const override</a>
+<a name="ln612">    {</a>
+<a name="ln613">        return &quot;You warm up again.&quot;;</a>
+<a name="ln614">    }</a>
+<a name="ln615"> </a>
+<a name="ln616">    /**</a>
+<a name="ln617">     * Get the name displayed in the UI for the form's unarmed-combat 'weapon'.</a>
+<a name="ln618">     */</a>
+<a name="ln619">    string get_uc_attack_name(string /*default_name*/) const override</a>
+<a name="ln620">    {</a>
+<a name="ln621">        const bool singular = you.get_mutation_level(MUT_MISSING_HAND);</a>
+<a name="ln622">        return make_stringf(&quot;Ice fist%s&quot;, singular ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln623">    }</a>
+<a name="ln624">};</a>
+<a name="ln625"> </a>
+<a name="ln626">class FormDragon : public Form</a>
+<a name="ln627">{</a>
+<a name="ln628">private:</a>
+<a name="ln629">    FormDragon() : Form(transformation::dragon) { }</a>
+<a name="ln630">    DISALLOW_COPY_AND_ASSIGN(FormDragon);</a>
+<a name="ln631">public:</a>
+<a name="ln632">    static const FormDragon &amp;instance() { static FormDragon inst; return inst; }</a>
+<a name="ln633"> </a>
+<a name="ln634">    /**</a>
+<a name="ln635">     * Get an monster type corresponding to the transformation.</a>
+<a name="ln636">     *</a>
+<a name="ln637">     * (Used for console player glyphs.)</a>
+<a name="ln638">     *</a>
+<a name="ln639">     * @return  A monster type corresponding to the player in this form.</a>
+<a name="ln640">     */</a>
+<a name="ln641">    monster_type get_equivalent_mons() const override</a>
+<a name="ln642">    {</a>
+<a name="ln643">        return dragon_form_dragon_type();</a>
+<a name="ln644">    }</a>
+<a name="ln645"> </a>
+<a name="ln646">    /**</a>
+<a name="ln647">     * The AC bonus of the form, multiplied by 100 to match</a>
+<a name="ln648">     * player::armour_class().</a>
+<a name="ln649">     */</a>
+<a name="ln650">    int get_ac_bonus() const override</a>
+<a name="ln651">    {</a>
+<a name="ln652">        if (species_is_draconian(you.species))</a>
+<a name="ln653">            return 1000;</a>
+<a name="ln654">        return Form::get_ac_bonus();</a>
+<a name="ln655">    }</a>
+<a name="ln656"> </a>
+<a name="ln657">    /**</a>
+<a name="ln658">     * How many levels of resistance against fire does this form provide?</a>
+<a name="ln659">     */</a>
+<a name="ln660">    int res_fire() const override</a>
+<a name="ln661">    {</a>
+<a name="ln662">        switch (dragon_form_dragon_type())</a>
+<a name="ln663">        {</a>
+<a name="ln664">            case MONS_FIRE_DRAGON:</a>
+<a name="ln665">                return 2;</a>
+<a name="ln666">            case MONS_ICE_DRAGON:</a>
+<a name="ln667">                return -1;</a>
+<a name="ln668">            default:</a>
+<a name="ln669">                return 0;</a>
+<a name="ln670">        }</a>
+<a name="ln671">    }</a>
+<a name="ln672"> </a>
+<a name="ln673">    /**</a>
+<a name="ln674">     * How many levels of resistance against cold does this form provide?</a>
+<a name="ln675">     */</a>
+<a name="ln676">    int res_cold() const override</a>
+<a name="ln677">    {</a>
+<a name="ln678">        switch (dragon_form_dragon_type())</a>
+<a name="ln679">        {</a>
+<a name="ln680">            case MONS_ICE_DRAGON:</a>
+<a name="ln681">                return 2;</a>
+<a name="ln682">            case MONS_FIRE_DRAGON:</a>
+<a name="ln683">                return -1;</a>
+<a name="ln684">            default:</a>
+<a name="ln685">                return 0;</a>
+<a name="ln686">        }</a>
+<a name="ln687">    }</a>
+<a name="ln688"> </a>
+<a name="ln689">    bool can_offhand_punch() const override { return true; }</a>
+<a name="ln690">};</a>
+<a name="ln691"> </a>
+<a name="ln692">class FormLich : public Form</a>
+<a name="ln693">{</a>
+<a name="ln694">private:</a>
+<a name="ln695">    FormLich() : Form(transformation::lich) { }</a>
+<a name="ln696">    DISALLOW_COPY_AND_ASSIGN(FormLich);</a>
+<a name="ln697">public:</a>
+<a name="ln698">    static const FormLich &amp;instance() { static FormLich inst; return inst; }</a>
+<a name="ln699"> </a>
+<a name="ln700">    /**</a>
+<a name="ln701">     * Get a message for transforming into this form.</a>
+<a name="ln702">     */</a>
+<a name="ln703">    string transform_message(transformation /*previous_trans*/) const override</a>
+<a name="ln704">    {</a>
+<a name="ln705">        return &quot;Your body is suffused with negative energy!&quot;;</a>
+<a name="ln706">    }</a>
+<a name="ln707"> </a>
+<a name="ln708">    /**</a>
+<a name="ln709">     * Get a message for untransforming from this form.</a>
+<a name="ln710">     */</a>
+<a name="ln711">    string get_untransform_message() const override</a>
+<a name="ln712">    {</a>
+<a name="ln713">        if (you.undead_state() == US_ALIVE)</a>
+<a name="ln714">            return &quot;You feel yourself come back to life.&quot;;</a>
+<a name="ln715">        return &quot;You feel your undeath return to normal.&quot;;</a>
+<a name="ln716">        // ^^^ vampires only, probably</a>
+<a name="ln717">    }</a>
+<a name="ln718">};</a>
+<a name="ln719"> </a>
+<a name="ln720">class FormBat : public Form</a>
+<a name="ln721">{</a>
+<a name="ln722">private:</a>
+<a name="ln723">    FormBat() : Form(transformation::bat) { }</a>
+<a name="ln724">    DISALLOW_COPY_AND_ASSIGN(FormBat);</a>
+<a name="ln725">public:</a>
+<a name="ln726">    static const FormBat &amp;instance() { static FormBat inst; return inst; }</a>
+<a name="ln727"> </a>
+<a name="ln728">    /**</a>
+<a name="ln729">     * Get an monster type corresponding to the transformation.</a>
+<a name="ln730">     *</a>
+<a name="ln731">     * (Used for console player glyphs.)</a>
+<a name="ln732">     *</a>
+<a name="ln733">     * @return  A monster type corresponding to the player in this form.</a>
+<a name="ln734">     */</a>
+<a name="ln735">    monster_type get_equivalent_mons() const override</a>
+<a name="ln736">    {</a>
+<a name="ln737">        return you.species == SP_VAMPIRE ? MONS_VAMPIRE_BAT : MONS_BAT;</a>
+<a name="ln738">    }</a>
+<a name="ln739"> </a>
+<a name="ln740">    string get_description(bool past_tense) const override</a>
+<a name="ln741">    {</a>
+<a name="ln742">        return make_stringf(&quot;You %s in %sbat-form.&quot;,</a>
+<a name="ln743">                            past_tense ? &quot;were&quot; : &quot;are&quot;,</a>
+<a name="ln744">                            you.species == SP_VAMPIRE ?  &quot;vampire-&quot; : &quot;&quot;);</a>
+<a name="ln745">    }</a>
+<a name="ln746"> </a>
+<a name="ln747">    /**</a>
+<a name="ln748">     * Get a string describing the form you're turning into. (If not the same</a>
+<a name="ln749">     * as the one used to describe this form in @.</a>
+<a name="ln750">     */</a>
+<a name="ln751">    string get_transform_description() const override</a>
+<a name="ln752">    {</a>
+<a name="ln753">        return make_stringf(&quot;a %sbat.&quot;,</a>
+<a name="ln754">                            you.species == SP_VAMPIRE ? &quot;vampire &quot; : &quot;&quot;);</a>
+<a name="ln755">    }</a>
+<a name="ln756">};</a>
+<a name="ln757"> </a>
+<a name="ln758">class FormPig : public Form</a>
+<a name="ln759">{</a>
+<a name="ln760">private:</a>
+<a name="ln761">    FormPig() : Form(transformation::pig) { }</a>
+<a name="ln762">    DISALLOW_COPY_AND_ASSIGN(FormPig);</a>
+<a name="ln763">public:</a>
+<a name="ln764">    static const FormPig &amp;instance() { static FormPig inst; return inst; }</a>
+<a name="ln765">};</a>
+<a name="ln766"> </a>
+<a name="ln767">class FormAppendage : public Form</a>
+<a name="ln768">{</a>
+<a name="ln769">private:</a>
+<a name="ln770">    FormAppendage() : Form(transformation::appendage) { }</a>
+<a name="ln771">    DISALLOW_COPY_AND_ASSIGN(FormAppendage);</a>
+<a name="ln772">public:</a>
+<a name="ln773">    static const FormAppendage &amp;instance()</a>
+<a name="ln774">    {</a>
+<a name="ln775">        static FormAppendage inst;</a>
+<a name="ln776">        return inst;</a>
+<a name="ln777">    }</a>
+<a name="ln778"> </a>
+<a name="ln779">    string get_description(bool past_tense) const override</a>
+<a name="ln780">    {</a>
+<a name="ln781">        if (you.attribute[ATTR_APPENDAGE] == MUT_TENTACLE_SPIKE)</a>
+<a name="ln782">        {</a>
+<a name="ln783">            return make_stringf(&quot;One of your tentacles %s a temporary spike.&quot;,</a>
+<a name="ln784">                                 past_tense ? &quot;had&quot; : &quot;has&quot;);</a>
+<a name="ln785">        }</a>
+<a name="ln786"> </a>
+<a name="ln787">        return make_stringf(&quot;You %s grown temporary %s.&quot;,</a>
+<a name="ln788">                            past_tense ? &quot;had&quot; : &quot;have&quot;,</a>
+<a name="ln789">                            mutation_name((mutation_type)</a>
+<a name="ln790">                                          you.attribute[ATTR_APPENDAGE]));</a>
+<a name="ln791">    }</a>
+<a name="ln792"> </a>
+<a name="ln793">    /**</a>
+<a name="ln794">     * Get a message for transforming into this form.</a>
+<a name="ln795">     */</a>
+<a name="ln796">    string transform_message(transformation /*previous_trans*/) const override</a>
+<a name="ln797">    {</a>
+<a name="ln798">        // ATTR_APPENDAGE must be set earlier!</a>
+<a name="ln799">        switch (you.attribute[ATTR_APPENDAGE])</a>
+<a name="ln800">        {</a>
+<a name="ln801">            case MUT_HORNS:</a>
+<a name="ln802">                return &quot;You grow a pair of large bovine horns.&quot;;</a>
+<a name="ln803">            case MUT_TENTACLE_SPIKE:</a>
+<a name="ln804">                return &quot;One of your tentacles grows a vicious spike.&quot;;</a>
+<a name="ln805">            case MUT_TALONS:</a>
+<a name="ln806">                return &quot;Your feet morph into talons.&quot;;</a>
+<a name="ln807">            default:</a>
+<a name="ln808">                 die(&quot;Unknown beastly appendage.&quot;);</a>
+<a name="ln809">        }</a>
+<a name="ln810">    }</a>
+<a name="ln811"> </a>
+<a name="ln812">    /**</a>
+<a name="ln813">     * Get a message for untransforming from this form. (Handled elsewhere.)</a>
+<a name="ln814">     */</a>
+<a name="ln815">    string get_untransform_message() const override { return &quot;&quot;; }</a>
+<a name="ln816">};</a>
+<a name="ln817"> </a>
+<a name="ln818">class FormTree : public Form</a>
+<a name="ln819">{</a>
+<a name="ln820">private:</a>
+<a name="ln821">    FormTree() : Form(transformation::tree) { }</a>
+<a name="ln822">    DISALLOW_COPY_AND_ASSIGN(FormTree);</a>
+<a name="ln823">public:</a>
+<a name="ln824">    static const FormTree &amp;instance() { static FormTree inst; return inst; }</a>
+<a name="ln825"> </a>
+<a name="ln826">    /**</a>
+<a name="ln827">     * Get a message for untransforming from this form.</a>
+<a name="ln828">     */</a>
+<a name="ln829">    string get_untransform_message() const override { return &quot;You feel less wooden.&quot;; }</a>
+<a name="ln830">};</a>
+<a name="ln831"> </a>
+<a name="ln832">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln833">class FormPorcupine : public Form</a>
+<a name="ln834">{</a>
+<a name="ln835">private:</a>
+<a name="ln836">    FormPorcupine() : Form(transformation::porcupine) { }</a>
+<a name="ln837">    DISALLOW_COPY_AND_ASSIGN(FormPorcupine);</a>
+<a name="ln838">public:</a>
+<a name="ln839">    static const FormPorcupine &amp;instance()</a>
+<a name="ln840">    {</a>
+<a name="ln841">        static FormPorcupine inst;</a>
+<a name="ln842">        return inst;</a>
+<a name="ln843">    }</a>
+<a name="ln844">};</a>
+<a name="ln845">#endif</a>
+<a name="ln846"> </a>
+<a name="ln847">class FormWisp : public Form</a>
+<a name="ln848">{</a>
+<a name="ln849">private:</a>
+<a name="ln850">    FormWisp() : Form(transformation::wisp) { }</a>
+<a name="ln851">    DISALLOW_COPY_AND_ASSIGN(FormWisp);</a>
+<a name="ln852">public:</a>
+<a name="ln853">    static const FormWisp &amp;instance() { static FormWisp inst; return inst; }</a>
+<a name="ln854">};</a>
+<a name="ln855"> </a>
+<a name="ln856">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln857">class FormJelly : public Form</a>
+<a name="ln858">{</a>
+<a name="ln859">private:</a>
+<a name="ln860">    FormJelly() : Form(transformation::jelly) { }</a>
+<a name="ln861">    DISALLOW_COPY_AND_ASSIGN(FormJelly);</a>
+<a name="ln862">public:</a>
+<a name="ln863">    static const FormJelly &amp;instance() { static FormJelly inst; return inst; }</a>
+<a name="ln864">};</a>
+<a name="ln865">#endif</a>
+<a name="ln866"> </a>
+<a name="ln867">class FormFungus : public Form</a>
+<a name="ln868">{</a>
+<a name="ln869">private:</a>
+<a name="ln870">    FormFungus() : Form(transformation::fungus) { }</a>
+<a name="ln871">    DISALLOW_COPY_AND_ASSIGN(FormFungus);</a>
+<a name="ln872">public:</a>
+<a name="ln873">    static const FormFungus &amp;instance() { static FormFungus inst; return inst; }</a>
+<a name="ln874"> </a>
+<a name="ln875">    /**</a>
+<a name="ln876">     * Get a message for untransforming from this form.</a>
+<a name="ln877">     */</a>
+<a name="ln878">    string get_untransform_message() const override { return &quot;You stop sporulating.&quot;; }</a>
+<a name="ln879">};</a>
+<a name="ln880"> </a>
+<a name="ln881">class FormShadow : public Form</a>
+<a name="ln882">{</a>
+<a name="ln883">private:</a>
+<a name="ln884">    FormShadow() : Form(transformation::shadow) { }</a>
+<a name="ln885">    DISALLOW_COPY_AND_ASSIGN(FormShadow);</a>
+<a name="ln886">public:</a>
+<a name="ln887">    static const FormShadow &amp;instance() { static FormShadow inst; return inst; }</a>
+<a name="ln888"> </a>
+<a name="ln889">    /**</a>
+<a name="ln890">     * Get a message for untransforming from this form.</a>
+<a name="ln891">     */</a>
+<a name="ln892">    string get_untransform_message() const override</a>
+<a name="ln893">    {</a>
+<a name="ln894">        if (you.invisible())</a>
+<a name="ln895">            return &quot;You feel less shadowy.&quot;;</a>
+<a name="ln896">        return &quot;You emerge from the shadows.&quot;;</a>
+<a name="ln897">    }</a>
+<a name="ln898">};</a>
+<a name="ln899"> </a>
+<a name="ln900">/**</a>
+<a name="ln901"> * Set the number of hydra heads that the player currently has.</a>
+<a name="ln902"> *</a>
+<a name="ln903"> * @param heads the new number of heads you should have.</a>
+<a name="ln904"> */</a>
+<a name="ln905">void set_hydra_form_heads(int heads)</a>
+<a name="ln906">{</a>
+<a name="ln907">    you.props[HYDRA_FORM_HEADS_KEY] = min(MAX_HYDRA_HEADS, max(1, heads));</a>
+<a name="ln908">    you.wield_change = true;</a>
+<a name="ln909">}</a>
+<a name="ln910"> </a>
+<a name="ln911">class FormHydra : public Form</a>
+<a name="ln912">{</a>
+<a name="ln913">private:</a>
+<a name="ln914">    FormHydra() : Form(transformation::hydra) { }</a>
+<a name="ln915">    DISALLOW_COPY_AND_ASSIGN(FormHydra);</a>
+<a name="ln916">public:</a>
+<a name="ln917">    static const FormHydra &amp;instance() { static FormHydra inst; return inst; }</a>
+<a name="ln918"> </a>
+<a name="ln919">    /**</a>
+<a name="ln920">     * Get a string describing the form you're turning into.</a>
+<a name="ln921">     */</a>
+<a name="ln922">    string get_transform_description() const override</a>
+<a name="ln923">    {</a>
+<a name="ln924">        const auto heads = you.heads();</a>
+<a name="ln925">        const string headstr = (heads &lt; 11 ? number_in_words(heads)</a>
+<a name="ln926">                                           : to_string(heads))</a>
+<a name="ln927">                             + &quot;-headed hydra.&quot;;</a>
+<a name="ln928">        return article_a(headstr);</a>
+<a name="ln929">    }</a>
+<a name="ln930"> </a>
+<a name="ln931">    /**</a>
+<a name="ln932">     * @ description</a>
+<a name="ln933">     */</a>
+<a name="ln934">    string get_description(bool past_tense) const override</a>
+<a name="ln935">    {</a>
+<a name="ln936">        return make_stringf(&quot;You %s %s&quot;,</a>
+<a name="ln937">                            past_tense ? &quot;were&quot; : &quot;are&quot;,</a>
+<a name="ln938">                            get_transform_description().c_str());</a>
+<a name="ln939">    }</a>
+<a name="ln940"> </a>
+<a name="ln941">    /**</a>
+<a name="ln942">     * Get the name displayed in the UI for the form's unarmed-combat 'weapon'.</a>
+<a name="ln943">     */</a>
+<a name="ln944">    string get_uc_attack_name(string /*default_name*/) const override</a>
+<a name="ln945">    {</a>
+<a name="ln946">        return make_stringf(&quot;Bite (x%d)&quot;, you.heads());</a>
+<a name="ln947">    }</a>
+<a name="ln948"> </a>
+<a name="ln949">    /**</a>
+<a name="ln950">     * Find the player's base unarmed damage in this form.</a>
+<a name="ln951">     */</a>
+<a name="ln952">    int get_base_unarmed_damage() const override</a>
+<a name="ln953">    {</a>
+<a name="ln954">        // 3 damage per head for 1-10</a>
+<a name="ln955">        const int normal_heads_damage = min(you.heads(), 10) * 3;</a>
+<a name="ln956">        // 3/2 damage per head for 11-20 (they get in each-other's way)</a>
+<a name="ln957">            // (and also a 62-base-damage form scares me)</a>
+<a name="ln958">        const int too_many_heads_damage = max(0, you.heads() - 10)</a>
+<a name="ln959">                                            * 3 / 2;</a>
+<a name="ln960">        // 2-47 (though more like 14-32 in practical ranges...)</a>
+<a name="ln961">        return 2 + normal_heads_damage + too_many_heads_damage;</a>
+<a name="ln962">    }</a>
+<a name="ln963"> </a>
+<a name="ln964">};</a>
+<a name="ln965"> </a>
+<a name="ln966">static const Form* forms[] =</a>
+<a name="ln967">{</a>
+<a name="ln968">    &amp;FormNone::instance(),</a>
+<a name="ln969">    &amp;FormSpider::instance(),</a>
+<a name="ln970">    &amp;FormBlade::instance(),</a>
+<a name="ln971">    &amp;FormStatue::instance(),</a>
+<a name="ln972"> </a>
+<a name="ln973">    &amp;FormIce::instance(),</a>
+<a name="ln974">    &amp;FormDragon::instance(),</a>
+<a name="ln975">    &amp;FormLich::instance(),</a>
+<a name="ln976">    &amp;FormBat::instance(),</a>
+<a name="ln977"> </a>
+<a name="ln978">    &amp;FormPig::instance(),</a>
+<a name="ln979">    &amp;FormAppendage::instance(),</a>
+<a name="ln980">    &amp;FormTree::instance(),</a>
+<a name="ln981">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln982">    &amp;FormPorcupine::instance(),</a>
+<a name="ln983">#endif</a>
+<a name="ln984"> </a>
+<a name="ln985">    &amp;FormWisp::instance(),</a>
+<a name="ln986">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln987">    &amp;FormJelly::instance(),</a>
+<a name="ln988">#endif</a>
+<a name="ln989">    &amp;FormFungus::instance(),</a>
+<a name="ln990">    &amp;FormShadow::instance(),</a>
+<a name="ln991">    &amp;FormHydra::instance(),</a>
+<a name="ln992">};</a>
+<a name="ln993"> </a>
+<a name="ln994">const Form* get_form(transformation xform)</a>
+<a name="ln995">{</a>
+<a name="ln996">    COMPILE_CHECK(ARRAYSZ(forms) == NUM_TRANSFORMS);</a>
+<a name="ln997">    const int form = static_cast&lt;int&gt;(xform);</a>
+<a name="ln998">    ASSERT_RANGE(form, 0, NUM_TRANSFORMS);</a>
+<a name="ln999">    return forms[form];</a>
+<a name="ln1000">}</a>
+<a name="ln1001"> </a>
+<a name="ln1002"> </a>
+<a name="ln1003">/**</a>
+<a name="ln1004"> * Get the wizmode name of a form.</a>
+<a name="ln1005"> *</a>
+<a name="ln1006"> * @param form      The form in question.</a>
+<a name="ln1007"> * @return          The form's casual, wizmode name.</a>
+<a name="ln1008"> */</a>
+<a name="ln1009">const char* transform_name(transformation form)</a>
+<a name="ln1010">{</a>
+<a name="ln1011">    return get_form(form)-&gt;wiz_name.c_str();</a>
+<a name="ln1012">}</a>
+<a name="ln1013"> </a>
+<a name="ln1014">/**</a>
+<a name="ln1015"> * Can the player (w)ield weapons when in the given form?</a>
+<a name="ln1016"> *</a>
+<a name="ln1017"> * @param form      The form in question.</a>
+<a name="ln1018"> * @return          Whether the player can wield items when in that form.</a>
+<a name="ln1019">*/</a>
+<a name="ln1020">bool form_can_wield(transformation form)</a>
+<a name="ln1021">{</a>
+<a name="ln1022">    return get_form(form)-&gt;can_wield();</a>
+<a name="ln1023">}</a>
+<a name="ln1024"> </a>
+<a name="ln1025">/**</a>
+<a name="ln1026"> * Can the player (W)ear armour when in the given form?</a>
+<a name="ln1027"> *</a>
+<a name="ln1028"> * @param form      The form in question.</a>
+<a name="ln1029"> * @return          Whether the player can wear armour when in that form.</a>
+<a name="ln1030"> */</a>
+<a name="ln1031">bool form_can_wear(transformation form)</a>
+<a name="ln1032">{</a>
+<a name="ln1033">    return !testbits(get_form(form)-&gt;blocked_slots, EQF_WEAR);</a>
+<a name="ln1034">}</a>
+<a name="ln1035"> </a>
+<a name="ln1036">/**</a>
+<a name="ln1037"> * Can the player fly, if in this form?</a>
+<a name="ln1038"> *</a>
+<a name="ln1039"> * DOES consider player state besides form.</a>
+<a name="ln1040"> * @param form      The form in question.</a>
+<a name="ln1041"> * @return          Whether the player will be able to fly in this form.</a>
+<a name="ln1042"> */</a>
+<a name="ln1043">bool form_can_fly(transformation form)</a>
+<a name="ln1044">{</a>
+<a name="ln1045">    return get_form(form)-&gt;player_can_fly();</a>
+<a name="ln1046">}</a>
+<a name="ln1047"> </a>
+<a name="ln1048"> </a>
+<a name="ln1049">/**</a>
+<a name="ln1050"> * Can the player swim, if in this form?</a>
+<a name="ln1051"> *</a>
+<a name="ln1052"> * (Swimming = traversing deep &amp; shallow water without penalties; includes</a>
+<a name="ln1053"> * floating (ice form) and wading forms (giants - currently just dragon form,</a>
+<a name="ln1054"> * which normally flies anyway...))</a>
+<a name="ln1055"> *</a>
+<a name="ln1056"> * DOES consider player state besides form.</a>
+<a name="ln1057"> * @param form      The form in question.</a>
+<a name="ln1058"> * @return          Whether the player will be able to swim in this form.</a>
+<a name="ln1059"> */</a>
+<a name="ln1060">bool form_can_swim(transformation form)</a>
+<a name="ln1061">{</a>
+<a name="ln1062">    return get_form(form)-&gt;player_can_swim();</a>
+<a name="ln1063">}</a>
+<a name="ln1064"> </a>
+<a name="ln1065">/**</a>
+<a name="ln1066"> * Can the player survive in deep water when in the given form?</a>
+<a name="ln1067"> *</a>
+<a name="ln1068"> * Doesn't count flight or beogh water-walking.</a>
+<a name="ln1069"> *</a>
+<a name="ln1070"> * @param form      The form in question.</a>
+<a name="ln1071"> * @return          Whether the player won't be killed when entering deep water</a>
+<a name="ln1072"> *                  in that form.</a>
+<a name="ln1073"> */</a>
+<a name="ln1074">bool form_likes_water(transformation form)</a>
+<a name="ln1075">{</a>
+<a name="ln1076">    // Grey dracs can't swim, so can't statue form merfolk/octopodes</a>
+<a name="ln1077">    // -- yet they can still survive in water.</a>
+<a name="ln1078">    if (species_likes_water(you.species)</a>
+<a name="ln1079">        &amp;&amp; (form == transformation::statue</a>
+<a name="ln1080">            || !get_form(form)-&gt;forbids_swimming()))</a>
+<a name="ln1081">    {</a>
+<a name="ln1082">        return true;</a>
+<a name="ln1083">    }</a>
+<a name="ln1084"> </a>
+<a name="ln1085">    // otherwise, you gotta swim to survive!</a>
+<a name="ln1086">    return form_can_swim(form);</a>
+<a name="ln1087">}</a>
+<a name="ln1088"> </a>
+<a name="ln1089">// Used to mark transformations which override species intrinsics.</a>
+<a name="ln1090">bool form_changed_physiology(transformation form)</a>
+<a name="ln1091">{</a>
+<a name="ln1092">    return form != transformation::none</a>
+<a name="ln1093">        &amp;&amp; form != transformation::appendage</a>
+<a name="ln1094">        &amp;&amp; form != transformation::blade_hands;</a>
+<a name="ln1095">}</a>
+<a name="ln1096"> </a>
+<a name="ln1097">/**</a>
+<a name="ln1098"> * Does this form have blood?</a>
+<a name="ln1099"> *</a>
+<a name="ln1100"> * @param form      The form in question.</a>
+<a name="ln1101"> * @return          Whether the form can bleed, sublime, etc.</a>
+<a name="ln1102"> */</a>
+<a name="ln1103">bool form_can_bleed(transformation form)</a>
+<a name="ln1104">{</a>
+<a name="ln1105">    return get_form(form)-&gt;can_bleed != FC_FORBID;</a>
+<a name="ln1106">}</a>
+<a name="ln1107"> </a>
+<a name="ln1108">// Used to mark forms which keep most form-based mutations.</a>
+<a name="ln1109">bool form_keeps_mutations(transformation form)</a>
+<a name="ln1110">{</a>
+<a name="ln1111">    return get_form(form)-&gt;keeps_mutations;</a>
+<a name="ln1112">}</a>
+<a name="ln1113"> </a>
+<a name="ln1114">static set&lt;equipment_type&gt;</a>
+<a name="ln1115">_init_equipment_removal(transformation form)</a>
+<a name="ln1116">{</a>
+<a name="ln1117">    set&lt;equipment_type&gt; result;</a>
+<a name="ln1118">    if (!form_can_wield(form) &amp;&amp; you.weapon() || you.melded[EQ_WEAPON])</a>
+<a name="ln1119">        result.insert(EQ_WEAPON);</a>
+<a name="ln1120"> </a>
+<a name="ln1121">    // Liches can't wield holy weapons.</a>
+<a name="ln1122">    if (form == transformation::lich &amp;&amp; you.weapon()</a>
+<a name="ln1123">        &amp;&amp; is_holy_item(*you.weapon()))</a>
+<a name="ln1124">    {</a>
+<a name="ln1125">        result.insert(EQ_WEAPON);</a>
+<a name="ln1126">    }</a>
+<a name="ln1127"> </a>
+<a name="ln1128">    for (int i = EQ_FIRST_EQUIP; i &lt; NUM_EQUIP; ++i)</a>
+<a name="ln1129">    {</a>
+<a name="ln1130">        if (i == EQ_WEAPON)</a>
+<a name="ln1131">            continue;</a>
+<a name="ln1132">        const equipment_type eq = static_cast&lt;equipment_type&gt;(i);</a>
+<a name="ln1133">        const item_def *pitem = you.slot_item(eq, true);</a>
+<a name="ln1134"> </a>
+<a name="ln1135">        if (pitem &amp;&amp; (get_form(form)-&gt;blocked_slots &amp; SLOTF(i)</a>
+<a name="ln1136">                      || (i != EQ_RING_AMULET</a>
+<a name="ln1137">                          &amp;&amp; !get_form(form)-&gt;can_wear_item(*pitem))))</a>
+<a name="ln1138">        {</a>
+<a name="ln1139">            result.insert(eq);</a>
+<a name="ln1140">        }</a>
+<a name="ln1141">    }</a>
+<a name="ln1142">    return result;</a>
+<a name="ln1143">}</a>
+<a name="ln1144"> </a>
+<a name="ln1145">static void _remove_equipment(const set&lt;equipment_type&gt;&amp; removed,</a>
+<a name="ln1146">                              transformation form,</a>
+<a name="ln1147">                              bool meld = true, bool mutation = false)</a>
+<a name="ln1148">{</a>
+<a name="ln1149">    // Meld items into you in (reverse) order. (set is a sorted container)</a>
+<a name="ln1150">    for (const equipment_type e : removed)</a>
+<a name="ln1151">    {</a>
+<a name="ln1152">        item_def *equip = you.slot_item(e, true);</a>
+<a name="ln1153">        if (equip == nullptr)</a>
+<a name="ln1154">            continue;</a>
+<a name="ln1155"> </a>
+<a name="ln1156">        bool unequip = !meld;</a>
+<a name="ln1157">        if (!unequip &amp;&amp; e == EQ_WEAPON)</a>
+<a name="ln1158">        {</a>
+<a name="ln1159">            if (form_can_wield(form))</a>
+<a name="ln1160">                unequip = true;</a>
+<a name="ln1161">            if (!is_weapon(*equip))</a>
+<a name="ln1162">                unequip = true;</a>
+<a name="ln1163">        }</a>
+<a name="ln1164"> </a>
+<a name="ln1165">        mprf(&quot;%s %s%s %s&quot;, equip-&gt;name(DESC_YOUR).c_str(),</a>
+<a name="ln1166">             unequip ? &quot;fall&quot; : &quot;meld&quot;,</a>
+<a name="ln1167">             equip-&gt;quantity &gt; 1 ? &quot;&quot; : &quot;s&quot;,</a>
+<a name="ln1168">             unequip ? &quot;away!&quot; : &quot;into your body.&quot;);</a>
+<a name="ln1169"> </a>
+<a name="ln1170">        if (unequip)</a>
+<a name="ln1171">        {</a>
+<a name="ln1172">            if (e == EQ_WEAPON)</a>
+<a name="ln1173">            {</a>
+<a name="ln1174">                unwield_item(!you.berserk());</a>
+<a name="ln1175">                canned_msg(MSG_EMPTY_HANDED_NOW);</a>
+<a name="ln1176">            }</a>
+<a name="ln1177">            else</a>
+<a name="ln1178">                unequip_item(e);</a>
+<a name="ln1179"> </a>
+<a name="ln1180">            if (mutation)</a>
+<a name="ln1181">            {</a>
+<a name="ln1182">                // A mutation made us not only lose an equipment slot</a>
+<a name="ln1183">                // but actually removed a worn item: Funny!</a>
+<a name="ln1184">                xom_is_stimulated(is_artefact(*equip) ? 200 : 100);</a>
+<a name="ln1185">            }</a>
+<a name="ln1186">        }</a>
+<a name="ln1187">        else</a>
+<a name="ln1188">            meld_slot(e);</a>
+<a name="ln1189">    }</a>
+<a name="ln1190"> </a>
+<a name="ln1191">    if (meld)</a>
+<a name="ln1192">    {</a>
+<a name="ln1193">        for (const equipment_type e : removed)</a>
+<a name="ln1194">            if (you.slot_item(e, true) != nullptr)</a>
+<a name="ln1195">                unequip_effect(e, you.equip[e], true, true);</a>
+<a name="ln1196">    }</a>
+<a name="ln1197">}</a>
+<a name="ln1198"> </a>
+<a name="ln1199">static void _unmeld_equipment_type(equipment_type e)</a>
+<a name="ln1200">{</a>
+<a name="ln1201">    item_def&amp; item = you.inv[you.equip[e]];</a>
+<a name="ln1202">    bool force_remove = false;</a>
+<a name="ln1203"> </a>
+<a name="ln1204">    if (e == EQ_WEAPON)</a>
+<a name="ln1205">    {</a>
+<a name="ln1206">        if (you.slot_item(EQ_SHIELD)</a>
+<a name="ln1207">            &amp;&amp; is_shield_incompatible(item, you.slot_item(EQ_SHIELD)))</a>
+<a name="ln1208">        {</a>
+<a name="ln1209">            force_remove = true;</a>
+<a name="ln1210">        }</a>
+<a name="ln1211">    }</a>
+<a name="ln1212">    else if (item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln1213">    {</a>
+<a name="ln1214">        // This could happen if the player was mutated during the form.</a>
+<a name="ln1215">        if (!can_wear_armour(item, false, false))</a>
+<a name="ln1216">            force_remove = true;</a>
+<a name="ln1217"> </a>
+<a name="ln1218">        // If you switched weapons during the transformation, make</a>
+<a name="ln1219">        // sure you can still wear your shield.</a>
+<a name="ln1220">        // (This is only possible with Statue Form.)</a>
+<a name="ln1221">        if (e == EQ_SHIELD &amp;&amp; you.weapon()</a>
+<a name="ln1222">            &amp;&amp; is_shield_incompatible(*you.weapon(), &amp;item))</a>
+<a name="ln1223">        {</a>
+<a name="ln1224">            force_remove = true;</a>
+<a name="ln1225">        }</a>
+<a name="ln1226">    }</a>
+<a name="ln1227"> </a>
+<a name="ln1228">    if (force_remove)</a>
+<a name="ln1229">    {</a>
+<a name="ln1230">        mprf(&quot;%s is pushed off your body!&quot;, item.name(DESC_YOUR).c_str());</a>
+<a name="ln1231">        unequip_item(e);</a>
+<a name="ln1232">    }</a>
+<a name="ln1233">    else</a>
+<a name="ln1234">    {</a>
+<a name="ln1235">        mprf(&quot;%s unmelds from your body.&quot;, item.name(DESC_YOUR).c_str());</a>
+<a name="ln1236">        unmeld_slot(e);</a>
+<a name="ln1237">    }</a>
+<a name="ln1238">}</a>
+<a name="ln1239"> </a>
+<a name="ln1240">static void _unmeld_equipment(const set&lt;equipment_type&gt;&amp; melded)</a>
+<a name="ln1241">{</a>
+<a name="ln1242">    // Unmeld items in order.</a>
+<a name="ln1243">    for (const equipment_type e : melded)</a>
+<a name="ln1244">    {</a>
+<a name="ln1245">        if (you.equip[e] == -1)</a>
+<a name="ln1246">            continue;</a>
+<a name="ln1247"> </a>
+<a name="ln1248">        _unmeld_equipment_type(e);</a>
+<a name="ln1249">    }</a>
+<a name="ln1250"> </a>
+<a name="ln1251">    for (const equipment_type e : melded)</a>
+<a name="ln1252">        if (you.equip[e] != -1)</a>
+<a name="ln1253">            equip_effect(e, you.equip[e], true, true);</a>
+<a name="ln1254">}</a>
+<a name="ln1255"> </a>
+<a name="ln1256">void unmeld_one_equip(equipment_type eq)</a>
+<a name="ln1257">{</a>
+<a name="ln1258">    if (eq &gt;= EQ_HELMET &amp;&amp; eq &lt;= EQ_BOOTS)</a>
+<a name="ln1259">    {</a>
+<a name="ln1260">        const item_def* arm = you.slot_item(EQ_BODY_ARMOUR, true);</a>
+<a name="ln1261">        if (arm &amp;&amp; is_unrandom_artefact(*arm, UNRAND_LEAR))</a>
+<a name="ln1262">            eq = EQ_BODY_ARMOUR;</a>
+<a name="ln1263">    }</a>
+<a name="ln1264"> </a>
+<a name="ln1265">    set&lt;equipment_type&gt; e;</a>
+<a name="ln1266">    e.insert(eq);</a>
+<a name="ln1267">    _unmeld_equipment(e);</a>
+<a name="ln1268">}</a>
+<a name="ln1269"> </a>
+<a name="ln1270">void remove_one_equip(equipment_type eq, bool meld, bool mutation)</a>
+<a name="ln1271">{</a>
+<a name="ln1272">    if (player_equip_unrand(UNRAND_LEAR) &amp;&amp; eq &gt;= EQ_HELMET &amp;&amp; eq &lt;= EQ_BOOTS)</a>
+<a name="ln1273">        eq = EQ_BODY_ARMOUR;</a>
+<a name="ln1274"> </a>
+<a name="ln1275">    set&lt;equipment_type&gt; r;</a>
+<a name="ln1276">    r.insert(eq);</a>
+<a name="ln1277">    _remove_equipment(r, you.form, meld, mutation);</a>
+<a name="ln1278">}</a>
+<a name="ln1279"> </a>
+<a name="ln1280">/**</a>
+<a name="ln1281"> * Get an monster type corresponding to the player's current form.</a>
+<a name="ln1282"> *</a>
+<a name="ln1283"> * (Used for console player glyphs.)</a>
+<a name="ln1284"> *</a>
+<a name="ln1285"> * @return  A monster type corresponding to the player in the form.</a>
+<a name="ln1286"> */</a>
+<a name="ln1287">monster_type transform_mons()</a>
+<a name="ln1288">{</a>
+<a name="ln1289">    return get_form()-&gt;get_equivalent_mons();</a>
+<a name="ln1290">}</a>
+<a name="ln1291"> </a>
+<a name="ln1292">string blade_parts(bool terse)</a>
+<a name="ln1293">{</a>
+<a name="ln1294">    string str;</a>
+<a name="ln1295"> </a>
+<a name="ln1296">    if (you.species == SP_FELID)</a>
+<a name="ln1297">        str = terse ? &quot;paw&quot; : &quot;front paw&quot;;</a>
+<a name="ln1298">    else if (you.species == SP_OCTOPODE)</a>
+<a name="ln1299">        str = &quot;tentacle&quot;;</a>
+<a name="ln1300">    else</a>
+<a name="ln1301">        str = &quot;hand&quot;;</a>
+<a name="ln1302"> </a>
+<a name="ln1303">    if (!you.get_mutation_level(MUT_MISSING_HAND))</a>
+<a name="ln1304">        str = pluralise(str);</a>
+<a name="ln1305"> </a>
+<a name="ln1306">    return str;</a>
+<a name="ln1307">}</a>
+<a name="ln1308"> </a>
+<a name="ln1309">// with a denominator of 10</a>
+<a name="ln1310">int form_hp_mod()</a>
+<a name="ln1311">{</a>
+<a name="ln1312">    return get_form()-&gt;hp_mod;</a>
+<a name="ln1313">}</a>
+<a name="ln1314"> </a>
+<a name="ln1315">static bool _flying_in_new_form(transformation which_trans)</a>
+<a name="ln1316">{</a>
+<a name="ln1317">    if (get_form(which_trans)-&gt;forbids_flight())</a>
+<a name="ln1318">        return false;</a>
+<a name="ln1319"> </a>
+<a name="ln1320">    // If our flight is uncancellable (or tenguish) then it's not from evoking</a>
+<a name="ln1321">    if (you.attribute[ATTR_FLIGHT_UNCANCELLABLE]</a>
+<a name="ln1322">        || you.permanent_flight() &amp;&amp; you.racial_permanent_flight())</a>
+<a name="ln1323">    {</a>
+<a name="ln1324">        return true;</a>
+<a name="ln1325">    }</a>
+<a name="ln1326"> </a>
+<a name="ln1327">    if (!you.duration[DUR_FLIGHT] &amp;&amp; !you.attribute[ATTR_PERM_FLIGHT])</a>
+<a name="ln1328">        return false;</a>
+<a name="ln1329"> </a>
+<a name="ln1330">    int sources = you.evokable_flight();</a>
+<a name="ln1331">    int sources_removed = 0;</a>
+<a name="ln1332">    for (auto eq : _init_equipment_removal(which_trans))</a>
+<a name="ln1333">    {</a>
+<a name="ln1334">        item_def *item = you.slot_item(eq, true);</a>
+<a name="ln1335">        if (item == nullptr)</a>
+<a name="ln1336">            continue;</a>
+<a name="ln1337">        item_info inf = get_item_info(*item);</a>
+<a name="ln1338"> </a>
+<a name="ln1339">        //similar code to safe_to_remove from item-use.cc</a>
+<a name="ln1340">        if (inf.is_type(OBJ_JEWELLERY, RING_FLIGHT))</a>
+<a name="ln1341">            sources_removed++;</a>
+<a name="ln1342">        if (inf.base_type == OBJ_ARMOUR &amp;&amp; inf.brand == SPARM_FLYING)</a>
+<a name="ln1343">            sources_removed++;</a>
+<a name="ln1344">        if (is_artefact(inf) &amp;&amp; artefact_known_property(inf, ARTP_FLY))</a>
+<a name="ln1345">            sources_removed++;</a>
+<a name="ln1346">    }</a>
+<a name="ln1347"> </a>
+<a name="ln1348">    return sources &gt; sources_removed;</a>
+<a name="ln1349">}</a>
+<a name="ln1350"> </a>
+<a name="ln1351">/**</a>
+<a name="ln1352"> * Check if it'd be lethal for the player to enter a form in a given terrain.</a>
+<a name="ln1353"> *</a>
+<a name="ln1354"> * In addition to checking whether the feature is dangerous for the form</a>
+<a name="ln1355"> * itself (form_likes_*), the function checks to see if the player is safe</a>
+<a name="ln1356"> * due to flying or similar effects.</a>
+<a name="ln1357"> *</a>
+<a name="ln1358"> * @param which_trans       The form being checked.</a>
+<a name="ln1359"> * @param feat              The dungeon feature to be checked for danger.</a>
+<a name="ln1360"> * @return                  If the feat is lethal for the player in the form.</a>
+<a name="ln1361"> */</a>
+<a name="ln1362">bool feat_dangerous_for_form(transformation which_trans,</a>
+<a name="ln1363">                             dungeon_feature_type feat)</a>
+<a name="ln1364">{</a>
+<a name="ln1365">    // Everything is okay if we can fly.</a>
+<a name="ln1366">    if (form_can_fly(which_trans) || _flying_in_new_form(which_trans))</a>
+<a name="ln1367">        return false;</a>
+<a name="ln1368"> </a>
+<a name="ln1369">    if (feat == DNGN_LAVA)</a>
+<a name="ln1370">        return true;</a>
+<a name="ln1371"> </a>
+<a name="ln1372">    if (feat == DNGN_DEEP_WATER)</a>
+<a name="ln1373">        return !you.can_water_walk() &amp;&amp; !form_likes_water(which_trans);</a>
+<a name="ln1374"> </a>
+<a name="ln1375">    return false;</a>
+<a name="ln1376">}</a>
+<a name="ln1377"> </a>
+<a name="ln1378">static mutation_type appendages[] =</a>
+<a name="ln1379">{</a>
+<a name="ln1380">    MUT_HORNS,</a>
+<a name="ln1381">    MUT_TENTACLE_SPIKE,</a>
+<a name="ln1382">    MUT_TALONS,</a>
+<a name="ln1383">};</a>
+<a name="ln1384"> </a>
+<a name="ln1385">static bool _slot_conflict(equipment_type eq)</a>
+<a name="ln1386">{</a>
+<a name="ln1387">    // Choose uncovered slots only. Melding could make people re-cast</a>
+<a name="ln1388">    // until they get something that doesn't conflict with their randart</a>
+<a name="ln1389">    // of überness.</a>
+<a name="ln1390">    if (you.equip[eq] != -1)</a>
+<a name="ln1391">    {</a>
+<a name="ln1392">        // Horns + hat is fine.</a>
+<a name="ln1393">        if (eq != EQ_HELMET</a>
+<a name="ln1394">            || you.melded[eq]</a>
+<a name="ln1395">            || is_hard_helmet(*(you.slot_item(eq))))</a>
+<a name="ln1396">        {</a>
+<a name="ln1397">            return true;</a>
+<a name="ln1398">        }</a>
+<a name="ln1399">    }</a>
+<a name="ln1400"> </a>
+<a name="ln1401">    for (int mut = 0; mut &lt; NUM_MUTATIONS; mut++)</a>
+<a name="ln1402">        if (you.has_mutation(static_cast&lt;mutation_type&gt;(mut)) &amp;&amp; eq == beastly_slot(mut))</a>
+<a name="ln1403">            return true;</a>
+<a name="ln1404"> </a>
+<a name="ln1405">    return false;</a>
+<a name="ln1406">}</a>
+<a name="ln1407"> </a>
+<a name="ln1408">static mutation_type _beastly_appendage()</a>
+<a name="ln1409">{</a>
+<a name="ln1410">    mutation_type chosen = NUM_MUTATIONS;</a>
+<a name="ln1411">    int count = 0;</a>
+<a name="ln1412"> </a>
+<a name="ln1413">    for (mutation_type app : appendages)</a>
+<a name="ln1414">    {</a>
+<a name="ln1415">        if (_slot_conflict(beastly_slot(app)))</a>
+<a name="ln1416">            continue;</a>
+<a name="ln1417">        if (physiology_mutation_conflict(app))</a>
+<a name="ln1418">            continue;</a>
+<a name="ln1419"> </a>
+<a name="ln1420">        if (one_chance_in(++count))</a>
+<a name="ln1421">            chosen = app;</a>
+<a name="ln1422">    }</a>
+<a name="ln1423">    return chosen;</a>
+<a name="ln1424">}</a>
+<a name="ln1425"> </a>
+<a name="ln1426">static bool _transformation_is_safe(transformation which_trans,</a>
+<a name="ln1427">                                    dungeon_feature_type feat,</a>
+<a name="ln1428">                                    string *fail_reason)</a>
+<a name="ln1429">{</a>
+<a name="ln1430">    if (!feat_dangerous_for_form(which_trans, feat))</a>
+<a name="ln1431">        return true;</a>
+<a name="ln1432"> </a>
+<a name="ln1433">    if (fail_reason)</a>
+<a name="ln1434">    {</a>
+<a name="ln1435">        *fail_reason = make_stringf(&quot;You would %s in your new form.&quot;,</a>
+<a name="ln1436">                                    feat == DNGN_DEEP_WATER ? &quot;drown&quot; : &quot;burn&quot;);</a>
+<a name="ln1437">    }</a>
+<a name="ln1438"> </a>
+<a name="ln1439">    return false;</a>
+<a name="ln1440">}</a>
+<a name="ln1441"> </a>
+<a name="ln1442">/**</a>
+<a name="ln1443"> * If we transform into the given form, will all of our stats remain above 0,</a>
+<a name="ln1444"> * based purely on the stat modifiers of the current &amp; destination form?</a>
+<a name="ln1445"> *</a>
+<a name="ln1446"> * May prompt the player.</a>
+<a name="ln1447"> *</a>
+<a name="ln1448"> * @param new_form  The form to check the safety of.</a>
+<a name="ln1449"> * @param quiet     Whether to prompt the player.</a>
+<a name="ln1450"> * @return          Whether it's okay to go ahead with the transformation.</a>
+<a name="ln1451"> */</a>
+<a name="ln1452">bool check_form_stat_safety(transformation new_form, bool quiet)</a>
+<a name="ln1453">{</a>
+<a name="ln1454">    const int str_mod = get_form(new_form)-&gt;str_mod - get_form()-&gt;str_mod;</a>
+<a name="ln1455">    const int dex_mod = get_form(new_form)-&gt;dex_mod - get_form()-&gt;dex_mod;</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    const bool bad_str = you.strength() &gt; 0 &amp;&amp; str_mod + you.strength() &lt;= 0;</a>
+<a name="ln1458">    const bool bad_dex = you.dex() &gt; 0 &amp;&amp; dex_mod + you.dex() &lt;= 0;</a>
+<a name="ln1459">    if (!bad_str &amp;&amp; !bad_dex)</a>
+<a name="ln1460">        return true;</a>
+<a name="ln1461">    if (quiet)</a>
+<a name="ln1462">        return false;</a>
+<a name="ln1463"> </a>
+<a name="ln1464">    string prompt = make_stringf(&quot;%s will reduce your %s to zero. Continue?&quot;,</a>
+<a name="ln1465">                                 new_form == transformation::none</a>
+<a name="ln1466">                                     ? &quot;Turning back&quot;</a>
+<a name="ln1467">                                     : &quot;Transforming&quot;,</a>
+<a name="ln1468">                                 bad_str ? &quot;strength&quot; : &quot;dexterity&quot;);</a>
+<a name="ln1469">    if (yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln1470">        return true;</a>
+<a name="ln1471"> </a>
+<a name="ln1472">    canned_msg(MSG_OK);</a>
+<a name="ln1473">    return false;</a>
+<a name="ln1474">}</a>
+<a name="ln1475"> </a>
+<a name="ln1476">static int _transform_duration(transformation which_trans, int pow)</a>
+<a name="ln1477">{</a>
+<a name="ln1478">    return get_form(which_trans)-&gt;get_duration(pow);</a>
+<a name="ln1479">}</a>
+<a name="ln1480"> </a>
+<a name="ln1481">static int _beastly_appendage_level(int appendage)</a>
+<a name="ln1482">{</a>
+<a name="ln1483">    switch (appendage)</a>
+<a name="ln1484">    {</a>
+<a name="ln1485">    case MUT_HORNS: return 2;</a>
+<a name="ln1486">    default:        return 3;</a>
+<a name="ln1487">    }</a>
+<a name="ln1488">}</a>
+<a name="ln1489"> </a>
+<a name="ln1490">/**</a>
+<a name="ln1491"> * Print an appropriate message when the number of heads the player has</a>
+<a name="ln1492"> * changes during a refresh of hydra form.</a>
+<a name="ln1493"> */</a>
+<a name="ln1494">static void _print_head_change_message(int old_heads, int new_heads)</a>
+<a name="ln1495">{</a>
+<a name="ln1496">    if (old_heads == new_heads)</a>
+<a name="ln1497">        return;</a>
+<a name="ln1498"> </a>
+<a name="ln1499">    const int delta = abs(old_heads - new_heads);</a>
+<a name="ln1500">    const bool plural = delta != 1;</a>
+<a name="ln1501">    if (old_heads &gt; new_heads)</a>
+<a name="ln1502">    {</a>
+<a name="ln1503">        if (plural)</a>
+<a name="ln1504">            mprf(&quot;%d of your heads shrink away.&quot;, delta);</a>
+<a name="ln1505">        else</a>
+<a name="ln1506">            mpr(&quot;One of your heads shrinks away.&quot;);</a>
+<a name="ln1507">        return;</a>
+<a name="ln1508">    }</a>
+<a name="ln1509"> </a>
+<a name="ln1510">    if (plural)</a>
+<a name="ln1511">        mprf(&quot;%d new heads grow.&quot;, delta);</a>
+<a name="ln1512">    else</a>
+<a name="ln1513">        mpr(&quot;A new head grows.&quot;);</a>
+<a name="ln1514">}</a>
+<a name="ln1515"> </a>
+<a name="ln1516">/**</a>
+<a name="ln1517"> * Is the player alive enough to become the given form?</a>
+<a name="ln1518"> *</a>
+<a name="ln1519"> * All undead can enter shadow form; vampires also can enter batform, and, when</a>
+<a name="ln1520"> * full, other forms (excepting lichform).</a>
+<a name="ln1521"> *</a>
+<a name="ln1522"> * @param which_trans   The tranformation which the player is undergoing</a>
+<a name="ln1523"> *                      (default you.form).</a>
+<a name="ln1524"> * @param involuntary   Whether the transformation is involuntary or not.</a>
+<a name="ln1525"> * @return              UFR_GOOD if the player is not blocked from entering the</a>
+<a name="ln1526"> *                      given form by their undead race; UFR_TOO_ALIVE if the</a>
+<a name="ln1527"> *                      player is too satiated as a vampire; UFR_TOO_DEAD if</a>
+<a name="ln1528"> *                      the player is too dead (or too thirsty as a vampire).</a>
+<a name="ln1529"> */</a>
+<a name="ln1530">undead_form_reason lifeless_prevents_form(transformation which_trans,</a>
+<a name="ln1531">                                          bool involuntary)</a>
+<a name="ln1532">{</a>
+<a name="ln1533">    if (!you.undead_state(false))</a>
+<a name="ln1534">        return UFR_GOOD; // not undead!</a>
+<a name="ln1535"> </a>
+<a name="ln1536">    if (which_trans == transformation::none)</a>
+<a name="ln1537">        return UFR_GOOD; // everything can become itself</a>
+<a name="ln1538"> </a>
+<a name="ln1539">    if (which_trans == transformation::shadow)</a>
+<a name="ln1540">        return UFR_GOOD; // even the undead can use dith's shadow form</a>
+<a name="ln1541"> </a>
+<a name="ln1542">    if (you.species != SP_VAMPIRE)</a>
+<a name="ln1543">        return UFR_TOO_DEAD; // ghouls &amp; mummies can't become anything else</a>
+<a name="ln1544"> </a>
+<a name="ln1545">    if (which_trans == transformation::lich)</a>
+<a name="ln1546">        return UFR_TOO_DEAD; // vampires can never lichform</a>
+<a name="ln1547"> </a>
+<a name="ln1548">    if (which_trans == transformation::bat) // can batform bloodless</a>
+<a name="ln1549">    {</a>
+<a name="ln1550">        if (involuntary)</a>
+<a name="ln1551">            return UFR_TOO_DEAD; // but not as a forced polymorph effect</a>
+<a name="ln1552"> </a>
+<a name="ln1553">        return !you.vampire_alive ? UFR_GOOD : UFR_TOO_ALIVE;</a>
+<a name="ln1554">    }</a>
+<a name="ln1555"> </a>
+<a name="ln1556">    // other forms can only be entered when alive</a>
+<a name="ln1557">    return you.vampire_alive ? UFR_GOOD : UFR_TOO_DEAD;</a>
+<a name="ln1558">}</a>
+<a name="ln1559"> </a>
+<a name="ln1560">/**</a>
+<a name="ln1561"> * Attempts to transform the player into the specified form.</a>
+<a name="ln1562"> *</a>
+<a name="ln1563"> * If the player is already in that form, attempt to refresh its duration and</a>
+<a name="ln1564"> * power.</a>
+<a name="ln1565"> *</a>
+<a name="ln1566"> * @param pow               Thw power of the transformation (equivalent to</a>
+<a name="ln1567"> *                          spellpower of form spells)</a>
+<a name="ln1568"> * @param which_trans       The form which the player should become.</a>
+<a name="ln1569"> * @param involuntary       Checks for inscription warnings are skipped, and</a>
+<a name="ln1570"> *                          failure is silent.</a>
+<a name="ln1571"> * @param just_check        A dry run; just check to see whether the player</a>
+<a name="ln1572"> *                          *can* enter the given form, but don't actually</a>
+<a name="ln1573"> *                          transform them.</a>
+<a name="ln1574"> * @return                  If the player was transformed, or if they were</a>
+<a name="ln1575"> *                          already in the given form, returns true.</a>
+<a name="ln1576"> *                          Otherwise, false.</a>
+<a name="ln1577"> *                          If just_check is set, returns true if the player</a>
+<a name="ln1578"> *                          could enter the form (or is in it already) and</a>
+<a name="ln1579"> *                          false otherwise.</a>
+<a name="ln1580"> *                          N.b. that transform() can fail even when a</a>
+<a name="ln1581"> *                          just_check run returns true; e.g. when Zin decides</a>
+<a name="ln1582"> *                          to intervene. (That may be the only case.)</a>
+<a name="ln1583"> */</a>
+<a name="ln1584">bool transform(int pow, transformation which_trans, bool involuntary,</a>
+<a name="ln1585">               bool just_check, string *fail_reason)</a>
+<a name="ln1586">{</a>
+<a name="ln1587">    const transformation previous_trans = you.form;</a>
+<a name="ln1588">    const bool was_flying = you.airborne();</a>
+<a name="ln1589">    bool success = true;</a>
+<a name="ln1590">    string msg;</a>
+<a name="ln1591"> </a>
+<a name="ln1592">    // Zin's protection.</a>
+<a name="ln1593">    if (!just_check &amp;&amp; have_passive(passive_t::resist_polymorph)</a>
+<a name="ln1594">        &amp;&amp; x_chance_in_y(you.piety, MAX_PIETY)</a>
+<a name="ln1595">        &amp;&amp; which_trans != transformation::none)</a>
+<a name="ln1596">    {</a>
+<a name="ln1597">        simple_god_message(&quot; protects your body from unnatural transformation!&quot;);</a>
+<a name="ln1598">        return false;</a>
+<a name="ln1599">    }</a>
+<a name="ln1600"> </a>
+<a name="ln1601">    if (!involuntary &amp;&amp; crawl_state.is_god_acting())</a>
+<a name="ln1602">        involuntary = true;</a>
+<a name="ln1603"> </a>
+<a name="ln1604">    if (you.transform_uncancellable)</a>
+<a name="ln1605">    {</a>
+<a name="ln1606">        msg = &quot;You are stuck in your current form!&quot;;</a>
+<a name="ln1607">        success = false;</a>
+<a name="ln1608">    }</a>
+<a name="ln1609">    else if (!_transformation_is_safe(which_trans, env.grid(you.pos()), &amp;msg))</a>
+<a name="ln1610">        success = false;</a>
+<a name="ln1611"> </a>
+<a name="ln1612">    if (!success)</a>
+<a name="ln1613">    {</a>
+<a name="ln1614">        // Message is not printed if we're updating fail_reason.</a>
+<a name="ln1615">        if (fail_reason)</a>
+<a name="ln1616">            *fail_reason = msg;</a>
+<a name="ln1617">        else if (!involuntary)</a>
+<a name="ln1618">            mpr(msg);</a>
+<a name="ln1619">        return false;</a>
+<a name="ln1620">    }</a>
+<a name="ln1621"> </a>
+<a name="ln1622">    // This must occur before the untransform() and the undead_state() check.</a>
+<a name="ln1623">    if (previous_trans == which_trans)</a>
+<a name="ln1624">    {</a>
+<a name="ln1625">        if (just_check)</a>
+<a name="ln1626">            return true;</a>
+<a name="ln1627"> </a>
+<a name="ln1628">        // update power</a>
+<a name="ln1629">        if (which_trans != transformation::none)</a>
+<a name="ln1630">        {</a>
+<a name="ln1631">            you.props[TRANSFORM_POW_KEY] = pow;</a>
+<a name="ln1632">            you.redraw_armour_class = true;</a>
+<a name="ln1633">            // ^ could check more carefully for the exact cases, but I'm</a>
+<a name="ln1634">            // worried about making the code too fragile</a>
+<a name="ln1635"> </a>
+<a name="ln1636">            if (which_trans == transformation::hydra)</a>
+<a name="ln1637">            {</a>
+<a name="ln1638">                const int heads = you.heads();</a>
+<a name="ln1639">                set_hydra_form_heads(div_rand_round(pow, 10));</a>
+<a name="ln1640">                _print_head_change_message(heads, you.heads());</a>
+<a name="ln1641">            }</a>
+<a name="ln1642">        }</a>
+<a name="ln1643"> </a>
+<a name="ln1644">        int dur = _transform_duration(which_trans, pow);</a>
+<a name="ln1645">        if (you.duration[DUR_TRANSFORMATION] &lt; dur * BASELINE_DELAY)</a>
+<a name="ln1646">        {</a>
+<a name="ln1647">            mpr(&quot;You extend your transformation's duration.&quot;);</a>
+<a name="ln1648">            you.duration[DUR_TRANSFORMATION] = dur * BASELINE_DELAY;</a>
+<a name="ln1649"> </a>
+<a name="ln1650">        }</a>
+<a name="ln1651">        else if (!involuntary &amp;&amp; which_trans != transformation::none)</a>
+<a name="ln1652">            mpr(&quot;You fail to extend your transformation any further.&quot;);</a>
+<a name="ln1653"> </a>
+<a name="ln1654">        return true;</a>
+<a name="ln1655">    }</a>
+<a name="ln1656"> </a>
+<a name="ln1657">    // the undead cannot enter most forms.</a>
+<a name="ln1658">    if (lifeless_prevents_form(which_trans, involuntary) == UFR_TOO_DEAD)</a>
+<a name="ln1659">    {</a>
+<a name="ln1660">        msg = &quot;Your unliving flesh cannot be transformed in this way.&quot;;</a>
+<a name="ln1661">        success = false;</a>
+<a name="ln1662">    }</a>
+<a name="ln1663">    else if (which_trans == transformation::lich</a>
+<a name="ln1664">             &amp;&amp; you.duration[DUR_DEATHS_DOOR])</a>
+<a name="ln1665">    {</a>
+<a name="ln1666">        msg = &quot;You cannot become a lich while in death's door.&quot;;</a>
+<a name="ln1667">        success = false;</a>
+<a name="ln1668">    }</a>
+<a name="ln1669"> </a>
+<a name="ln1670">    if (!just_check &amp;&amp; previous_trans != transformation::none)</a>
+<a name="ln1671">        untransform(true);</a>
+<a name="ln1672"> </a>
+<a name="ln1673">    set&lt;equipment_type&gt; rem_stuff = _init_equipment_removal(which_trans);</a>
+<a name="ln1674"> </a>
+<a name="ln1675">    // if going into lichform causes us to drop a holy weapon with consequences</a>
+<a name="ln1676">    // for unwielding (e.g. contam), warn first.</a>
+<a name="ln1677">    item_def nil_item;</a>
+<a name="ln1678">    nil_item.link = -1;</a>
+<a name="ln1679">    if (just_check &amp;&amp; !involuntary</a>
+<a name="ln1680">        &amp;&amp; which_trans == transformation::lich &amp;&amp; rem_stuff.count(EQ_WEAPON)</a>
+<a name="ln1681">        &amp;&amp; !check_old_item_warning(nil_item, OPER_WIELD))</a>
+<a name="ln1682">    {</a>
+<a name="ln1683">        canned_msg(MSG_OK);</a>
+<a name="ln1684">        return false;</a>
+<a name="ln1685">    }</a>
+<a name="ln1686"> </a>
+<a name="ln1687">    if (which_trans == transformation::appendage)</a>
+<a name="ln1688">    {</a>
+<a name="ln1689">        const mutation_type app = _beastly_appendage();</a>
+<a name="ln1690">        if (app == NUM_MUTATIONS)</a>
+<a name="ln1691">        {</a>
+<a name="ln1692">            msg = &quot;You have no appropriate body parts free.&quot;;</a>
+<a name="ln1693">            success = false; // XXX: VERY dubious, since an untransform occurred</a>
+<a name="ln1694">        }</a>
+<a name="ln1695"> </a>
+<a name="ln1696">        if (!just_check)</a>
+<a name="ln1697">        {</a>
+<a name="ln1698">            you.attribute[ATTR_APPENDAGE] = app; // need to set it here so</a>
+<a name="ln1699">                                                 // the message correlates</a>
+<a name="ln1700">        }</a>
+<a name="ln1701">    }</a>
+<a name="ln1702"> </a>
+<a name="ln1703">    if (!success)</a>
+<a name="ln1704">    {</a>
+<a name="ln1705">        // Message is not printed if we're updating fail_reason.</a>
+<a name="ln1706">        if (fail_reason)</a>
+<a name="ln1707">            *fail_reason = msg;</a>
+<a name="ln1708">        else if (!involuntary)</a>
+<a name="ln1709">            mpr(msg);</a>
+<a name="ln1710">        return false;</a>
+<a name="ln1711">    }</a>
+<a name="ln1712"> </a>
+<a name="ln1713">    // If we're just pretending return now.</a>
+<a name="ln1714">    if (just_check)</a>
+<a name="ln1715">        return true;</a>
+<a name="ln1716"> </a>
+<a name="ln1717">    // All checks done, transformation will take place now.</a>
+<a name="ln1718">    you.redraw_quiver       = true;</a>
+<a name="ln1719">    you.redraw_evasion      = true;</a>
+<a name="ln1720">    you.redraw_armour_class = true;</a>
+<a name="ln1721">    you.wield_change        = true;</a>
+<a name="ln1722">    if (form_changed_physiology(which_trans))</a>
+<a name="ln1723">        merfolk_stop_swimming();</a>
+<a name="ln1724"> </a>
+<a name="ln1725">    if (which_trans == transformation::hydra)</a>
+<a name="ln1726">        set_hydra_form_heads(div_rand_round(pow, 10));</a>
+<a name="ln1727"> </a>
+<a name="ln1728">    // Give the transformation message.</a>
+<a name="ln1729">    mpr(get_form(which_trans)-&gt;transform_message(previous_trans));</a>
+<a name="ln1730"> </a>
+<a name="ln1731">    // Update your status.</a>
+<a name="ln1732">    // Order matters here, take stuff off (and handle attendant HP and stat</a>
+<a name="ln1733">    // changes) before adjusting the player to be transformed.</a>
+<a name="ln1734">    _remove_equipment(rem_stuff, which_trans);</a>
+<a name="ln1735"> </a>
+<a name="ln1736">    you.form = which_trans;</a>
+<a name="ln1737">    you.set_duration(DUR_TRANSFORMATION, _transform_duration(which_trans, pow));</a>
+<a name="ln1738">    update_player_symbol();</a>
+<a name="ln1739"> </a>
+<a name="ln1740">    you.props[TRANSFORM_POW_KEY] = pow;</a>
+<a name="ln1741"> </a>
+<a name="ln1742">    const int str_mod = get_form(which_trans)-&gt;str_mod;</a>
+<a name="ln1743">    const int dex_mod = get_form(which_trans)-&gt;dex_mod;</a>
+<a name="ln1744"> </a>
+<a name="ln1745">    if (str_mod)</a>
+<a name="ln1746">        notify_stat_change(STAT_STR, str_mod, true);</a>
+<a name="ln1747"> </a>
+<a name="ln1748">    if (dex_mod)</a>
+<a name="ln1749">        notify_stat_change(STAT_DEX, dex_mod, true);</a>
+<a name="ln1750"> </a>
+<a name="ln1751">    calc_hp(true, false);</a>
+<a name="ln1752"> </a>
+<a name="ln1753">    if (you.digging &amp;&amp; !form_keeps_mutations(which_trans))</a>
+<a name="ln1754">    {</a>
+<a name="ln1755">        mpr(&quot;Your mandibles meld away.&quot;);</a>
+<a name="ln1756">        you.digging = false;</a>
+<a name="ln1757">    }</a>
+<a name="ln1758"> </a>
+<a name="ln1759">    // Extra effects</a>
+<a name="ln1760">    switch (which_trans)</a>
+<a name="ln1761">    {</a>
+<a name="ln1762">    case transformation::statue:</a>
+<a name="ln1763">        if (you.duration[DUR_ICY_ARMOUR])</a>
+<a name="ln1764">        {</a>
+<a name="ln1765">            mprf(MSGCH_DURATION, &quot;Your new body cracks your icy armour.&quot;);</a>
+<a name="ln1766">            you.duration[DUR_ICY_ARMOUR] = 0;</a>
+<a name="ln1767">        }</a>
+<a name="ln1768">        break;</a>
+<a name="ln1769"> </a>
+<a name="ln1770">    case transformation::spider:</a>
+<a name="ln1771">        leave_web();</a>
+<a name="ln1772">        break;</a>
+<a name="ln1773"> </a>
+<a name="ln1774">    case transformation::tree:</a>
+<a name="ln1775">        mpr(&quot;Your roots penetrate the ground.&quot;);</a>
+<a name="ln1776">        if (you.duration[DUR_TELEPORT])</a>
+<a name="ln1777">        {</a>
+<a name="ln1778">            you.duration[DUR_TELEPORT] = 0;</a>
+<a name="ln1779">            mpr(&quot;You feel strangely stable.&quot;);</a>
+<a name="ln1780">        }</a>
+<a name="ln1781">        you.duration[DUR_FLIGHT] = 0;</a>
+<a name="ln1782">        // break out of webs/nets as well</a>
+<a name="ln1783"> </a>
+<a name="ln1784">    case transformation::dragon:</a>
+<a name="ln1785">        if (you.attribute[ATTR_HELD])</a>
+<a name="ln1786">        {</a>
+<a name="ln1787">            trap_def *trap = trap_at(you.pos());</a>
+<a name="ln1788">            if (trap &amp;&amp; trap-&gt;type == TRAP_WEB)</a>
+<a name="ln1789">            {</a>
+<a name="ln1790">                mpr(&quot;You shred the web into pieces!&quot;);</a>
+<a name="ln1791">                destroy_trap(you.pos());</a>
+<a name="ln1792">            }</a>
+<a name="ln1793">            int net = get_trapping_net(you.pos());</a>
+<a name="ln1794">            if (net != NON_ITEM)</a>
+<a name="ln1795">            {</a>
+<a name="ln1796">                mpr(&quot;The net rips apart!&quot;);</a>
+<a name="ln1797">                destroy_item(net);</a>
+<a name="ln1798">            }</a>
+<a name="ln1799"> </a>
+<a name="ln1800">            stop_being_held();</a>
+<a name="ln1801">        }</a>
+<a name="ln1802">        break;</a>
+<a name="ln1803"> </a>
+<a name="ln1804">    case transformation::lich:</a>
+<a name="ln1805">        you.hunger_state = HS_SATIATED;  // no hunger effects while transformed</a>
+<a name="ln1806">        you.redraw_status_lights = true;</a>
+<a name="ln1807">        break;</a>
+<a name="ln1808"> </a>
+<a name="ln1809">    case transformation::appendage:</a>
+<a name="ln1810">        {</a>
+<a name="ln1811">            int app = you.attribute[ATTR_APPENDAGE];</a>
+<a name="ln1812">            ASSERT(app != NUM_MUTATIONS);</a>
+<a name="ln1813">            ASSERT(beastly_slot(app) != EQ_NONE);</a>
+<a name="ln1814">            you.mutation[app] = _beastly_appendage_level(app);</a>
+<a name="ln1815">        }</a>
+<a name="ln1816">        break;</a>
+<a name="ln1817"> </a>
+<a name="ln1818">    case transformation::shadow:</a>
+<a name="ln1819">        drain_player(25, true, true);</a>
+<a name="ln1820">        if (you.invisible())</a>
+<a name="ln1821">            mpr(&quot;You fade into the shadows.&quot;);</a>
+<a name="ln1822">        else</a>
+<a name="ln1823">            mpr(&quot;You feel less conspicuous.&quot;);</a>
+<a name="ln1824">        break;</a>
+<a name="ln1825"> </a>
+<a name="ln1826">    default:</a>
+<a name="ln1827">        break;</a>
+<a name="ln1828">    }</a>
+<a name="ln1829"> </a>
+<a name="ln1830">    // Stop constricting if we can no longer constrict. If any size-changing</a>
+<a name="ln1831">    // transformations were to allow constriction, we would have to check</a>
+<a name="ln1832">    // relative sizes as well. Likewise, if any transformations were to allow</a>
+<a name="ln1833">    // normally non-constricting players to constrict, this would need to</a>
+<a name="ln1834">    // be changed.</a>
+<a name="ln1835">    if (!form_keeps_mutations(which_trans))</a>
+<a name="ln1836">        you.stop_directly_constricting_all(false);</a>
+<a name="ln1837"> </a>
+<a name="ln1838">    // Stop being constricted if we are now too large.</a>
+<a name="ln1839">    if (you.is_directly_constricted())</a>
+<a name="ln1840">    {</a>
+<a name="ln1841">        actor* const constrictor = actor_by_mid(you.constricted_by);</a>
+<a name="ln1842">        ASSERT(constrictor);</a>
+<a name="ln1843"> </a>
+<a name="ln1844">        if (you.body_size(PSIZE_BODY) &gt; constrictor-&gt;body_size(PSIZE_BODY))</a>
+<a name="ln1845">            you.stop_being_constricted();</a>
+<a name="ln1846">    }</a>
+<a name="ln1847"> </a>
+<a name="ln1848"> </a>
+<a name="ln1849">    // If we are no longer living, end an effect that afflicts only the living</a>
+<a name="ln1850">    if (you.duration[DUR_FLAYED] &amp;&amp; !(you.holiness() &amp; MH_NATURAL))</a>
+<a name="ln1851">    {</a>
+<a name="ln1852">        // Heal a little extra if we gained max hp from this transformation</a>
+<a name="ln1853">        if (form_hp_mod() != 10)</a>
+<a name="ln1854">        {</a>
+<a name="ln1855">            int dam = you.props[&quot;flay_damage&quot;].get_int();</a>
+<a name="ln1856">            you.heal((dam * form_hp_mod() / 10) - dam);</a>
+<a name="ln1857">        }</a>
+<a name="ln1858">        heal_flayed_effect(&amp;you);</a>
+<a name="ln1859">    }</a>
+<a name="ln1860"> </a>
+<a name="ln1861">    // This only has an effect if the transformation happens passively,</a>
+<a name="ln1862">    // for example if Xom decides to transform you while you're busy</a>
+<a name="ln1863">    // running around or butchering corpses.</a>
+<a name="ln1864">    // If you're turned into a tree, you stop taking stairs.</a>
+<a name="ln1865">    stop_delay(which_trans == transformation::tree);</a>
+<a name="ln1866"> </a>
+<a name="ln1867">    if (crawl_state.which_god_acting() == GOD_XOM)</a>
+<a name="ln1868">       you.transform_uncancellable = true;</a>
+<a name="ln1869"> </a>
+<a name="ln1870">    // Land the player if we stopped flying.</a>
+<a name="ln1871">    if (was_flying &amp;&amp; !you.airborne())</a>
+<a name="ln1872">        move_player_to_grid(you.pos(), false);</a>
+<a name="ln1873"> </a>
+<a name="ln1874">    // Stop emergency flight if it's activated and this form can fly</a>
+<a name="ln1875">    if (you.props[EMERGENCY_FLIGHT_KEY]</a>
+<a name="ln1876">        &amp;&amp; form_can_fly()</a>
+<a name="ln1877">        &amp;&amp; you.airborne())</a>
+<a name="ln1878">    {</a>
+<a name="ln1879">        you.props.erase(EMERGENCY_FLIGHT_KEY);</a>
+<a name="ln1880">    }</a>
+<a name="ln1881"> </a>
+<a name="ln1882">    // Update merfolk swimming for the form change.</a>
+<a name="ln1883">    if (you.species == SP_MERFOLK)</a>
+<a name="ln1884">        merfolk_check_swimming(false);</a>
+<a name="ln1885"> </a>
+<a name="ln1886">    if (you.hp &lt;= 0)</a>
+<a name="ln1887">    {</a>
+<a name="ln1888">        ouch(0, KILLED_BY_FRAILTY, MID_NOBODY,</a>
+<a name="ln1889">             make_stringf(&quot;gaining the %s transformation&quot;,</a>
+<a name="ln1890">                          transform_name(which_trans)).c_str());</a>
+<a name="ln1891">    }</a>
+<a name="ln1892"> </a>
+<a name="ln1893">    return true;</a>
+<a name="ln1894">}</a>
+<a name="ln1895"> </a>
+<a name="ln1896">/**</a>
+<a name="ln1897"> * End the player's transformation and return them to their normal</a>
+<a name="ln1898"> * form.</a>
+<a name="ln1899"> * @param skip_move      If true, skip any move that was in progress before</a>
+<a name="ln1900"> *                       the transformation ended.</a>
+<a name="ln1901"> */</a>
+<a name="ln1902">void untransform(bool skip_move)</a>
+<a name="ln1903">{</a>
+<a name="ln1904">    const bool was_flying = you.airborne();</a>
+<a name="ln1905"> </a>
+<a name="ln1906">    you.redraw_quiver           = true;</a>
+<a name="ln1907">    you.redraw_evasion          = true;</a>
+<a name="ln1908">    you.redraw_armour_class     = true;</a>
+<a name="ln1909">    you.wield_change            = true;</a>
+<a name="ln1910">    you.received_weapon_warning = false;</a>
+<a name="ln1911">    if (you.props.exists(TRANSFORM_POW_KEY))</a>
+<a name="ln1912">        you.props.erase(TRANSFORM_POW_KEY);</a>
+<a name="ln1913">    if (you.props.exists(HYDRA_FORM_HEADS_KEY))</a>
+<a name="ln1914">        you.props.erase(HYDRA_FORM_HEADS_KEY);</a>
+<a name="ln1915"> </a>
+<a name="ln1916">    // Must be unset first or else infinite loops might result. -- bwr</a>
+<a name="ln1917">    const transformation old_form = you.form;</a>
+<a name="ln1918"> </a>
+<a name="ln1919">    // We may have to unmeld a couple of equipment types.</a>
+<a name="ln1920">    set&lt;equipment_type&gt; melded = _init_equipment_removal(old_form);</a>
+<a name="ln1921"> </a>
+<a name="ln1922">    you.form = transformation::none;</a>
+<a name="ln1923">    you.duration[DUR_TRANSFORMATION] = 0;</a>
+<a name="ln1924">    update_player_symbol();</a>
+<a name="ln1925"> </a>
+<a name="ln1926">    if (old_form == transformation::appendage)</a>
+<a name="ln1927">    {</a>
+<a name="ln1928">        mutation_type app = static_cast&lt;mutation_type&gt;(you.attribute[ATTR_APPENDAGE]);</a>
+<a name="ln1929">        ASSERT(beastly_slot(app) != EQ_NONE);</a>
+<a name="ln1930">        const int levels = you.get_base_mutation_level(app);</a>
+<a name="ln1931">        // Preserve extra mutation levels acquired after transforming.</a>
+<a name="ln1932">        const int beast_levels = _beastly_appendage_level(app);</a>
+<a name="ln1933">        const int extra = max(0, levels - you.get_innate_mutation_level(app)</a>
+<a name="ln1934">                                        - beast_levels);</a>
+<a name="ln1935">        you.mutation[app] = you.get_innate_mutation_level(app) + extra;</a>
+<a name="ln1936">        you.attribute[ATTR_APPENDAGE] = 0;</a>
+<a name="ln1937"> </a>
+<a name="ln1938">        // The mutation might have been removed already by a conflicting</a>
+<a name="ln1939">        // demonspawn innate mutation; no message then.</a>
+<a name="ln1940">        if (levels)</a>
+<a name="ln1941">        {</a>
+<a name="ln1942">            const char * const verb = you.has_mutation(app) ? &quot;shrink&quot;</a>
+<a name="ln1943">                                                            : &quot;disappear&quot;;</a>
+<a name="ln1944">            mprf(MSGCH_DURATION, &quot;Your %s %s%s.&quot;,</a>
+<a name="ln1945">                 mutation_name(app), verb,</a>
+<a name="ln1946">                 app == MUT_TENTACLE_SPIKE ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln1947">        }</a>
+<a name="ln1948">    }</a>
+<a name="ln1949"> </a>
+<a name="ln1950">    calc_hp(true, false);</a>
+<a name="ln1951"> </a>
+<a name="ln1952">    const string message = get_form(old_form)-&gt;get_untransform_message();</a>
+<a name="ln1953">    if (!message.empty())</a>
+<a name="ln1954">        mprf(MSGCH_DURATION, &quot;%s&quot;, message.c_str());</a>
+<a name="ln1955"> </a>
+<a name="ln1956">    const int str_mod = get_form(old_form)-&gt;str_mod;</a>
+<a name="ln1957">    const int dex_mod = get_form(old_form)-&gt;dex_mod;</a>
+<a name="ln1958"> </a>
+<a name="ln1959">    if (str_mod)</a>
+<a name="ln1960">        notify_stat_change(STAT_STR, -str_mod, true);</a>
+<a name="ln1961"> </a>
+<a name="ln1962">    if (dex_mod)</a>
+<a name="ln1963">        notify_stat_change(STAT_DEX, -dex_mod, true);</a>
+<a name="ln1964"> </a>
+<a name="ln1965">    _unmeld_equipment(melded);</a>
+<a name="ln1966"> </a>
+<a name="ln1967">    if (!skip_move)</a>
+<a name="ln1968">    {</a>
+<a name="ln1969">        // Land the player if we stopped flying.</a>
+<a name="ln1970">        if (is_feat_dangerous(grd(you.pos())))</a>
+<a name="ln1971">            enable_emergency_flight();</a>
+<a name="ln1972">        else if (was_flying &amp;&amp; !you.airborne())</a>
+<a name="ln1973">            move_player_to_grid(you.pos(), false);</a>
+<a name="ln1974"> </a>
+<a name="ln1975">        // Update merfolk swimming for the form change.</a>
+<a name="ln1976">        if (you.species == SP_MERFOLK)</a>
+<a name="ln1977">            merfolk_check_swimming(false);</a>
+<a name="ln1978">    }</a>
+<a name="ln1979"> </a>
+<a name="ln1980">#ifdef USE_TILE</a>
+<a name="ln1981">    if (you.species == SP_MERFOLK)</a>
+<a name="ln1982">        init_player_doll();</a>
+<a name="ln1983">#endif</a>
+<a name="ln1984"> </a>
+<a name="ln1985">    // If nagas wear boots while transformed, they fall off again afterwards:</a>
+<a name="ln1986">    // I don't believe this is currently possible, and if it is we</a>
+<a name="ln1987">    // probably need something better to cover all possibilities.  -bwr</a>
+<a name="ln1988"> </a>
+<a name="ln1989">    // Removed barding check, no transformed creatures can wear barding</a>
+<a name="ln1990">    // anyway.</a>
+<a name="ln1991">    // *coughs* Ahem, blade hands... -- jpeg</a>
+<a name="ln1992">    if (you.species == SP_NAGA || you.species == SP_CENTAUR)</a>
+<a name="ln1993">    {</a>
+<a name="ln1994">        const int arm = you.equip[EQ_BOOTS];</a>
+<a name="ln1995"> </a>
+<a name="ln1996">        if (arm != -1 &amp;&amp; you.inv[arm].sub_type == ARM_BOOTS)</a>
+<a name="ln1997">            remove_one_equip(EQ_BOOTS);</a>
+<a name="ln1998">    }</a>
+<a name="ln1999"> </a>
+<a name="ln2000">    // End Ozocubu's Icy Armour if you unmelded wearing heavy armour</a>
+<a name="ln2001">    if (you.duration[DUR_ICY_ARMOUR]</a>
+<a name="ln2002">        &amp;&amp; !player_effectively_in_light_armour())</a>
+<a name="ln2003">    {</a>
+<a name="ln2004">        you.duration[DUR_ICY_ARMOUR] = 0;</a>
+<a name="ln2005"> </a>
+<a name="ln2006">        const item_def *armour = you.slot_item(EQ_BODY_ARMOUR, false);</a>
+<a name="ln2007">        mprf(MSGCH_DURATION, &quot;%s cracks your icy armour.&quot;,</a>
+<a name="ln2008">             armour-&gt;name(DESC_YOUR).c_str());</a>
+<a name="ln2009">    }</a>
+<a name="ln2010"> </a>
+<a name="ln2011">    if (you.hp &lt;= 0)</a>
+<a name="ln2012">    {</a>
+<a name="ln2013">        ouch(0, KILLED_BY_FRAILTY, MID_NOBODY,</a>
+<a name="ln2014">             make_stringf(&quot;losing the %s form&quot;,</a>
+<a name="ln2015">                          transform_name(old_form)).c_str());</a>
+<a name="ln2016">    }</a>
+<a name="ln2017"> </a>
+<a name="ln2018">    // Stop being constricted if we are now too large.</a>
+<a name="ln2019">    if (you.is_directly_constricted())</a>
+<a name="ln2020">    {</a>
+<a name="ln2021">        actor* const constrictor = actor_by_mid(you.constricted_by);</a>
+<a name="ln2022">        if (you.body_size(PSIZE_BODY) &gt; constrictor-&gt;body_size(PSIZE_BODY))</a>
+<a name="ln2023">            you.stop_being_constricted();</a>
+<a name="ln2024">    }</a>
+<a name="ln2025"> </a>
+<a name="ln2026">    you.turn_is_over = true;</a>
+<a name="ln2027">    if (you.transform_uncancellable)</a>
+<a name="ln2028">        you.transform_uncancellable = false;</a>
+<a name="ln2029">}</a>
+<a name="ln2030"> </a>
+<a name="ln2031">void emergency_untransform()</a>
+<a name="ln2032">{</a>
+<a name="ln2033">    mpr(&quot;You quickly transform back into your natural form.&quot;);</a>
+<a name="ln2034">    untransform(true); // We're already entering the water.</a>
+<a name="ln2035"> </a>
+<a name="ln2036">    if (you.species == SP_MERFOLK)</a>
+<a name="ln2037">        merfolk_start_swimming(false);</a>
+<a name="ln2038">}</a>
+<a name="ln2039"> </a>
+<a name="ln2040">/**</a>
+<a name="ln2041"> * Update whether a merfolk should be swimming.</a>
+<a name="ln2042"> *</a>
+<a name="ln2043"> * Idempotent, so can be called after position/transformation change without</a>
+<a name="ln2044"> * redundantly checking conditions.</a>
+<a name="ln2045"> *</a>
+<a name="ln2046"> * @param stepped Whether the player is performing a normal walking move.</a>
+<a name="ln2047"> */</a>
+<a name="ln2048">void merfolk_check_swimming(bool stepped)</a>
+<a name="ln2049">{</a>
+<a name="ln2050">    const dungeon_feature_type grid = env.grid(you.pos());</a>
+<a name="ln2051">    if (you.ground_level()</a>
+<a name="ln2052">        &amp;&amp; feat_is_water(grid)</a>
+<a name="ln2053">        &amp;&amp; !form_changed_physiology(you.form))</a>
+<a name="ln2054">    {</a>
+<a name="ln2055">        merfolk_start_swimming(stepped);</a>
+<a name="ln2056">    }</a>
+<a name="ln2057">    else if (!is_feat_dangerous(grid)) // don't bother, the player is dying</a>
+<a name="ln2058">        merfolk_stop_swimming();</a>
+<a name="ln2059">}</a>
+<a name="ln2060"> </a>
+<a name="ln2061">void merfolk_start_swimming(bool stepped)</a>
+<a name="ln2062">{</a>
+<a name="ln2063">    if (you.fishtail)</a>
+<a name="ln2064">        return;</a>
+<a name="ln2065"> </a>
+<a name="ln2066">    if (stepped)</a>
+<a name="ln2067">        mpr(&quot;Your legs become a tail as you enter the water.&quot;);</a>
+<a name="ln2068">    else</a>
+<a name="ln2069">        mpr(&quot;Your legs become a tail as you dive into the water.&quot;);</a>
+<a name="ln2070"> </a>
+<a name="ln2071">    if (you.invisible())</a>
+<a name="ln2072">        mpr(&quot;...but don't expect to remain undetected.&quot;);</a>
+<a name="ln2073"> </a>
+<a name="ln2074">    you.fishtail = true;</a>
+<a name="ln2075">    remove_one_equip(EQ_BOOTS);</a>
+<a name="ln2076">    you.redraw_evasion = true;</a>
+<a name="ln2077"> </a>
+<a name="ln2078">#ifdef USE_TILE</a>
+<a name="ln2079">    init_player_doll();</a>
+<a name="ln2080">#endif</a>
+<a name="ln2081">}</a>
+<a name="ln2082"> </a>
+<a name="ln2083">void merfolk_stop_swimming()</a>
+<a name="ln2084">{</a>
+<a name="ln2085">    if (!you.fishtail)</a>
+<a name="ln2086">        return;</a>
+<a name="ln2087">    you.fishtail = false;</a>
+<a name="ln2088">    unmeld_one_equip(EQ_BOOTS);</a>
+<a name="ln2089">    you.redraw_evasion = true;</a>
+<a name="ln2090"> </a>
+<a name="ln2091">#ifdef USE_TILE</a>
+<a name="ln2092">    init_player_doll();</a>
+<a name="ln2093">#endif</a>
+<a name="ln2094">}</a>
+<a name="ln2095"> </a>
+<a name="ln2096">void vampire_update_transformations()</a>
+<a name="ln2097">{</a>
+<a name="ln2098">    const undead_form_reason form_reason = lifeless_prevents_form();</a>
+<a name="ln2099">    if (form_reason != UFR_GOOD &amp;&amp; you.duration[DUR_TRANSFORMATION])</a>
+<a name="ln2100">    {</a>
+<a name="ln2101">        print_stats();</a>
+<a name="ln2102">        mprf(MSGCH_WARN,</a>
+<a name="ln2103">             &quot;Your blood-%s body can't sustain your transformation.&quot;,</a>
+<a name="ln2104">             form_reason == UFR_TOO_DEAD ? &quot;deprived&quot; : &quot;filled&quot;);</a>
+<a name="ln2105">        untransform();</a>
+<a name="ln2106">    }</a>
+<a name="ln2107">}</a>
+
+</code></pre>
+<div class="balloon" rel="399"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="414"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1322"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1533"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'you.undead_state(false)' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

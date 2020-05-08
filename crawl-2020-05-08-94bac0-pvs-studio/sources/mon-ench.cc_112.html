@@ -1,0 +1,2392 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-ench.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Monster enchantments.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;monster.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;sstream&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;act-iter.h&quot;</a>
+<a name="ln13">#include &quot;areas.h&quot;</a>
+<a name="ln14">#include &quot;attitude-change.h&quot;</a>
+<a name="ln15">#include &quot;bloodspatter.h&quot;</a>
+<a name="ln16">#include &quot;cloud.h&quot;</a>
+<a name="ln17">#include &quot;coordit.h&quot;</a>
+<a name="ln18">#include &quot;delay.h&quot;</a>
+<a name="ln19">#include &quot;dgn-shoals.h&quot;</a>
+<a name="ln20">#include &quot;english.h&quot;</a>
+<a name="ln21">#include &quot;env.h&quot;</a>
+<a name="ln22">#include &quot;fight.h&quot;</a>
+<a name="ln23">#include &quot;hints.h&quot;</a>
+<a name="ln24">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln25">#include &quot;items.h&quot;</a>
+<a name="ln26">#include &quot;libutil.h&quot;</a>
+<a name="ln27">#include &quot;losglobal.h&quot;</a>
+<a name="ln28">#include &quot;message.h&quot;</a>
+<a name="ln29">#include &quot;mon-abil.h&quot;</a>
+<a name="ln30">#include &quot;mon-behv.h&quot;</a>
+<a name="ln31">#include &quot;mon-cast.h&quot;</a>
+<a name="ln32">#include &quot;mon-death.h&quot;</a>
+<a name="ln33">#include &quot;mon-place.h&quot;</a>
+<a name="ln34">#include &quot;mon-poly.h&quot;</a>
+<a name="ln35">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln36">#include &quot;religion.h&quot;</a>
+<a name="ln37">#include &quot;rot.h&quot;</a>
+<a name="ln38">#include &quot;spl-clouds.h&quot;</a>
+<a name="ln39">#include &quot;spl-damage.h&quot;</a>
+<a name="ln40">#include &quot;spl-summoning.h&quot;</a>
+<a name="ln41">#include &quot;state.h&quot;</a>
+<a name="ln42">#include &quot;stepdown.h&quot;</a>
+<a name="ln43">#include &quot;stringutil.h&quot;</a>
+<a name="ln44">#include &quot;teleport.h&quot;</a>
+<a name="ln45">#include &quot;terrain.h&quot;</a>
+<a name="ln46">#include &quot;timed-effects.h&quot;</a>
+<a name="ln47">#include &quot;traps.h&quot;</a>
+<a name="ln48">#include &quot;unwind.h&quot;</a>
+<a name="ln49">#include &quot;view.h&quot;</a>
+<a name="ln50"> </a>
+<a name="ln51">static void _place_thunder_ring(const monster &amp;mons)</a>
+<a name="ln52">{</a>
+<a name="ln53">    const cloud_type ctype = CLOUD_STORM;</a>
+<a name="ln54"> </a>
+<a name="ln55">    for (adjacent_iterator ai(mons.pos()); ai; ++ai)</a>
+<a name="ln56">        if (!cell_is_solid(*ai)</a>
+<a name="ln57">            &amp;&amp; (!cloud_at(*ai)</a>
+<a name="ln58">                || cloud_at(*ai)-&gt;type == ctype))</a>
+<a name="ln59">        {</a>
+<a name="ln60">            place_cloud(ctype, *ai, 2 + random2(3), &amp;mons);</a>
+<a name="ln61">        }</a>
+<a name="ln62">}</a>
+<a name="ln63"> </a>
+<a name="ln64">#ifdef DEBUG_ENCH_CACHE_DIAGNOSTICS</a>
+<a name="ln65">bool monster::has_ench(enchant_type ench) const</a>
+<a name="ln66">{</a>
+<a name="ln67">    mon_enchant e = get_ench(ench);</a>
+<a name="ln68">    if (e.ench == ench)</a>
+<a name="ln69">    {</a>
+<a name="ln70">        if (!ench_cache[ench])</a>
+<a name="ln71">        {</a>
+<a name="ln72">            die(&quot;monster %s has ench '%s' not in cache&quot;,</a>
+<a name="ln73">                name(DESC_PLAIN).c_str(),</a>
+<a name="ln74">                string(e).c_str());</a>
+<a name="ln75">        }</a>
+<a name="ln76">    }</a>
+<a name="ln77">    else if (e.ench == ENCH_NONE)</a>
+<a name="ln78">    {</a>
+<a name="ln79">        if (ench_cache[ench])</a>
+<a name="ln80">        {</a>
+<a name="ln81">            die(&quot;monster %s has no ench '%s' but cache says it does&quot;,</a>
+<a name="ln82">                name(DESC_PLAIN).c_str(),</a>
+<a name="ln83">                string(mon_enchant(ench)).c_str());</a>
+<a name="ln84">        }</a>
+<a name="ln85">    }</a>
+<a name="ln86">    else</a>
+<a name="ln87">    {</a>
+<a name="ln88">        die(&quot;get_ench returned '%s' when asked for '%s'&quot;,</a>
+<a name="ln89">            string(e).c_str(),</a>
+<a name="ln90">            string(mon_enchant(ench)).c_str());</a>
+<a name="ln91">    }</a>
+<a name="ln92">    return ench_cache[ench];</a>
+<a name="ln93">}</a>
+<a name="ln94">#endif</a>
+<a name="ln95"> </a>
+<a name="ln96">bool monster::has_ench(enchant_type ench, enchant_type ench2) const</a>
+<a name="ln97">{</a>
+<a name="ln98">    if (ench2 == ENCH_NONE)</a>
+<a name="ln99">        ench2 = ench;</a>
+<a name="ln100"> </a>
+<a name="ln101">    for (int i = ench; i &lt;= ench2; ++i)</a>
+<a name="ln102">        if (has_ench(static_cast&lt;enchant_type&gt;(i)))</a>
+<a name="ln103">            return true;</a>
+<a name="ln104"> </a>
+<a name="ln105">    return false;</a>
+<a name="ln106">}</a>
+<a name="ln107"> </a>
+<a name="ln108">mon_enchant monster::get_ench(enchant_type ench1,</a>
+<a name="ln109">                               enchant_type ench2) const</a>
+<a name="ln110">{</a>
+<a name="ln111">    if (ench2 == ENCH_NONE)</a>
+<a name="ln112">        ench2 = ench1;</a>
+<a name="ln113"> </a>
+<a name="ln114">    for (int e = ench1; e &lt;= ench2; ++e)</a>
+<a name="ln115">    {</a>
+<a name="ln116">        auto i = enchantments.find(static_cast&lt;enchant_type&gt;(e));</a>
+<a name="ln117"> </a>
+<a name="ln118">        if (i != enchantments.end())</a>
+<a name="ln119">            return i-&gt;second;</a>
+<a name="ln120">    }</a>
+<a name="ln121"> </a>
+<a name="ln122">    return mon_enchant();</a>
+<a name="ln123">}</a>
+<a name="ln124"> </a>
+<a name="ln125">void monster::update_ench(const mon_enchant &amp;ench)</a>
+<a name="ln126">{</a>
+<a name="ln127">    if (ench.ench != ENCH_NONE)</a>
+<a name="ln128">    {</a>
+<a name="ln129">        if (mon_enchant *curr_ench = map_find(enchantments, ench.ench))</a>
+<a name="ln130">            *curr_ench = ench;</a>
+<a name="ln131">    }</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">bool monster::add_ench(const mon_enchant &amp;ench)</a>
+<a name="ln135">{</a>
+<a name="ln136">    // silliness</a>
+<a name="ln137">    if (ench.ench == ENCH_NONE)</a>
+<a name="ln138">        return false;</a>
+<a name="ln139"> </a>
+<a name="ln140">    if (ench.ench == ENCH_FEAR</a>
+<a name="ln141">        &amp;&amp; (is_nonliving() || berserk_or_insane()))</a>
+<a name="ln142">    {</a>
+<a name="ln143">        return false;</a>
+<a name="ln144">    }</a>
+<a name="ln145"> </a>
+<a name="ln146">    if (ench.ench == ENCH_BLIND &amp;&amp; !mons_can_be_blinded(type))</a>
+<a name="ln147">        return false;</a>
+<a name="ln148"> </a>
+<a name="ln149">    if (ench.ench == ENCH_FLIGHT &amp;&amp; has_ench(ENCH_LIQUEFYING))</a>
+<a name="ln150">    {</a>
+<a name="ln151">        del_ench(ENCH_LIQUEFYING);</a>
+<a name="ln152">        invalidate_agrid();</a>
+<a name="ln153">    }</a>
+<a name="ln154"> </a>
+<a name="ln155">    // If we have never changed shape, mark us as shapeshifter, so that</a>
+<a name="ln156">    // &quot;goblin perm_ench:shapeshifter&quot; reverts on death.</a>
+<a name="ln157">    if (ench.ench == ENCH_SHAPESHIFTER)</a>
+<a name="ln158">    {</a>
+<a name="ln159">        if (!props.exists(ORIGINAL_TYPE_KEY))</a>
+<a name="ln160">            props[ORIGINAL_TYPE_KEY].get_int() = MONS_SHAPESHIFTER;</a>
+<a name="ln161">    }</a>
+<a name="ln162">    else if (ench.ench == ENCH_GLOWING_SHAPESHIFTER)</a>
+<a name="ln163">    {</a>
+<a name="ln164">        if (!props.exists(ORIGINAL_TYPE_KEY))</a>
+<a name="ln165">            props[ORIGINAL_TYPE_KEY].get_int() = MONS_GLOWING_SHAPESHIFTER;</a>
+<a name="ln166">    }</a>
+<a name="ln167"> </a>
+<a name="ln168">    bool new_enchantment = false;</a>
+<a name="ln169">    mon_enchant *added = map_find(enchantments, ench.ench);</a>
+<a name="ln170">    if (added)</a>
+<a name="ln171">        *added += ench;</a>
+<a name="ln172">    else</a>
+<a name="ln173">    {</a>
+<a name="ln174">        new_enchantment = true;</a>
+<a name="ln175">        added = &amp;(enchantments[ench.ench] = ench);</a>
+<a name="ln176">        ench_cache.set(ench.ench, true);</a>
+<a name="ln177">    }</a>
+<a name="ln178"> </a>
+<a name="ln179">    // If the duration is not set, we must calculate it (depending on the</a>
+<a name="ln180">    // enchantment).</a>
+<a name="ln181">    if (!ench.duration)</a>
+<a name="ln182">        added-&gt;set_duration(this, new_enchantment ? nullptr : &amp;ench);</a>
+<a name="ln183"> </a>
+<a name="ln184">    if (new_enchantment)</a>
+<a name="ln185">        add_enchantment_effect(ench);</a>
+<a name="ln186"> </a>
+<a name="ln187">    if (ench.ench == ENCH_CHARM</a>
+<a name="ln188">        || ench.ench == ENCH_NEUTRAL_BRIBED</a>
+<a name="ln189">        || ench.ench == ENCH_FRIENDLY_BRIBED</a>
+<a name="ln190">        || ench.ench == ENCH_HEXED)</a>
+<a name="ln191">    {</a>
+<a name="ln192">        remove_summons();</a>
+<a name="ln193">    }</a>
+<a name="ln194">    return true;</a>
+<a name="ln195">}</a>
+<a name="ln196"> </a>
+<a name="ln197">void monster::add_enchantment_effect(const mon_enchant &amp;ench, bool quiet)</a>
+<a name="ln198">{</a>
+<a name="ln199">    // Check for slow/haste.</a>
+<a name="ln200">    switch (ench.ench)</a>
+<a name="ln201">    {</a>
+<a name="ln202">    case ENCH_BERSERK:</a>
+<a name="ln203">        // Inflate hp.</a>
+<a name="ln204">        scale_hp(3, 2);</a>
+<a name="ln205">        // deliberate fall-through</a>
+<a name="ln206"> </a>
+<a name="ln207">    case ENCH_INSANE:</a>
+<a name="ln208">        if (has_ench(ENCH_SUBMERGED))</a>
+<a name="ln209">            del_ench(ENCH_SUBMERGED);</a>
+<a name="ln210"> </a>
+<a name="ln211">        calc_speed();</a>
+<a name="ln212">        break;</a>
+<a name="ln213"> </a>
+<a name="ln214">    case ENCH_HASTE:</a>
+<a name="ln215">        calc_speed();</a>
+<a name="ln216">        break;</a>
+<a name="ln217"> </a>
+<a name="ln218">    case ENCH_SLOW:</a>
+<a name="ln219">        calc_speed();</a>
+<a name="ln220">        break;</a>
+<a name="ln221"> </a>
+<a name="ln222">    case ENCH_SUBMERGED:</a>
+<a name="ln223">        dprf(&quot;%s submerges.&quot;, name(DESC_A, true).c_str());</a>
+<a name="ln224">        break;</a>
+<a name="ln225"> </a>
+<a name="ln226">    case ENCH_CHARM:</a>
+<a name="ln227">    case ENCH_NEUTRAL_BRIBED:</a>
+<a name="ln228">    case ENCH_FRIENDLY_BRIBED:</a>
+<a name="ln229">    case ENCH_HEXED:</a>
+<a name="ln230">    {</a>
+<a name="ln231">        behaviour = BEH_SEEK;</a>
+<a name="ln232"> </a>
+<a name="ln233">        actor *source_actor = actor_by_mid(ench.source, true);</a>
+<a name="ln234">        if (!source_actor)</a>
+<a name="ln235">        {</a>
+<a name="ln236">            target = pos();</a>
+<a name="ln237">            foe = MHITNOT;</a>
+<a name="ln238">        }</a>
+<a name="ln239">        else if (source_actor-&gt;is_player())</a>
+<a name="ln240">        {</a>
+<a name="ln241">            target = you.pos();</a>
+<a name="ln242">            foe = MHITYOU;</a>
+<a name="ln243">        }</a>
+<a name="ln244">        else</a>
+<a name="ln245">        {</a>
+<a name="ln246">            foe = source_actor-&gt;as_monster()-&gt;foe;</a>
+<a name="ln247">            if (foe == MHITYOU)</a>
+<a name="ln248">                target = you.pos();</a>
+<a name="ln249">            else if (foe != MHITNOT)</a>
+<a name="ln250">                target = menv[source_actor-&gt;as_monster()-&gt;foe].pos();</a>
+<a name="ln251">        }</a>
+<a name="ln252"> </a>
+<a name="ln253">        if (type == MONS_FLAYED_GHOST)</a>
+<a name="ln254">        {</a>
+<a name="ln255">            // temporarly change our attitude back (XXX: scary code...)</a>
+<a name="ln256">            unwind_var&lt;mon_enchant_list&gt; enchants(enchantments, mon_enchant_list{});</a>
+<a name="ln257">            unwind_var&lt;FixedBitVector&lt;NUM_ENCHANTMENTS&gt;&gt; ecache(ench_cache, {});</a>
+<a name="ln258">            end_flayed_effect(this);</a>
+<a name="ln259">        }</a>
+<a name="ln260">        del_ench(ENCH_STILL_WINDS);</a>
+<a name="ln261"> </a>
+<a name="ln262">        if (is_patrolling())</a>
+<a name="ln263">        {</a>
+<a name="ln264">            // Enslaved monsters stop patrolling and forget their patrol</a>
+<a name="ln265">            // point; they're supposed to follow you now.</a>
+<a name="ln266">            patrol_point.reset();</a>
+<a name="ln267">            firing_pos.reset();</a>
+<a name="ln268">        }</a>
+<a name="ln269">        mons_att_changed(this);</a>
+<a name="ln270">        // clear any constrictions on/by you</a>
+<a name="ln271">        stop_constricting(MID_PLAYER, true);</a>
+<a name="ln272">        you.stop_constricting(mid, true);</a>
+<a name="ln273"> </a>
+<a name="ln274">        if (invisible() &amp;&amp; you.see_cell(pos()) &amp;&amp; !you.can_see_invisible()</a>
+<a name="ln275">            &amp;&amp; !backlit() &amp;&amp; !has_ench(ENCH_SUBMERGED))</a>
+<a name="ln276">        {</a>
+<a name="ln277">            if (!quiet)</a>
+<a name="ln278">            {</a>
+<a name="ln279">                mprf(&quot;You %sdetect the %s %s.&quot;,</a>
+<a name="ln280">                     friendly() ? &quot;&quot; : &quot;can no longer &quot;,</a>
+<a name="ln281">                     ench.ench == ENCH_HEXED ? &quot;hexed&quot; :</a>
+<a name="ln282">                     ench.ench == ENCH_CHARM ? &quot;charmed&quot;</a>
+<a name="ln283">                                             : &quot;bribed&quot;,</a>
+<a name="ln284">                     name(DESC_PLAIN, true).c_str());</a>
+<a name="ln285">            }</a>
+<a name="ln286"> </a>
+<a name="ln287">            autotoggle_autopickup(!friendly());</a>
+<a name="ln288">            handle_seen_interrupt(this);</a>
+<a name="ln289">        }</a>
+<a name="ln290"> </a>
+<a name="ln291">        // TODO -- and friends</a>
+<a name="ln292"> </a>
+<a name="ln293">        if (you.can_see(*this) &amp;&amp; friendly())</a>
+<a name="ln294">            learned_something_new(HINT_MONSTER_FRIENDLY, pos());</a>
+<a name="ln295">        break;</a>
+<a name="ln296">    }</a>
+<a name="ln297"> </a>
+<a name="ln298">    case ENCH_LIQUEFYING:</a>
+<a name="ln299">    case ENCH_SILENCE:</a>
+<a name="ln300">        invalidate_agrid(true);</a>
+<a name="ln301">        break;</a>
+<a name="ln302"> </a>
+<a name="ln303">    case ENCH_FROZEN:</a>
+<a name="ln304">        calc_speed();</a>
+<a name="ln305">        break;</a>
+<a name="ln306"> </a>
+<a name="ln307">    case ENCH_INVIS:</a>
+<a name="ln308">        if (testbits(flags, MF_WAS_IN_VIEW))</a>
+<a name="ln309">        {</a>
+<a name="ln310">            went_unseen_this_turn = true;</a>
+<a name="ln311">            unseen_pos = pos();</a>
+<a name="ln312">        }</a>
+<a name="ln313">        break;</a>
+<a name="ln314"> </a>
+<a name="ln315">    case ENCH_STILL_WINDS:</a>
+<a name="ln316">        start_still_winds();</a>
+<a name="ln317">        break;</a>
+<a name="ln318"> </a>
+<a name="ln319">    case ENCH_RING_OF_THUNDER:</a>
+<a name="ln320">        _place_thunder_ring(*this);</a>
+<a name="ln321">        mprf(MSGCH_WARN, &quot;A violent storm begins to rage around %s.&quot;,</a>
+<a name="ln322">             name(DESC_THE).c_str());</a>
+<a name="ln323">        break;</a>
+<a name="ln324"> </a>
+<a name="ln325">    case ENCH_VILE_CLUTCH:</a>
+<a name="ln326">    case ENCH_GRASPING_ROOTS:</a>
+<a name="ln327">    {</a>
+<a name="ln328">        actor *source_actor = actor_by_mid(ench.source, true);</a>
+<a name="ln329">        const string noun = ench.ench == ENCH_VILE_CLUTCH ? &quot;Zombie hands&quot; :</a>
+<a name="ln330">                                                            &quot;Roots&quot;;</a>
+<a name="ln331">        source_actor-&gt;start_constricting(*this);</a>
+<a name="ln332">        mprf(MSGCH_WARN, &quot;%s grab %s.&quot;, noun.c_str(), name(DESC_THE).c_str());</a>
+<a name="ln333">        break;</a>
+<a name="ln334">    }</a>
+<a name="ln335"> </a>
+<a name="ln336">    default:</a>
+<a name="ln337">        break;</a>
+<a name="ln338">    }</a>
+<a name="ln339">}</a>
+<a name="ln340"> </a>
+<a name="ln341">static bool _prepare_del_ench(monster* mon, const mon_enchant &amp;me)</a>
+<a name="ln342">{</a>
+<a name="ln343">    if (me.ench != ENCH_SUBMERGED)</a>
+<a name="ln344">        return true;</a>
+<a name="ln345"> </a>
+<a name="ln346">    int midx = mon-&gt;mindex();</a>
+<a name="ln347"> </a>
+<a name="ln348">    if (!monster_at(mon-&gt;pos()))</a>
+<a name="ln349">        mgrd(mon-&gt;pos()) = midx;</a>
+<a name="ln350"> </a>
+<a name="ln351">    if (mon-&gt;pos() != you.pos() &amp;&amp; midx == mgrd(mon-&gt;pos()))</a>
+<a name="ln352">        return true;</a>
+<a name="ln353"> </a>
+<a name="ln354">    if (midx != mgrd(mon-&gt;pos()))</a>
+<a name="ln355">    {</a>
+<a name="ln356">        monster* other_mon = &amp;menv[mgrd(mon-&gt;pos())];</a>
+<a name="ln357"> </a>
+<a name="ln358">        if (other_mon-&gt;type == MONS_NO_MONSTER</a>
+<a name="ln359">            || other_mon-&gt;type == MONS_PROGRAM_BUG)</a>
+<a name="ln360">        {</a>
+<a name="ln361">            mgrd(mon-&gt;pos()) = midx;</a>
+<a name="ln362"> </a>
+<a name="ln363">            mprf(MSGCH_ERROR, &quot;mgrd(%d,%d) points to %s monster, even &quot;</a>
+<a name="ln364">                 &quot;though it contains submerged monster %s (see bug 2293518)&quot;,</a>
+<a name="ln365">                 mon-&gt;pos().x, mon-&gt;pos().y,</a>
+<a name="ln366">                 other_mon-&gt;type == MONS_NO_MONSTER ? &quot;dead&quot; : &quot;buggy&quot;,</a>
+<a name="ln367">                 mon-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln368"> </a>
+<a name="ln369">            if (mon-&gt;pos() != you.pos())</a>
+<a name="ln370">                return true;</a>
+<a name="ln371">        }</a>
+<a name="ln372">        else</a>
+<a name="ln373">            mprf(MSGCH_ERROR, &quot;%s tried to unsubmerge while on same square as &quot;</a>
+<a name="ln374">                 &quot;%s (see bug 2293518)&quot;, mon-&gt;name(DESC_THE, true).c_str(),</a>
+<a name="ln375">                 mon-&gt;name(DESC_A, true).c_str());</a>
+<a name="ln376">    }</a>
+<a name="ln377"> </a>
+<a name="ln378">    // Monster un-submerging while under player or another monster. Try to</a>
+<a name="ln379">    // move to an adjacent square in which the monster could have been</a>
+<a name="ln380">    // submerged and have it unsubmerge from there.</a>
+<a name="ln381">    coord_def target_square;</a>
+<a name="ln382">    int       okay_squares = 0;</a>
+<a name="ln383"> </a>
+<a name="ln384">    for (adjacent_iterator ai(mon-&gt;pos()); ai; ++ai)</a>
+<a name="ln385">        if (!actor_at(*ai)</a>
+<a name="ln386">            &amp;&amp; monster_can_submerge(mon, grd(*ai))</a>
+<a name="ln387">            &amp;&amp; one_chance_in(++okay_squares))</a>
+<a name="ln388">        {</a>
+<a name="ln389">            target_square = *ai;</a>
+<a name="ln390">        }</a>
+<a name="ln391"> </a>
+<a name="ln392">    if (okay_squares &gt; 0)</a>
+<a name="ln393">        return mon-&gt;move_to_pos(target_square);</a>
+<a name="ln394"> </a>
+<a name="ln395">    // No available adjacent squares from which the monster could also</a>
+<a name="ln396">    // have unsubmerged. Can it just stay submerged where it is?</a>
+<a name="ln397">    if (monster_can_submerge(mon, grd(mon-&gt;pos())))</a>
+<a name="ln398">        return false;</a>
+<a name="ln399"> </a>
+<a name="ln400">    // The terrain changed and the monster can't remain submerged.</a>
+<a name="ln401">    // Try to move to an adjacent square where it would be happy.</a>
+<a name="ln402">    for (adjacent_iterator ai(mon-&gt;pos()); ai; ++ai)</a>
+<a name="ln403">    {</a>
+<a name="ln404">        if (!actor_at(*ai)</a>
+<a name="ln405">            &amp;&amp; monster_habitable_grid(mon, grd(*ai))</a>
+<a name="ln406">            &amp;&amp; !trap_at(*ai))</a>
+<a name="ln407">        {</a>
+<a name="ln408">            if (one_chance_in(++okay_squares))</a>
+<a name="ln409">                target_square = *ai;</a>
+<a name="ln410">        }</a>
+<a name="ln411">    }</a>
+<a name="ln412"> </a>
+<a name="ln413">    if (okay_squares &gt; 0)</a>
+<a name="ln414">        return mon-&gt;move_to_pos(target_square);</a>
+<a name="ln415"> </a>
+<a name="ln416">    return true;</a>
+<a name="ln417">}</a>
+<a name="ln418"> </a>
+<a name="ln419">bool monster::del_ench(enchant_type ench, bool quiet, bool effect)</a>
+<a name="ln420">{</a>
+<a name="ln421">    auto i = enchantments.find(ench);</a>
+<a name="ln422">    if (i == enchantments.end())</a>
+<a name="ln423">        return false;</a>
+<a name="ln424"> </a>
+<a name="ln425">    const mon_enchant me = i-&gt;second;</a>
+<a name="ln426">    const enchant_type et = i-&gt;first;</a>
+<a name="ln427"> </a>
+<a name="ln428">    if (!_prepare_del_ench(this, me))</a>
+<a name="ln429">        return false;</a>
+<a name="ln430"> </a>
+<a name="ln431">    enchantments.erase(et);</a>
+<a name="ln432">    ench_cache.set(et, false);</a>
+<a name="ln433">    if (effect)</a>
+<a name="ln434">        remove_enchantment_effect(me, quiet);</a>
+<a name="ln435">    return true;</a>
+<a name="ln436">}</a>
+<a name="ln437"> </a>
+<a name="ln438">void monster::remove_enchantment_effect(const mon_enchant &amp;me, bool quiet)</a>
+<a name="ln439">{</a>
+<a name="ln440">    switch (me.ench)</a>
+<a name="ln441">    {</a>
+<a name="ln442">    case ENCH_TIDE:</a>
+<a name="ln443">        shoals_release_tide(this);</a>
+<a name="ln444">        break;</a>
+<a name="ln445"> </a>
+<a name="ln446">    case ENCH_INSANE:</a>
+<a name="ln447">        if (mons_is_elven_twin(this))</a>
+<a name="ln448">        {</a>
+<a name="ln449">            monster* twin = mons_find_elven_twin_of(this);</a>
+<a name="ln450">            if (twin &amp;&amp; !twin-&gt;has_ench(ENCH_INSANE))</a>
+<a name="ln451">                attitude = twin-&gt;attitude;</a>
+<a name="ln452">            else</a>
+<a name="ln453">                attitude = ATT_HOSTILE;</a>
+<a name="ln454">        }</a>
+<a name="ln455">        mons_att_changed(this);</a>
+<a name="ln456">        break;</a>
+<a name="ln457"> </a>
+<a name="ln458">    case ENCH_BERSERK:</a>
+<a name="ln459">        scale_hp(2, 3);</a>
+<a name="ln460">        calc_speed();</a>
+<a name="ln461">        break;</a>
+<a name="ln462"> </a>
+<a name="ln463">    case ENCH_HASTE:</a>
+<a name="ln464">        calc_speed();</a>
+<a name="ln465">        if (!quiet)</a>
+<a name="ln466">            simple_monster_message(*this, &quot; is no longer moving quickly.&quot;);</a>
+<a name="ln467">        break;</a>
+<a name="ln468"> </a>
+<a name="ln469">    case ENCH_SWIFT:</a>
+<a name="ln470">        if (!quiet)</a>
+<a name="ln471">        {</a>
+<a name="ln472">            if (type == MONS_ALLIGATOR)</a>
+<a name="ln473">                simple_monster_message(*this, &quot; slows down.&quot;);</a>
+<a name="ln474">            else</a>
+<a name="ln475">                simple_monster_message(*this, &quot; is no longer moving quickly.&quot;);</a>
+<a name="ln476">        }</a>
+<a name="ln477">        break;</a>
+<a name="ln478"> </a>
+<a name="ln479">    case ENCH_SILENCE:</a>
+<a name="ln480">        invalidate_agrid();</a>
+<a name="ln481">        if (!quiet &amp;&amp; !silenced(pos()))</a>
+<a name="ln482">        {</a>
+<a name="ln483">            if (alive())</a>
+<a name="ln484">                simple_monster_message(*this, &quot; becomes audible again.&quot;);</a>
+<a name="ln485">            else</a>
+<a name="ln486">                mprf(&quot;As %s %s, the sound returns.&quot;,</a>
+<a name="ln487">                     name(DESC_THE).c_str(),</a>
+<a name="ln488">                     wounded_damaged(holiness()) ? &quot;is destroyed&quot; : &quot;dies&quot;);</a>
+<a name="ln489">        }</a>
+<a name="ln490">        break;</a>
+<a name="ln491"> </a>
+<a name="ln492">    case ENCH_MIGHT:</a>
+<a name="ln493">        if (!quiet)</a>
+<a name="ln494">            simple_monster_message(*this, &quot; no longer looks unusually strong.&quot;);</a>
+<a name="ln495">        break;</a>
+<a name="ln496"> </a>
+<a name="ln497">    case ENCH_SLOW:</a>
+<a name="ln498">        if (!quiet)</a>
+<a name="ln499">            simple_monster_message(*this, &quot; is no longer moving slowly.&quot;);</a>
+<a name="ln500">        calc_speed();</a>
+<a name="ln501">        break;</a>
+<a name="ln502"> </a>
+<a name="ln503">    case ENCH_OZOCUBUS_ARMOUR:</a>
+<a name="ln504">        if (!quiet &amp;&amp; you.can_see(*this))</a>
+<a name="ln505">        {</a>
+<a name="ln506">            mprf(&quot;%s icy armour evaporates.&quot;,</a>
+<a name="ln507">                 apostrophise(name(DESC_THE)).c_str());</a>
+<a name="ln508">        }</a>
+<a name="ln509">        break;</a>
+<a name="ln510"> </a>
+<a name="ln511">    case ENCH_PARALYSIS:</a>
+<a name="ln512">        if (!quiet)</a>
+<a name="ln513">            simple_monster_message(*this, &quot; is no longer paralysed.&quot;);</a>
+<a name="ln514"> </a>
+<a name="ln515">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln516">        break;</a>
+<a name="ln517"> </a>
+<a name="ln518">    case ENCH_PETRIFIED:</a>
+<a name="ln519">        if (!quiet)</a>
+<a name="ln520">            simple_monster_message(*this, &quot; is no longer petrified.&quot;);</a>
+<a name="ln521">        del_ench(ENCH_PETRIFYING);</a>
+<a name="ln522"> </a>
+<a name="ln523">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln524">        break;</a>
+<a name="ln525"> </a>
+<a name="ln526">    case ENCH_PETRIFYING:</a>
+<a name="ln527">        fully_petrify(me.agent(), quiet);</a>
+<a name="ln528"> </a>
+<a name="ln529">        if (alive()) // losing active flight over lava</a>
+<a name="ln530">            behaviour_event(this, ME_EVAL);</a>
+<a name="ln531">        break;</a>
+<a name="ln532"> </a>
+<a name="ln533">    case ENCH_FEAR:</a>
+<a name="ln534">    {</a>
+<a name="ln535">        string msg;</a>
+<a name="ln536">        if (is_nonliving() || berserk_or_insane())</a>
+<a name="ln537">        {</a>
+<a name="ln538">            // This should only happen because of fleeing sanctuary</a>
+<a name="ln539">            msg = &quot; stops retreating.&quot;;</a>
+<a name="ln540">        }</a>
+<a name="ln541">        else if (!mons_is_tentacle_or_tentacle_segment(type))</a>
+<a name="ln542">        {</a>
+<a name="ln543">            msg = &quot; seems to regain &quot; + pronoun(PRONOUN_POSSESSIVE, true)</a>
+<a name="ln544">                                      + &quot; courage.&quot;;</a>
+<a name="ln545">        }</a>
+<a name="ln546"> </a>
+<a name="ln547">        if (!quiet)</a>
+<a name="ln548">            simple_monster_message(*this, msg.c_str());</a>
+<a name="ln549"> </a>
+<a name="ln550">        // Reevaluate behaviour.</a>
+<a name="ln551">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln552">        break;</a>
+<a name="ln553">    }</a>
+<a name="ln554"> </a>
+<a name="ln555">    case ENCH_CONFUSION:</a>
+<a name="ln556">        if (!quiet)</a>
+<a name="ln557">            simple_monster_message(*this, &quot; seems less confused.&quot;);</a>
+<a name="ln558"> </a>
+<a name="ln559">        // Reevaluate behaviour.</a>
+<a name="ln560">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln561">        break;</a>
+<a name="ln562"> </a>
+<a name="ln563">    case ENCH_INVIS:</a>
+<a name="ln564">        // Note: Invisible monsters are not forced to stay invisible, so</a>
+<a name="ln565">        // that they can properly have their invisibility removed just</a>
+<a name="ln566">        // before being polymorphed into a non-invisible monster.</a>
+<a name="ln567">        if (you.see_cell(pos()) &amp;&amp; !you.can_see_invisible() &amp;&amp; !backlit()</a>
+<a name="ln568">            &amp;&amp; !has_ench(ENCH_SUBMERGED)</a>
+<a name="ln569">            &amp;&amp; !friendly())</a>
+<a name="ln570">        {</a>
+<a name="ln571">            if (!quiet)</a>
+<a name="ln572">                mprf(&quot;%s appears from thin air!&quot;, name(DESC_A, true).c_str());</a>
+<a name="ln573"> </a>
+<a name="ln574">            autotoggle_autopickup(false);</a>
+<a name="ln575">            handle_seen_interrupt(this);</a>
+<a name="ln576">        }</a>
+<a name="ln577">        break;</a>
+<a name="ln578"> </a>
+<a name="ln579">    case ENCH_CHARM:</a>
+<a name="ln580">    case ENCH_NEUTRAL_BRIBED:</a>
+<a name="ln581">    case ENCH_FRIENDLY_BRIBED:</a>
+<a name="ln582">    case ENCH_HEXED:</a>
+<a name="ln583">        if (invisible() &amp;&amp; you.see_cell(pos()) &amp;&amp; !you.can_see_invisible()</a>
+<a name="ln584">            &amp;&amp; !backlit() &amp;&amp; !has_ench(ENCH_SUBMERGED))</a>
+<a name="ln585">        {</a>
+<a name="ln586">            if (!quiet)</a>
+<a name="ln587">            {</a>
+<a name="ln588">                if (me.ench == ENCH_CHARM &amp;&amp; props.exists(&quot;charmed_demon&quot;))</a>
+<a name="ln589">                {</a>
+<a name="ln590">                    mprf(&quot;%s breaks free of your control!&quot;,</a>
+<a name="ln591">                         name(DESC_THE, true).c_str());</a>
+<a name="ln592">                }</a>
+<a name="ln593">                else</a>
+<a name="ln594">                    mprf(&quot;%s is no longer %s.&quot;, name(DESC_THE, true).c_str(),</a>
+<a name="ln595">                         me.ench == ENCH_CHARM   ? &quot;charmed&quot;</a>
+<a name="ln596">                         : me.ench == ENCH_HEXED ? &quot;hexed&quot;</a>
+<a name="ln597">                                                 : &quot;bribed&quot;);</a>
+<a name="ln598"> </a>
+<a name="ln599">                mprf(&quot;You can %s detect the %s.&quot;,</a>
+<a name="ln600">                     friendly() ? &quot;once again&quot; : &quot;no longer&quot;,</a>
+<a name="ln601">                     name(DESC_PLAIN, true).c_str());</a>
+<a name="ln602">            }</a>
+<a name="ln603"> </a>
+<a name="ln604">            autotoggle_autopickup(friendly());</a>
+<a name="ln605">        }</a>
+<a name="ln606">        else</a>
+<a name="ln607">        {</a>
+<a name="ln608">            if (!quiet)</a>
+<a name="ln609">            {</a>
+<a name="ln610">                if (me.ench == ENCH_CHARM &amp;&amp; props.exists(&quot;charmed_demon&quot;))</a>
+<a name="ln611">                {</a>
+<a name="ln612">                    simple_monster_message(*this,</a>
+<a name="ln613">                                           &quot; breaks free of your control!&quot;);</a>
+<a name="ln614">                }</a>
+<a name="ln615">                else</a>
+<a name="ln616">                    simple_monster_message(*this,</a>
+<a name="ln617">                                        me.ench == ENCH_CHARM</a>
+<a name="ln618">                                        ? &quot; is no longer charmed.&quot;</a>
+<a name="ln619">                                        : me.ench == ENCH_HEXED</a>
+<a name="ln620">                                        ? &quot; is no longer hexed.&quot;</a>
+<a name="ln621">                                        : &quot; is no longer bribed.&quot;);</a>
+<a name="ln622">            }</a>
+<a name="ln623"> </a>
+<a name="ln624">        }</a>
+<a name="ln625"> </a>
+<a name="ln626">        if (you.can_see(*this))</a>
+<a name="ln627">        {</a>
+<a name="ln628">            // and fire activity interrupts</a>
+<a name="ln629">            interrupt_activity(activity_interrupt::see_monster,</a>
+<a name="ln630">                               activity_interrupt_data(this, SC_UNCHARM));</a>
+<a name="ln631">        }</a>
+<a name="ln632"> </a>
+<a name="ln633">        if (is_patrolling())</a>
+<a name="ln634">        {</a>
+<a name="ln635">            // Enslaved monsters stop patrolling and forget their patrol point,</a>
+<a name="ln636">            // in case they were on order to wait.</a>
+<a name="ln637">            patrol_point.reset();</a>
+<a name="ln638">        }</a>
+<a name="ln639">        mons_att_changed(this);</a>
+<a name="ln640"> </a>
+<a name="ln641">        // If a greater demon is breaking free, give the player time to respond</a>
+<a name="ln642">        if (me.ench == ENCH_CHARM &amp;&amp; props.exists(&quot;charmed_demon&quot;))</a>
+<a name="ln643">        {</a>
+<a name="ln644">            speed_increment -= speed;</a>
+<a name="ln645">            props.erase(&quot;charmed_demon&quot;);</a>
+<a name="ln646">        }</a>
+<a name="ln647"> </a>
+<a name="ln648">        // Reevaluate behaviour.</a>
+<a name="ln649">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln650">        break;</a>
+<a name="ln651"> </a>
+<a name="ln652">    case ENCH_CORONA:</a>
+<a name="ln653">    case ENCH_SILVER_CORONA:</a>
+<a name="ln654">    if (!quiet)</a>
+<a name="ln655">        {</a>
+<a name="ln656">            if (visible_to(&amp;you))</a>
+<a name="ln657">                simple_monster_message(*this, &quot; stops glowing.&quot;);</a>
+<a name="ln658">            else if (has_ench(ENCH_INVIS) &amp;&amp; you.see_cell(pos()))</a>
+<a name="ln659">            {</a>
+<a name="ln660">                mprf(&quot;%s stops glowing and disappears.&quot;,</a>
+<a name="ln661">                     name(DESC_THE, true).c_str());</a>
+<a name="ln662">            }</a>
+<a name="ln663">        }</a>
+<a name="ln664">        break;</a>
+<a name="ln665"> </a>
+<a name="ln666">    case ENCH_STICKY_FLAME:</a>
+<a name="ln667">        if (!quiet)</a>
+<a name="ln668">            simple_monster_message(*this, &quot; stops burning.&quot;);</a>
+<a name="ln669">        break;</a>
+<a name="ln670"> </a>
+<a name="ln671">    case ENCH_POISON:</a>
+<a name="ln672">        if (!quiet)</a>
+<a name="ln673">            simple_monster_message(*this, &quot; looks more healthy.&quot;);</a>
+<a name="ln674">        break;</a>
+<a name="ln675"> </a>
+<a name="ln676">    case ENCH_HELD:</a>
+<a name="ln677">    {</a>
+<a name="ln678">        int net = get_trapping_net(pos());</a>
+<a name="ln679">        if (net != NON_ITEM)</a>
+<a name="ln680">        {</a>
+<a name="ln681">            free_stationary_net(net);</a>
+<a name="ln682"> </a>
+<a name="ln683">            if (props.exists(NEWLY_TRAPPED_KEY))</a>
+<a name="ln684">                props.erase(NEWLY_TRAPPED_KEY);</a>
+<a name="ln685"> </a>
+<a name="ln686">            if (!quiet)</a>
+<a name="ln687">                simple_monster_message(*this, &quot; breaks free.&quot;);</a>
+<a name="ln688">            break;</a>
+<a name="ln689">        }</a>
+<a name="ln690"> </a>
+<a name="ln691">        monster_web_cleanup(*this, true);</a>
+<a name="ln692">        break;</a>
+<a name="ln693">    }</a>
+<a name="ln694">    case ENCH_FAKE_ABJURATION:</a>
+<a name="ln695">        if (type == MONS_BATTLESPHERE)</a>
+<a name="ln696">            return end_battlesphere(this, false);</a>
+<a name="ln697">    case ENCH_ABJ:</a>
+<a name="ln698">        if (type == MONS_SPECTRAL_WEAPON)</a>
+<a name="ln699">            return end_spectral_weapon(this, false);</a>
+<a name="ln700">        // Set duration to -1 so that monster_die() and any of its</a>
+<a name="ln701">        // callees can tell that the monster ran out of time or was</a>
+<a name="ln702">        // abjured.</a>
+<a name="ln703">        add_ench(mon_enchant(</a>
+<a name="ln704">            (me.ench != ENCH_FAKE_ABJURATION) ?</a>
+<a name="ln705">                ENCH_ABJ : ENCH_FAKE_ABJURATION, 0, 0, -1));</a>
+<a name="ln706"> </a>
+<a name="ln707">        if (berserk())</a>
+<a name="ln708">            simple_monster_message(*this, &quot; is no longer berserk.&quot;);</a>
+<a name="ln709"> </a>
+<a name="ln710">        monster_die(*this, (me.ench == ENCH_FAKE_ABJURATION) ? KILL_MISC :</a>
+<a name="ln711">                            (quiet) ? KILL_DISMISSED : KILL_RESET, NON_MONSTER);</a>
+<a name="ln712">        break;</a>
+<a name="ln713">    case ENCH_SHORT_LIVED:</a>
+<a name="ln714">        // Conjured ball lightnings explode when they time out.</a>
+<a name="ln715">        suicide();</a>
+<a name="ln716">        monster_die(*this, KILL_TIMEOUT, NON_MONSTER);</a>
+<a name="ln717">        break;</a>
+<a name="ln718">    case ENCH_SUBMERGED:</a>
+<a name="ln719">        if (mons_is_wandering(*this))</a>
+<a name="ln720">        {</a>
+<a name="ln721">            behaviour = BEH_SEEK;</a>
+<a name="ln722">            behaviour_event(this, ME_EVAL);</a>
+<a name="ln723">        }</a>
+<a name="ln724"> </a>
+<a name="ln725">        if (you.pos() == pos())</a>
+<a name="ln726">        {</a>
+<a name="ln727">            // If, despite our best efforts, it unsubmerged on the same</a>
+<a name="ln728">            // square as the player, teleport it away.</a>
+<a name="ln729">            monster_teleport(this, true, false);</a>
+<a name="ln730">            if (you.pos() == pos())</a>
+<a name="ln731">            {</a>
+<a name="ln732">                mprf(MSGCH_ERROR, &quot;%s is on the same square as you!&quot;,</a>
+<a name="ln733">                     name(DESC_A).c_str());</a>
+<a name="ln734">            }</a>
+<a name="ln735">        }</a>
+<a name="ln736"> </a>
+<a name="ln737">        if (you.can_see(*this))</a>
+<a name="ln738">        {</a>
+<a name="ln739">            if (!quiet &amp;&amp; feat_is_watery(grd(pos())))</a>
+<a name="ln740">            {</a>
+<a name="ln741">                mprf(MSGCH_WARN, &quot;%s bursts forth from the water.&quot;,</a>
+<a name="ln742">                     name(DESC_A, true).c_str());</a>
+<a name="ln743">                seen_monster(this);</a>
+<a name="ln744">            }</a>
+<a name="ln745">        }</a>
+<a name="ln746">        else if (you.see_cell(pos()) &amp;&amp; feat_is_watery(grd(pos())))</a>
+<a name="ln747">        {</a>
+<a name="ln748">            mpr(&quot;Something invisible bursts forth from the water.&quot;);</a>
+<a name="ln749">            interrupt_activity(activity_interrupt::force);</a>
+<a name="ln750">        }</a>
+<a name="ln751">        break;</a>
+<a name="ln752"> </a>
+<a name="ln753">    case ENCH_SOUL_RIPE:</a>
+<a name="ln754">        if (!quiet)</a>
+<a name="ln755">        {</a>
+<a name="ln756">            simple_monster_message(*this,</a>
+<a name="ln757">                                   &quot;'s soul is no longer ripe for the taking.&quot;);</a>
+<a name="ln758">        }</a>
+<a name="ln759">        break;</a>
+<a name="ln760"> </a>
+<a name="ln761">    case ENCH_AWAKEN_FOREST:</a>
+<a name="ln762">        env.forest_awoken_until = 0;</a>
+<a name="ln763">        if (!quiet)</a>
+<a name="ln764">            forest_message(pos(), &quot;The forest calms down.&quot;);</a>
+<a name="ln765">        break;</a>
+<a name="ln766"> </a>
+<a name="ln767">    case ENCH_LIQUEFYING:</a>
+<a name="ln768">        invalidate_agrid();</a>
+<a name="ln769"> </a>
+<a name="ln770">        if (!quiet)</a>
+<a name="ln771">            simple_monster_message(*this, &quot; is no longer liquefying the ground.&quot;);</a>
+<a name="ln772">        break;</a>
+<a name="ln773"> </a>
+<a name="ln774">    case ENCH_FLIGHT:</a>
+<a name="ln775">        apply_location_effects(pos(), me.killer(), me.kill_agent());</a>
+<a name="ln776">        break;</a>
+<a name="ln777"> </a>
+<a name="ln778">    case ENCH_DAZED:</a>
+<a name="ln779">        if (!quiet &amp;&amp; alive())</a>
+<a name="ln780">                simple_monster_message(*this, &quot; is no longer dazed.&quot;);</a>
+<a name="ln781">        break;</a>
+<a name="ln782"> </a>
+<a name="ln783">    case ENCH_INNER_FLAME:</a>
+<a name="ln784">        if (!quiet &amp;&amp; alive())</a>
+<a name="ln785">            simple_monster_message(*this, &quot;'s inner flame fades away.&quot;);</a>
+<a name="ln786">        break;</a>
+<a name="ln787"> </a>
+<a name="ln788">    //The following should never happen, but just in case...</a>
+<a name="ln789"> </a>
+<a name="ln790">    case ENCH_MUTE:</a>
+<a name="ln791">        if (!quiet &amp;&amp; alive())</a>
+<a name="ln792">                simple_monster_message(*this, &quot; is no longer mute.&quot;);</a>
+<a name="ln793">        break;</a>
+<a name="ln794"> </a>
+<a name="ln795">    case ENCH_BLIND:</a>
+<a name="ln796">        if (!quiet &amp;&amp; alive())</a>
+<a name="ln797">            simple_monster_message(*this, &quot; is no longer blind.&quot;);</a>
+<a name="ln798"> </a>
+<a name="ln799">        // Reevaluate behaviour.</a>
+<a name="ln800">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln801">        break;</a>
+<a name="ln802"> </a>
+<a name="ln803">    case ENCH_DUMB:</a>
+<a name="ln804">        if (!quiet &amp;&amp; alive())</a>
+<a name="ln805">            simple_monster_message(*this, &quot; is no longer stupefied.&quot;);</a>
+<a name="ln806"> </a>
+<a name="ln807">        // Reevaluate behaviour.</a>
+<a name="ln808">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln809">        break;</a>
+<a name="ln810"> </a>
+<a name="ln811">    case ENCH_MAD:</a>
+<a name="ln812">        if (!quiet &amp;&amp; alive())</a>
+<a name="ln813">            simple_monster_message(*this, &quot; is no longer mad.&quot;);</a>
+<a name="ln814"> </a>
+<a name="ln815">        // Reevaluate behaviour.</a>
+<a name="ln816">        behaviour_event(this, ME_EVAL);</a>
+<a name="ln817">        break;</a>
+<a name="ln818"> </a>
+<a name="ln819">    case ENCH_REGENERATION:</a>
+<a name="ln820">        if (!quiet)</a>
+<a name="ln821">            simple_monster_message(*this, &quot; is no longer regenerating.&quot;);</a>
+<a name="ln822">        break;</a>
+<a name="ln823"> </a>
+<a name="ln824">    case ENCH_RAISED_MR:</a>
+<a name="ln825">        if (!quiet)</a>
+<a name="ln826">        {</a>
+<a name="ln827">            simple_monster_message(*this, &quot; is no longer resistant to hostile &quot;</a>
+<a name="ln828">                                          &quot;enchantments.&quot;);</a>
+<a name="ln829">        }</a>
+<a name="ln830">        break;</a>
+<a name="ln831"> </a>
+<a name="ln832">    case ENCH_WRETCHED:</a>
+<a name="ln833">        if (!quiet)</a>
+<a name="ln834">        {</a>
+<a name="ln835">            const string msg = &quot; seems to return to &quot; +</a>
+<a name="ln836">                               pronoun(PRONOUN_POSSESSIVE, true) +</a>
+<a name="ln837">                               &quot; normal shape.&quot;;</a>
+<a name="ln838">            simple_monster_message(*this, msg.c_str());</a>
+<a name="ln839">        }</a>
+<a name="ln840">        break;</a>
+<a name="ln841"> </a>
+<a name="ln842">    case ENCH_FLAYED:</a>
+<a name="ln843">        heal_flayed_effect(this);</a>
+<a name="ln844">        break;</a>
+<a name="ln845"> </a>
+<a name="ln846">    case ENCH_HAUNTING:</a>
+<a name="ln847">    {</a>
+<a name="ln848">        mon_enchant abj = get_ench(ENCH_ABJ);</a>
+<a name="ln849">        abj.degree = 1;</a>
+<a name="ln850">        abj.duration = min(5 + random2(30), abj.duration);</a>
+<a name="ln851">        update_ench(abj);</a>
+<a name="ln852">        break;</a>
+<a name="ln853">    }</a>
+<a name="ln854"> </a>
+<a name="ln855">    case ENCH_WEAK:</a>
+<a name="ln856">        if (!quiet)</a>
+<a name="ln857">            simple_monster_message(*this, &quot; is no longer weakened.&quot;);</a>
+<a name="ln858">        break;</a>
+<a name="ln859"> </a>
+<a name="ln860">    case ENCH_AWAKEN_VINES:</a>
+<a name="ln861">        unawaken_vines(this, quiet);</a>
+<a name="ln862">        break;</a>
+<a name="ln863"> </a>
+<a name="ln864">    case ENCH_TOXIC_RADIANCE:</a>
+<a name="ln865">        if (!quiet &amp;&amp; you.can_see(*this))</a>
+<a name="ln866">            mprf(&quot;%s toxic aura wanes.&quot;, name(DESC_ITS).c_str());</a>
+<a name="ln867">        break;</a>
+<a name="ln868"> </a>
+<a name="ln869">    case ENCH_FIRE_VULN:</a>
+<a name="ln870">        if (!quiet)</a>
+<a name="ln871">            simple_monster_message(*this, &quot; is no longer more vulnerable to fire.&quot;);</a>
+<a name="ln872">        break;</a>
+<a name="ln873"> </a>
+<a name="ln874">    case ENCH_MERFOLK_AVATAR_SONG:</a>
+<a name="ln875">        props.erase(&quot;merfolk_avatar_call&quot;);</a>
+<a name="ln876">        break;</a>
+<a name="ln877"> </a>
+<a name="ln878">    case ENCH_POISON_VULN:</a>
+<a name="ln879">        if (!quiet)</a>
+<a name="ln880">            simple_monster_message(*this, &quot; is no longer more vulnerable to poison.&quot;);</a>
+<a name="ln881">        break;</a>
+<a name="ln882"> </a>
+<a name="ln883">    case ENCH_ICEMAIL:</a>
+<a name="ln884">        if (!quiet &amp;&amp; you.can_see(*this))</a>
+<a name="ln885">        {</a>
+<a name="ln886">            mprf(&quot;%s icy envelope dissipates!&quot;,</a>
+<a name="ln887">                 apostrophise(name(DESC_THE)).c_str());</a>
+<a name="ln888">        }</a>
+<a name="ln889">        break;</a>
+<a name="ln890"> </a>
+<a name="ln891">    case ENCH_AGILE:</a>
+<a name="ln892">        if (!quiet)</a>
+<a name="ln893">            simple_monster_message(*this, &quot; is no longer unusually agile.&quot;);</a>
+<a name="ln894">        break;</a>
+<a name="ln895"> </a>
+<a name="ln896">    case ENCH_FROZEN:</a>
+<a name="ln897">        if (!quiet)</a>
+<a name="ln898">            simple_monster_message(*this, &quot; is no longer encased in ice.&quot;);</a>
+<a name="ln899">        calc_speed();</a>
+<a name="ln900">        break;</a>
+<a name="ln901"> </a>
+<a name="ln902">    case ENCH_BLACK_MARK:</a>
+<a name="ln903">        if (!quiet)</a>
+<a name="ln904">        {</a>
+<a name="ln905">            simple_monster_message(*this, &quot; is no longer absorbing vital&quot;</a>
+<a name="ln906">                                         &quot; energies.&quot;);</a>
+<a name="ln907">        }</a>
+<a name="ln908">        calc_speed();</a>
+<a name="ln909">        break;</a>
+<a name="ln910"> </a>
+<a name="ln911">    case ENCH_SAP_MAGIC:</a>
+<a name="ln912">        if (!quiet)</a>
+<a name="ln913">            simple_monster_message(*this, &quot; is no longer being sapped.&quot;);</a>
+<a name="ln914">        break;</a>
+<a name="ln915"> </a>
+<a name="ln916">    case ENCH_CORROSION:</a>
+<a name="ln917">        if (!quiet)</a>
+<a name="ln918">           simple_monster_message(*this, &quot; is no longer covered in acid.&quot;);</a>
+<a name="ln919">        break;</a>
+<a name="ln920"> </a>
+<a name="ln921">    case ENCH_GOLD_LUST:</a>
+<a name="ln922">        if (!quiet)</a>
+<a name="ln923">           simple_monster_message(*this, &quot; is no longer distracted by gold.&quot;);</a>
+<a name="ln924">        break;</a>
+<a name="ln925"> </a>
+<a name="ln926">    case ENCH_DRAINED:</a>
+<a name="ln927">        if (!quiet)</a>
+<a name="ln928">            simple_monster_message(*this, &quot; seems less drained.&quot;);</a>
+<a name="ln929">        break;</a>
+<a name="ln930"> </a>
+<a name="ln931">    case ENCH_REPEL_MISSILES:</a>
+<a name="ln932">        if (!quiet)</a>
+<a name="ln933">            simple_monster_message(*this, &quot; is no longer repelling missiles.&quot;);</a>
+<a name="ln934">        break;</a>
+<a name="ln935"> </a>
+<a name="ln936">    case ENCH_RESISTANCE:</a>
+<a name="ln937">        if (!quiet)</a>
+<a name="ln938">            simple_monster_message(*this, &quot; is no longer unusually resistant.&quot;);</a>
+<a name="ln939">        break;</a>
+<a name="ln940"> </a>
+<a name="ln941">    case ENCH_BRILLIANCE_AURA:</a>
+<a name="ln942">        if (!quiet)</a>
+<a name="ln943">            simple_monster_message(*this, &quot; is no longer giving off an aura.&quot;);</a>
+<a name="ln944">        break;</a>
+<a name="ln945"> </a>
+<a name="ln946">    case ENCH_EMPOWERED_SPELLS:</a>
+<a name="ln947">        if (!quiet)</a>
+<a name="ln948">            simple_monster_message(*this, &quot; seems less brilliant.&quot;);</a>
+<a name="ln949">        break;</a>
+<a name="ln950"> </a>
+<a name="ln951">    case ENCH_IDEALISED:</a>
+<a name="ln952">        if (!quiet)</a>
+<a name="ln953">            simple_monster_message(*this, &quot; loses the glow of perfection.&quot;);</a>
+<a name="ln954">        break;</a>
+<a name="ln955"> </a>
+<a name="ln956">    case ENCH_BOUND_SOUL:</a>
+<a name="ln957">        if (!quiet &amp;&amp; you.can_see(*this))</a>
+<a name="ln958">            mprf(&quot;%s soul is no longer bound.&quot;, name(DESC_ITS).c_str());</a>
+<a name="ln959">        break;</a>
+<a name="ln960"> </a>
+<a name="ln961">    case ENCH_INFESTATION:</a>
+<a name="ln962">        if (!quiet)</a>
+<a name="ln963">            simple_monster_message(*this, &quot; is no longer infested.&quot;);</a>
+<a name="ln964">        break;</a>
+<a name="ln965"> </a>
+<a name="ln966">    case ENCH_VILE_CLUTCH:</a>
+<a name="ln967">    case ENCH_GRASPING_ROOTS:</a>
+<a name="ln968">    {</a>
+<a name="ln969">        const string noun = me.ench == ENCH_VILE_CLUTCH ? &quot;zombie hands&quot;</a>
+<a name="ln970">                                                        : &quot;roots&quot;;</a>
+<a name="ln971">        if (is_constricted())</a>
+<a name="ln972">        {</a>
+<a name="ln973">            // We handle the end-of-enchantment message here since the method</a>
+<a name="ln974">            // of constriction is no longer detectable.</a>
+<a name="ln975">            if (!quiet &amp;&amp; you.can_see(*this))</a>
+<a name="ln976">            {</a>
+<a name="ln977">                mprf(&quot;The %s release their grip on %s.&quot;, noun.c_str(),</a>
+<a name="ln978">                        name(DESC_THE).c_str());</a>
+<a name="ln979">            }</a>
+<a name="ln980">            stop_being_constricted(true);</a>
+<a name="ln981">        }</a>
+<a name="ln982">        break;</a>
+<a name="ln983">    }</a>
+<a name="ln984"> </a>
+<a name="ln985">    case ENCH_STILL_WINDS:</a>
+<a name="ln986">        end_still_winds();</a>
+<a name="ln987">        break;</a>
+<a name="ln988"> </a>
+<a name="ln989">    case ENCH_WATERLOGGED:</a>
+<a name="ln990">        if (!quiet)</a>
+<a name="ln991">            simple_monster_message(*this, &quot; is no longer waterlogged.&quot;);</a>
+<a name="ln992">        break;</a>
+<a name="ln993"> </a>
+<a name="ln994">    default:</a>
+<a name="ln995">        break;</a>
+<a name="ln996">    }</a>
+<a name="ln997">}</a>
+<a name="ln998"> </a>
+<a name="ln999">bool monster::lose_ench_levels(const mon_enchant &amp;e, int lev, bool infinite)</a>
+<a name="ln1000">{</a>
+<a name="ln1001">    if (!lev)</a>
+<a name="ln1002">        return false;</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    if (e.duration &gt;= INFINITE_DURATION &amp;&amp; !infinite)</a>
+<a name="ln1005">        return false;</a>
+<a name="ln1006">    if (e.degree &lt;= lev)</a>
+<a name="ln1007">    {</a>
+<a name="ln1008">        del_ench(e.ench);</a>
+<a name="ln1009">        return true;</a>
+<a name="ln1010">    }</a>
+<a name="ln1011">    else</a>
+<a name="ln1012">    {</a>
+<a name="ln1013">        mon_enchant newe(e);</a>
+<a name="ln1014">        newe.degree -= lev;</a>
+<a name="ln1015">        update_ench(newe);</a>
+<a name="ln1016">        return false;</a>
+<a name="ln1017">    }</a>
+<a name="ln1018">}</a>
+<a name="ln1019"> </a>
+<a name="ln1020">bool monster::lose_ench_duration(const mon_enchant &amp;e, int dur)</a>
+<a name="ln1021">{</a>
+<a name="ln1022">    if (!dur)</a>
+<a name="ln1023">        return false;</a>
+<a name="ln1024"> </a>
+<a name="ln1025">    if (e.duration &gt;= INFINITE_DURATION)</a>
+<a name="ln1026">        return false;</a>
+<a name="ln1027">    if (e.duration &lt;= dur)</a>
+<a name="ln1028">    {</a>
+<a name="ln1029">        del_ench(e.ench);</a>
+<a name="ln1030">        return true;</a>
+<a name="ln1031">    }</a>
+<a name="ln1032">    else</a>
+<a name="ln1033">    {</a>
+<a name="ln1034">        mon_enchant newe(e);</a>
+<a name="ln1035">        newe.duration -= dur;</a>
+<a name="ln1036">        update_ench(newe);</a>
+<a name="ln1037">        return false;</a>
+<a name="ln1038">    }</a>
+<a name="ln1039">}</a>
+<a name="ln1040"> </a>
+<a name="ln1041">string monster::describe_enchantments() const</a>
+<a name="ln1042">{</a>
+<a name="ln1043">    ostringstream oss;</a>
+<a name="ln1044">    for (auto i = enchantments.begin(); i != enchantments.end(); ++i)</a>
+<a name="ln1045">    {</a>
+<a name="ln1046">        if (i != enchantments.begin())</a>
+<a name="ln1047">            oss &lt;&lt; &quot;, &quot;;</a>
+<a name="ln1048">        oss &lt;&lt; string(i-&gt;second);</a>
+<a name="ln1049">    }</a>
+<a name="ln1050">    return oss.str();</a>
+<a name="ln1051">}</a>
+<a name="ln1052"> </a>
+<a name="ln1053">bool monster::decay_enchantment(enchant_type en, bool decay_degree)</a>
+<a name="ln1054">{</a>
+<a name="ln1055">    if (!has_ench(en))</a>
+<a name="ln1056">        return false;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    const mon_enchant&amp; me(get_ench(en));</a>
+<a name="ln1059"> </a>
+<a name="ln1060">    if (me.duration &gt;= INFINITE_DURATION)</a>
+<a name="ln1061">        return false;</a>
+<a name="ln1062"> </a>
+<a name="ln1063">    // Gozag-incited haste/berserk is permanent.</a>
+<a name="ln1064">    if (has_ench(ENCH_GOZAG_INCITE)</a>
+<a name="ln1065">        &amp;&amp; (en == ENCH_HASTE || en == ENCH_BERSERK))</a>
+<a name="ln1066">    {</a>
+<a name="ln1067">        return false;</a>
+<a name="ln1068">    }</a>
+<a name="ln1069"> </a>
+<a name="ln1070">    // Faster monsters can wiggle out of the net more quickly.</a>
+<a name="ln1071">    const int spd = (me.ench == ENCH_HELD) ? speed :</a>
+<a name="ln1072">                                             10;</a>
+<a name="ln1073">    int actdur = speed_to_duration(spd);</a>
+<a name="ln1074"> </a>
+<a name="ln1075">    // Don't let ENCH_SLOW time out while a torpor snail is around.</a>
+<a name="ln1076">    if (en == ENCH_SLOW)</a>
+<a name="ln1077">    {</a>
+<a name="ln1078">        if (torpor_slowed())</a>
+<a name="ln1079">            actdur = min(actdur, me.duration - 1);</a>
+<a name="ln1080">        else</a>
+<a name="ln1081">            props.erase(TORPOR_SLOWED_KEY);</a>
+<a name="ln1082">    }</a>
+<a name="ln1083"> </a>
+<a name="ln1084">    if (lose_ench_duration(me, actdur))</a>
+<a name="ln1085">        return true;</a>
+<a name="ln1086"> </a>
+<a name="ln1087">    if (!decay_degree)</a>
+<a name="ln1088">        return false;</a>
+<a name="ln1089"> </a>
+<a name="ln1090">    // Decay degree so that higher degrees decay faster than lower</a>
+<a name="ln1091">    // degrees, and a degree of 1 does not decay (it expires when the</a>
+<a name="ln1092">    // duration runs out).</a>
+<a name="ln1093">    const int level = me.degree;</a>
+<a name="ln1094">    if (level &lt;= 1)</a>
+<a name="ln1095">        return false;</a>
+<a name="ln1096"> </a>
+<a name="ln1097">    const int decay_factor = level * (level + 1) / 2;</a>
+<a name="ln1098">    if (me.duration &lt; me.maxduration * (decay_factor - 1) / decay_factor)</a>
+<a name="ln1099">    {</a>
+<a name="ln1100">        mon_enchant newme = me;</a>
+<a name="ln1101">        --newme.degree;</a>
+<a name="ln1102">        newme.maxduration = newme.duration;</a>
+<a name="ln1103"> </a>
+<a name="ln1104">        if (newme.degree &lt;= 0)</a>
+<a name="ln1105">        {</a>
+<a name="ln1106">            del_ench(me.ench);</a>
+<a name="ln1107">            return true;</a>
+<a name="ln1108">        }</a>
+<a name="ln1109">        else</a>
+<a name="ln1110">            update_ench(newme);</a>
+<a name="ln1111">    }</a>
+<a name="ln1112">    return false;</a>
+<a name="ln1113">}</a>
+<a name="ln1114"> </a>
+<a name="ln1115">bool monster::clear_far_engulf(void)</a>
+<a name="ln1116">{</a>
+<a name="ln1117">    if (you.duration[DUR_WATER_HOLD]</a>
+<a name="ln1118">        &amp;&amp; (mid_t) you.props[&quot;water_holder&quot;].get_int() == mid)</a>
+<a name="ln1119">    {</a>
+<a name="ln1120">        you.clear_far_engulf();</a>
+<a name="ln1121">    }</a>
+<a name="ln1122"> </a>
+<a name="ln1123">    const mon_enchant&amp; me = get_ench(ENCH_WATER_HOLD);</a>
+<a name="ln1124">    if (me.ench == ENCH_NONE)</a>
+<a name="ln1125">        return false;</a>
+<a name="ln1126">    const bool nonadj = !me.agent() || !adjacent(me.agent()-&gt;pos(), pos());</a>
+<a name="ln1127">    if (nonadj)</a>
+<a name="ln1128">        del_ench(ENCH_WATER_HOLD);</a>
+<a name="ln1129">    return nonadj;</a>
+<a name="ln1130">}</a>
+<a name="ln1131"> </a>
+<a name="ln1132">// Returns true if you resist the merfolk avatar's call.</a>
+<a name="ln1133">static bool _merfolk_avatar_movement_effect(const monster* mons)</a>
+<a name="ln1134">{</a>
+<a name="ln1135">    bool do_resist = (you.attribute[ATTR_HELD]</a>
+<a name="ln1136">                      || you.duration[DUR_TIME_STEP]</a>
+<a name="ln1137">                      || you.cannot_act()</a>
+<a name="ln1138">                      || you.clarity()</a>
+<a name="ln1139">                      || you.is_stationary());</a>
+<a name="ln1140"> </a>
+<a name="ln1141">    if (!do_resist)</a>
+<a name="ln1142">    {</a>
+<a name="ln1143">        // We use a beam tracer here since it is better at navigating</a>
+<a name="ln1144">        // obstructing walls than merely comparing our relative positions</a>
+<a name="ln1145">        bolt tracer;</a>
+<a name="ln1146">        tracer.pierce          = true;</a>
+<a name="ln1147">        tracer.affects_nothing = true;</a>
+<a name="ln1148">        tracer.target          = mons-&gt;pos();</a>
+<a name="ln1149">        tracer.source          = you.pos();</a>
+<a name="ln1150">        tracer.range           = LOS_RADIUS;</a>
+<a name="ln1151">        tracer.is_tracer       = true;</a>
+<a name="ln1152">        tracer.aimed_at_spot   = true;</a>
+<a name="ln1153">        tracer.fire();</a>
+<a name="ln1154"> </a>
+<a name="ln1155">        const coord_def newpos = tracer.path_taken[0];</a>
+<a name="ln1156"> </a>
+<a name="ln1157">        if (!in_bounds(newpos)</a>
+<a name="ln1158">            || is_feat_dangerous(grd(newpos))</a>
+<a name="ln1159">            || !you.can_pass_through_feat(grd(newpos))</a>
+<a name="ln1160">            || !cell_see_cell(mons-&gt;pos(), newpos, LOS_NO_TRANS))</a>
+<a name="ln1161">        {</a>
+<a name="ln1162">            do_resist = true;</a>
+<a name="ln1163">        }</a>
+<a name="ln1164">        else</a>
+<a name="ln1165">        {</a>
+<a name="ln1166">            bool swapping = false;</a>
+<a name="ln1167">            monster* mon = monster_at(newpos);</a>
+<a name="ln1168">            if (mon)</a>
+<a name="ln1169">            {</a>
+<a name="ln1170">                coord_def swapdest;</a>
+<a name="ln1171">                if (mon-&gt;wont_attack()</a>
+<a name="ln1172">                    &amp;&amp; !mon-&gt;is_stationary()</a>
+<a name="ln1173">                    &amp;&amp; !mons_is_projectile(*mon)</a>
+<a name="ln1174">                    &amp;&amp; !mon-&gt;cannot_act()</a>
+<a name="ln1175">                    &amp;&amp; !mon-&gt;asleep()</a>
+<a name="ln1176">                    &amp;&amp; swap_check(mon, swapdest, true))</a>
+<a name="ln1177">                {</a>
+<a name="ln1178">                    swapping = true;</a>
+<a name="ln1179">                }</a>
+<a name="ln1180">                else if (!mon-&gt;submerged())</a>
+<a name="ln1181">                    do_resist = true;</a>
+<a name="ln1182">            }</a>
+<a name="ln1183"> </a>
+<a name="ln1184">            if (!do_resist)</a>
+<a name="ln1185">            {</a>
+<a name="ln1186">                const coord_def oldpos = you.pos();</a>
+<a name="ln1187">                mpr(&quot;The pull of its song draws you forwards.&quot;);</a>
+<a name="ln1188"> </a>
+<a name="ln1189">                if (swapping)</a>
+<a name="ln1190">                {</a>
+<a name="ln1191">                    if (monster_at(oldpos))</a>
+<a name="ln1192">                    {</a>
+<a name="ln1193">                        mprf(&quot;Something prevents you from swapping places &quot;</a>
+<a name="ln1194">                             &quot;with %s.&quot;,</a>
+<a name="ln1195">                             mon-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1196">                        return do_resist;</a>
+<a name="ln1197">                    }</a>
+<a name="ln1198"> </a>
+<a name="ln1199">                    int swap_mon = mgrd(newpos);</a>
+<a name="ln1200">                    // Pick the monster up.</a>
+<a name="ln1201">                    mgrd(newpos) = NON_MONSTER;</a>
+<a name="ln1202">                    mon-&gt;moveto(oldpos);</a>
+<a name="ln1203"> </a>
+<a name="ln1204">                    // Plunk it down.</a>
+<a name="ln1205">                    mgrd(mon-&gt;pos()) = swap_mon;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">                    mprf(&quot;You swap places with %s.&quot;,</a>
+<a name="ln1208">                         mon-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1209">                }</a>
+<a name="ln1210">                move_player_to_grid(newpos, true);</a>
+<a name="ln1211">                stop_delay(true);</a>
+<a name="ln1212"> </a>
+<a name="ln1213">                if (swapping)</a>
+<a name="ln1214">                    mon-&gt;apply_location_effects(newpos);</a>
+<a name="ln1215">            }</a>
+<a name="ln1216">        }</a>
+<a name="ln1217">    }</a>
+<a name="ln1218"> </a>
+<a name="ln1219">    return do_resist;</a>
+<a name="ln1220">}</a>
+<a name="ln1221"> </a>
+<a name="ln1222">static void _merfolk_avatar_song(monster* mons)</a>
+<a name="ln1223">{</a>
+<a name="ln1224">    // First, attempt to pull the player, if mesmerised</a>
+<a name="ln1225">    if (you.beheld_by(*mons) &amp;&amp; coinflip())</a>
+<a name="ln1226">    {</a>
+<a name="ln1227">        // Don't pull the player if they walked forward voluntarily this</a>
+<a name="ln1228">        // turn (to avoid making you jump two spaces at once)</a>
+<a name="ln1229">        if (!mons-&gt;props[&quot;foe_approaching&quot;].get_bool())</a>
+<a name="ln1230">        {</a>
+<a name="ln1231">            _merfolk_avatar_movement_effect(mons);</a>
+<a name="ln1232"> </a>
+<a name="ln1233">            // Reset foe tracking position so that we won't automatically</a>
+<a name="ln1234">            // veto pulling on a subsequent turn because you 'approached'</a>
+<a name="ln1235">            mons-&gt;props[&quot;foe_pos&quot;].get_coord() = you.pos();</a>
+<a name="ln1236">        }</a>
+<a name="ln1237">    }</a>
+<a name="ln1238"> </a>
+<a name="ln1239">    // Only call up drowned souls if we're largely alone; otherwise our</a>
+<a name="ln1240">    // mesmerisation can support the present allies well enough.</a>
+<a name="ln1241">    int ally_hd = 0;</a>
+<a name="ln1242">    for (monster_near_iterator mi(you.pos()); mi; ++mi)</a>
+<a name="ln1243">    {</a>
+<a name="ln1244">        if (*mi != mons &amp;&amp; mons_aligned(mons, *mi) &amp;&amp; mons_is_threatening(**mi)</a>
+<a name="ln1245">            &amp;&amp; mi-&gt;type != MONS_DROWNED_SOUL)</a>
+<a name="ln1246">        {</a>
+<a name="ln1247">            ally_hd += mi-&gt;get_experience_level();</a>
+<a name="ln1248">        }</a>
+<a name="ln1249">    }</a>
+<a name="ln1250">    if (ally_hd &gt; mons-&gt;get_experience_level())</a>
+<a name="ln1251">    {</a>
+<a name="ln1252">        if (mons-&gt;props.exists(&quot;merfolk_avatar_call&quot;))</a>
+<a name="ln1253">        {</a>
+<a name="ln1254">            // Normally can only happen if allies of the merfolk avatar show up</a>
+<a name="ln1255">            // during a song that has already summoned drowned souls (though is</a>
+<a name="ln1256">            // technically possible if some existing ally gains HD instead)</a>
+<a name="ln1257">            if (you.see_cell(mons-&gt;pos()))</a>
+<a name="ln1258">                mpr(&quot;The shadowy forms in the deep grow still as others approach.&quot;);</a>
+<a name="ln1259">            mons-&gt;props.erase(&quot;merfolk_avatar_call&quot;);</a>
+<a name="ln1260">        }</a>
+<a name="ln1261"> </a>
+<a name="ln1262">        return;</a>
+<a name="ln1263">    }</a>
+<a name="ln1264"> </a>
+<a name="ln1265">    // Can only call up drowned souls if there's free deep water nearby</a>
+<a name="ln1266">    vector&lt;coord_def&gt; deep_water;</a>
+<a name="ln1267">    for (radius_iterator ri(mons-&gt;pos(), LOS_RADIUS, C_SQUARE); ri; ++ri)</a>
+<a name="ln1268">        if (grd(*ri) == DNGN_DEEP_WATER &amp;&amp; !actor_at(*ri))</a>
+<a name="ln1269">            deep_water.push_back(*ri);</a>
+<a name="ln1270"> </a>
+<a name="ln1271">    if (deep_water.size())</a>
+<a name="ln1272">    {</a>
+<a name="ln1273">        if (!mons-&gt;props.exists(&quot;merfolk_avatar_call&quot;))</a>
+<a name="ln1274">        {</a>
+<a name="ln1275">            if (you.see_cell(mons-&gt;pos()))</a>
+<a name="ln1276">            {</a>
+<a name="ln1277">                mprf(&quot;Shadowy forms rise from the deep at %s song!&quot;,</a>
+<a name="ln1278">                     mons-&gt;name(DESC_ITS).c_str());</a>
+<a name="ln1279">            }</a>
+<a name="ln1280">            mons-&gt;props[&quot;merfolk_avatar_call&quot;].get_bool() = true;</a>
+<a name="ln1281">        }</a>
+<a name="ln1282"> </a>
+<a name="ln1283">        if (coinflip())</a>
+<a name="ln1284">        {</a>
+<a name="ln1285">            int num = 1 + one_chance_in(4);</a>
+<a name="ln1286">            shuffle_array(deep_water);</a>
+<a name="ln1287"> </a>
+<a name="ln1288">            int existing = 0;</a>
+<a name="ln1289">            for (monster_near_iterator mi(mons); mi; ++mi)</a>
+<a name="ln1290">            {</a>
+<a name="ln1291">                if (mi-&gt;type == MONS_DROWNED_SOUL)</a>
+<a name="ln1292">                    existing++;</a>
+<a name="ln1293">            }</a>
+<a name="ln1294">            num = min(min(num, 5 - existing), int(deep_water.size()));</a>
+<a name="ln1295"> </a>
+<a name="ln1296">            for (int i = 0; i &lt; num; ++i)</a>
+<a name="ln1297">            {</a>
+<a name="ln1298">                monster* soul = create_monster(</a>
+<a name="ln1299">                    mgen_data(MONS_DROWNED_SOUL, SAME_ATTITUDE(mons),</a>
+<a name="ln1300">                              deep_water[i], mons-&gt;foe, MG_FORCE_PLACE)</a>
+<a name="ln1301">                    .set_summoned(mons, 1, SPELL_NO_SPELL));</a>
+<a name="ln1302"> </a>
+<a name="ln1303">                // Scale down drowned soul damage for low level merfolk avatars</a>
+<a name="ln1304">                if (soul)</a>
+<a name="ln1305">                    soul-&gt;set_hit_dice(mons-&gt;get_hit_dice());</a>
+<a name="ln1306">            }</a>
+<a name="ln1307">        }</a>
+<a name="ln1308">    }</a>
+<a name="ln1309">}</a>
+<a name="ln1310"> </a>
+<a name="ln1311">void monster::apply_enchantment(const mon_enchant &amp;me)</a>
+<a name="ln1312">{</a>
+<a name="ln1313">    enchant_type en = me.ench;</a>
+<a name="ln1314">    switch (me.ench)</a>
+<a name="ln1315">    {</a>
+<a name="ln1316">    case ENCH_INSANE:</a>
+<a name="ln1317">        if (decay_enchantment(en))</a>
+<a name="ln1318">        {</a>
+<a name="ln1319">            simple_monster_message(*this, &quot; is no longer in an insane frenzy.&quot;);</a>
+<a name="ln1320">            const int duration = random_range(70, 130);</a>
+<a name="ln1321">            add_ench(mon_enchant(ENCH_FATIGUE, 0, 0, duration));</a>
+<a name="ln1322">            add_ench(mon_enchant(ENCH_SLOW, 0, 0, duration));</a>
+<a name="ln1323">        }</a>
+<a name="ln1324">        break;</a>
+<a name="ln1325"> </a>
+<a name="ln1326">    case ENCH_BERSERK:</a>
+<a name="ln1327">        if (decay_enchantment(en))</a>
+<a name="ln1328">        {</a>
+<a name="ln1329">            simple_monster_message(*this, &quot; is no longer berserk.&quot;);</a>
+<a name="ln1330">            const int duration = random_range(70, 130);</a>
+<a name="ln1331">            add_ench(mon_enchant(ENCH_FATIGUE, 0, 0, duration));</a>
+<a name="ln1332">            add_ench(mon_enchant(ENCH_SLOW, 0, 0, duration));</a>
+<a name="ln1333">        }</a>
+<a name="ln1334">        break;</a>
+<a name="ln1335"> </a>
+<a name="ln1336">    case ENCH_FATIGUE:</a>
+<a name="ln1337">        if (decay_enchantment(en))</a>
+<a name="ln1338">        {</a>
+<a name="ln1339">            simple_monster_message(*this, &quot; looks more energetic.&quot;);</a>
+<a name="ln1340">            del_ench(ENCH_SLOW, true);</a>
+<a name="ln1341">        }</a>
+<a name="ln1342">        break;</a>
+<a name="ln1343"> </a>
+<a name="ln1344">    case ENCH_SLOW:</a>
+<a name="ln1345">    case ENCH_HASTE:</a>
+<a name="ln1346">    case ENCH_SWIFT:</a>
+<a name="ln1347">    case ENCH_MIGHT:</a>
+<a name="ln1348">    case ENCH_FEAR:</a>
+<a name="ln1349">    case ENCH_PARALYSIS:</a>
+<a name="ln1350">    case ENCH_PETRIFYING:</a>
+<a name="ln1351">    case ENCH_PETRIFIED:</a>
+<a name="ln1352">    case ENCH_SICK:</a>
+<a name="ln1353">    case ENCH_CORONA:</a>
+<a name="ln1354">    case ENCH_ABJ:</a>
+<a name="ln1355">    case ENCH_CHARM:</a>
+<a name="ln1356">    case ENCH_SLEEP_WARY:</a>
+<a name="ln1357">    case ENCH_LOWERED_MR:</a>
+<a name="ln1358">    case ENCH_SOUL_RIPE:</a>
+<a name="ln1359">    case ENCH_TIDE:</a>
+<a name="ln1360">    case ENCH_REGENERATION:</a>
+<a name="ln1361">    case ENCH_RAISED_MR:</a>
+<a name="ln1362">    case ENCH_IDEALISED:</a>
+<a name="ln1363">    case ENCH_FEAR_INSPIRING:</a>
+<a name="ln1364">    case ENCH_LIFE_TIMER:</a>
+<a name="ln1365">    case ENCH_FLIGHT:</a>
+<a name="ln1366">    case ENCH_DAZED:</a>
+<a name="ln1367">    case ENCH_FAKE_ABJURATION:</a>
+<a name="ln1368">    case ENCH_RECITE_TIMER:</a>
+<a name="ln1369">    case ENCH_INNER_FLAME:</a>
+<a name="ln1370">    case ENCH_MUTE:</a>
+<a name="ln1371">    case ENCH_BLIND:</a>
+<a name="ln1372">    case ENCH_DUMB:</a>
+<a name="ln1373">    case ENCH_MAD:</a>
+<a name="ln1374">    case ENCH_BREATH_WEAPON:</a>
+<a name="ln1375">    case ENCH_WRETCHED:</a>
+<a name="ln1376">    case ENCH_SCREAMED:</a>
+<a name="ln1377">    case ENCH_WEAK:</a>
+<a name="ln1378">    case ENCH_AWAKEN_VINES:</a>
+<a name="ln1379">    case ENCH_FIRE_VULN:</a>
+<a name="ln1380">    case ENCH_BARBS:</a>
+<a name="ln1381">    case ENCH_POISON_VULN:</a>
+<a name="ln1382">    case ENCH_DIMENSION_ANCHOR:</a>
+<a name="ln1383">    case ENCH_AGILE:</a>
+<a name="ln1384">    case ENCH_FROZEN:</a>
+<a name="ln1385">    case ENCH_SAP_MAGIC:</a>
+<a name="ln1386">    case ENCH_CORROSION:</a>
+<a name="ln1387">    case ENCH_GOLD_LUST:</a>
+<a name="ln1388">    case ENCH_RESISTANCE:</a>
+<a name="ln1389">    case ENCH_HEXED:</a>
+<a name="ln1390">    case ENCH_BRILLIANCE_AURA:</a>
+<a name="ln1391">    case ENCH_EMPOWERED_SPELLS:</a>
+<a name="ln1392">    case ENCH_ANTIMAGIC:</a>
+<a name="ln1393">    case ENCH_BOUND_SOUL:</a>
+<a name="ln1394">    case ENCH_INFESTATION:</a>
+<a name="ln1395">    case ENCH_BLACK_MARK:</a>
+<a name="ln1396">    case ENCH_STILL_WINDS:</a>
+<a name="ln1397">    case ENCH_RING_OF_THUNDER:</a>
+<a name="ln1398">    case ENCH_VILE_CLUTCH:</a>
+<a name="ln1399">    case ENCH_GRASPING_ROOTS:</a>
+<a name="ln1400">    case ENCH_WATERLOGGED:</a>
+<a name="ln1401">        decay_enchantment(en);</a>
+<a name="ln1402">        break;</a>
+<a name="ln1403"> </a>
+<a name="ln1404">    case ENCH_MIRROR_DAMAGE:</a>
+<a name="ln1405">        if (decay_enchantment(en))</a>
+<a name="ln1406">            simple_monster_message(*this, &quot;'s dark mirror aura disappears.&quot;);</a>
+<a name="ln1407">        break;</a>
+<a name="ln1408"> </a>
+<a name="ln1409">    case ENCH_SILENCE:</a>
+<a name="ln1410">    case ENCH_LIQUEFYING:</a>
+<a name="ln1411">        decay_enchantment(en);</a>
+<a name="ln1412">        invalidate_agrid();</a>
+<a name="ln1413">        break;</a>
+<a name="ln1414"> </a>
+<a name="ln1415">    case ENCH_DRAINED:</a>
+<a name="ln1416">        decay_enchantment(en, false);</a>
+<a name="ln1417">        break;</a>
+<a name="ln1418"> </a>
+<a name="ln1419">    case ENCH_AQUATIC_LAND:</a>
+<a name="ln1420">        // Aquatic monsters lose hit points every turn they spend on dry land.</a>
+<a name="ln1421">        ASSERT(mons_habitat(*this) == HT_WATER || mons_habitat(*this) == HT_LAVA);</a>
+<a name="ln1422">        if (monster_habitable_grid(this, grd(pos())))</a>
+<a name="ln1423">        {</a>
+<a name="ln1424">            del_ench(ENCH_AQUATIC_LAND);</a>
+<a name="ln1425">            break;</a>
+<a name="ln1426">        }</a>
+<a name="ln1427"> </a>
+<a name="ln1428">        // Zombies don't take damage from flopping about on land.</a>
+<a name="ln1429">        if (mons_is_zombified(*this))</a>
+<a name="ln1430">            break;</a>
+<a name="ln1431"> </a>
+<a name="ln1432">        hurt(me.agent(), 1 + random2(5), BEAM_NONE);</a>
+<a name="ln1433">        break;</a>
+<a name="ln1434"> </a>
+<a name="ln1435">    case ENCH_HELD:</a>
+<a name="ln1436">        break; // handled in mon-act.cc:struggle_against_net()</a>
+<a name="ln1437"> </a>
+<a name="ln1438">    case ENCH_CONFUSION:</a>
+<a name="ln1439">        if (!mons_class_flag(type, M_CONFUSED))</a>
+<a name="ln1440">            decay_enchantment(en);</a>
+<a name="ln1441">        break;</a>
+<a name="ln1442"> </a>
+<a name="ln1443">    case ENCH_INVIS:</a>
+<a name="ln1444">        if (!mons_class_flag(type, M_INVIS))</a>
+<a name="ln1445">            decay_enchantment(en);</a>
+<a name="ln1446">        break;</a>
+<a name="ln1447"> </a>
+<a name="ln1448">    case ENCH_SUBMERGED:</a>
+<a name="ln1449">    {</a>
+<a name="ln1450">        // Don't unsubmerge into a harmful cloud</a>
+<a name="ln1451">        if (!is_harmless_cloud(cloud_type_at(pos())))</a>
+<a name="ln1452">            break;</a>
+<a name="ln1453"> </a>
+<a name="ln1454">        // Now we handle the others:</a>
+<a name="ln1455">        const dungeon_feature_type grid = grd(pos());</a>
+<a name="ln1456"> </a>
+<a name="ln1457">        if (!monster_can_submerge(this, grid))</a>
+<a name="ln1458">            del_ench(ENCH_SUBMERGED); // forced to surface</a>
+<a name="ln1459">        break;</a>
+<a name="ln1460">    }</a>
+<a name="ln1461">    case ENCH_POISON:</a>
+<a name="ln1462">    {</a>
+<a name="ln1463">        const int poisonval = me.degree;</a>
+<a name="ln1464">        int dam = (poisonval &gt;= 4) ? 1 : 0;</a>
+<a name="ln1465"> </a>
+<a name="ln1466">        if (coinflip())</a>
+<a name="ln1467">            dam += roll_dice(1, poisonval + 1);</a>
+<a name="ln1468"> </a>
+<a name="ln1469">        if (res_poison() &lt; 0)</a>
+<a name="ln1470">            dam += roll_dice(2, poisonval) - 1;</a>
+<a name="ln1471"> </a>
+<a name="ln1472">        if (dam &gt; 0)</a>
+<a name="ln1473">        {</a>
+<a name="ln1474">            dprf(&quot;%s takes poison damage: %d (degree %d)&quot;,</a>
+<a name="ln1475">                 name(DESC_THE).c_str(), dam, me.degree);</a>
+<a name="ln1476"> </a>
+<a name="ln1477">            hurt(me.agent(), dam, BEAM_POISON, KILLED_BY_POISON);</a>
+<a name="ln1478">        }</a>
+<a name="ln1479"> </a>
+<a name="ln1480">        decay_enchantment(en, true);</a>
+<a name="ln1481">        break;</a>
+<a name="ln1482">    }</a>
+<a name="ln1483"> </a>
+<a name="ln1484">    // Assumption: monster::res_fire has already been checked.</a>
+<a name="ln1485">    case ENCH_STICKY_FLAME:</a>
+<a name="ln1486">    {</a>
+<a name="ln1487">        if (feat_is_watery(grd(pos())) &amp;&amp; ground_level())</a>
+<a name="ln1488">        {</a>
+<a name="ln1489">            if (you.can_see(*this))</a>
+<a name="ln1490">            {</a>
+<a name="ln1491">                mprf(&quot;The flames covering %s go out.&quot;,</a>
+<a name="ln1492">                     name(DESC_THE, false).c_str());</a>
+<a name="ln1493">            }</a>
+<a name="ln1494">            del_ench(ENCH_STICKY_FLAME);</a>
+<a name="ln1495">            break;</a>
+<a name="ln1496">        }</a>
+<a name="ln1497">        const int dam = resist_adjust_damage(this, BEAM_FIRE,</a>
+<a name="ln1498">                                             roll_dice(2, 4) - 1);</a>
+<a name="ln1499"> </a>
+<a name="ln1500">        if (dam &gt; 0)</a>
+<a name="ln1501">        {</a>
+<a name="ln1502">            simple_monster_message(*this, &quot; burns!&quot;);</a>
+<a name="ln1503">            dprf(&quot;sticky flame damage: %d&quot;, dam);</a>
+<a name="ln1504">            hurt(me.agent(), dam, BEAM_STICKY_FLAME);</a>
+<a name="ln1505">        }</a>
+<a name="ln1506"> </a>
+<a name="ln1507">        decay_enchantment(en, true);</a>
+<a name="ln1508">        break;</a>
+<a name="ln1509">    }</a>
+<a name="ln1510"> </a>
+<a name="ln1511">    case ENCH_SHORT_LIVED:</a>
+<a name="ln1512">        // This should only be used for ball lightning -- bwr</a>
+<a name="ln1513">        if (decay_enchantment(en))</a>
+<a name="ln1514">            suicide();</a>
+<a name="ln1515">        break;</a>
+<a name="ln1516"> </a>
+<a name="ln1517">    case ENCH_SLOWLY_DYING:</a>
+<a name="ln1518">        // If you are no longer dying, you must be dead.</a>
+<a name="ln1519">        if (decay_enchantment(en))</a>
+<a name="ln1520">        {</a>
+<a name="ln1521">            if (you.can_see(*this))</a>
+<a name="ln1522">            {</a>
+<a name="ln1523">                if (type == MONS_PILLAR_OF_SALT)</a>
+<a name="ln1524">                    mprf(&quot;%s crumbles away.&quot;, name(DESC_THE, false).c_str());</a>
+<a name="ln1525">                else if (type == MONS_BLOCK_OF_ICE)</a>
+<a name="ln1526">                    mprf(&quot;%s melts away.&quot;, name(DESC_THE, false).c_str());</a>
+<a name="ln1527">                else</a>
+<a name="ln1528">                {</a>
+<a name="ln1529">                    mprf(&quot;A nearby %s withers and dies.&quot;,</a>
+<a name="ln1530">                         name(DESC_PLAIN, false).c_str());</a>
+<a name="ln1531">                }</a>
+<a name="ln1532">            }</a>
+<a name="ln1533"> </a>
+<a name="ln1534">            monster_die(*this, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln1535">        }</a>
+<a name="ln1536">        break;</a>
+<a name="ln1537"> </a>
+<a name="ln1538">    case ENCH_EXPLODING:</a>
+<a name="ln1539">    {</a>
+<a name="ln1540">        // Reduce the timer, if that means we lose the enchantment then</a>
+<a name="ln1541">        // spawn a spore and re-add the enchantment</a>
+<a name="ln1542">        if (decay_enchantment(en))</a>
+<a name="ln1543">        {</a>
+<a name="ln1544">            monster_type mtype = type;</a>
+<a name="ln1545">            bolt beam;</a>
+<a name="ln1546"> </a>
+<a name="ln1547">            setup_spore_explosion(beam, *this);</a>
+<a name="ln1548"> </a>
+<a name="ln1549">            beam.explode();</a>
+<a name="ln1550"> </a>
+<a name="ln1551">            // Ballistos are immune to their own explosions, but must</a>
+<a name="ln1552">            // die some time</a>
+<a name="ln1553">            this-&gt;set_hit_dice(this-&gt;get_experience_level() - 1);</a>
+<a name="ln1554">            if (this-&gt;get_experience_level() &lt;= 0)</a>
+<a name="ln1555">                this-&gt;self_destruct();</a>
+<a name="ln1556"> </a>
+<a name="ln1557">            // The ballisto dying, then a spore being created in its slot</a>
+<a name="ln1558">            // env.mons means we can appear to be alive, but in fact be</a>
+<a name="ln1559">            // an entirely different monster.</a>
+<a name="ln1560">            if (alive() &amp;&amp; type == mtype)</a>
+<a name="ln1561">                add_ench(ENCH_EXPLODING);</a>
+<a name="ln1562">        }</a>
+<a name="ln1563"> </a>
+<a name="ln1564">    }</a>
+<a name="ln1565">    break;</a>
+<a name="ln1566"> </a>
+<a name="ln1567">    case ENCH_PORTAL_TIMER:</a>
+<a name="ln1568">    {</a>
+<a name="ln1569">        if (decay_enchantment(en))</a>
+<a name="ln1570">        {</a>
+<a name="ln1571">            coord_def base_position = props[&quot;base_position&quot;].get_coord();</a>
+<a name="ln1572">            // Do a thing.</a>
+<a name="ln1573">            if (you.see_cell(base_position))</a>
+<a name="ln1574">                mprf(&quot;The portal closes; %s is severed.&quot;, name(DESC_THE).c_str());</a>
+<a name="ln1575"> </a>
+<a name="ln1576">            if (env.grid(base_position) == DNGN_MALIGN_GATEWAY)</a>
+<a name="ln1577">                env.grid(base_position) = DNGN_FLOOR;</a>
+<a name="ln1578"> </a>
+<a name="ln1579">            maybe_bloodify_square(base_position);</a>
+<a name="ln1580">            add_ench(ENCH_SEVERED);</a>
+<a name="ln1581"> </a>
+<a name="ln1582">            // Severed tentacles immediately become &quot;hostile&quot; to everyone</a>
+<a name="ln1583">            // (or insane)</a>
+<a name="ln1584">            attitude = ATT_NEUTRAL;</a>
+<a name="ln1585">            mons_att_changed(this);</a>
+<a name="ln1586">            if (!crawl_state.game_is_arena())</a>
+<a name="ln1587">                behaviour_event(this, ME_ALERT);</a>
+<a name="ln1588">        }</a>
+<a name="ln1589">    }</a>
+<a name="ln1590">    break;</a>
+<a name="ln1591"> </a>
+<a name="ln1592">    case ENCH_PORTAL_PACIFIED:</a>
+<a name="ln1593">    {</a>
+<a name="ln1594">        if (decay_enchantment(en))</a>
+<a name="ln1595">        {</a>
+<a name="ln1596">            if (has_ench(ENCH_SEVERED))</a>
+<a name="ln1597">                break;</a>
+<a name="ln1598"> </a>
+<a name="ln1599">            if (!friendly())</a>
+<a name="ln1600">                break;</a>
+<a name="ln1601"> </a>
+<a name="ln1602">            if (!silenced(you.pos()))</a>
+<a name="ln1603">            {</a>
+<a name="ln1604">                if (you.can_see(*this))</a>
+<a name="ln1605">                    simple_monster_message(*this, &quot; suddenly becomes enraged!&quot;);</a>
+<a name="ln1606">                else</a>
+<a name="ln1607">                    mpr(&quot;You hear a distant and violent thrashing sound.&quot;);</a>
+<a name="ln1608">            }</a>
+<a name="ln1609"> </a>
+<a name="ln1610">            attitude = ATT_HOSTILE;</a>
+<a name="ln1611">            mons_att_changed(this);</a>
+<a name="ln1612">            if (!crawl_state.game_is_arena())</a>
+<a name="ln1613">                behaviour_event(this, ME_ALERT, &amp;you);</a>
+<a name="ln1614">        }</a>
+<a name="ln1615">    }</a>
+<a name="ln1616">    break;</a>
+<a name="ln1617"> </a>
+<a name="ln1618">    case ENCH_SEVERED:</a>
+<a name="ln1619">    {</a>
+<a name="ln1620">        simple_monster_message(*this, &quot; writhes!&quot;);</a>
+<a name="ln1621">        coord_def base_position = props[&quot;base_position&quot;].get_coord();</a>
+<a name="ln1622">        maybe_bloodify_square(base_position);</a>
+<a name="ln1623">        hurt(me.agent(), 20);</a>
+<a name="ln1624">    }</a>
+<a name="ln1625"> </a>
+<a name="ln1626">    break;</a>
+<a name="ln1627"> </a>
+<a name="ln1628">    case ENCH_GLOWING_SHAPESHIFTER: // This ench never runs out!</a>
+<a name="ln1629">        // Number of actions is fine for shapeshifters. Don't change</a>
+<a name="ln1630">        // shape while taking the stairs because monster_polymorph() has</a>
+<a name="ln1631">        // an assert about it. -cao</a>
+<a name="ln1632">        if (!(flags &amp; MF_TAKING_STAIRS)</a>
+<a name="ln1633">            &amp;&amp; !(paralysed() || petrified() || petrifying() || asleep())</a>
+<a name="ln1634">            &amp;&amp; (type == MONS_GLOWING_SHAPESHIFTER</a>
+<a name="ln1635">                || one_chance_in(4)))</a>
+<a name="ln1636">        {</a>
+<a name="ln1637">            monster_polymorph(this, RANDOM_MONSTER);</a>
+<a name="ln1638">        }</a>
+<a name="ln1639">        break;</a>
+<a name="ln1640"> </a>
+<a name="ln1641">    case ENCH_SHAPESHIFTER:         // This ench never runs out!</a>
+<a name="ln1642">        if (!(flags &amp; MF_TAKING_STAIRS)</a>
+<a name="ln1643">            &amp;&amp; !(paralysed() || petrified() || petrifying() || asleep())</a>
+<a name="ln1644">            &amp;&amp; (type == MONS_SHAPESHIFTER</a>
+<a name="ln1645">                || x_chance_in_y(1000 / (15 * max(1, get_hit_dice()) / 5),</a>
+<a name="ln1646">                                 1000)))</a>
+<a name="ln1647">        {</a>
+<a name="ln1648">            monster_polymorph(this, RANDOM_MONSTER);</a>
+<a name="ln1649">        }</a>
+<a name="ln1650">        break;</a>
+<a name="ln1651"> </a>
+<a name="ln1652">    case ENCH_TP:</a>
+<a name="ln1653">        if (decay_enchantment(en, true) &amp;&amp; !no_tele(true, false))</a>
+<a name="ln1654">            monster_teleport(this, true);</a>
+<a name="ln1655">        break;</a>
+<a name="ln1656"> </a>
+<a name="ln1657">    case ENCH_AWAKEN_FOREST:</a>
+<a name="ln1658">        forest_damage(this);</a>
+<a name="ln1659">        decay_enchantment(en);</a>
+<a name="ln1660">        break;</a>
+<a name="ln1661"> </a>
+<a name="ln1662">    case ENCH_TORNADO:</a>
+<a name="ln1663">        tornado_damage(this, speed_to_duration(speed));</a>
+<a name="ln1664">        if (decay_enchantment(en))</a>
+<a name="ln1665">        {</a>
+<a name="ln1666">            add_ench(ENCH_TORNADO_COOLDOWN);</a>
+<a name="ln1667">            if (you.can_see(*this))</a>
+<a name="ln1668">            {</a>
+<a name="ln1669">                mprf(&quot;The winds around %s start to calm down.&quot;,</a>
+<a name="ln1670">                     name(DESC_THE).c_str());</a>
+<a name="ln1671">            }</a>
+<a name="ln1672">        }</a>
+<a name="ln1673">        break;</a>
+<a name="ln1674"> </a>
+<a name="ln1675">    case ENCH_VORTEX:</a>
+<a name="ln1676">        tornado_damage(this, speed_to_duration(speed), true);</a>
+<a name="ln1677">        if (decay_enchantment(en))</a>
+<a name="ln1678">        {</a>
+<a name="ln1679">            add_ench(ENCH_VORTEX_COOLDOWN);</a>
+<a name="ln1680">            if (you.can_see(*this))</a>
+<a name="ln1681">            {</a>
+<a name="ln1682">                mprf(&quot;The winds around %s start to calm down.&quot;,</a>
+<a name="ln1683">                     name(DESC_THE).c_str());</a>
+<a name="ln1684">            }</a>
+<a name="ln1685">        }</a>
+<a name="ln1686">        break;</a>
+<a name="ln1687"> </a>
+<a name="ln1688">    // This is like Corona, but if silver harms them, it has sticky</a>
+<a name="ln1689">    // flame levels of damage.</a>
+<a name="ln1690">    case ENCH_SILVER_CORONA:</a>
+<a name="ln1691">        if (how_chaotic())</a>
+<a name="ln1692">        {</a>
+<a name="ln1693">            int dam = roll_dice(2, 4) - 1;</a>
+<a name="ln1694">            simple_monster_message(*this, &quot; is seared!&quot;);</a>
+<a name="ln1695">            dprf(&quot;Zin's Corona damage: %d&quot;, dam);</a>
+<a name="ln1696">            hurt(me.agent(), dam);</a>
+<a name="ln1697">        }</a>
+<a name="ln1698"> </a>
+<a name="ln1699">        decay_enchantment(en, true);</a>
+<a name="ln1700">        break;</a>
+<a name="ln1701"> </a>
+<a name="ln1702">    case ENCH_WORD_OF_RECALL:</a>
+<a name="ln1703">        // If we've gotten silenced or somehow incapacitated since we started,</a>
+<a name="ln1704">        // cancel the recitation</a>
+<a name="ln1705">        if (is_silenced() || cannot_act() || has_ench(ENCH_BREATH_WEAPON)</a>
+<a name="ln1706">            || confused() || asleep() || has_ench(ENCH_FEAR))</a>
+<a name="ln1707">        {</a>
+<a name="ln1708">            speed_increment += me.duration;</a>
+<a name="ln1709">            del_ench(en, true, false);</a>
+<a name="ln1710">            if (you.can_see(*this))</a>
+<a name="ln1711">            {</a>
+<a name="ln1712">                mprf(&quot;%s chant is interrupted.&quot;,</a>
+<a name="ln1713">                     name(DESC_ITS).c_str());</a>
+<a name="ln1714">            }</a>
+<a name="ln1715">            break;</a>
+<a name="ln1716">        }</a>
+<a name="ln1717"> </a>
+<a name="ln1718">        if (decay_enchantment(en))</a>
+<a name="ln1719">        {</a>
+<a name="ln1720">            int breath_timeout_turns = random_range(4, 12);</a>
+<a name="ln1721"> </a>
+<a name="ln1722">            mons_word_of_recall(this, random_range(3, 7));</a>
+<a name="ln1723">            add_ench(mon_enchant(ENCH_BREATH_WEAPON, 1, this,</a>
+<a name="ln1724">                                 breath_timeout_turns * BASELINE_DELAY));</a>
+<a name="ln1725">        }</a>
+<a name="ln1726">        break;</a>
+<a name="ln1727"> </a>
+<a name="ln1728">    case ENCH_INJURY_BOND:</a>
+<a name="ln1729">        // It's hard to absorb someone else's injuries when you're dead</a>
+<a name="ln1730">        if (!me.agent() || !me.agent()-&gt;alive()</a>
+<a name="ln1731">            || me.agent()-&gt;mid == MID_ANON_FRIEND)</a>
+<a name="ln1732">        {</a>
+<a name="ln1733">            del_ench(ENCH_INJURY_BOND, true, false);</a>
+<a name="ln1734">        }</a>
+<a name="ln1735">        else</a>
+<a name="ln1736">            decay_enchantment(en);</a>
+<a name="ln1737">        break;</a>
+<a name="ln1738"> </a>
+<a name="ln1739">    case ENCH_WATER_HOLD:</a>
+<a name="ln1740">        if (!clear_far_engulf())</a>
+<a name="ln1741">        {</a>
+<a name="ln1742">            if (res_water_drowning() &lt;= 0)</a>
+<a name="ln1743">            {</a>
+<a name="ln1744">                lose_ench_duration(me, -speed_to_duration(speed));</a>
+<a name="ln1745">                int dur = speed_to_duration(speed); // sequence point for randomness</a>
+<a name="ln1746">                int dam = div_rand_round((50 + stepdown((float)me.duration, 30.0))</a>
+<a name="ln1747">                                          * dur,</a>
+<a name="ln1748">                            BASELINE_DELAY * 10);</a>
+<a name="ln1749">                if (res_water_drowning() &lt; 0)</a>
+<a name="ln1750">                    dam = dam * 3 / 2;</a>
+<a name="ln1751">                hurt(me.agent(), dam);</a>
+<a name="ln1752">            }</a>
+<a name="ln1753">        }</a>
+<a name="ln1754">        break;</a>
+<a name="ln1755"> </a>
+<a name="ln1756">    case ENCH_FLAYED:</a>
+<a name="ln1757">    {</a>
+<a name="ln1758">        bool near_ghost = false;</a>
+<a name="ln1759">        for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1760">        {</a>
+<a name="ln1761">            if (mi-&gt;type == MONS_FLAYED_GHOST &amp;&amp; !mons_aligned(this, *mi)</a>
+<a name="ln1762">                &amp;&amp; see_cell(mi-&gt;pos()))</a>
+<a name="ln1763">            {</a>
+<a name="ln1764">                near_ghost = true;</a>
+<a name="ln1765">                break;</a>
+<a name="ln1766">            }</a>
+<a name="ln1767">        }</a>
+<a name="ln1768">        if (!near_ghost)</a>
+<a name="ln1769">            decay_enchantment(en);</a>
+<a name="ln1770"> </a>
+<a name="ln1771">        break;</a>
+<a name="ln1772">    }</a>
+<a name="ln1773"> </a>
+<a name="ln1774">    case ENCH_HAUNTING:</a>
+<a name="ln1775">        if (!me.agent() || !me.agent()-&gt;alive())</a>
+<a name="ln1776">            del_ench(ENCH_HAUNTING);</a>
+<a name="ln1777">        break;</a>
+<a name="ln1778"> </a>
+<a name="ln1779">    case ENCH_TOXIC_RADIANCE:</a>
+<a name="ln1780">        toxic_radiance_effect(this, 10);</a>
+<a name="ln1781">        decay_enchantment(en);</a>
+<a name="ln1782">        break;</a>
+<a name="ln1783"> </a>
+<a name="ln1784">    case ENCH_TORNADO_COOLDOWN:</a>
+<a name="ln1785">    case ENCH_VORTEX_COOLDOWN:</a>
+<a name="ln1786">        if (decay_enchantment(en))</a>
+<a name="ln1787">        {</a>
+<a name="ln1788">            remove_tornado_clouds(mid);</a>
+<a name="ln1789">            if (you.can_see(*this))</a>
+<a name="ln1790">                mprf(&quot;The winds around %s calm down.&quot;, name(DESC_THE).c_str());</a>
+<a name="ln1791">        }</a>
+<a name="ln1792">        break;</a>
+<a name="ln1793"> </a>
+<a name="ln1794">    case ENCH_MERFOLK_AVATAR_SONG:</a>
+<a name="ln1795">        // If we've gotten silenced or somehow incapacitated since we started,</a>
+<a name="ln1796">        // cancel the song</a>
+<a name="ln1797">        if (silenced(pos()) || paralysed() || petrified()</a>
+<a name="ln1798">            || confused() || asleep() || has_ench(ENCH_FEAR))</a>
+<a name="ln1799">        {</a>
+<a name="ln1800">            del_ench(ENCH_MERFOLK_AVATAR_SONG, true, false);</a>
+<a name="ln1801">            if (you.can_see(*this))</a>
+<a name="ln1802">            {</a>
+<a name="ln1803">                mprf(&quot;%s song is interrupted.&quot;,</a>
+<a name="ln1804">                     name(DESC_ITS).c_str());</a>
+<a name="ln1805">            }</a>
+<a name="ln1806">            break;</a>
+<a name="ln1807">        }</a>
+<a name="ln1808"> </a>
+<a name="ln1809">        _merfolk_avatar_song(this);</a>
+<a name="ln1810"> </a>
+<a name="ln1811">        // The merfolk avatar will stop singing without her audience</a>
+<a name="ln1812">        if (!see_cell_no_trans(you.pos()))</a>
+<a name="ln1813">            decay_enchantment(en);</a>
+<a name="ln1814"> </a>
+<a name="ln1815">        break;</a>
+<a name="ln1816"> </a>
+<a name="ln1817">    case ENCH_PAIN_BOND:</a>
+<a name="ln1818">        if (decay_enchantment(en))</a>
+<a name="ln1819">        {</a>
+<a name="ln1820">            const string msg = &quot; is no longer sharing &quot; +</a>
+<a name="ln1821">                               pronoun(PRONOUN_POSSESSIVE, true) +</a>
+<a name="ln1822">                               &quot; pain.&quot;;</a>
+<a name="ln1823">            simple_monster_message(*this, msg.c_str());</a>
+<a name="ln1824">        }</a>
+<a name="ln1825">        break;</a>
+<a name="ln1826"> </a>
+<a name="ln1827">    default:</a>
+<a name="ln1828">        break;</a>
+<a name="ln1829">    }</a>
+<a name="ln1830">}</a>
+<a name="ln1831"> </a>
+<a name="ln1832">void monster::mark_summoned(int longevity, bool mark_items, int summon_type, bool abj)</a>
+<a name="ln1833">{</a>
+<a name="ln1834">    if (abj)</a>
+<a name="ln1835">        add_ench(mon_enchant(ENCH_ABJ, longevity));</a>
+<a name="ln1836">    if (summon_type != 0)</a>
+<a name="ln1837">        add_ench(mon_enchant(ENCH_SUMMON, summon_type, 0, INT_MAX));</a>
+<a name="ln1838"> </a>
+<a name="ln1839">    if (mark_items)</a>
+<a name="ln1840">        for (mon_inv_iterator ii(*this); ii; ++ii)</a>
+<a name="ln1841">            ii-&gt;flags |= ISFLAG_SUMMONED;</a>
+<a name="ln1842">}</a>
+<a name="ln1843"> </a>
+<a name="ln1844">/* Is the monster temporarily summoned?</a>
+<a name="ln1845"> *</a>
+<a name="ln1846"> * Monsters must have ENCH_ABJ (giving how long they last) to be considered</a>
+<a name="ln1847"> * summons. If they additionally set ENCH_SUMMON, which gives how they were</a>
+<a name="ln1848"> * derived, this must not be from certain spells or &quot;monster summoning types&quot;</a>
+<a name="ln1849"> * we don't consider actual summons. Temporary monsters with</a>
+<a name="ln1850"> * ENCH_FAKE_ABJURATION also aren't summons, and durably summoned monsters</a>
+<a name="ln1851"> * aren't temporary.</a>
+<a name="ln1852"> *</a>
+<a name="ln1853"> * @param[out] duration    The monster's summon duration in aut.</a>
+<a name="ln1854"> * @param[out] summon_type The monster's means of summoning. If negative, this</a>
+<a name="ln1855"> *                         is a mon_summon_type, otherwise it's a spell_type.</a>
+<a name="ln1856"> * @returns True if the monster is a temporary summon, false otherwise.</a>
+<a name="ln1857"> */</a>
+<a name="ln1858">bool monster::is_summoned(int* duration, int* summon_type) const</a>
+<a name="ln1859">{</a>
+<a name="ln1860">    const mon_enchant abj = get_ench(ENCH_ABJ);</a>
+<a name="ln1861">    if (abj.ench == ENCH_NONE)</a>
+<a name="ln1862">    {</a>
+<a name="ln1863">        if (duration != nullptr)</a>
+<a name="ln1864">            *duration = -1;</a>
+<a name="ln1865">        if (summon_type != nullptr)</a>
+<a name="ln1866">            *summon_type = 0;</a>
+<a name="ln1867"> </a>
+<a name="ln1868">        return false;</a>
+<a name="ln1869">    }</a>
+<a name="ln1870">    if (duration != nullptr)</a>
+<a name="ln1871">        *duration = abj.duration;</a>
+<a name="ln1872"> </a>
+<a name="ln1873">    const mon_enchant summ = get_ench(ENCH_SUMMON);</a>
+<a name="ln1874">    if (summ.ench == ENCH_NONE)</a>
+<a name="ln1875">    {</a>
+<a name="ln1876">        if (summon_type != nullptr)</a>
+<a name="ln1877">            *summon_type = 0;</a>
+<a name="ln1878"> </a>
+<a name="ln1879">        return true;</a>
+<a name="ln1880">    }</a>
+<a name="ln1881">    if (summon_type != nullptr)</a>
+<a name="ln1882">        *summon_type = summ.degree;</a>
+<a name="ln1883"> </a>
+<a name="ln1884">    // Conjured things (fire vortices, ball lightning, IOOD) are not summoned.</a>
+<a name="ln1885">    if (mons_is_conjured(type))</a>
+<a name="ln1886">        return false;</a>
+<a name="ln1887"> </a>
+<a name="ln1888">    // Certain spells or monster summon types that set abjuration but aren't</a>
+<a name="ln1889">    // considered summons.</a>
+<a name="ln1890">    switch (summ.degree)</a>
+<a name="ln1891">    {</a>
+<a name="ln1892">    // Temporarily dancing weapons are really there.</a>
+<a name="ln1893">    case SPELL_TUKIMAS_DANCE:</a>
+<a name="ln1894"> </a>
+<a name="ln1895">    // Clones aren't really summoned (though their equipment might be).</a>
+<a name="ln1896">    case MON_SUMM_CLONE:</a>
+<a name="ln1897"> </a>
+<a name="ln1898">    // Nor are body parts.</a>
+<a name="ln1899">    case SPELL_CREATE_TENTACLES:</a>
+<a name="ln1900"> </a>
+<a name="ln1901">    // Some object which was animated, and thus not really summoned.</a>
+<a name="ln1902">    case MON_SUMM_ANIMATE:</a>
+<a name="ln1903">        return false;</a>
+<a name="ln1904">    }</a>
+<a name="ln1905"> </a>
+<a name="ln1906">    return true;</a>
+<a name="ln1907">}</a>
+<a name="ln1908"> </a>
+<a name="ln1909">bool monster::is_perm_summoned() const</a>
+<a name="ln1910">{</a>
+<a name="ln1911">    return testbits(flags, MF_HARD_RESET | MF_NO_REWARD);</a>
+<a name="ln1912">}</a>
+<a name="ln1913"> </a>
+<a name="ln1914">void monster::apply_enchantments()</a>
+<a name="ln1915">{</a>
+<a name="ln1916">    if (enchantments.empty())</a>
+<a name="ln1917">        return;</a>
+<a name="ln1918"> </a>
+<a name="ln1919">    // We process an enchantment only if it existed both at the start of this</a>
+<a name="ln1920">    // function and when getting to it in order; any enchantment can add, modify</a>
+<a name="ln1921">    // or remove others -- or even itself.</a>
+<a name="ln1922">    FixedBitVector&lt;NUM_ENCHANTMENTS&gt; ec = ench_cache;</a>
+<a name="ln1923"> </a>
+<a name="ln1924">    // The ordering in enchant_type makes sure that &quot;super-enchantments&quot;</a>
+<a name="ln1925">    // like berserk time out before their parts.</a>
+<a name="ln1926">    for (int i = 0; i &lt; NUM_ENCHANTMENTS; ++i)</a>
+<a name="ln1927">        if (ec[i] &amp;&amp; has_ench(static_cast&lt;enchant_type&gt;(i)))</a>
+<a name="ln1928">            apply_enchantment(enchantments.find(static_cast&lt;enchant_type&gt;(i))-&gt;second);</a>
+<a name="ln1929">}</a>
+<a name="ln1930"> </a>
+<a name="ln1931">// Used to adjust time durations in calc_duration() for monster speed.</a>
+<a name="ln1932">static inline int _mod_speed(int val, int speed)</a>
+<a name="ln1933">{</a>
+<a name="ln1934">    if (!speed)</a>
+<a name="ln1935">        speed = BASELINE_DELAY;</a>
+<a name="ln1936">    const int modded = val * BASELINE_DELAY / speed;</a>
+<a name="ln1937">    return modded? modded : 1;</a>
+<a name="ln1938">}</a>
+<a name="ln1939"> </a>
+<a name="ln1940">/////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1941">// mon_enchant</a>
+<a name="ln1942"> </a>
+<a name="ln1943">static const char *enchant_names[] =</a>
+<a name="ln1944">{</a>
+<a name="ln1945">    &quot;none&quot;, &quot;berserk&quot;, &quot;haste&quot;, &quot;might&quot;, &quot;fatigue&quot;, &quot;slow&quot;, &quot;fear&quot;,</a>
+<a name="ln1946">    &quot;confusion&quot;, &quot;invis&quot;, &quot;poison&quot;,</a>
+<a name="ln1947">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1948">    &quot;rot&quot;,</a>
+<a name="ln1949">#endif</a>
+<a name="ln1950">    &quot;summon&quot;, &quot;abj&quot;, &quot;corona&quot;,</a>
+<a name="ln1951">    &quot;charm&quot;, &quot;sticky_flame&quot;, &quot;glowing_shapeshifter&quot;, &quot;shapeshifter&quot;, &quot;tp&quot;,</a>
+<a name="ln1952">    &quot;sleep_wary&quot;, &quot;submerged&quot;, &quot;short_lived&quot;, &quot;paralysis&quot;, &quot;sick&quot;,</a>
+<a name="ln1953">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1954">    &quot;sleepy&quot;,</a>
+<a name="ln1955">#endif</a>
+<a name="ln1956">    &quot;held&quot;,</a>
+<a name="ln1957">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1958">     &quot;battle_frenzy&quot;, &quot;temp_pacif&quot;,</a>
+<a name="ln1959">#endif</a>
+<a name="ln1960">    &quot;petrifying&quot;,</a>
+<a name="ln1961">    &quot;petrified&quot;, &quot;lowered_mr&quot;, &quot;soul_ripe&quot;, &quot;slowly_dying&quot;,</a>
+<a name="ln1962">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1963">    &quot;eat_items&quot;,</a>
+<a name="ln1964">#endif</a>
+<a name="ln1965">    &quot;aquatic_land&quot;,</a>
+<a name="ln1966">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1967">    &quot;spore_production&quot;,</a>
+<a name="ln1968">    &quot;slouch&quot;,</a>
+<a name="ln1969">#endif</a>
+<a name="ln1970">    &quot;swift&quot;, &quot;tide&quot;,</a>
+<a name="ln1971">    &quot;insane&quot;, &quot;silenced&quot;, &quot;awaken_forest&quot;, &quot;exploding&quot;,</a>
+<a name="ln1972">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1973">    &quot;bleeding&quot;,</a>
+<a name="ln1974">#endif</a>
+<a name="ln1975">    &quot;tethered&quot;, &quot;severed&quot;, &quot;antimagic&quot;,</a>
+<a name="ln1976">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1977">    &quot;fading_away&quot;, &quot;preparing_resurrect&quot;,</a>
+<a name="ln1978">#endif</a>
+<a name="ln1979">    &quot;regen&quot;,</a>
+<a name="ln1980">    &quot;magic_res&quot;, &quot;mirror_dam&quot;,</a>
+<a name="ln1981">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1982">    &quot;stoneskin&quot;,</a>
+<a name="ln1983">#endif</a>
+<a name="ln1984">    &quot;fear inspiring&quot;, &quot;temporarily pacified&quot;,</a>
+<a name="ln1985">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1986">    &quot;withdrawn&quot;, &quot;attached&quot;,</a>
+<a name="ln1987">#endif</a>
+<a name="ln1988">    &quot;guardian_timer&quot;, &quot;flight&quot;, &quot;liquefying&quot;, &quot;tornado&quot;, &quot;fake_abjuration&quot;,</a>
+<a name="ln1989">    &quot;dazed&quot;, &quot;mute&quot;, &quot;blind&quot;, &quot;dumb&quot;, &quot;mad&quot;, &quot;silver_corona&quot;, &quot;recite timer&quot;,</a>
+<a name="ln1990">    &quot;inner_flame&quot;,</a>
+<a name="ln1991">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1992">    &quot;roused&quot;,</a>
+<a name="ln1993">#endif</a>
+<a name="ln1994">    &quot;breath timer&quot;,</a>
+<a name="ln1995">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1996">    &quot;deaths_door&quot;, &quot;rolling&quot;,</a>
+<a name="ln1997">#endif</a>
+<a name="ln1998">    &quot;ozocubus_armour&quot;, &quot;wretched&quot;, &quot;screamed&quot;, &quot;rune_of_recall&quot;, &quot;injury bond&quot;,</a>
+<a name="ln1999">    &quot;drowning&quot;, &quot;flayed&quot;, &quot;haunting&quot;,</a>
+<a name="ln2000">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2001">    &quot;retching&quot;,</a>
+<a name="ln2002">#endif</a>
+<a name="ln2003">    &quot;weak&quot;, &quot;dimension_anchor&quot;, &quot;awaken vines&quot;,</a>
+<a name="ln2004">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2005">    &quot;control_winds&quot;, &quot;wind_aided&quot;,</a>
+<a name="ln2006">#endif</a>
+<a name="ln2007">    &quot;summon_capped&quot;,</a>
+<a name="ln2008">    &quot;toxic_radiance&quot;,</a>
+<a name="ln2009">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2010">    &quot;grasping_roots_source&quot;,</a>
+<a name="ln2011">#endif</a>
+<a name="ln2012">    &quot;grasping_roots&quot;,</a>
+<a name="ln2013">    &quot;iood_charged&quot;, &quot;fire_vuln&quot;, &quot;tornado_cooldown&quot;, &quot;merfolk_avatar_song&quot;,</a>
+<a name="ln2014">    &quot;barbs&quot;,</a>
+<a name="ln2015">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2016">    &quot;building_charge&quot;,</a>
+<a name="ln2017">#endif</a>
+<a name="ln2018">    &quot;poison_vuln&quot;, &quot;icemail&quot;, &quot;agile&quot;,</a>
+<a name="ln2019">    &quot;frozen&quot;,</a>
+<a name="ln2020">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2021">    &quot;ephemeral_infusion&quot;,</a>
+<a name="ln2022">#endif</a>
+<a name="ln2023">    &quot;black_mark&quot;,</a>
+<a name="ln2024">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2025">    &quot;grand_avatar&quot;,</a>
+<a name="ln2026">#endif</a>
+<a name="ln2027">    &quot;sap magic&quot;, &quot;shroud&quot;, &quot;phantom_mirror&quot;, &quot;bribed&quot;, &quot;permabribed&quot;,</a>
+<a name="ln2028">    &quot;corrosion&quot;, &quot;gold_lust&quot;, &quot;drained&quot;, &quot;repel missiles&quot;,</a>
+<a name="ln2029">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2030">    &quot;deflect missiles&quot;,</a>
+<a name="ln2031">    &quot;negative_vuln&quot;, &quot;condensation_shield&quot;,</a>
+<a name="ln2032">#endif</a>
+<a name="ln2033">    &quot;resistant&quot;, &quot;hexed&quot;,</a>
+<a name="ln2034">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2035">    &quot;corpse_armour&quot;,</a>
+<a name="ln2036">    &quot;chanting_fire_storm&quot;, &quot;chanting_word_of_entropy&quot;,</a>
+<a name="ln2037">#endif</a>
+<a name="ln2038">    &quot;aura_of_brilliance&quot;, &quot;empowered_spells&quot;, &quot;gozag_incite&quot;, &quot;pain_bond&quot;,</a>
+<a name="ln2039">    &quot;idealised&quot;, &quot;bound_soul&quot;, &quot;infestation&quot;,</a>
+<a name="ln2040">    &quot;stilling the winds&quot;, &quot;thunder_ringed&quot;,</a>
+<a name="ln2041">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2042">    &quot;pinned_by_whirlwind&quot;,</a>
+<a name="ln2043">#endif</a>
+<a name="ln2044">    &quot;vortex&quot;, &quot;vortex_cooldown&quot;, &quot;vile_clutch&quot;, &quot;waterlogged&quot;,</a>
+<a name="ln2045">    &quot;buggy&quot;,</a>
+<a name="ln2046">};</a>
+<a name="ln2047"> </a>
+<a name="ln2048">static const char *_mons_enchantment_name(enchant_type ench)</a>
+<a name="ln2049">{</a>
+<a name="ln2050">    COMPILE_CHECK(ARRAYSZ(enchant_names) == NUM_ENCHANTMENTS+1);</a>
+<a name="ln2051"> </a>
+<a name="ln2052">    if (ench &gt; NUM_ENCHANTMENTS)</a>
+<a name="ln2053">        ench = NUM_ENCHANTMENTS;</a>
+<a name="ln2054"> </a>
+<a name="ln2055">    return enchant_names[ench];</a>
+<a name="ln2056">}</a>
+<a name="ln2057"> </a>
+<a name="ln2058">enchant_type name_to_ench(const char *name)</a>
+<a name="ln2059">{</a>
+<a name="ln2060">    for (unsigned int i = ENCH_NONE; i &lt; ARRAYSZ(enchant_names); i++)</a>
+<a name="ln2061">        if (!strcmp(name, enchant_names[i]))</a>
+<a name="ln2062">            return (enchant_type)i;</a>
+<a name="ln2063">    return ENCH_NONE;</a>
+<a name="ln2064">}</a>
+<a name="ln2065"> </a>
+<a name="ln2066">mon_enchant::mon_enchant(enchant_type e, int deg, const actor* a,</a>
+<a name="ln2067">                         int dur)</a>
+<a name="ln2068">    : ench(e), degree(deg), duration(dur), maxduration(0)</a>
+<a name="ln2069">{</a>
+<a name="ln2070">    if (a)</a>
+<a name="ln2071">    {</a>
+<a name="ln2072">        who = a-&gt;kill_alignment();</a>
+<a name="ln2073">        source = a-&gt;mid;</a>
+<a name="ln2074">    }</a>
+<a name="ln2075">    else</a>
+<a name="ln2076">    {</a>
+<a name="ln2077">        who = KC_OTHER;</a>
+<a name="ln2078">        source = 0;</a>
+<a name="ln2079">    }</a>
+<a name="ln2080">}</a>
+<a name="ln2081"> </a>
+<a name="ln2082">mon_enchant::operator string () const</a>
+<a name="ln2083">{</a>
+<a name="ln2084">    const actor *a = agent();</a>
+<a name="ln2085">    return make_stringf(&quot;%s (%d:%d%s %s)&quot;,</a>
+<a name="ln2086">                        _mons_enchantment_name(ench),</a>
+<a name="ln2087">                        degree,</a>
+<a name="ln2088">                        duration,</a>
+<a name="ln2089">                        kill_category_desc(who),</a>
+<a name="ln2090">                        source == MID_ANON_FRIEND ? &quot;anon friend&quot; :</a>
+<a name="ln2091">                        source == MID_YOU_FAULTLESS ? &quot;you w/o fault&quot; :</a>
+<a name="ln2092">                            a ? a-&gt;name(DESC_PLAIN, true).c_str() : &quot;N/A&quot;);</a>
+<a name="ln2093">}</a>
+<a name="ln2094"> </a>
+<a name="ln2095">const char *mon_enchant::kill_category_desc(kill_category k) const</a>
+<a name="ln2096">{</a>
+<a name="ln2097">    return k == KC_YOU ?      &quot; you&quot; :</a>
+<a name="ln2098">           k == KC_FRIENDLY ? &quot; pet&quot; : &quot;&quot;;</a>
+<a name="ln2099">}</a>
+<a name="ln2100"> </a>
+<a name="ln2101">void mon_enchant::merge_killer(kill_category k, mid_t m)</a>
+<a name="ln2102">{</a>
+<a name="ln2103">    if (who &gt;= k) // prefer the new one</a>
+<a name="ln2104">        who = k, source = m;</a>
+<a name="ln2105">}</a>
+<a name="ln2106"> </a>
+<a name="ln2107">void mon_enchant::cap_degree()</a>
+<a name="ln2108">{</a>
+<a name="ln2109">    // Sickness &amp; draining are not capped.</a>
+<a name="ln2110">    if (ench == ENCH_SICK || ench == ENCH_DRAINED)</a>
+<a name="ln2111">        return;</a>
+<a name="ln2112"> </a>
+<a name="ln2113">    // Hard cap to simulate old enum behaviour, we should really throw this</a>
+<a name="ln2114">    // out entirely.</a>
+<a name="ln2115">    const int max = (ench == ENCH_ABJ || ench == ENCH_FAKE_ABJURATION) ?</a>
+<a name="ln2116">            MAX_ENCH_DEGREE_ABJURATION : MAX_ENCH_DEGREE_DEFAULT;</a>
+<a name="ln2117">    if (degree &gt; max)</a>
+<a name="ln2118">        degree = max;</a>
+<a name="ln2119">}</a>
+<a name="ln2120"> </a>
+<a name="ln2121">mon_enchant &amp;mon_enchant::operator += (const mon_enchant &amp;other)</a>
+<a name="ln2122">{</a>
+<a name="ln2123">    if (ench == other.ench)</a>
+<a name="ln2124">    {</a>
+<a name="ln2125">        degree   += other.degree;</a>
+<a name="ln2126">        cap_degree();</a>
+<a name="ln2127">        duration += other.duration;</a>
+<a name="ln2128">        if (duration &gt; INFINITE_DURATION)</a>
+<a name="ln2129">            duration = INFINITE_DURATION;</a>
+<a name="ln2130">        merge_killer(other.who, other.source);</a>
+<a name="ln2131">    }</a>
+<a name="ln2132">    return *this;</a>
+<a name="ln2133">}</a>
+<a name="ln2134"> </a>
+<a name="ln2135">mon_enchant mon_enchant::operator + (const mon_enchant &amp;other) const</a>
+<a name="ln2136">{</a>
+<a name="ln2137">    mon_enchant tmp(*this);</a>
+<a name="ln2138">    tmp += other;</a>
+<a name="ln2139">    return tmp;</a>
+<a name="ln2140">}</a>
+<a name="ln2141"> </a>
+<a name="ln2142">killer_type mon_enchant::killer() const</a>
+<a name="ln2143">{</a>
+<a name="ln2144">    return who == KC_YOU      ? KILL_YOU :</a>
+<a name="ln2145">           who == KC_FRIENDLY ? KILL_MON</a>
+<a name="ln2146">                              : KILL_MISC;</a>
+<a name="ln2147">}</a>
+<a name="ln2148"> </a>
+<a name="ln2149">int mon_enchant::kill_agent() const</a>
+<a name="ln2150">{</a>
+<a name="ln2151">    return who == KC_FRIENDLY ? ANON_FRIENDLY_MONSTER : 0;</a>
+<a name="ln2152">}</a>
+<a name="ln2153"> </a>
+<a name="ln2154">actor* mon_enchant::agent() const</a>
+<a name="ln2155">{</a>
+<a name="ln2156">    return find_agent(source, who);</a>
+<a name="ln2157">}</a>
+<a name="ln2158"> </a>
+<a name="ln2159">int mon_enchant::modded_speed(const monster* mons, int hdplus) const</a>
+<a name="ln2160">{</a>
+<a name="ln2161">    return _mod_speed(mons-&gt;get_hit_dice() + hdplus, mons-&gt;speed);</a>
+<a name="ln2162">}</a>
+<a name="ln2163"> </a>
+<a name="ln2164">int mon_enchant::calc_duration(const monster* mons,</a>
+<a name="ln2165">                               const mon_enchant *added) const</a>
+<a name="ln2166">{</a>
+<a name="ln2167">    int cturn = 0;</a>
+<a name="ln2168"> </a>
+<a name="ln2169">    const int newdegree = added ? added-&gt;degree : degree;</a>
+<a name="ln2170">    const int deg = newdegree ? newdegree : 1;</a>
+<a name="ln2171"> </a>
+<a name="ln2172">    // Beneficial enchantments (like Haste) should not be throttled by</a>
+<a name="ln2173">    // monster HD via modded_speed(). Use _mod_speed instead!</a>
+<a name="ln2174">    switch (ench)</a>
+<a name="ln2175">    {</a>
+<a name="ln2176">    case ENCH_SWIFT:</a>
+<a name="ln2177">        cturn = 1000 / _mod_speed(25, mons-&gt;speed);</a>
+<a name="ln2178">        break;</a>
+<a name="ln2179">    case ENCH_HASTE:</a>
+<a name="ln2180">    case ENCH_MIGHT:</a>
+<a name="ln2181">    case ENCH_INVIS:</a>
+<a name="ln2182">    case ENCH_FEAR_INSPIRING:</a>
+<a name="ln2183">    case ENCH_AGILE:</a>
+<a name="ln2184">    case ENCH_BLACK_MARK:</a>
+<a name="ln2185">    case ENCH_RESISTANCE:</a>
+<a name="ln2186">    case ENCH_IDEALISED:</a>
+<a name="ln2187">    case ENCH_BOUND_SOUL:</a>
+<a name="ln2188">    case ENCH_RING_OF_THUNDER:</a>
+<a name="ln2189">        cturn = 1000 / _mod_speed(25, mons-&gt;speed);</a>
+<a name="ln2190">        break;</a>
+<a name="ln2191">    case ENCH_LIQUEFYING:</a>
+<a name="ln2192">    case ENCH_SILENCE:</a>
+<a name="ln2193">    case ENCH_REGENERATION:</a>
+<a name="ln2194">    case ENCH_RAISED_MR:</a>
+<a name="ln2195">    case ENCH_MIRROR_DAMAGE:</a>
+<a name="ln2196">    case ENCH_SAP_MAGIC:</a>
+<a name="ln2197">    case ENCH_STILL_WINDS:</a>
+<a name="ln2198">        cturn = 300 / _mod_speed(25, mons-&gt;speed);</a>
+<a name="ln2199">        break;</a>
+<a name="ln2200">    case ENCH_SLOW:</a>
+<a name="ln2201">    case ENCH_CORROSION:</a>
+<a name="ln2202">        cturn = 250 / (1 + modded_speed(mons, 10));</a>
+<a name="ln2203">        break;</a>
+<a name="ln2204">    case ENCH_FEAR:</a>
+<a name="ln2205">        cturn = 150 / (1 + modded_speed(mons, 5));</a>
+<a name="ln2206">        break;</a>
+<a name="ln2207">    case ENCH_PARALYSIS:</a>
+<a name="ln2208">        cturn = max(90 / modded_speed(mons, 5), 3);</a>
+<a name="ln2209">        break;</a>
+<a name="ln2210">    case ENCH_PETRIFIED:</a>
+<a name="ln2211">        cturn = max(8, 150 / (1 + modded_speed(mons, 5)));</a>
+<a name="ln2212">        break;</a>
+<a name="ln2213">    case ENCH_DAZED:</a>
+<a name="ln2214">    case ENCH_PETRIFYING:</a>
+<a name="ln2215">        cturn = 50 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2216">        break;</a>
+<a name="ln2217">    case ENCH_CONFUSION:</a>
+<a name="ln2218">        cturn = max(100 / modded_speed(mons, 5), 3);</a>
+<a name="ln2219">        break;</a>
+<a name="ln2220">    case ENCH_HELD:</a>
+<a name="ln2221">        cturn = 120 / _mod_speed(25, mons-&gt;speed);</a>
+<a name="ln2222">        break;</a>
+<a name="ln2223">    case ENCH_POISON:</a>
+<a name="ln2224">        cturn = 1000 * deg / _mod_speed(125, mons-&gt;speed);</a>
+<a name="ln2225">        break;</a>
+<a name="ln2226">    case ENCH_STICKY_FLAME:</a>
+<a name="ln2227">        cturn = 1000 * deg / _mod_speed(200, mons-&gt;speed);</a>
+<a name="ln2228">        break;</a>
+<a name="ln2229">    case ENCH_CORONA:</a>
+<a name="ln2230">    case ENCH_SILVER_CORONA:</a>
+<a name="ln2231">        if (deg &gt; 1)</a>
+<a name="ln2232">            cturn = 1000 * (deg - 1) / _mod_speed(200, mons-&gt;speed);</a>
+<a name="ln2233">        cturn += 1000 / _mod_speed(100, mons-&gt;speed);</a>
+<a name="ln2234">        break;</a>
+<a name="ln2235">    case ENCH_SHORT_LIVED:</a>
+<a name="ln2236">        cturn = 1200 / _mod_speed(200, mons-&gt;speed);</a>
+<a name="ln2237">        break;</a>
+<a name="ln2238">    case ENCH_SLOWLY_DYING:</a>
+<a name="ln2239">    {</a>
+<a name="ln2240">        // This may be a little too direct but the randomization at the end</a>
+<a name="ln2241">        // of this function is excessive for toadstools. -cao</a>
+<a name="ln2242">        int dur = speed_to_duration(mons-&gt;speed); // uses div_rand_round, so we need a sequence point</a>
+<a name="ln2243">        return (2 * FRESHEST_CORPSE + random2(10))</a>
+<a name="ln2244">                  * dur;</a>
+<a name="ln2245">    }</a>
+<a name="ln2246">    case ENCH_EXPLODING:</a>
+<a name="ln2247">        return random_range(3, 7) * 10;</a>
+<a name="ln2248"> </a>
+<a name="ln2249">    case ENCH_PORTAL_PACIFIED:</a>
+<a name="ln2250">        // Must be set by spell.</a>
+<a name="ln2251">        return 0;</a>
+<a name="ln2252"> </a>
+<a name="ln2253">    case ENCH_BREATH_WEAPON:</a>
+<a name="ln2254">        // Must be set by creature.</a>
+<a name="ln2255">        return 0;</a>
+<a name="ln2256"> </a>
+<a name="ln2257">    case ENCH_PORTAL_TIMER:</a>
+<a name="ln2258">        cturn = 30 * 10 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2259">        break;</a>
+<a name="ln2260"> </a>
+<a name="ln2261">    case ENCH_FAKE_ABJURATION:</a>
+<a name="ln2262">    case ENCH_ABJ:</a>
+<a name="ln2263">        // The duration is:</a>
+<a name="ln2264">        // deg = 1     90 aut</a>
+<a name="ln2265">        // deg = 2    180 aut</a>
+<a name="ln2266">        // deg = 3    270 aut</a>
+<a name="ln2267">        // deg = 4    360 aut</a>
+<a name="ln2268">        // deg = 5    810 aut</a>
+<a name="ln2269">        // deg = 6   1710 aut</a>
+<a name="ln2270">        // with a large fuzz</a>
+<a name="ln2271">        if (deg &gt;= 6)</a>
+<a name="ln2272">            cturn = 1000 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2273">        if (deg &gt;= 5)</a>
+<a name="ln2274">            cturn += 1000 / _mod_speed(20, mons-&gt;speed);</a>
+<a name="ln2275">        cturn += 1000 * min(4, deg) / _mod_speed(100, mons-&gt;speed);</a>
+<a name="ln2276">        break;</a>
+<a name="ln2277">    case ENCH_CHARM:</a>
+<a name="ln2278">    case ENCH_HEXED:</a>
+<a name="ln2279">        cturn = 500 / modded_speed(mons, 10);</a>
+<a name="ln2280">        break;</a>
+<a name="ln2281">    case ENCH_TP:</a>
+<a name="ln2282">        cturn = 1000 * deg / _mod_speed(1000, mons-&gt;speed);</a>
+<a name="ln2283">        break;</a>
+<a name="ln2284">    case ENCH_SLEEP_WARY:</a>
+<a name="ln2285">        cturn = 1000 / _mod_speed(50, mons-&gt;speed);</a>
+<a name="ln2286">        break;</a>
+<a name="ln2287">    case ENCH_LIFE_TIMER:</a>
+<a name="ln2288">        cturn = 20 * (4 + random2(4)) / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2289">        break;</a>
+<a name="ln2290">    case ENCH_INNER_FLAME:</a>
+<a name="ln2291">        return random_range(25, 35) * 10;</a>
+<a name="ln2292">    case ENCH_BERSERK:</a>
+<a name="ln2293">        return (16 + random2avg(13, 2)) * 10;</a>
+<a name="ln2294">    case ENCH_WRETCHED:</a>
+<a name="ln2295">        cturn = (20 + roll_dice(3, 10)) * 10 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2296">        break;</a>
+<a name="ln2297">    case ENCH_TORNADO_COOLDOWN:</a>
+<a name="ln2298">        cturn = random_range(25, 35) * 10 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2299">        break;</a>
+<a name="ln2300">    case ENCH_VORTEX_COOLDOWN:</a>
+<a name="ln2301">        cturn = random_range(7, 17) * 10 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2302">        break;</a>
+<a name="ln2303">    case ENCH_FROZEN:</a>
+<a name="ln2304">        cturn = 3 * 10 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2305">        break;</a>
+<a name="ln2306">    case ENCH_BRILLIANCE_AURA:</a>
+<a name="ln2307">        cturn = 20 * 10 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2308">        break;</a>
+<a name="ln2309">    case ENCH_EMPOWERED_SPELLS:</a>
+<a name="ln2310">        cturn = 20 * 10 / _mod_speed(10, mons-&gt;speed);</a>
+<a name="ln2311">        break;</a>
+<a name="ln2312">    case ENCH_GOZAG_INCITE:</a>
+<a name="ln2313">        cturn = 100; // is never decremented</a>
+<a name="ln2314">    default:</a>
+<a name="ln2315">        break;</a>
+<a name="ln2316">    }</a>
+<a name="ln2317"> </a>
+<a name="ln2318">    cturn = max(2, cturn);</a>
+<a name="ln2319"> </a>
+<a name="ln2320">    int raw_duration = (cturn * speed_to_duration(mons-&gt;speed));</a>
+<a name="ln2321">    // Note: this fuzzing is _not_ symmetric, resulting in 90% of input</a>
+<a name="ln2322">    // on the average.</a>
+<a name="ln2323">    raw_duration = max(15, fuzz_value(raw_duration, 60, 40));</a>
+<a name="ln2324"> </a>
+<a name="ln2325">    dprf(&quot;cturn: %d, raw_duration: %d&quot;, cturn, raw_duration);</a>
+<a name="ln2326"> </a>
+<a name="ln2327">    return raw_duration;</a>
+<a name="ln2328">}</a>
+<a name="ln2329"> </a>
+<a name="ln2330">// Calculate the effective duration (in terms of normal player time - 10</a>
+<a name="ln2331">// duration units being one normal player action) of this enchantment.</a>
+<a name="ln2332">void mon_enchant::set_duration(const monster* mons, const mon_enchant *added)</a>
+<a name="ln2333">{</a>
+<a name="ln2334">    if (duration &amp;&amp; !added)</a>
+<a name="ln2335">        return;</a>
+<a name="ln2336"> </a>
+<a name="ln2337">    if (added &amp;&amp; added-&gt;duration)</a>
+<a name="ln2338">        duration += added-&gt;duration;</a>
+<a name="ln2339">    else</a>
+<a name="ln2340">        duration += calc_duration(mons, added);</a>
+<a name="ln2341"> </a>
+<a name="ln2342">    if (duration &gt; maxduration)</a>
+<a name="ln2343">        maxduration = duration;</a>
+<a name="ln2344">}</a>
+
+</code></pre>
+<div class="balloon" rel="215"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 215, 219, 304</p></div>
+<div class="balloon" rel="2307"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 2307, 2310</p></div>
+<div class="balloon" rel="2177"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 2177, 2189</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

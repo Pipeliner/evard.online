@@ -1,0 +1,930 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>movement.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Movement, open-close door commands, movement effects.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &lt;algorithm&gt;</a>
+<a name="ln7">#include &lt;cstring&gt;</a>
+<a name="ln8">#include &lt;string&gt;</a>
+<a name="ln9">#include &lt;sstream&gt;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &quot;AppHdr.h&quot;</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;movement.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;abyss.h&quot;</a>
+<a name="ln16">#include &quot;bloodspatter.h&quot;</a>
+<a name="ln17">#include &quot;cloud.h&quot;</a>
+<a name="ln18">#include &quot;coord.h&quot;</a>
+<a name="ln19">#include &quot;coordit.h&quot;</a>
+<a name="ln20">#include &quot;delay.h&quot;</a>
+<a name="ln21">#include &quot;directn.h&quot;</a>
+<a name="ln22">#include &quot;dungeon.h&quot;</a>
+<a name="ln23">#include &quot;env.h&quot;</a>
+<a name="ln24">#include &quot;fight.h&quot;</a>
+<a name="ln25">#include &quot;food.h&quot;</a>
+<a name="ln26">#include &quot;fprop.h&quot;</a>
+<a name="ln27">#include &quot;god-abil.h&quot;</a>
+<a name="ln28">#include &quot;god-conduct.h&quot;</a>
+<a name="ln29">#include &quot;god-passive.h&quot;</a>
+<a name="ln30">#include &quot;items.h&quot;</a>
+<a name="ln31">#include &quot;message.h&quot;</a>
+<a name="ln32">#include &quot;mon-act.h&quot;</a>
+<a name="ln33">#include &quot;mon-death.h&quot;</a>
+<a name="ln34">#include &quot;mon-place.h&quot;</a>
+<a name="ln35">#include &quot;mon-util.h&quot;</a>
+<a name="ln36">#include &quot;player.h&quot;</a>
+<a name="ln37">#include &quot;player-reacts.h&quot;</a>
+<a name="ln38">#include &quot;prompt.h&quot;</a>
+<a name="ln39">#include &quot;random.h&quot;</a>
+<a name="ln40">#include &quot;religion.h&quot;</a>
+<a name="ln41">#include &quot;shout.h&quot;</a>
+<a name="ln42">#include &quot;state.h&quot;</a>
+<a name="ln43">#include &quot;stringutil.h&quot;</a>
+<a name="ln44">#include &quot;spl-damage.h&quot;</a>
+<a name="ln45">#include &quot;spl-selfench.h&quot; // noxious_bog_cell</a>
+<a name="ln46">#include &quot;terrain.h&quot;</a>
+<a name="ln47">#include &quot;traps.h&quot;</a>
+<a name="ln48">#include &quot;travel.h&quot;</a>
+<a name="ln49">#include &quot;transform.h&quot;</a>
+<a name="ln50">#include &quot;xom.h&quot; // XOM_CLOUD_TRAIL_TYPE_KEY</a>
+<a name="ln51"> </a>
+<a name="ln52">// Swap monster to this location. Player is swapped elsewhere.</a>
+<a name="ln53">// Moves the monster into position, but does not move the player</a>
+<a name="ln54">// or apply location effects: the latter should happen after the</a>
+<a name="ln55">// player is moved.</a>
+<a name="ln56">static void _swap_places(monster* mons, const coord_def &amp;loc)</a>
+<a name="ln57">{</a>
+<a name="ln58">    ASSERT(map_bounds(loc));</a>
+<a name="ln59">    ASSERT(monster_habitable_grid(mons, grd(loc)));</a>
+<a name="ln60"> </a>
+<a name="ln61">    if (monster_at(loc))</a>
+<a name="ln62">    {</a>
+<a name="ln63">        if (mons-&gt;type == MONS_WANDERING_MUSHROOM</a>
+<a name="ln64">            &amp;&amp; monster_at(loc)-&gt;type == MONS_TOADSTOOL)</a>
+<a name="ln65">        {</a>
+<a name="ln66">            // We'll fire location effects for 'mons' back in move_player_action,</a>
+<a name="ln67">            // so don't do so here. The toadstool won't get location effects,</a>
+<a name="ln68">            // but the player will trigger those soon enough. This wouldn't</a>
+<a name="ln69">            // work so well if toadstools were aquatic, or were</a>
+<a name="ln70">            // otherwise handled specially in monster_swap_places or in</a>
+<a name="ln71">            // apply_location_effects.</a>
+<a name="ln72">            monster_swaps_places(mons, loc - mons-&gt;pos(), true, false);</a>
+<a name="ln73">            return;</a>
+<a name="ln74">        }</a>
+<a name="ln75">        else</a>
+<a name="ln76">        {</a>
+<a name="ln77">            mpr(&quot;Something prevents you from swapping places.&quot;);</a>
+<a name="ln78">            return;</a>
+<a name="ln79">        }</a>
+<a name="ln80">    }</a>
+<a name="ln81"> </a>
+<a name="ln82">    // Friendly foxfire dissipates instead of damaging the player.</a>
+<a name="ln83">    if (mons-&gt;type == MONS_FOXFIRE)</a>
+<a name="ln84">    {</a>
+<a name="ln85">        simple_monster_message(*mons, &quot; dissipates!&quot;,</a>
+<a name="ln86">                               MSGCH_MONSTER_DAMAGE, MDAM_DEAD);</a>
+<a name="ln87">        monster_die(*mons, KILL_DISMISSED, NON_MONSTER, true);</a>
+<a name="ln88">        return;</a>
+<a name="ln89">    }</a>
+<a name="ln90"> </a>
+<a name="ln91">    mpr(&quot;You swap places.&quot;);</a>
+<a name="ln92"> </a>
+<a name="ln93">    mons-&gt;move_to_pos(loc, true, true);</a>
+<a name="ln94"> </a>
+<a name="ln95">    return;</a>
+<a name="ln96">}</a>
+<a name="ln97"> </a>
+<a name="ln98">// Check squares adjacent to player for given feature and return how</a>
+<a name="ln99">// many there are. If there's only one, return the dx and dy.</a>
+<a name="ln100">static int _check_adjacent(dungeon_feature_type feat, coord_def&amp; delta)</a>
+<a name="ln101">{</a>
+<a name="ln102">    int num = 0;</a>
+<a name="ln103"> </a>
+<a name="ln104">    set&lt;coord_def&gt; doors;</a>
+<a name="ln105">    for (adjacent_iterator ai(you.pos(), true); ai; ++ai)</a>
+<a name="ln106">    {</a>
+<a name="ln107">        if (grd(*ai) == feat)</a>
+<a name="ln108">        {</a>
+<a name="ln109">            // Specialcase doors to take into account gates.</a>
+<a name="ln110">            if (feat_is_door(feat))</a>
+<a name="ln111">            {</a>
+<a name="ln112">                // Already included in a gate, skip this door.</a>
+<a name="ln113">                if (doors.count(*ai))</a>
+<a name="ln114">                    continue;</a>
+<a name="ln115"> </a>
+<a name="ln116">                // Check if it's part of a gate. If so, remember all its doors.</a>
+<a name="ln117">                set&lt;coord_def&gt; all_door;</a>
+<a name="ln118">                find_connected_identical(*ai, all_door);</a>
+<a name="ln119">                doors.insert(begin(all_door), end(all_door));</a>
+<a name="ln120">            }</a>
+<a name="ln121"> </a>
+<a name="ln122">            num++;</a>
+<a name="ln123">            delta = *ai - you.pos();</a>
+<a name="ln124">        }</a>
+<a name="ln125">    }</a>
+<a name="ln126"> </a>
+<a name="ln127">    return num;</a>
+<a name="ln128">}</a>
+<a name="ln129"> </a>
+<a name="ln130">static void _entered_malign_portal(actor* act)</a>
+<a name="ln131">{</a>
+<a name="ln132">    ASSERT(act); // XXX: change to actor &amp;act</a>
+<a name="ln133">    if (you.can_see(*act))</a>
+<a name="ln134">    {</a>
+<a name="ln135">        mprf(&quot;%s %s twisted violently and ejected from the portal!&quot;,</a>
+<a name="ln136">             act-&gt;name(DESC_THE).c_str(), act-&gt;conj_verb(&quot;be&quot;).c_str());</a>
+<a name="ln137">    }</a>
+<a name="ln138"> </a>
+<a name="ln139">    act-&gt;blink();</a>
+<a name="ln140">    act-&gt;hurt(nullptr, roll_dice(2, 4), BEAM_MISSILE, KILLED_BY_WILD_MAGIC,</a>
+<a name="ln141">              &quot;&quot;, &quot;entering a malign gateway&quot;);</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">bool cancel_barbed_move()</a>
+<a name="ln145">{</a>
+<a name="ln146">    if (you.duration[DUR_BARBS] &amp;&amp; !you.props.exists(BARBS_MOVE_KEY))</a>
+<a name="ln147">    {</a>
+<a name="ln148">        std::string prompt = &quot;The barbs in your skin will harm you if you move.&quot;</a>
+<a name="ln149">                        &quot; Continue?&quot;;</a>
+<a name="ln150">        if (!yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln151">        {</a>
+<a name="ln152">            canned_msg(MSG_OK);</a>
+<a name="ln153">            return true;</a>
+<a name="ln154">        }</a>
+<a name="ln155"> </a>
+<a name="ln156">        you.props[BARBS_MOVE_KEY] = true;</a>
+<a name="ln157">    }</a>
+<a name="ln158"> </a>
+<a name="ln159">    return false;</a>
+<a name="ln160">}</a>
+<a name="ln161"> </a>
+<a name="ln162">void apply_barbs_damage()</a>
+<a name="ln163">{</a>
+<a name="ln164">    if (you.duration[DUR_BARBS])</a>
+<a name="ln165">    {</a>
+<a name="ln166">        mprf(MSGCH_WARN, &quot;The barbed spikes dig painfully into your body &quot;</a>
+<a name="ln167">                         &quot;as you move.&quot;);</a>
+<a name="ln168">        ouch(roll_dice(2, you.attribute[ATTR_BARBS_POW]), KILLED_BY_BARBS);</a>
+<a name="ln169">        bleed_onto_floor(you.pos(), MONS_PLAYER, 2, false);</a>
+<a name="ln170"> </a>
+<a name="ln171">        // Sometimes decrease duration even when we move.</a>
+<a name="ln172">        if (one_chance_in(3))</a>
+<a name="ln173">            extract_manticore_spikes(&quot;The barbed spikes snap loose.&quot;);</a>
+<a name="ln174">        // But if that failed to end the effect, duration stays the same.</a>
+<a name="ln175">        if (you.duration[DUR_BARBS])</a>
+<a name="ln176">            you.duration[DUR_BARBS] += you.time_taken;</a>
+<a name="ln177">    }</a>
+<a name="ln178">}</a>
+<a name="ln179"> </a>
+<a name="ln180">void remove_ice_armour_movement()</a>
+<a name="ln181">{</a>
+<a name="ln182">    if (you.duration[DUR_ICY_ARMOUR])</a>
+<a name="ln183">    {</a>
+<a name="ln184">        mprf(MSGCH_DURATION, &quot;Your icy armour cracks and falls away as &quot;</a>
+<a name="ln185">                             &quot;you move.&quot;);</a>
+<a name="ln186">        you.duration[DUR_ICY_ARMOUR] = 0;</a>
+<a name="ln187">        you.redraw_armour_class = true;</a>
+<a name="ln188">    }</a>
+<a name="ln189">}</a>
+<a name="ln190"> </a>
+<a name="ln191">bool cancel_confused_move(bool stationary)</a>
+<a name="ln192">{</a>
+<a name="ln193">    dungeon_feature_type dangerous = DNGN_FLOOR;</a>
+<a name="ln194">    monster *bad_mons = 0;</a>
+<a name="ln195">    string bad_suff, bad_adj;</a>
+<a name="ln196">    bool penance = false;</a>
+<a name="ln197">    bool flight = false;</a>
+<a name="ln198">    for (adjacent_iterator ai(you.pos(), false); ai; ++ai)</a>
+<a name="ln199">    {</a>
+<a name="ln200">        if (!stationary</a>
+<a name="ln201">            &amp;&amp; is_feat_dangerous(grd(*ai), true)</a>
+<a name="ln202">            &amp;&amp; need_expiration_warning(grd(*ai))</a>
+<a name="ln203">            &amp;&amp; (dangerous == DNGN_FLOOR || grd(*ai) == DNGN_LAVA))</a>
+<a name="ln204">        {</a>
+<a name="ln205">            dangerous = grd(*ai);</a>
+<a name="ln206">            if (need_expiration_warning(DUR_FLIGHT, grd(*ai)))</a>
+<a name="ln207">                flight = true;</a>
+<a name="ln208">            break;</a>
+<a name="ln209">        }</a>
+<a name="ln210">        else</a>
+<a name="ln211">        {</a>
+<a name="ln212">            string suffix, adj;</a>
+<a name="ln213">            monster *mons = monster_at(*ai);</a>
+<a name="ln214">            if (mons</a>
+<a name="ln215">                &amp;&amp; (stationary</a>
+<a name="ln216">                    || !(is_sanctuary(you.pos()) &amp;&amp; is_sanctuary(mons-&gt;pos()))</a>
+<a name="ln217">                       &amp;&amp; !fedhas_passthrough(mons))</a>
+<a name="ln218">                &amp;&amp; bad_attack(mons, adj, suffix, penance)</a>
+<a name="ln219">                &amp;&amp; mons-&gt;angered_by_attacks())</a>
+<a name="ln220">            {</a>
+<a name="ln221">                bad_mons = mons;</a>
+<a name="ln222">                bad_suff = suffix;</a>
+<a name="ln223">                bad_adj = adj;</a>
+<a name="ln224">                if (penance)</a>
+<a name="ln225">                    break;</a>
+<a name="ln226">            }</a>
+<a name="ln227">        }</a>
+<a name="ln228">    }</a>
+<a name="ln229"> </a>
+<a name="ln230">    if (dangerous != DNGN_FLOOR || bad_mons)</a>
+<a name="ln231">    {</a>
+<a name="ln232">        string prompt = &quot;&quot;;</a>
+<a name="ln233">        prompt += &quot;Are you sure you want to &quot;;</a>
+<a name="ln234">        prompt += !stationary ? &quot;stumble around&quot; : &quot;swing wildly&quot;;</a>
+<a name="ln235">        prompt += &quot; while confused and next to &quot;;</a>
+<a name="ln236"> </a>
+<a name="ln237">        if (dangerous != DNGN_FLOOR)</a>
+<a name="ln238">        {</a>
+<a name="ln239">            prompt += (dangerous == DNGN_LAVA ? &quot;lava&quot; : &quot;deep water&quot;);</a>
+<a name="ln240">            prompt += flight ? &quot; while you are losing your buoyancy&quot;</a>
+<a name="ln241">                             : &quot; while your transformation is expiring&quot;;</a>
+<a name="ln242">        }</a>
+<a name="ln243">        else</a>
+<a name="ln244">        {</a>
+<a name="ln245">            string name = bad_mons-&gt;name(DESC_PLAIN);</a>
+<a name="ln246">            if (starts_with(name, &quot;the &quot;))</a>
+<a name="ln247">               name.erase(0, 4);</a>
+<a name="ln248">            if (!starts_with(bad_adj, &quot;your&quot;))</a>
+<a name="ln249">               bad_adj = &quot;the &quot; + bad_adj;</a>
+<a name="ln250">            prompt += bad_adj + name + bad_suff;</a>
+<a name="ln251">        }</a>
+<a name="ln252">        prompt += &quot;?&quot;;</a>
+<a name="ln253"> </a>
+<a name="ln254">        if (penance)</a>
+<a name="ln255">            prompt += &quot; This could place you under penance!&quot;;</a>
+<a name="ln256"> </a>
+<a name="ln257">        if (!crawl_state.disables[DIS_CONFIRMATIONS]</a>
+<a name="ln258">            &amp;&amp; !yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln259">        {</a>
+<a name="ln260">            canned_msg(MSG_OK);</a>
+<a name="ln261">            return true;</a>
+<a name="ln262">        }</a>
+<a name="ln263">    }</a>
+<a name="ln264"> </a>
+<a name="ln265">    return false;</a>
+<a name="ln266">}</a>
+<a name="ln267"> </a>
+<a name="ln268">// Opens doors.</a>
+<a name="ln269">// If move is !::origin, it carries a specific direction for the</a>
+<a name="ln270">// door to be opened (eg if you type ctrl + dir).</a>
+<a name="ln271">void open_door_action(coord_def move)</a>
+<a name="ln272">{</a>
+<a name="ln273">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln274">    ASSERT(!crawl_state.arena_suspended);</a>
+<a name="ln275"> </a>
+<a name="ln276">    if (you.attribute[ATTR_HELD])</a>
+<a name="ln277">    {</a>
+<a name="ln278">        free_self_from_net();</a>
+<a name="ln279">        you.turn_is_over = true;</a>
+<a name="ln280">        return;</a>
+<a name="ln281">    }</a>
+<a name="ln282"> </a>
+<a name="ln283">    if (you.confused())</a>
+<a name="ln284">    {</a>
+<a name="ln285">        canned_msg(MSG_TOO_CONFUSED);</a>
+<a name="ln286">        return;</a>
+<a name="ln287">    }</a>
+<a name="ln288"> </a>
+<a name="ln289">    dist door_move;</a>
+<a name="ln290"> </a>
+<a name="ln291">    // The player hasn't picked a direction yet.</a>
+<a name="ln292">    if (move.origin())</a>
+<a name="ln293">    {</a>
+<a name="ln294">        const int num = _check_adjacent(DNGN_CLOSED_DOOR, move)</a>
+<a name="ln295">                        + _check_adjacent(DNGN_CLOSED_CLEAR_DOOR, move)</a>
+<a name="ln296">                        + _check_adjacent(DNGN_RUNED_DOOR, move)</a>
+<a name="ln297">                        + _check_adjacent(DNGN_RUNED_CLEAR_DOOR, move);</a>
+<a name="ln298"> </a>
+<a name="ln299">        if (num == 0)</a>
+<a name="ln300">        {</a>
+<a name="ln301">            mpr(&quot;There's nothing to open nearby.&quot;);</a>
+<a name="ln302">            return;</a>
+<a name="ln303">        }</a>
+<a name="ln304"> </a>
+<a name="ln305">        // If there's only one door to open, don't ask.</a>
+<a name="ln306">        if (num == 1 &amp;&amp; Options.easy_door)</a>
+<a name="ln307">            door_move.delta = move;</a>
+<a name="ln308">        else</a>
+<a name="ln309">        {</a>
+<a name="ln310">            mprf(MSGCH_PROMPT, &quot;Which direction?&quot;);</a>
+<a name="ln311">            direction_chooser_args args;</a>
+<a name="ln312">            args.restricts = DIR_DIR;</a>
+<a name="ln313">            direction(door_move, args);</a>
+<a name="ln314"> </a>
+<a name="ln315">            if (!door_move.isValid)</a>
+<a name="ln316">                return;</a>
+<a name="ln317">        }</a>
+<a name="ln318">    }</a>
+<a name="ln319">    else</a>
+<a name="ln320">        door_move.delta = move;</a>
+<a name="ln321"> </a>
+<a name="ln322">    // We got a valid direction.</a>
+<a name="ln323">    const coord_def doorpos = you.pos() + door_move.delta;</a>
+<a name="ln324"> </a>
+<a name="ln325">    if (door_vetoed(doorpos))</a>
+<a name="ln326">    {</a>
+<a name="ln327">        // Allow doors to be locked.</a>
+<a name="ln328">        const string door_veto_message = env.markers.property_at(doorpos,</a>
+<a name="ln329">                                                                 MAT_ANY,</a>
+<a name="ln330">                                                                 &quot;veto_reason&quot;);</a>
+<a name="ln331">        if (door_veto_message.empty())</a>
+<a name="ln332">            mpr(&quot;The door is shut tight!&quot;);</a>
+<a name="ln333">        else</a>
+<a name="ln334">            mpr(door_veto_message);</a>
+<a name="ln335">        if (you.confused())</a>
+<a name="ln336">            you.turn_is_over = true;</a>
+<a name="ln337"> </a>
+<a name="ln338">        return;</a>
+<a name="ln339">    }</a>
+<a name="ln340"> </a>
+<a name="ln341">    const dungeon_feature_type feat = (in_bounds(doorpos) ? grd(doorpos)</a>
+<a name="ln342">                                                          : DNGN_UNSEEN);</a>
+<a name="ln343">    switch (feat)</a>
+<a name="ln344">    {</a>
+<a name="ln345">    case DNGN_CLOSED_DOOR:</a>
+<a name="ln346">    case DNGN_CLOSED_CLEAR_DOOR:</a>
+<a name="ln347">    case DNGN_RUNED_DOOR:</a>
+<a name="ln348">    case DNGN_RUNED_CLEAR_DOOR:</a>
+<a name="ln349">        player_open_door(doorpos);</a>
+<a name="ln350">        break;</a>
+<a name="ln351">    case DNGN_OPEN_DOOR:</a>
+<a name="ln352">    case DNGN_OPEN_CLEAR_DOOR:</a>
+<a name="ln353">    {</a>
+<a name="ln354">        string door_already_open = &quot;&quot;;</a>
+<a name="ln355">        if (in_bounds(doorpos))</a>
+<a name="ln356">        {</a>
+<a name="ln357">            door_already_open = env.markers.property_at(doorpos, MAT_ANY,</a>
+<a name="ln358">                                                    &quot;door_verb_already_open&quot;);</a>
+<a name="ln359">        }</a>
+<a name="ln360"> </a>
+<a name="ln361">        if (!door_already_open.empty())</a>
+<a name="ln362">            mpr(door_already_open);</a>
+<a name="ln363">        else</a>
+<a name="ln364">            mpr(&quot;It's already open!&quot;);</a>
+<a name="ln365">        break;</a>
+<a name="ln366">    }</a>
+<a name="ln367">    case DNGN_SEALED_DOOR:</a>
+<a name="ln368">    case DNGN_SEALED_CLEAR_DOOR:</a>
+<a name="ln369">        mpr(&quot;That door is sealed shut!&quot;);</a>
+<a name="ln370">        break;</a>
+<a name="ln371">    default:</a>
+<a name="ln372">        mpr(&quot;There isn't anything that you can open there!&quot;);</a>
+<a name="ln373">        break;</a>
+<a name="ln374">    }</a>
+<a name="ln375">}</a>
+<a name="ln376"> </a>
+<a name="ln377">void close_door_action(coord_def move)</a>
+<a name="ln378">{</a>
+<a name="ln379">    if (you.attribute[ATTR_HELD])</a>
+<a name="ln380">    {</a>
+<a name="ln381">        mprf(&quot;You can't close doors while %s.&quot;, held_status());</a>
+<a name="ln382">        return;</a>
+<a name="ln383">    }</a>
+<a name="ln384"> </a>
+<a name="ln385">    if (you.confused())</a>
+<a name="ln386">    {</a>
+<a name="ln387">        canned_msg(MSG_TOO_CONFUSED);</a>
+<a name="ln388">        return;</a>
+<a name="ln389">    }</a>
+<a name="ln390"> </a>
+<a name="ln391">    dist door_move;</a>
+<a name="ln392"> </a>
+<a name="ln393">    if (move.origin())</a>
+<a name="ln394">    {</a>
+<a name="ln395">        // If there's only one door to close, don't ask.</a>
+<a name="ln396">        int num = _check_adjacent(DNGN_OPEN_DOOR, move)</a>
+<a name="ln397">                  + _check_adjacent(DNGN_OPEN_CLEAR_DOOR, move);</a>
+<a name="ln398">        if (num == 0)</a>
+<a name="ln399">        {</a>
+<a name="ln400">            mpr(&quot;There's nothing to close nearby.&quot;);</a>
+<a name="ln401">            return;</a>
+<a name="ln402">        }</a>
+<a name="ln403">        // move got set in _check_adjacent</a>
+<a name="ln404">        else if (num == 1 &amp;&amp; Options.easy_door)</a>
+<a name="ln405">            door_move.delta = move;</a>
+<a name="ln406">        else</a>
+<a name="ln407">        {</a>
+<a name="ln408">            mprf(MSGCH_PROMPT, &quot;Which direction?&quot;);</a>
+<a name="ln409">            direction_chooser_args args;</a>
+<a name="ln410">            args.restricts = DIR_DIR;</a>
+<a name="ln411">            direction(door_move, args);</a>
+<a name="ln412"> </a>
+<a name="ln413">            if (!door_move.isValid)</a>
+<a name="ln414">                return;</a>
+<a name="ln415">        }</a>
+<a name="ln416"> </a>
+<a name="ln417">        if (door_move.delta.origin())</a>
+<a name="ln418">        {</a>
+<a name="ln419">            mpr(&quot;You can't close doors on yourself!&quot;);</a>
+<a name="ln420">            return;</a>
+<a name="ln421">        }</a>
+<a name="ln422">    }</a>
+<a name="ln423">    else</a>
+<a name="ln424">        door_move.delta = move;</a>
+<a name="ln425"> </a>
+<a name="ln426">    const coord_def doorpos = you.pos() + door_move.delta;</a>
+<a name="ln427">    const dungeon_feature_type feat = (in_bounds(doorpos) ? grd(doorpos)</a>
+<a name="ln428">                                                          : DNGN_UNSEEN);</a>
+<a name="ln429"> </a>
+<a name="ln430">    switch (feat)</a>
+<a name="ln431">    {</a>
+<a name="ln432">    case DNGN_OPEN_DOOR:</a>
+<a name="ln433">    case DNGN_OPEN_CLEAR_DOOR:</a>
+<a name="ln434">        player_close_door(doorpos);</a>
+<a name="ln435">        break;</a>
+<a name="ln436">    case DNGN_CLOSED_DOOR:</a>
+<a name="ln437">    case DNGN_CLOSED_CLEAR_DOOR:</a>
+<a name="ln438">    case DNGN_RUNED_DOOR:</a>
+<a name="ln439">    case DNGN_RUNED_CLEAR_DOOR:</a>
+<a name="ln440">    case DNGN_SEALED_DOOR:</a>
+<a name="ln441">    case DNGN_SEALED_CLEAR_DOOR:</a>
+<a name="ln442">        mpr(&quot;It's already closed!&quot;);</a>
+<a name="ln443">        break;</a>
+<a name="ln444">    default:</a>
+<a name="ln445">        mpr(&quot;There isn't anything that you can close there!&quot;);</a>
+<a name="ln446">        break;</a>
+<a name="ln447">    }</a>
+<a name="ln448">}</a>
+<a name="ln449"> </a>
+<a name="ln450">// Maybe prompt to enter a portal, return true if we should enter the</a>
+<a name="ln451">// portal, false if the user said no at the prompt.</a>
+<a name="ln452">bool prompt_dangerous_portal(dungeon_feature_type ftype)</a>
+<a name="ln453">{</a>
+<a name="ln454">    switch (ftype)</a>
+<a name="ln455">    {</a>
+<a name="ln456">    case DNGN_ENTER_PANDEMONIUM:</a>
+<a name="ln457">    case DNGN_ENTER_ABYSS:</a>
+<a name="ln458">        return yesno(&quot;If you enter this portal you might not be able to return &quot;</a>
+<a name="ln459">                     &quot;immediately. Continue?&quot;, false, 'n');</a>
+<a name="ln460"> </a>
+<a name="ln461">    case DNGN_MALIGN_GATEWAY:</a>
+<a name="ln462">        return yesno(&quot;Are you sure you wish to approach this portal? There's no &quot;</a>
+<a name="ln463">                     &quot;telling what its forces would wreak upon your fragile &quot;</a>
+<a name="ln464">                     &quot;self.&quot;, false, 'n');</a>
+<a name="ln465"> </a>
+<a name="ln466">    default:</a>
+<a name="ln467">        return true;</a>
+<a name="ln468">    }</a>
+<a name="ln469">}</a>
+<a name="ln470"> </a>
+<a name="ln471">// Called when the player moves by walking/running. Also calls attack</a>
+<a name="ln472">// function etc when necessary.</a>
+<a name="ln473">void move_player_action(coord_def move)</a>
+<a name="ln474">{</a>
+<a name="ln475">    ASSERT(!crawl_state.game_is_arena() &amp;&amp; !crawl_state.arena_suspended);</a>
+<a name="ln476"> </a>
+<a name="ln477">    bool attacking = false;</a>
+<a name="ln478">    bool moving = true;         // used to prevent eventual movement (swap)</a>
+<a name="ln479">    bool swap = false;</a>
+<a name="ln480"> </a>
+<a name="ln481">    int additional_time_taken = 0; // Extra time independent of movement speed</a>
+<a name="ln482"> </a>
+<a name="ln483">    ASSERT(!in_bounds(you.pos()) || !cell_is_solid(you.pos())</a>
+<a name="ln484">           || you.wizmode_teleported_into_rock);</a>
+<a name="ln485"> </a>
+<a name="ln486">    if (you.attribute[ATTR_HELD])</a>
+<a name="ln487">    {</a>
+<a name="ln488">        free_self_from_net();</a>
+<a name="ln489">        you.turn_is_over = true;</a>
+<a name="ln490">        return;</a>
+<a name="ln491">    }</a>
+<a name="ln492"> </a>
+<a name="ln493">    const coord_def initial_position = you.pos();</a>
+<a name="ln494"> </a>
+<a name="ln495">    // When confused, sometimes make a random move.</a>
+<a name="ln496">    if (you.confused())</a>
+<a name="ln497">    {</a>
+<a name="ln498">        if (you.is_stationary())</a>
+<a name="ln499">        {</a>
+<a name="ln500">            // Don't choose a random location to try to attack into - allows</a>
+<a name="ln501">            // abuse, since trying to move (not attack) takes no time, and</a>
+<a name="ln502">            // shouldn't. Just force confused trees to use ctrl.</a>
+<a name="ln503">            mpr(&quot;You cannot move. (Use ctrl+direction or * direction to &quot;</a>
+<a name="ln504">                &quot;attack without moving.)&quot;);</a>
+<a name="ln505">            return;</a>
+<a name="ln506">        }</a>
+<a name="ln507"> </a>
+<a name="ln508">        if (cancel_confused_move(false))</a>
+<a name="ln509">            return;</a>
+<a name="ln510"> </a>
+<a name="ln511">        if (cancel_barbed_move())</a>
+<a name="ln512">            return;</a>
+<a name="ln513"> </a>
+<a name="ln514">        if (!one_chance_in(3))</a>
+<a name="ln515">        {</a>
+<a name="ln516">            move.x = random2(3) - 1;</a>
+<a name="ln517">            move.y = random2(3) - 1;</a>
+<a name="ln518">            if (move.origin())</a>
+<a name="ln519">            {</a>
+<a name="ln520">                mpr(&quot;You're too confused to move!&quot;);</a>
+<a name="ln521">                you.apply_berserk_penalty = true;</a>
+<a name="ln522">                you.turn_is_over = true;</a>
+<a name="ln523">                return;</a>
+<a name="ln524">            }</a>
+<a name="ln525">        }</a>
+<a name="ln526"> </a>
+<a name="ln527">        const coord_def new_targ = you.pos() + move;</a>
+<a name="ln528">        if (!in_bounds(new_targ) || !you.can_pass_through(new_targ))</a>
+<a name="ln529">        {</a>
+<a name="ln530">            you.turn_is_over = true;</a>
+<a name="ln531">            if (you.digging) // no actual damage</a>
+<a name="ln532">            {</a>
+<a name="ln533">                mprf(&quot;Your mandibles retract as you bump into %s.&quot;,</a>
+<a name="ln534">                     feature_description_at(new_targ, false,</a>
+<a name="ln535">                                            DESC_THE).c_str());</a>
+<a name="ln536">                you.digging = false;</a>
+<a name="ln537">            }</a>
+<a name="ln538">            else</a>
+<a name="ln539">            {</a>
+<a name="ln540">                mprf(&quot;You bump into %s.&quot;,</a>
+<a name="ln541">                     feature_description_at(new_targ, false,</a>
+<a name="ln542">                                            DESC_THE).c_str());</a>
+<a name="ln543">            }</a>
+<a name="ln544">            you.apply_berserk_penalty = true;</a>
+<a name="ln545">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln546"> </a>
+<a name="ln547">            return;</a>
+<a name="ln548">        }</a>
+<a name="ln549">    }</a>
+<a name="ln550"> </a>
+<a name="ln551">    const coord_def targ = you.pos() + move;</a>
+<a name="ln552">    // You can't walk out of bounds!</a>
+<a name="ln553">    if (!in_bounds(targ))</a>
+<a name="ln554">    {</a>
+<a name="ln555">        // Why isn't the border permarock?</a>
+<a name="ln556">        if (you.digging)</a>
+<a name="ln557">            mpr(&quot;This wall is too hard to dig through.&quot;);</a>
+<a name="ln558">        return;</a>
+<a name="ln559">    }</a>
+<a name="ln560"> </a>
+<a name="ln561">    const string walkverb = you.airborne()                     ? &quot;fly&quot;</a>
+<a name="ln562">                          : you.swimming()                     ? &quot;swim&quot;</a>
+<a name="ln563">                          : you.form == transformation::spider ? &quot;crawl&quot;</a>
+<a name="ln564">                          : (you.species == SP_NAGA</a>
+<a name="ln565">                             &amp;&amp; form_keeps_mutations())        ? &quot;slither&quot;</a>
+<a name="ln566">                                                               : &quot;walk&quot;;</a>
+<a name="ln567"> </a>
+<a name="ln568">    monster* targ_monst = monster_at(targ);</a>
+<a name="ln569">    if (fedhas_passthrough(targ_monst) &amp;&amp; !you.is_stationary())</a>
+<a name="ln570">    {</a>
+<a name="ln571">        // Moving on a plant takes 1.5 x normal move delay. We</a>
+<a name="ln572">        // will print a message about it but only when moving</a>
+<a name="ln573">        // from open space-&gt;plant (hopefully this will cut down</a>
+<a name="ln574">        // on the message spam).</a>
+<a name="ln575">        you.time_taken = div_rand_round(you.time_taken * 3, 2);</a>
+<a name="ln576"> </a>
+<a name="ln577">        monster* current = monster_at(you.pos());</a>
+<a name="ln578">        if (!current || !fedhas_passthrough(current))</a>
+<a name="ln579">        {</a>
+<a name="ln580">            // Probably need a better message. -cao</a>
+<a name="ln581">            mprf(&quot;You %s carefully through the %s.&quot;, walkverb.c_str(),</a>
+<a name="ln582">                 mons_genus(targ_monst-&gt;type) == MONS_FUNGUS ? &quot;fungus&quot;</a>
+<a name="ln583">                                                             : &quot;plants&quot;);</a>
+<a name="ln584">        }</a>
+<a name="ln585">        targ_monst = nullptr;</a>
+<a name="ln586">    }</a>
+<a name="ln587"> </a>
+<a name="ln588">    bool targ_pass = you.can_pass_through(targ) &amp;&amp; !you.is_stationary();</a>
+<a name="ln589"> </a>
+<a name="ln590">    if (you.digging)</a>
+<a name="ln591">    {</a>
+<a name="ln592">        if (apply_starvation_penalties())</a>
+<a name="ln593">        {</a>
+<a name="ln594">            you.digging = false;</a>
+<a name="ln595">            canned_msg(MSG_TOO_HUNGRY);</a>
+<a name="ln596">        }</a>
+<a name="ln597">        else if (feat_is_diggable(grd(targ)))</a>
+<a name="ln598">            targ_pass = true;</a>
+<a name="ln599">        else // moving or attacking ends dig</a>
+<a name="ln600">        {</a>
+<a name="ln601">            you.digging = false;</a>
+<a name="ln602">            if (feat_is_solid(grd(targ)))</a>
+<a name="ln603">                mpr(&quot;You can't dig through that.&quot;);</a>
+<a name="ln604">            else</a>
+<a name="ln605">                mpr(&quot;You retract your mandibles.&quot;);</a>
+<a name="ln606">        }</a>
+<a name="ln607">    }</a>
+<a name="ln608"> </a>
+<a name="ln609">    // You can swap places with a friendly or good neutral monster if</a>
+<a name="ln610">    // you're not confused, or even with hostiles if both of you are inside</a>
+<a name="ln611">    // a sanctuary.</a>
+<a name="ln612">    const bool try_to_swap = targ_monst</a>
+<a name="ln613">                             &amp;&amp; (targ_monst-&gt;wont_attack()</a>
+<a name="ln614">                                    &amp;&amp; !you.confused()</a>
+<a name="ln615">                                 || is_sanctuary(you.pos())</a>
+<a name="ln616">                                    &amp;&amp; is_sanctuary(targ));</a>
+<a name="ln617"> </a>
+<a name="ln618">    // You cannot move away from a siren but you CAN fight monsters on</a>
+<a name="ln619">    // neighbouring squares.</a>
+<a name="ln620">    monster* beholder = nullptr;</a>
+<a name="ln621">    if (!you.confused())</a>
+<a name="ln622">        beholder = you.get_beholder(targ);</a>
+<a name="ln623"> </a>
+<a name="ln624">    // You cannot move closer to a fear monger.</a>
+<a name="ln625">    monster *fmonger = nullptr;</a>
+<a name="ln626">    if (!you.confused())</a>
+<a name="ln627">        fmonger = you.get_fearmonger(targ);</a>
+<a name="ln628"> </a>
+<a name="ln629">    if (you.running.check_stop_running())</a>
+<a name="ln630">    {</a>
+<a name="ln631">        // [ds] Do we need this? Shouldn't it be false to start with?</a>
+<a name="ln632">        you.turn_is_over = false;</a>
+<a name="ln633">        return;</a>
+<a name="ln634">    }</a>
+<a name="ln635"> </a>
+<a name="ln636">    coord_def mon_swap_dest;</a>
+<a name="ln637"> </a>
+<a name="ln638">    if (targ_monst &amp;&amp; !targ_monst-&gt;submerged())</a>
+<a name="ln639">    {</a>
+<a name="ln640">        if (try_to_swap &amp;&amp; !beholder &amp;&amp; !fmonger)</a>
+<a name="ln641">        {</a>
+<a name="ln642">            if (swap_check(targ_monst, mon_swap_dest))</a>
+<a name="ln643">                swap = true;</a>
+<a name="ln644">            else</a>
+<a name="ln645">            {</a>
+<a name="ln646">                stop_running();</a>
+<a name="ln647">                moving = false;</a>
+<a name="ln648">            }</a>
+<a name="ln649">        }</a>
+<a name="ln650">        else if (targ_monst-&gt;temp_attitude() == ATT_NEUTRAL &amp;&amp; !you.confused()</a>
+<a name="ln651">                 &amp;&amp; targ_monst-&gt;visible_to(&amp;you))</a>
+<a name="ln652">        {</a>
+<a name="ln653">            simple_monster_message(*targ_monst, &quot; refuses to make way for you. &quot;</a>
+<a name="ln654">                              &quot;(Use ctrl+direction or * direction to attack.)&quot;);</a>
+<a name="ln655">            you.turn_is_over = false;</a>
+<a name="ln656">            return;</a>
+<a name="ln657">        }</a>
+<a name="ln658">        else if (!try_to_swap) // attack!</a>
+<a name="ln659">        {</a>
+<a name="ln660">            // Don't allow the player to freely locate invisible monsters</a>
+<a name="ln661">            // with confirmation prompts.</a>
+<a name="ln662">            if (!you.can_see(*targ_monst)</a>
+<a name="ln663">                &amp;&amp; !you.confused()</a>
+<a name="ln664">                &amp;&amp; !check_moveto(targ, walkverb))</a>
+<a name="ln665">            {</a>
+<a name="ln666">                stop_running();</a>
+<a name="ln667">                you.turn_is_over = false;</a>
+<a name="ln668">                return;</a>
+<a name="ln669">            }</a>
+<a name="ln670"> </a>
+<a name="ln671">            you.turn_is_over = true;</a>
+<a name="ln672">            fight_melee(&amp;you, targ_monst);</a>
+<a name="ln673"> </a>
+<a name="ln674">            you.berserk_penalty = 0;</a>
+<a name="ln675">            attacking = true;</a>
+<a name="ln676">        }</a>
+<a name="ln677">    }</a>
+<a name="ln678">    else if (you.form == transformation::fungus &amp;&amp; moving &amp;&amp; !you.confused())</a>
+<a name="ln679">    {</a>
+<a name="ln680">        if (you.is_nervous())</a>
+<a name="ln681">        {</a>
+<a name="ln682">            mpr(&quot;You're too terrified to move while being watched!&quot;);</a>
+<a name="ln683">            stop_running();</a>
+<a name="ln684">            you.turn_is_over = false;</a>
+<a name="ln685">            return;</a>
+<a name="ln686">        }</a>
+<a name="ln687">    }</a>
+<a name="ln688"> </a>
+<a name="ln689">    const bool running = you_are_delayed() &amp;&amp; current_delay()-&gt;is_run();</a>
+<a name="ln690"> </a>
+<a name="ln691">    if (!attacking &amp;&amp; targ_pass &amp;&amp; moving &amp;&amp; !beholder &amp;&amp; !fmonger)</a>
+<a name="ln692">    {</a>
+<a name="ln693">        if (you.confused() &amp;&amp; is_feat_dangerous(env.grid(targ)))</a>
+<a name="ln694">        {</a>
+<a name="ln695">            mprf(&quot;You nearly stumble into %s!&quot;,</a>
+<a name="ln696">                 feature_description_at(targ, false, DESC_THE).c_str());</a>
+<a name="ln697">            you.apply_berserk_penalty = true;</a>
+<a name="ln698">            you.turn_is_over = true;</a>
+<a name="ln699">            return;</a>
+<a name="ln700">        }</a>
+<a name="ln701"> </a>
+<a name="ln702">        if (!you.confused() &amp;&amp; !check_moveto(targ, walkverb))</a>
+<a name="ln703">        {</a>
+<a name="ln704">            stop_running();</a>
+<a name="ln705">            you.turn_is_over = false;</a>
+<a name="ln706">            return;</a>
+<a name="ln707">        }</a>
+<a name="ln708"> </a>
+<a name="ln709">        // If confused, we've already been prompted (in case of stumbling into</a>
+<a name="ln710">        // a monster and attacking instead).</a>
+<a name="ln711">        if (!you.confused() &amp;&amp; cancel_barbed_move())</a>
+<a name="ln712">            return;</a>
+<a name="ln713"> </a>
+<a name="ln714">        if (!you.attempt_escape()) // false means constricted and did not escape</a>
+<a name="ln715">            return;</a>
+<a name="ln716"> </a>
+<a name="ln717">        if (you.duration[DUR_WATER_HOLD])</a>
+<a name="ln718">        {</a>
+<a name="ln719">            mpr(&quot;You slip free of the water engulfing you.&quot;);</a>
+<a name="ln720">            you.props.erase(&quot;water_holder&quot;);</a>
+<a name="ln721">            you.clear_far_engulf();</a>
+<a name="ln722">        }</a>
+<a name="ln723"> </a>
+<a name="ln724">        if (you.digging)</a>
+<a name="ln725">        {</a>
+<a name="ln726">            mprf(&quot;You dig through %s.&quot;, feature_description_at(targ, false,</a>
+<a name="ln727">                 DESC_THE).c_str());</a>
+<a name="ln728">            destroy_wall(targ);</a>
+<a name="ln729">            noisy(6, you.pos());</a>
+<a name="ln730">            make_hungry(50, true);</a>
+<a name="ln731">            additional_time_taken += BASELINE_DELAY / 5;</a>
+<a name="ln732">        }</a>
+<a name="ln733"> </a>
+<a name="ln734">        if (swap)</a>
+<a name="ln735">            _swap_places(targ_monst, mon_swap_dest);</a>
+<a name="ln736"> </a>
+<a name="ln737">        if (running &amp;&amp; env.travel_trail.empty())</a>
+<a name="ln738">            env.travel_trail.push_back(you.pos());</a>
+<a name="ln739">        else if (!running)</a>
+<a name="ln740">            clear_travel_trail();</a>
+<a name="ln741"> </a>
+<a name="ln742">        // clear constriction data</a>
+<a name="ln743">        you.stop_directly_constricting_all(true);</a>
+<a name="ln744">        if (you.is_directly_constricted())</a>
+<a name="ln745">            you.stop_being_constricted();</a>
+<a name="ln746"> </a>
+<a name="ln747">        coord_def old_pos = you.pos();</a>
+<a name="ln748">        // Don't trigger traps when confusion causes no move.</a>
+<a name="ln749">        if (you.pos() != targ &amp;&amp; targ_pass)</a>
+<a name="ln750">            move_player_to_grid(targ, true);</a>
+<a name="ln751"> </a>
+<a name="ln752">        // Now it is safe to apply the swappee's location effects and add</a>
+<a name="ln753">        // trailing effects. Doing so earlier would allow e.g. shadow traps to</a>
+<a name="ln754">        // put a monster at the player's location.</a>
+<a name="ln755">        if (swap)</a>
+<a name="ln756">            targ_monst-&gt;apply_location_effects(targ);</a>
+<a name="ln757">        else</a>
+<a name="ln758">        {</a>
+<a name="ln759"> </a>
+<a name="ln760">            if (you.duration[DUR_NOXIOUS_BOG])</a>
+<a name="ln761">            {</a>
+<a name="ln762">                if (cell_is_solid(old_pos))</a>
+<a name="ln763">                    ASSERT(you.wizmode_teleported_into_rock);</a>
+<a name="ln764">                else</a>
+<a name="ln765">                    noxious_bog_cell(old_pos);</a>
+<a name="ln766">            }</a>
+<a name="ln767"> </a>
+<a name="ln768">            if (you.duration[DUR_CLOUD_TRAIL])</a>
+<a name="ln769">            {</a>
+<a name="ln770">                if (cell_is_solid(old_pos))</a>
+<a name="ln771">                    ASSERT(you.wizmode_teleported_into_rock);</a>
+<a name="ln772">                else</a>
+<a name="ln773">                {</a>
+<a name="ln774">                    auto cloud = static_cast&lt;cloud_type&gt;(</a>
+<a name="ln775">                        you.props[XOM_CLOUD_TRAIL_TYPE_KEY].get_int());</a>
+<a name="ln776">                    ASSERT(cloud != CLOUD_NONE);</a>
+<a name="ln777">                    check_place_cloud(cloud, old_pos, random_range(3, 10), &amp;you,</a>
+<a name="ln778">                                      0, -1);</a>
+<a name="ln779">                }</a>
+<a name="ln780">            }</a>
+<a name="ln781">        }</a>
+<a name="ln782">        apply_barbs_damage();</a>
+<a name="ln783">        remove_ice_armour_movement();</a>
+<a name="ln784"> </a>
+<a name="ln785">        if (you_are_delayed() &amp;&amp; current_delay()-&gt;is_run())</a>
+<a name="ln786">            env.travel_trail.push_back(you.pos());</a>
+<a name="ln787"> </a>
+<a name="ln788">        you.time_taken *= player_movement_speed();</a>
+<a name="ln789">        you.time_taken = div_rand_round(you.time_taken, 10);</a>
+<a name="ln790">        you.time_taken += additional_time_taken;</a>
+<a name="ln791"> </a>
+<a name="ln792">        if (you.running &amp;&amp; you.running.travel_speed)</a>
+<a name="ln793">        {</a>
+<a name="ln794">            you.time_taken = max(you.time_taken,</a>
+<a name="ln795">                                 div_round_up(100, you.running.travel_speed));</a>
+<a name="ln796">        }</a>
+<a name="ln797"> </a>
+<a name="ln798">        if (you.duration[DUR_NO_HOP])</a>
+<a name="ln799">            you.duration[DUR_NO_HOP] += you.time_taken;</a>
+<a name="ln800"> </a>
+<a name="ln801">        move.reset();</a>
+<a name="ln802">        you.turn_is_over = true;</a>
+<a name="ln803">        request_autopickup();</a>
+<a name="ln804">    }</a>
+<a name="ln805"> </a>
+<a name="ln806">    // BCR - Easy doors single move</a>
+<a name="ln807">    if ((Options.travel_open_doors || !you.running)</a>
+<a name="ln808">        &amp;&amp; !attacking</a>
+<a name="ln809">        &amp;&amp; feat_is_closed_door(grd(targ)))</a>
+<a name="ln810">    {</a>
+<a name="ln811">        open_door_action(move);</a>
+<a name="ln812">        move.reset();</a>
+<a name="ln813">        return;</a>
+<a name="ln814">    }</a>
+<a name="ln815">    else if (!targ_pass &amp;&amp; grd(targ) == DNGN_MALIGN_GATEWAY</a>
+<a name="ln816">             &amp;&amp; !attacking &amp;&amp; !you.is_stationary())</a>
+<a name="ln817">    {</a>
+<a name="ln818">        if (!crawl_state.disables[DIS_CONFIRMATIONS]</a>
+<a name="ln819">            &amp;&amp; !prompt_dangerous_portal(grd(targ)))</a>
+<a name="ln820">        {</a>
+<a name="ln821">            return;</a>
+<a name="ln822">        }</a>
+<a name="ln823"> </a>
+<a name="ln824">        move.reset();</a>
+<a name="ln825">        you.turn_is_over = true;</a>
+<a name="ln826"> </a>
+<a name="ln827">        _entered_malign_portal(&amp;you);</a>
+<a name="ln828">        return;</a>
+<a name="ln829">    }</a>
+<a name="ln830">    else if (!targ_pass &amp;&amp; !attacking)</a>
+<a name="ln831">    {</a>
+<a name="ln832">        if (you.is_stationary())</a>
+<a name="ln833">            canned_msg(MSG_CANNOT_MOVE);</a>
+<a name="ln834">        else if (grd(targ) == DNGN_OPEN_SEA)</a>
+<a name="ln835">            mpr(&quot;The ferocious winds and tides of the open sea thwart your progress.&quot;);</a>
+<a name="ln836">        else if (grd(targ) == DNGN_LAVA_SEA)</a>
+<a name="ln837">            mpr(&quot;The endless sea of lava is not a nice place.&quot;);</a>
+<a name="ln838">        else if (feat_is_tree(grd(targ)) &amp;&amp; you_worship(GOD_FEDHAS))</a>
+<a name="ln839">            mpr(&quot;You cannot walk through the dense trees.&quot;);</a>
+<a name="ln840"> </a>
+<a name="ln841">        stop_running();</a>
+<a name="ln842">        move.reset();</a>
+<a name="ln843">        you.turn_is_over = false;</a>
+<a name="ln844">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln845">        return;</a>
+<a name="ln846">    }</a>
+<a name="ln847">    else if (beholder &amp;&amp; !attacking)</a>
+<a name="ln848">    {</a>
+<a name="ln849">        mprf(&quot;You cannot move away from %s!&quot;,</a>
+<a name="ln850">            beholder-&gt;name(DESC_THE).c_str());</a>
+<a name="ln851">        stop_running();</a>
+<a name="ln852">        return;</a>
+<a name="ln853">    }</a>
+<a name="ln854">    else if (fmonger &amp;&amp; !attacking)</a>
+<a name="ln855">    {</a>
+<a name="ln856">        mprf(&quot;You cannot move closer to %s!&quot;,</a>
+<a name="ln857">            fmonger-&gt;name(DESC_THE).c_str());</a>
+<a name="ln858">        stop_running();</a>
+<a name="ln859">        return;</a>
+<a name="ln860">    }</a>
+<a name="ln861"> </a>
+<a name="ln862">    if (you.running == RMODE_START)</a>
+<a name="ln863">        you.running = RMODE_CONTINUE;</a>
+<a name="ln864"> </a>
+<a name="ln865">    if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln866">        maybe_shift_abyss_around_player();</a>
+<a name="ln867"> </a>
+<a name="ln868">    you.apply_berserk_penalty = !attacking;</a>
+<a name="ln869"> </a>
+<a name="ln870">    if (!attacking &amp;&amp; you_worship(GOD_CHEIBRIADOS) &amp;&amp; one_chance_in(10)</a>
+<a name="ln871">        &amp;&amp; you.run())</a>
+<a name="ln872">    {</a>
+<a name="ln873">        did_god_conduct(DID_HASTY, 1, true);</a>
+<a name="ln874">    }</a>
+<a name="ln875"> </a>
+<a name="ln876">    bool did_wu_jian_attack = false;</a>
+<a name="ln877">    if (you_worship(GOD_WU_JIAN) &amp;&amp; !attacking)</a>
+<a name="ln878">        did_wu_jian_attack = wu_jian_post_move_effects(false, initial_position);</a>
+<a name="ln879"> </a>
+<a name="ln880">    // If you actually moved you are eligible for amulet of the acrobat.</a>
+<a name="ln881">    if (!attacking &amp;&amp; moving &amp;&amp; !did_wu_jian_attack)</a>
+<a name="ln882">        update_acrobat_status();</a>
+<a name="ln883">}</a>
+
+</code></pre>
+<div class="balloon" rel="216"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="749"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: targ_pass.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

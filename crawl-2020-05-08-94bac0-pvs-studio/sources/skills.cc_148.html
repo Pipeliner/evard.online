@@ -1,0 +1,2386 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>skills.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Skill exercising functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;skills.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cmath&gt;</a>
+<a name="ln12">#include &lt;cstdlib&gt;</a>
+<a name="ln13">#include &lt;cstring&gt;</a>
+<a name="ln14">#include &lt;functional&gt;</a>
+<a name="ln15">#include &lt;sstream&gt;</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &quot;ability.h&quot;</a>
+<a name="ln18">#include &quot;clua.h&quot;</a>
+<a name="ln19">#include &quot;describe-god.h&quot;</a>
+<a name="ln20">#include &quot;evoke.h&quot;</a>
+<a name="ln21">#include &quot;god-abil.h&quot;</a>
+<a name="ln22">#include &quot;god-conduct.h&quot;</a>
+<a name="ln23">#include &quot;god-passive.h&quot;</a>
+<a name="ln24">#include &quot;hints.h&quot;</a>
+<a name="ln25">#include &quot;item-prop.h&quot;</a>
+<a name="ln26">#include &quot;libutil.h&quot;</a>
+<a name="ln27">#include &quot;message.h&quot;</a>
+<a name="ln28">#include &quot;notes.h&quot;</a>
+<a name="ln29">#include &quot;output.h&quot;</a>
+<a name="ln30">#include &quot;random.h&quot;</a>
+<a name="ln31">#include &quot;religion.h&quot;</a>
+<a name="ln32">#include &quot;skill-menu.h&quot;</a>
+<a name="ln33">#include &quot;sprint.h&quot;</a>
+<a name="ln34">#include &quot;state.h&quot;</a>
+<a name="ln35">#include &quot;stringutil.h&quot;</a>
+<a name="ln36"> </a>
+<a name="ln37">// MAX_COST_LIMIT is the maximum XP amount it will cost to raise a skill</a>
+<a name="ln38">//                by 10 skill points (ie one standard practice).</a>
+<a name="ln39">//</a>
+<a name="ln40">// MAX_SPENDING_LIMIT is the maximum XP amount we allow the player to</a>
+<a name="ln41">//                    spend on a skill in a single raise.</a>
+<a name="ln42">//</a>
+<a name="ln43">// Note that they don't have to be equal, but it is important to make</a>
+<a name="ln44">// sure that they're set so that the spending limit will always allow</a>
+<a name="ln45">// for 1 skill point to be earned.</a>
+<a name="ln46">#define MAX_COST_LIMIT           265</a>
+<a name="ln47">#define MAX_SPENDING_LIMIT       265</a>
+<a name="ln48"> </a>
+<a name="ln49">static int _train(skill_type exsk, int &amp;max_exp, bool simu = false);</a>
+<a name="ln50">static void _train_skills(int exp, const int cost, const bool simu);</a>
+<a name="ln51">static int _training_target_skill_point_diff(skill_type exsk, int training_target);</a>
+<a name="ln52"> </a>
+<a name="ln53">// Basic goals for titles:</a>
+<a name="ln54">// The higher titles must come last.</a>
+<a name="ln55">// Referring to the skill itself is fine (&quot;Transmuter&quot;) but not impressive.</a>
+<a name="ln56">// No overlaps, high diversity.</a>
+<a name="ln57"> </a>
+<a name="ln58">// See the map &quot;replacements&quot; below for what @Genus@, @Adj@, etc. do.</a>
+<a name="ln59">// NOTE: Even though @foo@ could be used with most of these, remember that</a>
+<a name="ln60">// the character's race will be listed on the next line. It's only really</a>
+<a name="ln61">// intended for cases where things might be really awkward without it. -- bwr</a>
+<a name="ln62"> </a>
+<a name="ln63">// NOTE: If a skill name is changed, remember to also adapt the database entry.</a>
+<a name="ln64">static const char *skill_titles[NUM_SKILLS][6] =</a>
+<a name="ln65">{</a>
+<a name="ln66">  //  Skill name        levels 1-7       levels 8-14        levels 15-20       levels 21-26      level 27</a>
+<a name="ln67">    {&quot;Fighting&quot;,       &quot;Skirmisher&quot;,    &quot;Fighter&quot;,         &quot;Warrior&quot;,         &quot;Slayer&quot;,         &quot;Conqueror&quot;},</a>
+<a name="ln68">    {&quot;Short Blades&quot;,   &quot;Cutter&quot;,        &quot;Slicer&quot;,          &quot;Swashbuckler&quot;,    &quot;Cutthroat&quot;,      &quot;Politician&quot;},</a>
+<a name="ln69">    {&quot;Long Blades&quot;,    &quot;Slasher&quot;,       &quot;Carver&quot;,          &quot;Fencer&quot;,          &quot;@Adj@ Blade&quot;,    &quot;Swordmaster&quot;},</a>
+<a name="ln70">    {&quot;Axes&quot;,           &quot;Chopper&quot;,       &quot;Cleaver&quot;,         &quot;Severer&quot;,         &quot;Executioner&quot;,    &quot;Axe Maniac&quot;},</a>
+<a name="ln71">    {&quot;Maces &amp; Flails&quot;, &quot;Cudgeler&quot;,      &quot;Basher&quot;,          &quot;Bludgeoner&quot;,      &quot;Shatterer&quot;,      &quot;Skullcrusher&quot;},</a>
+<a name="ln72">    {&quot;Polearms&quot;,       &quot;Poker&quot;,         &quot;Spear-Bearer&quot;,    &quot;Impaler&quot;,         &quot;Phalangite&quot;,     &quot;@Adj@ Porcupine&quot;},</a>
+<a name="ln73">    {&quot;Staves&quot;,         &quot;Twirler&quot;,       &quot;Cruncher&quot;,        &quot;Stickfighter&quot;,    &quot;Pulveriser&quot;,     &quot;Chief of Staff&quot;},</a>
+<a name="ln74">    {&quot;Slings&quot;,         &quot;Vandal&quot;,        &quot;Slinger&quot;,         &quot;Whirler&quot;,         &quot;Slingshot&quot;,      &quot;@Adj@ Catapult&quot;},</a>
+<a name="ln75">    {&quot;Bows&quot;,           &quot;Shooter&quot;,       &quot;Archer&quot;,          &quot;Marks@genus@&quot;,    &quot;Crack Shot&quot;,     &quot;Merry @Genus@&quot;},</a>
+<a name="ln76">    {&quot;Crossbows&quot;,      &quot;Bolt Thrower&quot;,  &quot;Quickloader&quot;,     &quot;Sharpshooter&quot;,    &quot;Sniper&quot;,         &quot;@Adj@ Arbalest&quot;},</a>
+<a name="ln77">    {&quot;Throwing&quot;,       &quot;Chucker&quot;,       &quot;Thrower&quot;,         &quot;Deadly Accurate&quot;, &quot;Hawkeye&quot;,        &quot;@Adj@ Ballista&quot;},</a>
+<a name="ln78">    {&quot;Armour&quot;,         &quot;Covered&quot;,       &quot;Protected&quot;,       &quot;Tortoise&quot;,        &quot;Impregnable&quot;,    &quot;Invulnerable&quot;},</a>
+<a name="ln79">    {&quot;Dodging&quot;,        &quot;Ducker&quot;,        &quot;Nimble&quot;,          &quot;Spry&quot;,            &quot;Acrobat&quot;,        &quot;Intangible&quot;},</a>
+<a name="ln80">    {&quot;Stealth&quot;,        &quot;Sneak&quot;,         &quot;Covert&quot;,          &quot;Unseen&quot;,          &quot;Imperceptible&quot;,  &quot;Ninja&quot;},</a>
+<a name="ln81">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln82">    {&quot;Stabbing&quot;,       &quot;Miscreant&quot;,     &quot;Blackguard&quot;,      &quot;Backstabber&quot;,     &quot;Cutthroat&quot;,      &quot;Politician&quot;},</a>
+<a name="ln83">#endif</a>
+<a name="ln84">    {&quot;Shields&quot;,        &quot;Shield-Bearer&quot;, &quot;Blocker&quot;,         &quot;Peltast&quot;,         &quot;Hoplite&quot;,        &quot;@Adj@ Barricade&quot;},</a>
+<a name="ln85">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln86">    {&quot;Traps&quot;,          &quot;Scout&quot;,         &quot;Disarmer&quot;,        &quot;Vigilant&quot;,        &quot;Perceptive&quot;,     &quot;Dungeon Master&quot;},</a>
+<a name="ln87">#endif</a>
+<a name="ln88">    // STR based fighters, for DEX/martial arts titles see below. Felids get their own category, too.</a>
+<a name="ln89">    {&quot;Unarmed Combat&quot;, &quot;Ruffian&quot;,       &quot;Grappler&quot;,        &quot;Brawler&quot;,         &quot;Wrestler&quot;,       &quot;@Weight@weight Champion&quot;},</a>
+<a name="ln90"> </a>
+<a name="ln91">    {&quot;Spellcasting&quot;,   &quot;Magician&quot;,      &quot;Thaumaturge&quot;,     &quot;Eclecticist&quot;,     &quot;Sorcerer&quot;,       &quot;Archmage&quot;},</a>
+<a name="ln92">    {&quot;Conjurations&quot;,   &quot;Conjurer&quot;,      &quot;Destroyer&quot;,       &quot;Devastator&quot;,      &quot;Ruinous&quot;,        &quot;Annihilator&quot;},</a>
+<a name="ln93">    {&quot;Hexes&quot;,          &quot;Vexing&quot;,        &quot;Jinx&quot;,            &quot;Bewitcher&quot;,       &quot;Maledictor&quot;,     &quot;Spellbinder&quot;},</a>
+<a name="ln94">    {&quot;Charms&quot;,         &quot;Charmwright&quot;,   &quot;Infuser&quot;,         &quot;Anointer&quot;,        &quot;Gracecrafter&quot;,   &quot;Miracle Worker&quot;},</a>
+<a name="ln95">    {&quot;Summonings&quot;,     &quot;Caller&quot;,        &quot;Summoner&quot;,        &quot;Convoker&quot;,        &quot;Demonologist&quot;,   &quot;Hellbinder&quot;},</a>
+<a name="ln96">    {&quot;Necromancy&quot;,     &quot;Grave Robber&quot;,  &quot;Reanimator&quot;,      &quot;Necromancer&quot;,     &quot;Thanatomancer&quot;,  &quot;@Genus_Short@ of Death&quot;},</a>
+<a name="ln97">    {&quot;Translocations&quot;, &quot;Grasshopper&quot;,   &quot;Placeless @Genus@&quot;, &quot;Blinker&quot;,       &quot;Portalist&quot;,      &quot;Plane @Walker@&quot;},</a>
+<a name="ln98">    {&quot;Transmutations&quot;, &quot;Changer&quot;,       &quot;Transmogrifier&quot;,  &quot;Alchemist&quot;,       &quot;Malleable&quot;,      &quot;Shapeless @Genus@&quot;},</a>
+<a name="ln99"> </a>
+<a name="ln100">    {&quot;Fire Magic&quot;,     &quot;Firebug&quot;,       &quot;Arsonist&quot;,        &quot;Scorcher&quot;,        &quot;Pyromancer&quot;,     &quot;Infernalist&quot;},</a>
+<a name="ln101">    {&quot;Ice Magic&quot;,      &quot;Chiller&quot;,       &quot;Frost Mage&quot;,      &quot;Gelid&quot;,           &quot;Cryomancer&quot;,     &quot;Englaciator&quot;},</a>
+<a name="ln102">    {&quot;Air Magic&quot;,      &quot;Gusty&quot;,         &quot;Zephyrmancer&quot;,    &quot;Stormcaller&quot;,     &quot;Cloud Mage&quot;,     &quot;Meteorologist&quot;},</a>
+<a name="ln103">    {&quot;Earth Magic&quot;,    &quot;Digger&quot;,        &quot;Geomancer&quot;,       &quot;Earth Mage&quot;,      &quot;Metallomancer&quot;,  &quot;Petrodigitator&quot;},</a>
+<a name="ln104">    {&quot;Poison Magic&quot;,   &quot;Stinger&quot;,       &quot;Tainter&quot;,         &quot;Polluter&quot;,        &quot;Contaminator&quot;,   &quot;Envenomancer&quot;},</a>
+<a name="ln105"> </a>
+<a name="ln106">    // These titles apply to atheists only, worshippers of the various gods</a>
+<a name="ln107">    // use the god titles instead, depending on piety or, in Gozag's case, gold.</a>
+<a name="ln108">    // or, in U's case, invocations skill.</a>
+<a name="ln109">    {&quot;Invocations&quot;,    &quot;Unbeliever&quot;,    &quot;Agnostic&quot;,        &quot;Dissident&quot;,       &quot;Heretic&quot;,        &quot;Apostate&quot;},</a>
+<a name="ln110">    {&quot;Evocations&quot;,     &quot;Charlatan&quot;,     &quot;Prestidigitator&quot;, &quot;Fetichist&quot;,       &quot;Evocator&quot;,       &quot;Talismancer&quot;},</a>
+<a name="ln111">};</a>
+<a name="ln112"> </a>
+<a name="ln113">static const char *martial_arts_titles[6] =</a>
+<a name="ln114">    {&quot;Unarmed Combat&quot;, &quot;Insei&quot;, &quot;Martial Artist&quot;, &quot;Black Belt&quot;, &quot;Sensei&quot;, &quot;Grand Master&quot;};</a>
+<a name="ln115">static const char *claw_and_tooth_titles[6] =</a>
+<a name="ln116">    {&quot;Unarmed Combat&quot;, &quot;Scratcher&quot;, &quot;Gouger&quot;, &quot;Ripper&quot;, &quot;Eviscerator&quot;, &quot;Sabretooth&quot;};</a>
+<a name="ln117"> </a>
+<a name="ln118">struct species_skill_aptitude</a>
+<a name="ln119">{</a>
+<a name="ln120">    species_type species;</a>
+<a name="ln121">    skill_type   skill;</a>
+<a name="ln122">    int aptitude;          // -50..50, with 0 for humans</a>
+<a name="ln123"> </a>
+<a name="ln124">    species_skill_aptitude(species_type _species,</a>
+<a name="ln125">                           skill_type _skill,</a>
+<a name="ln126">                           int _aptitude)</a>
+<a name="ln127">        : species(_species), skill(_skill), aptitude(_aptitude)</a>
+<a name="ln128">    {</a>
+<a name="ln129">    }</a>
+<a name="ln130">};</a>
+<a name="ln131"> </a>
+<a name="ln132">#include &quot;aptitudes.h&quot;</a>
+<a name="ln133"> </a>
+<a name="ln134">// Traditionally, Spellcasting and In/Evocations formed the exceptions here:</a>
+<a name="ln135">// Spellcasting skill was more expensive with about 130%, the other two got</a>
+<a name="ln136">// a discount with about 75%.</a>
+<a name="ln137">static int _spec_skills[NUM_SPECIES][NUM_SKILLS];</a>
+<a name="ln138"> </a>
+<a name="ln139">// The progress of skill_cost_level depends only on total experience points,</a>
+<a name="ln140">// it's independent of species. We try to keep close to the old system</a>
+<a name="ln141">// and use an experience aptitude of 130 as a reference (Tengu).</a>
+<a name="ln142">// This means that for a species with 130 exp apt, skill_cost_level should be</a>
+<a name="ln143">// the same as XL (unless the player has been drained).</a>
+<a name="ln144"> </a>
+<a name="ln145">// 130 exp apt is midway between +0 and -1 now. -- elliptic</a>
+<a name="ln146">unsigned int skill_cost_needed(int level)</a>
+<a name="ln147">{</a>
+<a name="ln148">    return exp_needed(level, 1) * 13;</a>
+<a name="ln149">}</a>
+<a name="ln150"> </a>
+<a name="ln151">static const int MAX_SKILL_COST_LEVEL = 27;</a>
+<a name="ln152"> </a>
+<a name="ln153">// skill_cost_level makes skills more expensive for more experienced characters</a>
+<a name="ln154">int calc_skill_cost(int skill_cost_level)</a>
+<a name="ln155">{</a>
+<a name="ln156">    const int cost[] = { 1, 2, 3, 4, 5,            // 1-5</a>
+<a name="ln157">                         7, 8, 9, 13, 22,         // 6-10</a>
+<a name="ln158">                         37, 48, 73, 98, 125,      // 11-15</a>
+<a name="ln159">                         145, 170, 190, 212, 225,  // 16-20</a>
+<a name="ln160">                         240, 255, 260, 265, 265,  // 21-25</a>
+<a name="ln161">                         265, 265 };</a>
+<a name="ln162">    COMPILE_CHECK(ARRAYSZ(cost) == MAX_SKILL_COST_LEVEL);</a>
+<a name="ln163"> </a>
+<a name="ln164">    ASSERT_RANGE(skill_cost_level, 1, MAX_SKILL_COST_LEVEL + 1);</a>
+<a name="ln165">    return cost[skill_cost_level - 1];</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">/**</a>
+<a name="ln169"> * The baseline skill cost for the 'cost' interface on the m screen.</a>
+<a name="ln170"> *</a>
+<a name="ln171"> * @returns the XP needed to go from level 0 to level 1 with +0 apt.</a>
+<a name="ln172"> */</a>
+<a name="ln173">int skill_cost_baseline()</a>
+<a name="ln174">{</a>
+<a name="ln175">    return skill_exp_needed(1, SK_FIGHTING, SP_HUMAN)</a>
+<a name="ln176">           - skill_exp_needed(0, SK_FIGHTING, SP_HUMAN);</a>
+<a name="ln177">}</a>
+<a name="ln178"> </a>
+<a name="ln179">/**</a>
+<a name="ln180"> * The skill cost to increase the given skill from its current level by one.</a>
+<a name="ln181"> *</a>
+<a name="ln182"> * @param sk the skill to check the player's level of</a>
+<a name="ln183"> * @returns the XP needed to increase from floor(level) to ceiling(level)</a>
+<a name="ln184"> */</a>
+<a name="ln185">int one_level_cost(skill_type sk)</a>
+<a name="ln186">{</a>
+<a name="ln187">    if (you.skills[sk] &gt;= MAX_SKILL_LEVEL)</a>
+<a name="ln188">        return 0;</a>
+<a name="ln189">    return skill_exp_needed(you.skills[sk] + 1, sk)</a>
+<a name="ln190">           - skill_exp_needed(you.skills[sk], sk);</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">/**</a>
+<a name="ln194"> * The number displayed in the 'cost' interface on the m screen.</a>
+<a name="ln195"> *</a>
+<a name="ln196"> * @param sk the skill to compute the cost of</a>
+<a name="ln197"> * @returns the cost of raising sk from floor(level) to ceiling(level),</a>
+<a name="ln198"> *          as a multiple of skill_cost_baseline()</a>
+<a name="ln199"> */</a>
+<a name="ln200">float scaled_skill_cost(skill_type sk)</a>
+<a name="ln201">{</a>
+<a name="ln202">    if (you.skills[sk] == MAX_SKILL_LEVEL || is_useless_skill(sk))</a>
+<a name="ln203">        return 0;</a>
+<a name="ln204">    int baseline = skill_cost_baseline();</a>
+<a name="ln205">    int next_level = one_level_cost(sk);</a>
+<a name="ln206">    if (skill_has_manual(sk))</a>
+<a name="ln207">        baseline *= 2;</a>
+<a name="ln208"> </a>
+<a name="ln209">    return (float)next_level / baseline;</a>
+<a name="ln210">}</a>
+<a name="ln211"> </a>
+<a name="ln212">// Characters are actually granted skill points, not skill levels.</a>
+<a name="ln213">// Here we take racial aptitudes into account in determining final</a>
+<a name="ln214">// skill levels.</a>
+<a name="ln215">void reassess_starting_skills()</a>
+<a name="ln216">{</a>
+<a name="ln217">    // go backwards, need to do Dodging before Armour</a>
+<a name="ln218">    // &quot;sk &gt;= SK_FIRST_SKILL&quot; might be optimised away, so do this differently.</a>
+<a name="ln219">    for (skill_type next = NUM_SKILLS; next &gt; SK_FIRST_SKILL; )</a>
+<a name="ln220">    {</a>
+<a name="ln221">        skill_type sk = --next;</a>
+<a name="ln222">        ASSERT(you.skills[sk] == 0 || !is_useless_skill(sk));</a>
+<a name="ln223"> </a>
+<a name="ln224">        // Grant the amount of skill points required for a human.</a>
+<a name="ln225">        you.skill_points[sk] = you.skills[sk] ?</a>
+<a name="ln226">            skill_exp_needed(you.skills[sk], sk, SP_HUMAN) + 1 : 0;</a>
+<a name="ln227"> </a>
+<a name="ln228">        if (sk == SK_DODGING &amp;&amp; you.skills[SK_ARMOUR]</a>
+<a name="ln229">            &amp;&amp; (is_useless_skill(SK_ARMOUR)</a>
+<a name="ln230">                || you_can_wear(EQ_BODY_ARMOUR) != MB_TRUE))</a>
+<a name="ln231">        {</a>
+<a name="ln232">            // No one who can't wear mundane heavy armour should start with</a>
+<a name="ln233">            // the Armour skill -- D:1 dragon armour is too unlikely.</a>
+<a name="ln234">            you.skill_points[sk] += skill_exp_needed(you.skills[SK_ARMOUR],</a>
+<a name="ln235">                SK_ARMOUR, SP_HUMAN) + 1;</a>
+<a name="ln236">            you.skills[SK_ARMOUR] = 0;</a>
+<a name="ln237">        }</a>
+<a name="ln238"> </a>
+<a name="ln239">        if (!you.skill_points[sk])</a>
+<a name="ln240">            continue;</a>
+<a name="ln241"> </a>
+<a name="ln242">        // Find out what level that earns this character.</a>
+<a name="ln243">        you.skills[sk] = 0;</a>
+<a name="ln244"> </a>
+<a name="ln245">        for (int lvl = 1; lvl &lt;= 8; ++lvl)</a>
+<a name="ln246">        {</a>
+<a name="ln247">            if (you.skill_points[sk] &gt; skill_exp_needed(lvl, sk))</a>
+<a name="ln248">                you.skills[sk] = lvl;</a>
+<a name="ln249">            else</a>
+<a name="ln250">                break;</a>
+<a name="ln251">        }</a>
+<a name="ln252"> </a>
+<a name="ln253">        // Wanderers get at least 1 level in their skills.</a>
+<a name="ln254">        if (you.char_class == JOB_WANDERER &amp;&amp; you.skills[sk] &lt; 1)</a>
+<a name="ln255">        {</a>
+<a name="ln256">            you.skill_points[sk] = skill_exp_needed(1, sk);</a>
+<a name="ln257">            you.skills[sk] = 1;</a>
+<a name="ln258">        }</a>
+<a name="ln259"> </a>
+<a name="ln260">        // Spellcasters should always have Spellcasting skill.</a>
+<a name="ln261">        if (sk == SK_SPELLCASTING &amp;&amp; you.skills[sk] &lt; 1)</a>
+<a name="ln262">        {</a>
+<a name="ln263">            you.skill_points[sk] = skill_exp_needed(1, sk);</a>
+<a name="ln264">            you.skills[sk] = 1;</a>
+<a name="ln265">        }</a>
+<a name="ln266">    }</a>
+<a name="ln267">}</a>
+<a name="ln268"> </a>
+<a name="ln269">static void _change_skill_level(skill_type exsk, int n)</a>
+<a name="ln270">{</a>
+<a name="ln271">    ASSERT(n != 0);</a>
+<a name="ln272">    bool need_reset = false;</a>
+<a name="ln273"> </a>
+<a name="ln274">    you.skills[exsk] = max(0, you.skills[exsk] + n);</a>
+<a name="ln275"> </a>
+<a name="ln276">    take_note(Note(n &gt; 0 ? NOTE_GAIN_SKILL : NOTE_LOSE_SKILL,</a>
+<a name="ln277">                   exsk, you.skills[exsk]));</a>
+<a name="ln278"> </a>
+<a name="ln279">    // are you drained/crosstrained/ash'd in the relevant skill?</a>
+<a name="ln280">    const bool specify_base = you.skill(exsk, 1) != you.skill(exsk, 1, true);</a>
+<a name="ln281">    if (you.skills[exsk] == MAX_SKILL_LEVEL)</a>
+<a name="ln282">        mprf(MSGCH_INTRINSIC_GAIN, &quot;You have mastered %s!&quot;, skill_name(exsk));</a>
+<a name="ln283">    else if (abs(n) == 1 &amp;&amp; you.num_turns)</a>
+<a name="ln284">    {</a>
+<a name="ln285">        mprf(MSGCH_INTRINSIC_GAIN, &quot;Your %s%s skill %s to level %d!&quot;,</a>
+<a name="ln286">             specify_base ? &quot;base &quot; : &quot;&quot;,</a>
+<a name="ln287">             skill_name(exsk), (n &gt; 0) ? &quot;increases&quot; : &quot;decreases&quot;,</a>
+<a name="ln288">             you.skills[exsk]);</a>
+<a name="ln289">    }</a>
+<a name="ln290">    else if (you.num_turns)</a>
+<a name="ln291">    {</a>
+<a name="ln292">        mprf(MSGCH_INTRINSIC_GAIN, &quot;Your %s%s skill %s %d levels and is now &quot;</a>
+<a name="ln293">             &quot;at level %d!&quot;,</a>
+<a name="ln294">             specify_base ? &quot;base &quot; : &quot;&quot;,</a>
+<a name="ln295">             skill_name(exsk),</a>
+<a name="ln296">             (n &gt; 0) ? &quot;gained&quot; : &quot;lost&quot;,</a>
+<a name="ln297">             abs(n), you.skills[exsk]);</a>
+<a name="ln298">    }</a>
+<a name="ln299"> </a>
+<a name="ln300">    if (you.skills[exsk] == n &amp;&amp; n &gt; 0)</a>
+<a name="ln301">        hints_gained_new_skill(exsk);</a>
+<a name="ln302"> </a>
+<a name="ln303">    if (n &gt; 0 &amp;&amp; you.num_turns)</a>
+<a name="ln304">        learned_something_new(HINT_SKILL_RAISE);</a>
+<a name="ln305"> </a>
+<a name="ln306">    if (you.skills[exsk] - n == MAX_SKILL_LEVEL)</a>
+<a name="ln307">    {</a>
+<a name="ln308">        you.train[exsk] = TRAINING_ENABLED;</a>
+<a name="ln309">        need_reset = true;</a>
+<a name="ln310">    }</a>
+<a name="ln311"> </a>
+<a name="ln312">    if (exsk == SK_SPELLCASTING &amp;&amp; you.skills[exsk] == n &amp;&amp; n &gt; 0)</a>
+<a name="ln313">        learned_something_new(HINT_GAINED_SPELLCASTING);</a>
+<a name="ln314"> </a>
+<a name="ln315">    if (need_reset)</a>
+<a name="ln316">        reset_training();</a>
+<a name="ln317"> </a>
+<a name="ln318">    // calc_hp() has to be called here because it currently doesn't work</a>
+<a name="ln319">    // right if you.skills[] hasn't been updated yet.</a>
+<a name="ln320">    if (exsk == SK_FIGHTING)</a>
+<a name="ln321">        calc_hp(true, false);</a>
+<a name="ln322">}</a>
+<a name="ln323"> </a>
+<a name="ln324">// Called whenever a skill is trained.</a>
+<a name="ln325">void redraw_skill(skill_type exsk, skill_type old_best_skill, bool recalculate_order)</a>
+<a name="ln326">{</a>
+<a name="ln327">    if (exsk == SK_FIGHTING)</a>
+<a name="ln328">        calc_hp(true, false);</a>
+<a name="ln329"> </a>
+<a name="ln330">    if (exsk == SK_INVOCATIONS || exsk == SK_SPELLCASTING || exsk == SK_EVOCATIONS)</a>
+<a name="ln331">        calc_mp();</a>
+<a name="ln332"> </a>
+<a name="ln333">    if (exsk == SK_DODGING || exsk == SK_ARMOUR)</a>
+<a name="ln334">        you.redraw_evasion = true;</a>
+<a name="ln335"> </a>
+<a name="ln336">    if (exsk == SK_ARMOUR || exsk == SK_SHIELDS || exsk == SK_ICE_MAGIC</a>
+<a name="ln337">        || exsk == SK_EARTH_MAGIC || you.duration[DUR_TRANSFORMATION] &gt; 0)</a>
+<a name="ln338">    {</a>
+<a name="ln339">        you.redraw_armour_class = true;</a>
+<a name="ln340">    }</a>
+<a name="ln341"> </a>
+<a name="ln342">    if (recalculate_order)</a>
+<a name="ln343">    {</a>
+<a name="ln344">        // Recalculate this skill's order for tie breaking skills</a>
+<a name="ln345">        // at its new level.   See skills.cc::init_skill_order()</a>
+<a name="ln346">        // for more details.  -- bwr</a>
+<a name="ln347">        you.skill_order[exsk] = 0;</a>
+<a name="ln348">        for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln349">        {</a>
+<a name="ln350">            if (sk != exsk &amp;&amp; you.skill(sk, 10, true) &gt;= you.skill(exsk, 10, true))</a>
+<a name="ln351">                you.skill_order[exsk]++;</a>
+<a name="ln352">        }</a>
+<a name="ln353"> </a>
+<a name="ln354">        const skill_type best = best_skill(SK_FIRST_SKILL, SK_LAST_SKILL);</a>
+<a name="ln355">        if (best != old_best_skill || old_best_skill == exsk)</a>
+<a name="ln356">        {</a>
+<a name="ln357">            you.redraw_title = true;</a>
+<a name="ln358">            // The player symbol depends on best skill title.</a>
+<a name="ln359">            update_player_symbol();</a>
+<a name="ln360">        }</a>
+<a name="ln361">    }</a>
+<a name="ln362"> </a>
+<a name="ln363">    // Identify weapon pluses.</a>
+<a name="ln364">    if (exsk &lt;= SK_THROWING)</a>
+<a name="ln365">        auto_id_inventory();</a>
+<a name="ln366">}</a>
+<a name="ln367"> </a>
+<a name="ln368">int calc_skill_level_change(skill_type sk, int starting_level, int sk_points)</a>
+<a name="ln369">{</a>
+<a name="ln370">    int new_level = starting_level;</a>
+<a name="ln371">    while (1)</a>
+<a name="ln372">    {</a>
+<a name="ln373">        if (new_level &lt; MAX_SKILL_LEVEL</a>
+<a name="ln374">            &amp;&amp; sk_points &gt;= (int) skill_exp_needed(new_level + 1, sk))</a>
+<a name="ln375">        {</a>
+<a name="ln376">            ++new_level;</a>
+<a name="ln377">        }</a>
+<a name="ln378">        else if (sk_points &lt; (int) skill_exp_needed(new_level, sk))</a>
+<a name="ln379">        {</a>
+<a name="ln380">            new_level--;</a>
+<a name="ln381">            ASSERT(new_level &gt;= 0);</a>
+<a name="ln382">        }</a>
+<a name="ln383">        else</a>
+<a name="ln384">            break;</a>
+<a name="ln385">    }</a>
+<a name="ln386">    return new_level;</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389">void check_skill_level_change(skill_type sk, bool do_level_up)</a>
+<a name="ln390">{</a>
+<a name="ln391">    const int new_level = calc_skill_level_change(sk, you.skills[sk], you.skill_points[sk]);</a>
+<a name="ln392"> </a>
+<a name="ln393">    if (new_level != you.skills[sk])</a>
+<a name="ln394">    {</a>
+<a name="ln395">        if (do_level_up)</a>
+<a name="ln396">            _change_skill_level(sk, new_level - you.skills[sk]);</a>
+<a name="ln397">        else</a>
+<a name="ln398">            you.skills[sk] = new_level;</a>
+<a name="ln399">    }</a>
+<a name="ln400">}</a>
+<a name="ln401"> </a>
+<a name="ln402">// Fill a queue in random order with the values of the array.</a>
+<a name="ln403">template &lt;typename T, int SIZE&gt;</a>
+<a name="ln404">static void _init_queue(list&lt;skill_type&gt; &amp;queue, FixedVector&lt;T, SIZE&gt; &amp;array)</a>
+<a name="ln405">{</a>
+<a name="ln406">    ASSERT(queue.empty());</a>
+<a name="ln407"> </a>
+<a name="ln408">    while (1)</a>
+<a name="ln409">    {</a>
+<a name="ln410">        skill_type sk = (skill_type)random_choose_weighted(array);</a>
+<a name="ln411">        if (is_invalid_skill(sk))</a>
+<a name="ln412">            break;</a>
+<a name="ln413">        queue.push_back(sk);</a>
+<a name="ln414">        --array[sk];</a>
+<a name="ln415">    }</a>
+<a name="ln416"> </a>
+<a name="ln417">    ASSERT(queue.size() == (unsigned)EXERCISE_QUEUE_SIZE);</a>
+<a name="ln418">}</a>
+<a name="ln419"> </a>
+<a name="ln420">static void _erase_from_stop_train(const skill_set &amp;can_train)</a>
+<a name="ln421">{</a>
+<a name="ln422">    for (skill_type sk : can_train)</a>
+<a name="ln423">        you.stop_train.erase(sk);</a>
+<a name="ln424">}</a>
+<a name="ln425"> </a>
+<a name="ln426">/*</a>
+<a name="ln427"> * Check the inventory to see what skills the player can train,</a>
+<a name="ln428"> * among the ones in you.stop_train.</a>
+<a name="ln429"> * Trainable skills are removed from the set.</a>
+<a name="ln430"> */</a>
+<a name="ln431">static void _check_inventory_skills()</a>
+<a name="ln432">{</a>
+<a name="ln433">    for (const auto &amp;item : you.inv)</a>
+<a name="ln434">    {</a>
+<a name="ln435">        // Exit early if there's no more skill to check.</a>
+<a name="ln436">        if (you.stop_train.empty())</a>
+<a name="ln437">            return;</a>
+<a name="ln438"> </a>
+<a name="ln439">        skill_set skills;</a>
+<a name="ln440">        if (!item.defined() || !item_skills(item, skills))</a>
+<a name="ln441">            continue;</a>
+<a name="ln442"> </a>
+<a name="ln443">        _erase_from_stop_train(skills);</a>
+<a name="ln444">    }</a>
+<a name="ln445">}</a>
+<a name="ln446"> </a>
+<a name="ln447">static void _check_spell_skills()</a>
+<a name="ln448">{</a>
+<a name="ln449">    for (spell_type spell : you.spells)</a>
+<a name="ln450">    {</a>
+<a name="ln451">        // Exit early if there's no more skill to check.</a>
+<a name="ln452">        if (you.stop_train.empty())</a>
+<a name="ln453">            return;</a>
+<a name="ln454"> </a>
+<a name="ln455">        if (spell == SPELL_NO_SPELL)</a>
+<a name="ln456">            continue;</a>
+<a name="ln457"> </a>
+<a name="ln458">        skill_set skills;</a>
+<a name="ln459">        spell_skills(spell, skills);</a>
+<a name="ln460">        _erase_from_stop_train(skills);</a>
+<a name="ln461">    }</a>
+<a name="ln462">}</a>
+<a name="ln463"> </a>
+<a name="ln464">static void _check_abil_skills()</a>
+<a name="ln465">{</a>
+<a name="ln466">    for (ability_type abil : get_god_abilities())</a>
+<a name="ln467">    {</a>
+<a name="ln468">        // Exit early if there's no more skill to check.</a>
+<a name="ln469">        if (you.stop_train.empty())</a>
+<a name="ln470">            return;</a>
+<a name="ln471"> </a>
+<a name="ln472">        you.stop_train.erase(abil_skill(abil));</a>
+<a name="ln473">    }</a>
+<a name="ln474">}</a>
+<a name="ln475"> </a>
+<a name="ln476">string skill_names(const skill_set &amp;skills)</a>
+<a name="ln477">{</a>
+<a name="ln478">    return comma_separated_fn(begin(skills), end(skills), skill_name);</a>
+<a name="ln479">}</a>
+<a name="ln480"> </a>
+<a name="ln481">static void _check_start_train()</a>
+<a name="ln482">{</a>
+<a name="ln483">    skill_set skills;</a>
+<a name="ln484">    for (skill_type sk : you.start_train)</a>
+<a name="ln485">    {</a>
+<a name="ln486">        if (is_invalid_skill(sk) || is_useless_skill(sk))</a>
+<a name="ln487">            continue;</a>
+<a name="ln488"> </a>
+<a name="ln489">        if (!you.can_currently_train[sk] &amp;&amp; you.train[sk])</a>
+<a name="ln490">            skills.insert(sk);</a>
+<a name="ln491">        you.can_currently_train.set(sk);</a>
+<a name="ln492">    }</a>
+<a name="ln493"> </a>
+<a name="ln494">    reset_training();</a>
+<a name="ln495"> </a>
+<a name="ln496">    // We're careful of not invalidating the iterator when erasing.</a>
+<a name="ln497">    for (auto it = skills.begin(); it != skills.end();)</a>
+<a name="ln498">        if (!you.training[*it])</a>
+<a name="ln499">            skills.erase(it++);</a>
+<a name="ln500">        else</a>
+<a name="ln501">            ++it;</a>
+<a name="ln502"> </a>
+<a name="ln503">    if (!skills.empty())</a>
+<a name="ln504">        mprf(&quot;You resume training %s.&quot;, skill_names(skills).c_str());</a>
+<a name="ln505"> </a>
+<a name="ln506">    you.start_train.clear();</a>
+<a name="ln507">}</a>
+<a name="ln508"> </a>
+<a name="ln509">static bool _player_is_gnoll()</a>
+<a name="ln510">{</a>
+<a name="ln511">    return you.species == SP_GNOLL;</a>
+<a name="ln512">}</a>
+<a name="ln513"> </a>
+<a name="ln514">static void _check_stop_train()</a>
+<a name="ln515">{</a>
+<a name="ln516">    // Gnolls can't stop training skills.</a>
+<a name="ln517">    if (_player_is_gnoll())</a>
+<a name="ln518">        return;</a>
+<a name="ln519"> </a>
+<a name="ln520">    _check_inventory_skills();</a>
+<a name="ln521">    _check_spell_skills();</a>
+<a name="ln522">    _check_abil_skills();</a>
+<a name="ln523"> </a>
+<a name="ln524">    if (you.stop_train.empty())</a>
+<a name="ln525">        return;</a>
+<a name="ln526"> </a>
+<a name="ln527">    skill_set skills;</a>
+<a name="ln528">    for (skill_type sk : you.stop_train)</a>
+<a name="ln529">    {</a>
+<a name="ln530">        if (is_invalid_skill(sk))</a>
+<a name="ln531">            continue;</a>
+<a name="ln532">        if (skill_has_manual(sk))</a>
+<a name="ln533">            continue;</a>
+<a name="ln534"> </a>
+<a name="ln535">        if (skill_trained(sk) &amp;&amp; you.training[sk])</a>
+<a name="ln536">            skills.insert(sk);</a>
+<a name="ln537">        you.can_currently_train.set(sk, false);</a>
+<a name="ln538">    }</a>
+<a name="ln539"> </a>
+<a name="ln540">    if (!skills.empty())</a>
+<a name="ln541">    {</a>
+<a name="ln542">        mprf(&quot;You stop training %s.&quot;, skill_names(skills).c_str());</a>
+<a name="ln543">        check_selected_skills();</a>
+<a name="ln544">    }</a>
+<a name="ln545"> </a>
+<a name="ln546">    reset_training();</a>
+<a name="ln547">    you.stop_train.clear();</a>
+<a name="ln548">}</a>
+<a name="ln549"> </a>
+<a name="ln550">void update_can_currently_train()</a>
+<a name="ln551">{</a>
+<a name="ln552">    if (!you.start_train.empty())</a>
+<a name="ln553">        _check_start_train();</a>
+<a name="ln554"> </a>
+<a name="ln555">    if (!you.stop_train.empty())</a>
+<a name="ln556">        _check_stop_train();</a>
+<a name="ln557">}</a>
+<a name="ln558"> </a>
+<a name="ln559">bool training_restricted(skill_type sk)</a>
+<a name="ln560">{</a>
+<a name="ln561">    if (_player_is_gnoll())</a>
+<a name="ln562">        return false;</a>
+<a name="ln563"> </a>
+<a name="ln564">    switch (sk)</a>
+<a name="ln565">    {</a>
+<a name="ln566">    case SK_FIGHTING:</a>
+<a name="ln567">    // Requiring missiles would mean disabling the skill when you run out.</a>
+<a name="ln568">    case SK_THROWING:</a>
+<a name="ln569">    case SK_ARMOUR:</a>
+<a name="ln570">    case SK_DODGING:</a>
+<a name="ln571">    case SK_STEALTH:</a>
+<a name="ln572">    case SK_UNARMED_COMBAT:</a>
+<a name="ln573">    case SK_SPELLCASTING:</a>
+<a name="ln574">        return false;</a>
+<a name="ln575">    default:</a>
+<a name="ln576">        return true;</a>
+<a name="ln577">    }</a>
+<a name="ln578">}</a>
+<a name="ln579"> </a>
+<a name="ln580">/*</a>
+<a name="ln581"> * Init the can_currently_train array by examining inventory and spell list to</a>
+<a name="ln582"> * see which skills can be trained.</a>
+<a name="ln583"> */</a>
+<a name="ln584">void init_can_currently_train()</a>
+<a name="ln585">{</a>
+<a name="ln586">    // Clear everything out, in case this isn't the first game.</a>
+<a name="ln587">    you.start_train.clear();</a>
+<a name="ln588">    you.stop_train.clear();</a>
+<a name="ln589">    you.can_currently_train.reset();</a>
+<a name="ln590"> </a>
+<a name="ln591">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln592">    {</a>
+<a name="ln593">        const skill_type sk = skill_type(i);</a>
+<a name="ln594"> </a>
+<a name="ln595">        if (is_useless_skill(sk))</a>
+<a name="ln596">            continue;</a>
+<a name="ln597"> </a>
+<a name="ln598">        you.can_currently_train.set(sk);</a>
+<a name="ln599">        if (training_restricted(sk))</a>
+<a name="ln600">            you.stop_train.insert(sk);</a>
+<a name="ln601">    }</a>
+<a name="ln602"> </a>
+<a name="ln603">    _check_stop_train();</a>
+<a name="ln604">}</a>
+<a name="ln605"> </a>
+<a name="ln606">void init_train()</a>
+<a name="ln607">{</a>
+<a name="ln608">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln609">    {</a>
+<a name="ln610">        if (you.can_currently_train[i] &amp;&amp; you.skill_points[i])</a>
+<a name="ln611">            you.train[i] = you.train_alt[i] = TRAINING_ENABLED;</a>
+<a name="ln612">        else</a>
+<a name="ln613">        {</a>
+<a name="ln614">            const bool gnoll_enable = _player_is_gnoll() &amp;&amp;</a>
+<a name="ln615">                                !is_removed_skill((skill_type) i);</a>
+<a name="ln616">            // Skills are on by default in auto mode and off in manual.</a>
+<a name="ln617">            you.train[i] = (training_status) (gnoll_enable</a>
+<a name="ln618">                                                || you.auto_training);</a>
+<a name="ln619">            you.train_alt[i] =</a>
+<a name="ln620">                (training_status) (gnoll_enable || !you.auto_training);</a>
+<a name="ln621">        }</a>
+<a name="ln622">    }</a>
+<a name="ln623">}</a>
+<a name="ln624"> </a>
+<a name="ln625">static bool _cmp_rest(const pair&lt;skill_type, int64_t&gt;&amp; a,</a>
+<a name="ln626">                      const pair&lt;skill_type, int64_t&gt;&amp; b)</a>
+<a name="ln627">{</a>
+<a name="ln628">    return a.second &lt; b.second;</a>
+<a name="ln629">}</a>
+<a name="ln630"> </a>
+<a name="ln631">/**</a>
+<a name="ln632"> * Scale an array.</a>
+<a name="ln633"> *</a>
+<a name="ln634"> * @param array The array to be scaled.</a>
+<a name="ln635"> * @param scale The new scale of the array.</a>
+<a name="ln636"> * @param exact When true, make sure that the sum of the array elements</a>
+<a name="ln637"> *              is equal to the scale.</a>
+<a name="ln638"> */</a>
+<a name="ln639">template &lt;typename T, int SIZE&gt;</a>
+<a name="ln640">static void _scale_array(FixedVector&lt;T, SIZE&gt; &amp;array, int scale, bool exact)</a>
+<a name="ln641">{</a>
+<a name="ln642">    int64_t total = 0;</a>
+<a name="ln643">    // First, we calculate the sum of the values to be scaled.</a>
+<a name="ln644">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln645">        total += array[i];</a>
+<a name="ln646"> </a>
+<a name="ln647">    vector&lt;pair&lt;skill_type, int64_t&gt; &gt; rests;</a>
+<a name="ln648">    int scaled_total = 0;</a>
+<a name="ln649"> </a>
+<a name="ln650">    // All skills disabled, nothing to do.</a>
+<a name="ln651">    if (!total)</a>
+<a name="ln652">        return;</a>
+<a name="ln653"> </a>
+<a name="ln654">    // Now we scale the values.</a>
+<a name="ln655">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln656">        if (array[i] &gt; 0)</a>
+<a name="ln657">        {</a>
+<a name="ln658">            int64_t result = (int64_t)array[i] * (int64_t)scale;</a>
+<a name="ln659">            const int64_t rest = result % total;</a>
+<a name="ln660">            if (rest)</a>
+<a name="ln661">                rests.emplace_back(skill_type(i), rest);</a>
+<a name="ln662">            array[i] = (int)(result / total);</a>
+<a name="ln663">            scaled_total += array[i];</a>
+<a name="ln664">        }</a>
+<a name="ln665"> </a>
+<a name="ln666">    ASSERT(scaled_total &lt;= scale);</a>
+<a name="ln667"> </a>
+<a name="ln668">    if (!exact || scaled_total == scale)</a>
+<a name="ln669">        return;</a>
+<a name="ln670"> </a>
+<a name="ln671">    // We ensure that the percentage always add up to 100 by increasing the</a>
+<a name="ln672">    // training for skills which had the higher rest from the above scaling.</a>
+<a name="ln673">    sort(rests.begin(), rests.end(), _cmp_rest);</a>
+<a name="ln674">    for (auto &amp;rest : rests)</a>
+<a name="ln675">    {</a>
+<a name="ln676">        if (scaled_total &gt;= scale)</a>
+<a name="ln677">            break;</a>
+<a name="ln678"> </a>
+<a name="ln679">        ++array[rest.first];</a>
+<a name="ln680">        ++scaled_total;</a>
+<a name="ln681">    }</a>
+<a name="ln682"> </a>
+<a name="ln683">    ASSERT(scaled_total == scale);</a>
+<a name="ln684">}</a>
+<a name="ln685"> </a>
+<a name="ln686">/*</a>
+<a name="ln687"> * Init the training array by scaling down the skill_points array to 100.</a>
+<a name="ln688"> * Used at game setup, when upgrading saves and when loading dump files.</a>
+<a name="ln689"> */</a>
+<a name="ln690">void init_training()</a>
+<a name="ln691">{</a>
+<a name="ln692">    FixedVector&lt;unsigned int, NUM_SKILLS&gt; skills;</a>
+<a name="ln693">    skills.init(0);</a>
+<a name="ln694">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln695">        if (skill_trained(i))</a>
+<a name="ln696">            skills[i] = sqr(you.skill_points[i]);</a>
+<a name="ln697"> </a>
+<a name="ln698">    _scale_array(skills, EXERCISE_QUEUE_SIZE, true);</a>
+<a name="ln699">    _init_queue(you.exercises, skills);</a>
+<a name="ln700"> </a>
+<a name="ln701">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln702">        skills[i] = sqr(you.skill_points[i]);</a>
+<a name="ln703"> </a>
+<a name="ln704">    _scale_array(skills, EXERCISE_QUEUE_SIZE, true);</a>
+<a name="ln705">    _init_queue(you.exercises_all, skills);</a>
+<a name="ln706"> </a>
+<a name="ln707">    reset_training();</a>
+<a name="ln708">}</a>
+<a name="ln709"> </a>
+<a name="ln710">bool skills_being_trained()</a>
+<a name="ln711">{</a>
+<a name="ln712">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln713">    {</a>
+<a name="ln714">        skill_type sk = static_cast&lt;skill_type&gt;(i);</a>
+<a name="ln715">        if (skill_trained(sk))</a>
+<a name="ln716">            return true;</a>
+<a name="ln717">    }</a>
+<a name="ln718">    return false;</a>
+<a name="ln719">}</a>
+<a name="ln720"> </a>
+<a name="ln721">// Make sure at least one skill is selected.</a>
+<a name="ln722">// If not, go to the skill menu and return true.</a>
+<a name="ln723">bool check_selected_skills()</a>
+<a name="ln724">{</a>
+<a name="ln725">    if (skills_being_trained())</a>
+<a name="ln726">        return false;</a>
+<a name="ln727">    if (!trainable_skills())</a>
+<a name="ln728">    {</a>
+<a name="ln729">        if (!you.received_noskill_warning)</a>
+<a name="ln730">        {</a>
+<a name="ln731">            you.received_noskill_warning = true;</a>
+<a name="ln732">            mpr(&quot;You cannot train any new skills!&quot;);</a>
+<a name="ln733">        }</a>
+<a name="ln734">        // It's possible to have no selectable skills, if they are all</a>
+<a name="ln735">        // untrainable or level 27, so we don't assert.</a>
+<a name="ln736">        return false;</a>
+<a name="ln737">    }</a>
+<a name="ln738"> </a>
+<a name="ln739">    // Calling a user lua function here to allow enabling skills without user</a>
+<a name="ln740">    // prompt (much like the callback auto_experience for the case of potion of</a>
+<a name="ln741">    // experience).</a>
+<a name="ln742">    if (clua.callbooleanfn(false, &quot;skill_training_needed&quot;, nullptr))</a>
+<a name="ln743">    {</a>
+<a name="ln744">        // did the callback do anything?</a>
+<a name="ln745">        if (skills_being_trained())</a>
+<a name="ln746">            return true;</a>
+<a name="ln747">    }</a>
+<a name="ln748"> </a>
+<a name="ln749">    mpr(&quot;You need to enable at least one skill for training.&quot;);</a>
+<a name="ln750">    // Training will be fixed up on load if this ASSERT triggers.</a>
+<a name="ln751">    ASSERT(!_player_is_gnoll());</a>
+<a name="ln752">    more();</a>
+<a name="ln753">    reset_training();</a>
+<a name="ln754">    skill_menu();</a>
+<a name="ln755">    redraw_screen();</a>
+<a name="ln756">    return true;</a>
+<a name="ln757">}</a>
+<a name="ln758"> </a>
+<a name="ln759">/**</a>
+<a name="ln760"> * Reset the training array. Disabled skills are skipped.</a>
+<a name="ln761"> * In automatic mode, we use values from the exercise queue.</a>
+<a name="ln762"> * In manual mode, all enabled skills are set to the same value.</a>
+<a name="ln763"> * Result is scaled back to 100.</a>
+<a name="ln764"> */</a>
+<a name="ln765">void reset_training()</a>
+<a name="ln766">{</a>
+<a name="ln767">    // Disable this here since we don't want any autotraining related skilling</a>
+<a name="ln768">    // changes for Gnolls.</a>
+<a name="ln769">    if (_player_is_gnoll())</a>
+<a name="ln770">        you.auto_training = false;</a>
+<a name="ln771"> </a>
+<a name="ln772">    // We clear the values in the training array. In auto mode they are set</a>
+<a name="ln773">    // to 0 (and filled later with the content of the queue), in manual mode,</a>
+<a name="ln774">    // the trainable ones are set to 1 (or 2 for focus).</a>
+<a name="ln775">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln776">    {</a>
+<a name="ln777">        // skill_trained doesn't work for gnolls, but all existent skills</a>
+<a name="ln778">        // will be set as enabled here.</a>
+<a name="ln779">        if (!_player_is_gnoll() &amp;&amp; (you.auto_training || !skill_trained(i)))</a>
+<a name="ln780">            you.training[i] = 0;</a>
+<a name="ln781">        else</a>
+<a name="ln782">            you.training[i] = you.train[i];</a>
+<a name="ln783">    }</a>
+<a name="ln784"> </a>
+<a name="ln785">    bool empty = true;</a>
+<a name="ln786">    // In automatic mode, we fill the array with the content of the queue.</a>
+<a name="ln787">    if (you.auto_training)</a>
+<a name="ln788">    {</a>
+<a name="ln789">        for (auto sk : you.exercises)</a>
+<a name="ln790">        {</a>
+<a name="ln791">            if (skill_trained(sk))</a>
+<a name="ln792">            {</a>
+<a name="ln793">                you.training[sk] += you.train[sk];</a>
+<a name="ln794">                empty = false;</a>
+<a name="ln795">            }</a>
+<a name="ln796">        }</a>
+<a name="ln797"> </a>
+<a name="ln798">        // We count the practise events in the other queue.</a>
+<a name="ln799">        FixedVector&lt;unsigned int, NUM_SKILLS&gt; exer_all;</a>
+<a name="ln800">        exer_all.init(0);</a>
+<a name="ln801">        for (auto sk : you.exercises_all)</a>
+<a name="ln802">        {</a>
+<a name="ln803">            if (skill_trained(sk))</a>
+<a name="ln804">            {</a>
+<a name="ln805">                exer_all[sk] += you.train[sk];</a>
+<a name="ln806">                empty = false;</a>
+<a name="ln807">            }</a>
+<a name="ln808">        }</a>
+<a name="ln809"> </a>
+<a name="ln810">        // We keep the highest of the 2 numbers.</a>
+<a name="ln811">        for (int sk = 0; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln812">            you.training[sk] = max(you.training[sk], exer_all[sk]);</a>
+<a name="ln813"> </a>
+<a name="ln814">        // The selected skills have not been exercised recently. Give them all</a>
+<a name="ln815">        // a default weight of 1 (or 2 for focus skills).</a>
+<a name="ln816">        if (empty)</a>
+<a name="ln817">        {</a>
+<a name="ln818">            for (int sk = 0; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln819">                if (skill_trained(sk))</a>
+<a name="ln820">                    you.training[sk] = you.train[sk];</a>
+<a name="ln821">        }</a>
+<a name="ln822"> </a>
+<a name="ln823">        // Focused skills get at least 20% training.</a>
+<a name="ln824">        for (int sk = 0; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln825">            if (you.train[sk] == 2 &amp;&amp; you.training[sk] &lt; 20</a>
+<a name="ln826">                &amp;&amp; you.can_currently_train[sk])</a>
+<a name="ln827">            {</a>
+<a name="ln828">                you.training[sk] += 5 * (5 - you.training[sk] / 4);</a>
+<a name="ln829">            }</a>
+<a name="ln830">    }</a>
+<a name="ln831"> </a>
+<a name="ln832">    _scale_array(you.training, 100, you.auto_training);</a>
+<a name="ln833">    if (_player_is_gnoll())</a>
+<a name="ln834">    {</a>
+<a name="ln835">        // we use the full set of skills to calculate gnoll percentages,</a>
+<a name="ln836">        // but they don't actually get to train sacrificed skills.</a>
+<a name="ln837">        for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln838">            if (is_useless_skill((skill_type) i))</a>
+<a name="ln839">                you.training[i] = 0;</a>
+<a name="ln840">    }</a>
+<a name="ln841">}</a>
+<a name="ln842"> </a>
+<a name="ln843">void exercise(skill_type exsk, int deg)</a>
+<a name="ln844">{</a>
+<a name="ln845">    if (you.skills[exsk] &gt;= MAX_SKILL_LEVEL)</a>
+<a name="ln846">        return;</a>
+<a name="ln847"> </a>
+<a name="ln848">    dprf(DIAG_SKILLS, &quot;Exercise %s by %d.&quot;, skill_name(exsk), deg);</a>
+<a name="ln849"> </a>
+<a name="ln850">    // push first in case queues are empty, like during -test</a>
+<a name="ln851">    while (deg &gt; 0)</a>
+<a name="ln852">    {</a>
+<a name="ln853">        if (skill_trained(exsk))</a>
+<a name="ln854">        {</a>
+<a name="ln855">            you.exercises.push_back(exsk);</a>
+<a name="ln856">            you.exercises.pop_front();</a>
+<a name="ln857">        }</a>
+<a name="ln858">        you.exercises_all.push_back(exsk);</a>
+<a name="ln859">        you.exercises_all.pop_front();</a>
+<a name="ln860">        deg--;</a>
+<a name="ln861">    }</a>
+<a name="ln862">    reset_training();</a>
+<a name="ln863">}</a>
+<a name="ln864"> </a>
+<a name="ln865">// Check if we should stop training this skill immediately.</a>
+<a name="ln866">// We look at skill points because actual level up comes later.</a>
+<a name="ln867">static bool _level_up_check(skill_type sk, bool simu)</a>
+<a name="ln868">{</a>
+<a name="ln869">    // Don't train past level 27.</a>
+<a name="ln870">    if (you.skill_points[sk] &gt;= skill_exp_needed(MAX_SKILL_LEVEL, sk))</a>
+<a name="ln871">    {</a>
+<a name="ln872">        you.training[sk] = 0;</a>
+<a name="ln873">        if (!simu)</a>
+<a name="ln874">        {</a>
+<a name="ln875">            you.train[sk] = TRAINING_DISABLED;</a>
+<a name="ln876">            you.train_alt[sk] = TRAINING_DISABLED;</a>
+<a name="ln877">        }</a>
+<a name="ln878">        return true;</a>
+<a name="ln879">    }</a>
+<a name="ln880"> </a>
+<a name="ln881">    return false;</a>
+<a name="ln882">}</a>
+<a name="ln883"> </a>
+<a name="ln884">bool is_magic_skill(skill_type sk)</a>
+<a name="ln885">{</a>
+<a name="ln886">    return sk &gt; SK_LAST_MUNDANE &amp;&amp; sk &lt;= SK_LAST_MAGIC;</a>
+<a name="ln887">}</a>
+<a name="ln888"> </a>
+<a name="ln889">int _gnoll_total_skill_cost();</a>
+<a name="ln890"> </a>
+<a name="ln891">void train_skills(bool simu)</a>
+<a name="ln892">{</a>
+<a name="ln893">    int cost, exp;</a>
+<a name="ln894">    if (_player_is_gnoll())</a>
+<a name="ln895">    {</a>
+<a name="ln896">        do</a>
+<a name="ln897">        {</a>
+<a name="ln898">            exp = you.exp_available;</a>
+<a name="ln899">            cost = _gnoll_total_skill_cost();</a>
+<a name="ln900">            if (exp &gt;= cost)</a>
+<a name="ln901">            {</a>
+<a name="ln902">                _train_skills(exp, calc_skill_cost(you.skill_cost_level), simu);</a>
+<a name="ln903">                dprf(DIAG_SKILLS,</a>
+<a name="ln904">                    &quot;Trained all gnoll skills by 1 at total cost %d.&quot;, cost);</a>
+<a name="ln905">            }</a>
+<a name="ln906">        }</a>
+<a name="ln907">        while (exp != you.exp_available);</a>
+<a name="ln908">    }</a>
+<a name="ln909">    else</a>
+<a name="ln910">    {</a>
+<a name="ln911">        do</a>
+<a name="ln912">        {</a>
+<a name="ln913">            cost = calc_skill_cost(you.skill_cost_level);</a>
+<a name="ln914">            exp = you.exp_available;</a>
+<a name="ln915">            if (you.skill_cost_level == MAX_SKILL_COST_LEVEL)</a>
+<a name="ln916">                _train_skills(exp, cost, simu);</a>
+<a name="ln917">            else</a>
+<a name="ln918">            {</a>
+<a name="ln919">                // Amount of experience points needed to reach the next skill cost level</a>
+<a name="ln920">                const int next_level = skill_cost_needed(you.skill_cost_level + 1)</a>
+<a name="ln921">                                       - you.total_experience;</a>
+<a name="ln922">                ASSERT(next_level &gt; 0);</a>
+<a name="ln923">                _train_skills(min(exp, next_level + cost - 1), cost, simu);</a>
+<a name="ln924">            }</a>
+<a name="ln925">        }</a>
+<a name="ln926">        while (you.exp_available &gt;= cost &amp;&amp; exp != you.exp_available);</a>
+<a name="ln927">    }</a>
+<a name="ln928"> </a>
+<a name="ln929">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln930">        check_skill_level_change(static_cast&lt;skill_type&gt;(i), !simu);</a>
+<a name="ln931"> </a>
+<a name="ln932">    // We might have disabled some skills on level up.</a>
+<a name="ln933">    reset_training();</a>
+<a name="ln934">}</a>
+<a name="ln935"> </a>
+<a name="ln936">//#define DEBUG_TRAINING_COST</a>
+<a name="ln937">static void _train_skills(int exp, const int cost, const bool simu)</a>
+<a name="ln938">{</a>
+<a name="ln939">    bool skip_first_phase = false;</a>
+<a name="ln940">    int magic_gain = 0;</a>
+<a name="ln941">    FixedVector&lt;int, NUM_SKILLS&gt; sk_exp;</a>
+<a name="ln942">    sk_exp.init(0);</a>
+<a name="ln943">    vector&lt;skill_type&gt; training_order;</a>
+<a name="ln944">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln945">    FixedVector&lt;int, NUM_SKILLS&gt; total_gain;</a>
+<a name="ln946">    total_gain.init(0);</a>
+<a name="ln947">#endif</a>
+<a name="ln948">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln949">    int exp_pool = you.exp_available;</a>
+<a name="ln950">    dprf(DIAG_SKILLS,</a>
+<a name="ln951">         &quot;skill cost level: %d, cost: %dxp/skp, max XP usable: %d.&quot;,</a>
+<a name="ln952">         you.skill_cost_level, cost, exp);</a>
+<a name="ln953">#endif</a>
+<a name="ln954"> </a>
+<a name="ln955">    // pre-check training targets -- may disable some skills.</a>
+<a name="ln956">    if (!simu)</a>
+<a name="ln957">        check_training_targets();</a>
+<a name="ln958"> </a>
+<a name="ln959">    // We scale the training array to the amount of XP available in the pool.</a>
+<a name="ln960">    // That gives us the amount of XP available to train each skill.</a>
+<a name="ln961">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln962">    {</a>
+<a name="ln963">        if (you.training[i] &gt; 0)</a>
+<a name="ln964">        {</a>
+<a name="ln965">            sk_exp[i] = you.training[i] * exp / 100;</a>
+<a name="ln966">            if (sk_exp[i] &lt; cost &amp;&amp; !_player_is_gnoll())</a>
+<a name="ln967">            {</a>
+<a name="ln968">                // One skill has a too low training to be trained at all.</a>
+<a name="ln969">                // We skip the first phase and go directly to the random</a>
+<a name="ln970">                // phase so it has a chance to be trained.</a>
+<a name="ln971">                skip_first_phase = true;</a>
+<a name="ln972">                break;</a>
+<a name="ln973">            }</a>
+<a name="ln974">            training_order.push_back(static_cast&lt;skill_type&gt;(i));</a>
+<a name="ln975">        }</a>
+<a name="ln976">    }</a>
+<a name="ln977"> </a>
+<a name="ln978">    if (!skip_first_phase)</a>
+<a name="ln979">    {</a>
+<a name="ln980">        // We randomize the order, to avoid a slight bias to first skills.</a>
+<a name="ln981">        // Being trained first can make a difference if skill cost increases.</a>
+<a name="ln982">        if (_player_is_gnoll())</a>
+<a name="ln983">            reverse(training_order.begin(), training_order.end());</a>
+<a name="ln984">        else</a>
+<a name="ln985">            shuffle_array(training_order);</a>
+<a name="ln986">        for (auto sk : training_order)</a>
+<a name="ln987">        {</a>
+<a name="ln988">            int gain = 0;</a>
+<a name="ln989"> </a>
+<a name="ln990">            if (_player_is_gnoll())</a>
+<a name="ln991">                sk_exp[sk] = exp;</a>
+<a name="ln992">            while (sk_exp[sk] &gt;= cost &amp;&amp; you.training[sk])</a>
+<a name="ln993">            {</a>
+<a name="ln994">                exp -= sk_exp[sk];</a>
+<a name="ln995">                gain += _train(sk, sk_exp[sk], simu);</a>
+<a name="ln996">                exp += sk_exp[sk];</a>
+<a name="ln997">                ASSERT(exp &gt;= 0);</a>
+<a name="ln998">                if (_level_up_check(sk, simu))</a>
+<a name="ln999">                    sk_exp[sk] = 0;</a>
+<a name="ln1000">                if (_player_is_gnoll())</a>
+<a name="ln1001">                    break;</a>
+<a name="ln1002">            }</a>
+<a name="ln1003"> </a>
+<a name="ln1004">            if (gain &amp;&amp; is_magic_skill(sk))</a>
+<a name="ln1005">                magic_gain += gain;</a>
+<a name="ln1006"> </a>
+<a name="ln1007">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1008">           total_gain[sk] += gain;</a>
+<a name="ln1009">#endif</a>
+<a name="ln1010">        }</a>
+<a name="ln1011">    }</a>
+<a name="ln1012">    // If there's enough xp in the pool, we use it to train skills selected</a>
+<a name="ln1013">    // with random_choose_weighted.</a>
+<a name="ln1014">    while (exp &gt;= cost)</a>
+<a name="ln1015">    {</a>
+<a name="ln1016">        if (_player_is_gnoll())</a>
+<a name="ln1017">            break;</a>
+<a name="ln1018">        int gain;</a>
+<a name="ln1019">        skill_type sk = SK_NONE;</a>
+<a name="ln1020">        if (!skip_first_phase)</a>
+<a name="ln1021">            sk = static_cast&lt;skill_type&gt;(random_choose_weighted(sk_exp));</a>
+<a name="ln1022">        if (is_invalid_skill(sk) || !you.train[sk])</a>
+<a name="ln1023">            sk = static_cast&lt;skill_type&gt;(random_choose_weighted(you.training));</a>
+<a name="ln1024">        if (!is_invalid_skill(sk))</a>
+<a name="ln1025">        {</a>
+<a name="ln1026">            gain = _train(sk, exp, simu);</a>
+<a name="ln1027">            ASSERT(exp &gt;= 0);</a>
+<a name="ln1028">            sk_exp[sk] = 0;</a>
+<a name="ln1029">        }</a>
+<a name="ln1030">        else</a>
+<a name="ln1031">        {</a>
+<a name="ln1032">            // No skill to train. Can happen if all skills are at 27.</a>
+<a name="ln1033">            break;</a>
+<a name="ln1034">        }</a>
+<a name="ln1035"> </a>
+<a name="ln1036">        _level_up_check(sk, simu);</a>
+<a name="ln1037"> </a>
+<a name="ln1038">        if (gain &amp;&amp; is_magic_skill(sk))</a>
+<a name="ln1039">            magic_gain += gain;</a>
+<a name="ln1040"> </a>
+<a name="ln1041">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1042">        total_gain[sk] += gain;</a>
+<a name="ln1043">#endif</a>
+<a name="ln1044">    }</a>
+<a name="ln1045"> </a>
+<a name="ln1046">    // clean up any cross-training effects</a>
+<a name="ln1047">    if (!simu)</a>
+<a name="ln1048">        check_training_targets();</a>
+<a name="ln1049"> </a>
+<a name="ln1050">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1051">    if (!crawl_state.script)</a>
+<a name="ln1052">    {</a>
+<a name="ln1053">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln1054">        int total = 0;</a>
+<a name="ln1055">#endif</a>
+<a name="ln1056">        for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln1057">        {</a>
+<a name="ln1058">            skill_type sk = static_cast&lt;skill_type&gt;(i);</a>
+<a name="ln1059">            if (total_gain[sk] &amp;&amp; !simu &amp;&amp; !_player_is_gnoll())</a>
+<a name="ln1060">            {</a>
+<a name="ln1061">                dprf(DIAG_SKILLS, &quot;Trained %s by %d.&quot;,</a>
+<a name="ln1062">                     skill_name(sk), total_gain[sk]);</a>
+<a name="ln1063">            }</a>
+<a name="ln1064">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln1065">            total += total_gain[sk];</a>
+<a name="ln1066">        }</a>
+<a name="ln1067">        dprf(DIAG_SKILLS, &quot;Total skill points gained: %d, cost: %d XP.&quot;,</a>
+<a name="ln1068">             total, exp_pool - you.exp_available);</a>
+<a name="ln1069">#else</a>
+<a name="ln1070">        }</a>
+<a name="ln1071">#endif</a>
+<a name="ln1072">    }</a>
+<a name="ln1073">#endif</a>
+<a name="ln1074"> </a>
+<a name="ln1075">    // Avoid doubly rewarding spell practise in sprint</a>
+<a name="ln1076">    // (by inflated XP and inflated piety gain)</a>
+<a name="ln1077">    if (crawl_state.game_is_sprint())</a>
+<a name="ln1078">        magic_gain = sprint_modify_exp_inverse(magic_gain);</a>
+<a name="ln1079"> </a>
+<a name="ln1080">    if (magic_gain &amp;&amp; !simu)</a>
+<a name="ln1081">        did_god_conduct(DID_SPELL_PRACTISE, div_rand_round(magic_gain, 10));</a>
+<a name="ln1082">}</a>
+<a name="ln1083"> </a>
+<a name="ln1084">bool skill_trained(int i)</a>
+<a name="ln1085">{</a>
+<a name="ln1086">    return you.can_currently_train[i] &amp;&amp; you.train[i];</a>
+<a name="ln1087">}</a>
+<a name="ln1088"> </a>
+<a name="ln1089">/**</a>
+<a name="ln1090"> * Is the training target, if any, met or exceeded for skill sk?</a>
+<a name="ln1091"> *</a>
+<a name="ln1092"> * @param sk the skill to check. This checks crosstraining and ash bonuses,</a>
+<a name="ln1093"> * but not other skill modifiers.</a>
+<a name="ln1094"> * @param target the target to check against. Defaults to you.training_targets[sk]</a>
+<a name="ln1095"> *</a>
+<a name="ln1096"> * @return whether the skill target has been met.</a>
+<a name="ln1097"> */</a>
+<a name="ln1098">bool target_met(skill_type sk, unsigned int target)</a>
+<a name="ln1099">{</a>
+<a name="ln1100">    return you.skill(sk, 10, false, false, false) &gt;= (int) target;</a>
+<a name="ln1101">}</a>
+<a name="ln1102"> </a>
+<a name="ln1103">bool target_met(skill_type sk)</a>
+<a name="ln1104">{</a>
+<a name="ln1105">    return target_met(sk, you.training_targets[sk]);</a>
+<a name="ln1106">}</a>
+<a name="ln1107"> </a>
+<a name="ln1108">/**</a>
+<a name="ln1109"> * Check the training target (if any) for skill sk, and change state</a>
+<a name="ln1110"> * appropriately. If the target has been met or exceeded, this will turn off</a>
+<a name="ln1111"> * targeting for that skill, and stop training it. This does *not* reset the</a>
+<a name="ln1112"> * training percentages, though, so if it's used mid-training, you need to take</a>
+<a name="ln1113"> * care of that.</a>
+<a name="ln1114"> *</a>
+<a name="ln1115"> * @param sk the skill to check.</a>
+<a name="ln1116"> * @return whether a target was reached.</a>
+<a name="ln1117"> */</a>
+<a name="ln1118">bool check_training_target(skill_type sk)</a>
+<a name="ln1119">{</a>
+<a name="ln1120">    if (you.training_targets[sk] &amp;&amp; target_met(sk))</a>
+<a name="ln1121">    {</a>
+<a name="ln1122">        bool base = (you.skill(sk, 10, false, false, false) !=</a>
+<a name="ln1123">                        you.skill(sk, 10, false, true, true));</a>
+<a name="ln1124">        mprf(&quot;%sraining target %d.%d for %s reached!&quot;,</a>
+<a name="ln1125">            base ? &quot;Base t&quot; : &quot;T&quot;,</a>
+<a name="ln1126">            you.training_targets[sk] / 10,</a>
+<a name="ln1127">            you.training_targets[sk] % 10, skill_name(sk));</a>
+<a name="ln1128"> </a>
+<a name="ln1129">        you.training_targets[sk] = 0;</a>
+<a name="ln1130">        you.train[sk] = TRAINING_DISABLED;</a>
+<a name="ln1131">        you.train_alt[sk] = TRAINING_DISABLED;</a>
+<a name="ln1132">        return true;</a>
+<a name="ln1133">    }</a>
+<a name="ln1134">    return false;</a>
+<a name="ln1135">}</a>
+<a name="ln1136"> </a>
+<a name="ln1137">/**</a>
+<a name="ln1138"> * Check the training target (if any) for all skills, and change state</a>
+<a name="ln1139"> * appropriately.</a>
+<a name="ln1140"> *</a>
+<a name="ln1141"> * @return whether any target was reached.</a>
+<a name="ln1142"> *</a>
+<a name="ln1143"> * @see check_training_target</a>
+<a name="ln1144"> */</a>
+<a name="ln1145">bool check_training_targets()</a>
+<a name="ln1146">{</a>
+<a name="ln1147">    bool change = false;</a>
+<a name="ln1148">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln1149">        change |= check_training_target(sk);</a>
+<a name="ln1150">    if (change)</a>
+<a name="ln1151">        reset_training();</a>
+<a name="ln1152">    return change;</a>
+<a name="ln1153">}</a>
+<a name="ln1154"> </a>
+<a name="ln1155">static int _calc_skill_cost_level(int xp, int start)</a>
+<a name="ln1156">{</a>
+<a name="ln1157">    while (start &lt; MAX_SKILL_COST_LEVEL</a>
+<a name="ln1158">           &amp;&amp; xp &gt;= (int) skill_cost_needed(start + 1))</a>
+<a name="ln1159">    {</a>
+<a name="ln1160">        ++start;</a>
+<a name="ln1161">    }</a>
+<a name="ln1162">    while (start &gt; 0</a>
+<a name="ln1163">           &amp;&amp; xp &lt; (int) skill_cost_needed(start))</a>
+<a name="ln1164">    {</a>
+<a name="ln1165">        --start;</a>
+<a name="ln1166">    }</a>
+<a name="ln1167">    return start;</a>
+<a name="ln1168">}</a>
+<a name="ln1169"> </a>
+<a name="ln1170">void check_skill_cost_change()</a>
+<a name="ln1171">{</a>
+<a name="ln1172">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln1173">    int initial_cost = you.skill_cost_level;</a>
+<a name="ln1174">#endif</a>
+<a name="ln1175"> </a>
+<a name="ln1176">    you.skill_cost_level = _calc_skill_cost_level(you.total_experience, you.skill_cost_level);</a>
+<a name="ln1177"> </a>
+<a name="ln1178">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln1179">    if (initial_cost != you.skill_cost_level)</a>
+<a name="ln1180">        dprf(&quot;Adjusting skill cost level to %d&quot;, you.skill_cost_level);</a>
+<a name="ln1181">#endif</a>
+<a name="ln1182">}</a>
+<a name="ln1183"> </a>
+<a name="ln1184">static int _useless_skill_count()</a>
+<a name="ln1185">{</a>
+<a name="ln1186">    int count = 0;</a>
+<a name="ln1187">    for (skill_type skill = SK_FIRST_SKILL; skill &lt; NUM_SKILLS; ++skill)</a>
+<a name="ln1188">    {</a>
+<a name="ln1189">        if (is_removed_skill(skill))</a>
+<a name="ln1190">            continue;</a>
+<a name="ln1191">        if (is_useless_skill(skill))</a>
+<a name="ln1192">            count++;</a>
+<a name="ln1193">    }</a>
+<a name="ln1194">    return count;</a>
+<a name="ln1195">}</a>
+<a name="ln1196"> </a>
+<a name="ln1197">static int _total_skill_count()</a>
+<a name="ln1198">{</a>
+<a name="ln1199">    int count = 0;</a>
+<a name="ln1200">    for (skill_type skill = SK_FIRST_SKILL; skill &lt; NUM_SKILLS; ++skill)</a>
+<a name="ln1201">    {</a>
+<a name="ln1202">        if (is_removed_skill(skill))</a>
+<a name="ln1203">            continue;</a>
+<a name="ln1204">        count++;</a>
+<a name="ln1205">    }</a>
+<a name="ln1206">    return count;</a>
+<a name="ln1207">}</a>
+<a name="ln1208"> </a>
+<a name="ln1209">// The current cost of raising each skill by one skill point, taking the</a>
+<a name="ln1210">// gnoll penalty for useless skills into account and rounding up for all</a>
+<a name="ln1211">// computations. Used to ensure that gnoll skills rise evenly - we don't</a>
+<a name="ln1212">// train anything unless we have this much xp to spend.</a>
+<a name="ln1213">int _gnoll_total_skill_cost()</a>
+<a name="ln1214">{</a>
+<a name="ln1215">    int this_cost;</a>
+<a name="ln1216">    int total_cost = 0;</a>
+<a name="ln1217">    int cur_cost_level = you.skill_cost_level;</a>
+<a name="ln1218">    const int useless_count = _useless_skill_count();</a>
+<a name="ln1219">    const int total_count = _total_skill_count();</a>
+<a name="ln1220">    const int num = total_count;</a>
+<a name="ln1221">    const int denom = total_count - useless_count;</a>
+<a name="ln1222">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln1223">    {</a>
+<a name="ln1224">        if (!you.training[i])</a>
+<a name="ln1225">            continue;</a>
+<a name="ln1226">        cur_cost_level = _calc_skill_cost_level(you.total_experience + total_cost, cur_cost_level);</a>
+<a name="ln1227">        this_cost = calc_skill_cost(cur_cost_level);</a>
+<a name="ln1228">        if (num != denom)</a>
+<a name="ln1229">            this_cost = (num * this_cost + denom - 1) / denom;</a>
+<a name="ln1230">        total_cost += this_cost;</a>
+<a name="ln1231">    }</a>
+<a name="ln1232">    return total_cost;</a>
+<a name="ln1233">}</a>
+<a name="ln1234"> </a>
+<a name="ln1235">void change_skill_points(skill_type sk, int points, bool do_level_up)</a>
+<a name="ln1236">{</a>
+<a name="ln1237">    if (static_cast&lt;int&gt;(you.skill_points[sk]) &lt; -points)</a>
+<a name="ln1238">        points = -(int)you.skill_points[sk];</a>
+<a name="ln1239"> </a>
+<a name="ln1240">    you.skill_points[sk] += points;</a>
+<a name="ln1241"> </a>
+<a name="ln1242">    check_skill_level_change(sk, do_level_up);</a>
+<a name="ln1243">}</a>
+<a name="ln1244"> </a>
+<a name="ln1245">// Calculates the skill points required to reach the training target</a>
+<a name="ln1246">// Does not currently consider Ashenzari skill boost for experience currently being gained</a>
+<a name="ln1247">// so this may still result in some overtraining</a>
+<a name="ln1248">static int _training_target_skill_point_diff(skill_type exsk, int training_target)</a>
+<a name="ln1249">{</a>
+<a name="ln1250">    int target_level = training_target / 10;</a>
+<a name="ln1251">    int target_fractional = training_target % 10;</a>
+<a name="ln1252">    int target_skill_points;</a>
+<a name="ln1253"> </a>
+<a name="ln1254">    if (target_level == MAX_SKILL_LEVEL)</a>
+<a name="ln1255">        target_skill_points = skill_exp_needed(target_level, exsk);</a>
+<a name="ln1256">    else</a>
+<a name="ln1257">    {</a>
+<a name="ln1258">        int target_level_points = skill_exp_needed(target_level, exsk);</a>
+<a name="ln1259">        int target_next_level_points = skill_exp_needed(target_level + 1, exsk);</a>
+<a name="ln1260">        // Round up for any remainder to ensure target is hit</a>
+<a name="ln1261">        target_skill_points = target_level_points</a>
+<a name="ln1262">            + div_round_up((target_next_level_points - target_level_points)</a>
+<a name="ln1263">                            * target_fractional, 10);</a>
+<a name="ln1264">    }</a>
+<a name="ln1265"> </a>
+<a name="ln1266">    int you_skill_points = you.skill_points[exsk] + get_crosstrain_points(exsk);</a>
+<a name="ln1267">    if (ash_has_skill_boost(exsk))</a>
+<a name="ln1268">        you_skill_points += ash_skill_point_boost(exsk, training_target);</a>
+<a name="ln1269"> </a>
+<a name="ln1270">    int target_skill_point_diff = target_skill_points - you_skill_points;</a>
+<a name="ln1271"> </a>
+<a name="ln1272">    int manual_charges = get_all_manual_charges_for_skill(exsk);</a>
+<a name="ln1273">    if (manual_charges &gt; 0)</a>
+<a name="ln1274">        target_skill_point_diff -= min(manual_charges, target_skill_point_diff / 2);</a>
+<a name="ln1275"> </a>
+<a name="ln1276">    return target_skill_point_diff;</a>
+<a name="ln1277">}</a>
+<a name="ln1278"> </a>
+<a name="ln1279">static int _train(skill_type exsk, int &amp;max_exp, bool simu)</a>
+<a name="ln1280">{</a>
+<a name="ln1281">    // This will be added to you.skill_points[exsk];</a>
+<a name="ln1282">    int skill_inc = 1;</a>
+<a name="ln1283"> </a>
+<a name="ln1284">    // This will be deducted from you.exp_available.</a>
+<a name="ln1285">    int cost = calc_skill_cost(you.skill_cost_level);</a>
+<a name="ln1286"> </a>
+<a name="ln1287">    if (_player_is_gnoll())</a>
+<a name="ln1288">    {</a>
+<a name="ln1289">        int useless_count = _useless_skill_count();</a>
+<a name="ln1290">        int total_count = _total_skill_count();</a>
+<a name="ln1291">        int num = total_count;</a>
+<a name="ln1292">        int denom = total_count - useless_count;</a>
+<a name="ln1293">        if (num != denom)</a>
+<a name="ln1294">            cost = div_rand_round(num * cost, denom);</a>
+<a name="ln1295">    }</a>
+<a name="ln1296">    else</a>
+<a name="ln1297">    {</a>
+<a name="ln1298">        // Scale cost and skill_inc to available experience.</a>
+<a name="ln1299">        const int spending_limit = min(10 * MAX_SPENDING_LIMIT, max_exp);</a>
+<a name="ln1300">        skill_inc = spending_limit / cost;</a>
+<a name="ln1301"> </a>
+<a name="ln1302">        int training_target = you.training_targets[exsk];</a>
+<a name="ln1303">        if (training_target &gt; you.skill(exsk, 10, false, false, false))</a>
+<a name="ln1304">        {</a>
+<a name="ln1305">            int target_skill_point_diff = _training_target_skill_point_diff(exsk, training_target);</a>
+<a name="ln1306">            if (target_skill_point_diff &gt; 0)</a>
+<a name="ln1307">                skill_inc = min(skill_inc, target_skill_point_diff);</a>
+<a name="ln1308">        }</a>
+<a name="ln1309">        cost = skill_inc * cost;</a>
+<a name="ln1310">    }</a>
+<a name="ln1311"> </a>
+<a name="ln1312">    if (skill_inc &lt;= 0 || cost &gt; max_exp)</a>
+<a name="ln1313">        return 0;</a>
+<a name="ln1314"> </a>
+<a name="ln1315">    // Bonus from manual</a>
+<a name="ln1316">    int slot;</a>
+<a name="ln1317">    int bonus_left = skill_inc;</a>
+<a name="ln1318">    while (bonus_left &gt; 0 &amp;&amp; (slot = manual_slot_for_skill(exsk)) != -1)</a>
+<a name="ln1319">    {</a>
+<a name="ln1320">        item_def&amp; manual(you.inv[slot]);</a>
+<a name="ln1321">        const int bonus = min&lt;int&gt;(bonus_left, manual.skill_points);</a>
+<a name="ln1322">        skill_inc += bonus;</a>
+<a name="ln1323">        bonus_left -= bonus;</a>
+<a name="ln1324">        manual.skill_points -= bonus;</a>
+<a name="ln1325">        if (!manual.skill_points &amp;&amp; !simu &amp;&amp; !crawl_state.simulating_xp_gain)</a>
+<a name="ln1326">            finish_manual(slot);</a>
+<a name="ln1327">    }</a>
+<a name="ln1328"> </a>
+<a name="ln1329">    const skill_type old_best_skill = best_skill(SK_FIRST_SKILL, SK_LAST_SKILL);</a>
+<a name="ln1330">    const int old_level = you.skill(exsk, 10, true);</a>
+<a name="ln1331">    you.skill_points[exsk] += skill_inc;</a>
+<a name="ln1332">    you.exp_available -= cost;</a>
+<a name="ln1333">    you.total_experience += cost;</a>
+<a name="ln1334">    max_exp -= cost;</a>
+<a name="ln1335"> </a>
+<a name="ln1336">    if (!simu)</a>
+<a name="ln1337">    {</a>
+<a name="ln1338">        check_training_targets();</a>
+<a name="ln1339">        redraw_skill(exsk, old_best_skill, (you.skill(exsk, 10, true) &gt; old_level));</a>
+<a name="ln1340">    }</a>
+<a name="ln1341"> </a>
+<a name="ln1342">    check_skill_cost_change();</a>
+<a name="ln1343">    ASSERT(you.exp_available &gt;= 0);</a>
+<a name="ln1344">    ASSERT(max_exp &gt;= 0);</a>
+<a name="ln1345">    you.redraw_experience = true;</a>
+<a name="ln1346"> </a>
+<a name="ln1347">    return skill_inc;</a>
+<a name="ln1348">}</a>
+<a name="ln1349"> </a>
+<a name="ln1350">/**</a>
+<a name="ln1351"> * Calculate the difference in skill points and xp for new skill level `amount`.</a>
+<a name="ln1352"> *</a>
+<a name="ln1353"> * If `base_only` is false, this will produce an estimate only. Otherwise, it is</a>
+<a name="ln1354"> * exact. This function is used in both estimating skill targets, and in</a>
+<a name="ln1355"> * actually changing skills. It will work both for cases where the new skill</a>
+<a name="ln1356"> * level is greater, and where it is less, than the current level.</a>
+<a name="ln1357"> *</a>
+<a name="ln1358"> * @param skill the skill to calculate for.</a>
+<a name="ln1359"> * @param amount the new skill level for `skill`.</a>
+<a name="ln1360"> * @param scaled_training how to scale the training values (for estimating what</a>
+<a name="ln1361"> *          happens when other skills are being trained).</a>
+<a name="ln1362"> * @param base_only whether to calculate on actual unmodified skill levels, or</a>
+<a name="ln1363"> *          use various bonuses that apply on top of these (crosstraining, ash,</a>
+<a name="ln1364"> *          manuals).</a>
+<a name="ln1365"> *</a>
+<a name="ln1366"> * @return a pair consisting of the difference in skill points, and the</a>
+<a name="ln1367"> *          difference in xp.</a>
+<a name="ln1368"> */</a>
+<a name="ln1369">skill_diff skill_level_to_diffs(skill_type skill, double amount,</a>
+<a name="ln1370">                            int scaled_training,</a>
+<a name="ln1371">                            bool base_only)</a>
+<a name="ln1372">{</a>
+<a name="ln1373">    // TODO: should this use skill_state?</a>
+<a name="ln1374">    // TODO: can `amount` be converted to fixed point?</a>
+<a name="ln1375">    double level;</a>
+<a name="ln1376">    double fractional = modf(amount, &amp;level);</a>
+<a name="ln1377">    if (level &gt;= MAX_SKILL_LEVEL)</a>
+<a name="ln1378">    {</a>
+<a name="ln1379">        level = MAX_SKILL_LEVEL;</a>
+<a name="ln1380">        fractional = 0;</a>
+<a name="ln1381">    }</a>
+<a name="ln1382"> </a>
+<a name="ln1383">    unsigned int target = skill_exp_needed(level, skill);</a>
+<a name="ln1384">    if (fractional)</a>
+<a name="ln1385">    {</a>
+<a name="ln1386">        target += (skill_exp_needed(level + 1, skill)</a>
+<a name="ln1387">                  - skill_exp_needed(level, skill)) * fractional + 1;</a>
+<a name="ln1388">    }</a>
+<a name="ln1389"> </a>
+<a name="ln1390">    // We're calculating you.skill_points[skill] and calculating the new</a>
+<a name="ln1391">    // you.total_experience to update skill cost.</a>
+<a name="ln1392"> </a>
+<a name="ln1393">    unsigned int you_skill = you.skill_points[skill];</a>
+<a name="ln1394"> </a>
+<a name="ln1395">    if (!base_only)</a>
+<a name="ln1396">    {</a>
+<a name="ln1397">        // Factor in crosstraining bonus at the time of the query.</a>
+<a name="ln1398">        // This will not address the case where some cross-training skills are</a>
+<a name="ln1399">        // also being trained.</a>
+<a name="ln1400">        you_skill += get_crosstrain_points(skill);</a>
+<a name="ln1401"> </a>
+<a name="ln1402">        // Estimate the ash bonus, based on current skill levels and piety.</a>
+<a name="ln1403">        // This isn't perfectly accurate, because the boost changes as</a>
+<a name="ln1404">        // skill increases. TODO: exact solution.</a>
+<a name="ln1405">        // It also assumes that piety won't change.</a>
+<a name="ln1406">        if (ash_has_skill_boost(skill))</a>
+<a name="ln1407">            you_skill += ash_skill_point_boost(skill, you.skills[skill] * 10);</a>
+<a name="ln1408"> </a>
+<a name="ln1409">        if (skill_has_manual(skill))</a>
+<a name="ln1410">            target = you_skill + (target - you_skill) / 2;</a>
+<a name="ln1411">    }</a>
+<a name="ln1412"> </a>
+<a name="ln1413">    if (target == you_skill)</a>
+<a name="ln1414">        return skill_diff();</a>
+<a name="ln1415"> </a>
+<a name="ln1416">    // Do we need to increase or decrease skill points/xp?</a>
+<a name="ln1417">    // XXX: reducing with ash bonuses in play could lead to weird results.</a>
+<a name="ln1418">    const bool decrease_skill = target &lt; you_skill;</a>
+<a name="ln1419"> </a>
+<a name="ln1420">    int you_xp = you.total_experience;</a>
+<a name="ln1421">    int you_skill_cost_level = you.skill_cost_level;</a>
+<a name="ln1422"> </a>
+<a name="ln1423">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln1424">    dprf(DIAG_SKILLS, &quot;target skill points: %d.&quot;, target);</a>
+<a name="ln1425">#endif</a>
+<a name="ln1426">    while (you_skill != target)</a>
+<a name="ln1427">    {</a>
+<a name="ln1428">        // each loop is the max skill points that can be gained at the</a>
+<a name="ln1429">        // current skill cost level, up to `target`.</a>
+<a name="ln1430"> </a>
+<a name="ln1431">        // If we are decreasing, find the xp needed to get to the current skill</a>
+<a name="ln1432">        // cost level. Otherwise, find the xp needed to get to the next one.</a>
+<a name="ln1433">        const int next_level = skill_cost_needed(you_skill_cost_level +</a>
+<a name="ln1434">                                                    (decrease_skill ? 0 : 1));</a>
+<a name="ln1435"> </a>
+<a name="ln1436">        // max xp that can be added (or subtracted) in one pass of the loop</a>
+<a name="ln1437">        int max_xp = abs(next_level - you_xp);</a>
+<a name="ln1438"> </a>
+<a name="ln1439">        // When reducing, we don't want to stop right at the limit, unless</a>
+<a name="ln1440">        // we're at skill cost level 0.</a>
+<a name="ln1441">        if (decrease_skill &amp;&amp; you_skill_cost_level)</a>
+<a name="ln1442">            ++max_xp;</a>
+<a name="ln1443"> </a>
+<a name="ln1444">        const int cost = calc_skill_cost(you_skill_cost_level);</a>
+<a name="ln1445">        // Maximum number of skill points to transfer in one go.</a>
+<a name="ln1446">        // It's max_xp/cost rounded up.</a>
+<a name="ln1447">        const int max_skp = max((max_xp + cost - 1) / cost, 1);</a>
+<a name="ln1448"> </a>
+<a name="ln1449">        skill_diff delta;</a>
+<a name="ln1450">        delta.skill_points = min&lt;int&gt;(abs((int)(target - you_skill)),</a>
+<a name="ln1451">                                 max_skp);</a>
+<a name="ln1452">        delta.experience = delta.skill_points * cost;</a>
+<a name="ln1453"> </a>
+<a name="ln1454">        if (decrease_skill)</a>
+<a name="ln1455">        {</a>
+<a name="ln1456">            // We are decreasing skill points / xp to reach the target. Ensure</a>
+<a name="ln1457">            // that the delta is negative but won't result in negative skp or xp</a>
+<a name="ln1458">            delta.skill_points = -min&lt;int&gt;(delta.skill_points, you_skill);</a>
+<a name="ln1459">            delta.experience = -min&lt;int&gt;(delta.experience, you_xp);</a>
+<a name="ln1460">        }</a>
+<a name="ln1461"> </a>
+<a name="ln1462">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln1463">        dprf(DIAG_SKILLS, &quot;cost level: %d, total experience: %d, &quot;</a>
+<a name="ln1464">             &quot;next level: %d, skill points: %d, delta_skp: %d, delta_xp: %d.&quot;,</a>
+<a name="ln1465">             you_skill_cost_level, you_xp, next_level,</a>
+<a name="ln1466">             you_skill, delta.skill_points, delta.experience);</a>
+<a name="ln1467">#endif</a>
+<a name="ln1468">        you_skill += (delta.skill_points * scaled_training</a>
+<a name="ln1469">                                        + (decrease_skill ? -99 : 99)) / 100;</a>
+<a name="ln1470">        you_xp += delta.experience;</a>
+<a name="ln1471">        you_skill_cost_level = _calc_skill_cost_level(you_xp, you_skill_cost_level);</a>
+<a name="ln1472">    }</a>
+<a name="ln1473"> </a>
+<a name="ln1474">    return skill_diff(you_skill - you.skill_points[skill],</a>
+<a name="ln1475">                                you_xp - you.total_experience);</a>
+<a name="ln1476">}</a>
+<a name="ln1477"> </a>
+<a name="ln1478">void set_skill_level(skill_type skill, double amount)</a>
+<a name="ln1479">{</a>
+<a name="ln1480">    double level;</a>
+<a name="ln1481">    modf(amount, &amp;level);</a>
+<a name="ln1482"> </a>
+<a name="ln1483">    you.ct_skill_points[skill] = 0;</a>
+<a name="ln1484"> </a>
+<a name="ln1485">    skill_diff diffs = skill_level_to_diffs(skill, amount);</a>
+<a name="ln1486"> </a>
+<a name="ln1487">    you.skills[skill] = level;</a>
+<a name="ln1488">    you.skill_points[skill] += diffs.skill_points;</a>
+<a name="ln1489">    you.total_experience += diffs.experience;</a>
+<a name="ln1490">#ifdef DEBUG_TRAINING_COST</a>
+<a name="ln1491">    dprf(&quot;Change (total): %d skp (%d), %d xp (%d)&quot;,</a>
+<a name="ln1492">        diffs.skill_points, you.skill_points[skill],</a>
+<a name="ln1493">        diffs.experience, you.total_experience);</a>
+<a name="ln1494">#endif</a>
+<a name="ln1495"> </a>
+<a name="ln1496">    check_skill_cost_change();</a>
+<a name="ln1497"> </a>
+<a name="ln1498">    // need to check them all, to handle crosstraining.</a>
+<a name="ln1499">    check_training_targets();</a>
+<a name="ln1500">}</a>
+<a name="ln1501"> </a>
+<a name="ln1502">int get_skill_progress(skill_type sk, int level, int points, int scale)</a>
+<a name="ln1503">{</a>
+<a name="ln1504">    if (level &gt;= MAX_SKILL_LEVEL)</a>
+<a name="ln1505">        return 0;</a>
+<a name="ln1506"> </a>
+<a name="ln1507">    const int needed = skill_exp_needed(level + 1, sk);</a>
+<a name="ln1508">    const int prev_needed = skill_exp_needed(level, sk);</a>
+<a name="ln1509">    if (needed == 0) // invalid race, legitimate at startup</a>
+<a name="ln1510">        return 0;</a>
+<a name="ln1511">    // A scale as small as 92 would overflow with 31 bits if skill_rdiv()</a>
+<a name="ln1512">    // is involved: needed can be 91985, skill_rdiv() multiplies by 256.</a>
+<a name="ln1513">    const int64_t amt_done = points - prev_needed;</a>
+<a name="ln1514">    int prog = amt_done * scale / (needed - prev_needed);</a>
+<a name="ln1515"> </a>
+<a name="ln1516">    ASSERT(prog &gt;= 0);</a>
+<a name="ln1517"> </a>
+<a name="ln1518">    return prog;</a>
+<a name="ln1519">}</a>
+<a name="ln1520"> </a>
+<a name="ln1521">int get_skill_progress(skill_type sk, int scale)</a>
+<a name="ln1522">{</a>
+<a name="ln1523">    return get_skill_progress(sk, you.skills[sk], you.skill_points[sk], scale);</a>
+<a name="ln1524">}</a>
+<a name="ln1525"> </a>
+<a name="ln1526">int get_skill_percentage(const skill_type x)</a>
+<a name="ln1527">{</a>
+<a name="ln1528">    return get_skill_progress(x, 100);</a>
+<a name="ln1529">}</a>
+<a name="ln1530"> </a>
+<a name="ln1531">/**</a>
+<a name="ln1532"> * Get the training target for a skill.</a>
+<a name="ln1533"> *</a>
+<a name="ln1534"> * @param sk the skill to set</a>
+<a name="ln1535"> * @return the current target, scaled by 10 -- so between 0 and 270.</a>
+<a name="ln1536"> *         0 means no target.</a>
+<a name="ln1537"> */</a>
+<a name="ln1538">int player::get_training_target(const skill_type sk) const</a>
+<a name="ln1539">{</a>
+<a name="ln1540">    ASSERT_LESS(training_targets[sk], 271);</a>
+<a name="ln1541">    return training_targets[sk];</a>
+<a name="ln1542">}</a>
+<a name="ln1543"> </a>
+<a name="ln1544">/**</a>
+<a name="ln1545"> * Set the training target for a skill.</a>
+<a name="ln1546"> *</a>
+<a name="ln1547"> * @param sk the skill to set</a>
+<a name="ln1548"> * @param target the new target, between 0.0 and 27.0.  0.0 means no target.</a>
+<a name="ln1549"> */</a>
+<a name="ln1550">bool player::set_training_target(const skill_type sk, const double target, bool announce)</a>
+<a name="ln1551">{</a>
+<a name="ln1552">    return set_training_target(sk, (int) round(target * 10), announce);</a>
+<a name="ln1553">}</a>
+<a name="ln1554"> </a>
+<a name="ln1555">void player::clear_training_targets()</a>
+<a name="ln1556">{</a>
+<a name="ln1557">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln1558">        set_training_target(sk, 0);</a>
+<a name="ln1559">}</a>
+<a name="ln1560"> </a>
+<a name="ln1561">/**</a>
+<a name="ln1562"> * Set the training target for a skill, scaled by 10.</a>
+<a name="ln1563"> *</a>
+<a name="ln1564"> * @param sk the skill to set</a>
+<a name="ln1565"> * @param target the new target, scaled by ten, so between 0 and 270.  0 means</a>
+<a name="ln1566"> *               no target.</a>
+<a name="ln1567"> *</a>
+<a name="ln1568"> * @return whether setting the target succeeded.</a>
+<a name="ln1569"> */</a>
+<a name="ln1570">bool player::set_training_target(const skill_type sk, const int target, bool announce)</a>
+<a name="ln1571">{</a>
+<a name="ln1572">    const int ranged_target = min(max((int) target, 0), 270);</a>
+<a name="ln1573">    if (announce &amp;&amp; ranged_target != (int) training_targets[sk])</a>
+<a name="ln1574">    {</a>
+<a name="ln1575">        if (_player_is_gnoll())</a>
+<a name="ln1576">            mprf(&quot;Gnolls can't set training targets!&quot;);</a>
+<a name="ln1577">        else if (ranged_target == 0)</a>
+<a name="ln1578">            mprf(&quot;Clearing the skill training target for %s.&quot;, skill_name(sk));</a>
+<a name="ln1579">        else</a>
+<a name="ln1580">        {</a>
+<a name="ln1581">            mprf(&quot;Setting a skill training target for %s at %d.%d.&quot;, skill_name(sk),</a>
+<a name="ln1582">                                    ranged_target / 10, ranged_target % 10);</a>
+<a name="ln1583">        }</a>
+<a name="ln1584">    }</a>
+<a name="ln1585">    if (!can_enable_skill(sk)) // checks for gnolls</a>
+<a name="ln1586">    {</a>
+<a name="ln1587">        training_targets[sk] = 0;</a>
+<a name="ln1588">        return false;</a>
+<a name="ln1589">    }</a>
+<a name="ln1590">    training_targets[sk] = ranged_target;</a>
+<a name="ln1591">    return true;</a>
+<a name="ln1592">}</a>
+<a name="ln1593"> </a>
+<a name="ln1594">const char *skill_name(skill_type which_skill)</a>
+<a name="ln1595">{</a>
+<a name="ln1596">    return skill_titles[which_skill][0];</a>
+<a name="ln1597">}</a>
+<a name="ln1598"> </a>
+<a name="ln1599">/**</a>
+<a name="ln1600"> * Get a skill_type from an (exact, case-insensitive) skill name.</a>
+<a name="ln1601"> *</a>
+<a name="ln1602"> * @return a valid skill_type, or SK_NONE on failure.</a>
+<a name="ln1603"> *</a>
+<a name="ln1604"> * @see skill_from_name for a non-exact version.</a>
+<a name="ln1605"> */</a>
+<a name="ln1606">skill_type str_to_skill(const string &amp;skill)</a>
+<a name="ln1607">{</a>
+<a name="ln1608">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln1609">        if (lowercase_string(skill) == lowercase_string(skill_titles[sk][0]))</a>
+<a name="ln1610">            return sk;</a>
+<a name="ln1611"> </a>
+<a name="ln1612">    return SK_NONE;</a>
+<a name="ln1613">}</a>
+<a name="ln1614"> </a>
+<a name="ln1615">/**</a>
+<a name="ln1616"> * Get a skill_type from a skill name.</a>
+<a name="ln1617"> *</a>
+<a name="ln1618"> * @return a valid skill_type, or SK_FIGHTING on failure.</a>
+<a name="ln1619"> */</a>
+<a name="ln1620">skill_type str_to_skill_safe(const string &amp;skill)</a>
+<a name="ln1621">{</a>
+<a name="ln1622">    // legacy behaviour -- ensure that a valid skill is returned.</a>
+<a name="ln1623">    skill_type sk = str_to_skill(skill);</a>
+<a name="ln1624">    if (sk == SK_NONE)</a>
+<a name="ln1625">        return SK_FIGHTING;</a>
+<a name="ln1626">    else</a>
+<a name="ln1627">        return sk;</a>
+<a name="ln1628">}</a>
+<a name="ln1629"> </a>
+<a name="ln1630">static string _stk_weight(species_type species)</a>
+<a name="ln1631">{</a>
+<a name="ln1632">    if (species_size(species) == SIZE_LARGE)</a>
+<a name="ln1633">        return &quot;Heavy&quot;;</a>
+<a name="ln1634">    else if (species_size(species, PSIZE_BODY) == SIZE_LARGE)</a>
+<a name="ln1635">        return &quot;Cruiser&quot;;</a>
+<a name="ln1636">    else if (species_size(species) == SIZE_SMALL || species == SP_TENGU)</a>
+<a name="ln1637">        return &quot;Feather&quot;;</a>
+<a name="ln1638">    else if (species_size(species) == SIZE_LITTLE)</a>
+<a name="ln1639">        return &quot;Fly&quot;;</a>
+<a name="ln1640">    else if (species_is_elven(species))</a>
+<a name="ln1641">        return &quot;Light&quot;;</a>
+<a name="ln1642">    else</a>
+<a name="ln1643">        return &quot;Middle&quot;;</a>
+<a name="ln1644">}</a>
+<a name="ln1645"> </a>
+<a name="ln1646">unsigned get_skill_rank(unsigned skill_lev)</a>
+<a name="ln1647">{</a>
+<a name="ln1648">    // Translate skill level into skill ranking {dlb}:</a>
+<a name="ln1649">    return (skill_lev &lt;= 7)  ? 0 :</a>
+<a name="ln1650">                           (skill_lev &lt;= 14) ? 1 :</a>
+<a name="ln1651">                           (skill_lev &lt;= 20) ? 2 :</a>
+<a name="ln1652">                           (skill_lev &lt;= 26) ? 3</a>
+<a name="ln1653">                           /* level 27 */    : 4;</a>
+<a name="ln1654">}</a>
+<a name="ln1655"> </a>
+<a name="ln1656">/**</a>
+<a name="ln1657"> * What title will the player get at the given rank of the given skill?</a>
+<a name="ln1658"> *</a>
+<a name="ln1659"> * @param best_skill    The skill used to determine the title.</a>
+<a name="ln1660"> * @param skill_rank    The player's rank in the given skill.</a>
+<a name="ln1661"> * @param species       The player's species.</a>
+<a name="ln1662"> * @param dex_better    Whether the player's dexterity is higher than strength.</a>
+<a name="ln1663"> * @param god           The god_type of the god the player follows.</a>
+<a name="ln1664"> * @param piety         The player's piety with the given god.</a>
+<a name="ln1665"> * @return              An appropriate and/or humorous title.</a>
+<a name="ln1666"> */</a>
+<a name="ln1667">string skill_title_by_rank(skill_type best_skill, uint8_t skill_rank,</a>
+<a name="ln1668">                           species_type species, bool dex_better,</a>
+<a name="ln1669">                           god_type god, int piety)</a>
+<a name="ln1670">{</a>
+<a name="ln1671"> </a>
+<a name="ln1672">    // paranoia</a>
+<a name="ln1673">    if (is_invalid_skill(best_skill))</a>
+<a name="ln1674">        return &quot;Adventurer&quot;;</a>
+<a name="ln1675"> </a>
+<a name="ln1676">    // Increment rank by one to &quot;skip&quot; skill name in array {dlb}:</a>
+<a name="ln1677">    ++skill_rank;</a>
+<a name="ln1678"> </a>
+<a name="ln1679">    string result;</a>
+<a name="ln1680"> </a>
+<a name="ln1681">    if (best_skill &lt; NUM_SKILLS)</a>
+<a name="ln1682">    {</a>
+<a name="ln1683">        switch (best_skill)</a>
+<a name="ln1684">        {</a>
+<a name="ln1685">        case SK_SUMMONINGS:</a>
+<a name="ln1686">            // don't call good disciples hellbinders or demonologists</a>
+<a name="ln1687">            if (is_good_god(god))</a>
+<a name="ln1688">            {</a>
+<a name="ln1689">                if (skill_rank == 4)</a>
+<a name="ln1690">                    result = &quot;Worldbinder&quot;;</a>
+<a name="ln1691">                else if (skill_rank == 5)</a>
+<a name="ln1692">                    result = &quot;Planerender&quot;;</a>
+<a name="ln1693">            }</a>
+<a name="ln1694">            break;</a>
+<a name="ln1695"> </a>
+<a name="ln1696">        case SK_UNARMED_COMBAT:</a>
+<a name="ln1697">            if (species == SP_FELID)</a>
+<a name="ln1698">            {</a>
+<a name="ln1699">                result = claw_and_tooth_titles[skill_rank];</a>
+<a name="ln1700">                break;</a>
+<a name="ln1701">            }</a>
+<a name="ln1702">            result = dex_better ? martial_arts_titles[skill_rank]</a>
+<a name="ln1703">                                : skill_titles[best_skill][skill_rank];</a>
+<a name="ln1704"> </a>
+<a name="ln1705">            break;</a>
+<a name="ln1706"> </a>
+<a name="ln1707">        case SK_SHORT_BLADES:</a>
+<a name="ln1708">            if (species_is_elven(species) &amp;&amp; skill_rank == 5)</a>
+<a name="ln1709">            {</a>
+<a name="ln1710">                result = &quot;Blademaster&quot;;</a>
+<a name="ln1711">                break;</a>
+<a name="ln1712">            }</a>
+<a name="ln1713">            break;</a>
+<a name="ln1714"> </a>
+<a name="ln1715">        case SK_INVOCATIONS:</a>
+<a name="ln1716">            if (species == SP_DEMONSPAWN</a>
+<a name="ln1717">                &amp;&amp; skill_rank == 5</a>
+<a name="ln1718">                &amp;&amp; is_evil_god(god))</a>
+<a name="ln1719">            {</a>
+<a name="ln1720">                result = &quot;Blood Saint&quot;;</a>
+<a name="ln1721">                break;</a>
+<a name="ln1722">            }</a>
+<a name="ln1723">            else if (god != GOD_NO_GOD)</a>
+<a name="ln1724">                result = god_title(god, species, piety);</a>
+<a name="ln1725">            break;</a>
+<a name="ln1726"> </a>
+<a name="ln1727">        case SK_BOWS:</a>
+<a name="ln1728">            if (species_is_elven(species) &amp;&amp; skill_rank == 5)</a>
+<a name="ln1729">            {</a>
+<a name="ln1730">                result = &quot;Master Archer&quot;;</a>
+<a name="ln1731">                break;</a>
+<a name="ln1732">            }</a>
+<a name="ln1733">            break;</a>
+<a name="ln1734"> </a>
+<a name="ln1735">        case SK_SPELLCASTING:</a>
+<a name="ln1736">            if (species == SP_OGRE)</a>
+<a name="ln1737">                result = &quot;Ogre Mage&quot;;</a>
+<a name="ln1738">            break;</a>
+<a name="ln1739"> </a>
+<a name="ln1740">        case SK_NECROMANCY:</a>
+<a name="ln1741">            if (species == SP_SPRIGGAN &amp;&amp; skill_rank == 5)</a>
+<a name="ln1742">                result = &quot;Petite Mort&quot;;</a>
+<a name="ln1743">            else if (god == GOD_KIKUBAAQUDGHA)</a>
+<a name="ln1744">                result = god_title(god, species, piety);</a>
+<a name="ln1745">            break;</a>
+<a name="ln1746"> </a>
+<a name="ln1747">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1748">        case SK_EVOCATIONS:</a>
+<a name="ln1749">            if (god == GOD_PAKELLAS)</a>
+<a name="ln1750">                result = god_title(god, species, piety);</a>
+<a name="ln1751">            break;</a>
+<a name="ln1752">#endif</a>
+<a name="ln1753"> </a>
+<a name="ln1754">        default:</a>
+<a name="ln1755">            break;</a>
+<a name="ln1756">        }</a>
+<a name="ln1757">        if (result.empty())</a>
+<a name="ln1758">            result = skill_titles[best_skill][skill_rank];</a>
+<a name="ln1759">    }</a>
+<a name="ln1760"> </a>
+<a name="ln1761">    const map&lt;string, string&gt; replacements =</a>
+<a name="ln1762">    {</a>
+<a name="ln1763">        { &quot;Adj&quot;, species_name(species, SPNAME_ADJ) },</a>
+<a name="ln1764">        { &quot;Genus&quot;, species_name(species, SPNAME_GENUS) },</a>
+<a name="ln1765">        { &quot;genus&quot;, lowercase_string(species_name(species, SPNAME_GENUS)) },</a>
+<a name="ln1766">        { &quot;Genus_Short&quot;, species == SP_DEMIGOD ? &quot;God&quot; :</a>
+<a name="ln1767">                           species_name(species, SPNAME_GENUS) },</a>
+<a name="ln1768">        { &quot;Walker&quot;, species_walking_verb(species) + &quot;er&quot; },</a>
+<a name="ln1769">        { &quot;Weight&quot;, _stk_weight(species) },</a>
+<a name="ln1770">    };</a>
+<a name="ln1771"> </a>
+<a name="ln1772">    return replace_keys(result, replacements);</a>
+<a name="ln1773">}</a>
+<a name="ln1774"> </a>
+<a name="ln1775">/** What is the player's current title.</a>
+<a name="ln1776"> *</a>
+<a name="ln1777"> *  @param the whether to prepend a definite article.</a>
+<a name="ln1778"> *  @returns the title.</a>
+<a name="ln1779"> */</a>
+<a name="ln1780">string player_title(bool the)</a>
+<a name="ln1781">{</a>
+<a name="ln1782">    const skill_type best = best_skill(SK_FIRST_SKILL, SK_LAST_SKILL);</a>
+<a name="ln1783">    const string title =</a>
+<a name="ln1784">            skill_title_by_rank(best, get_skill_rank(you.skills[best]));</a>
+<a name="ln1785">    const string article = !the ? &quot;&quot; : title == &quot;Petite Mort&quot; ? &quot;La &quot; : &quot;the &quot;;</a>
+<a name="ln1786">    return article + title;</a>
+<a name="ln1787">}</a>
+<a name="ln1788"> </a>
+<a name="ln1789">skill_type best_skill(skill_type min_skill, skill_type max_skill,</a>
+<a name="ln1790">                      skill_type excl_skill)</a>
+<a name="ln1791">{</a>
+<a name="ln1792">    ASSERT(min_skill &lt; NUM_SKILLS);</a>
+<a name="ln1793">    ASSERT(max_skill &lt; NUM_SKILLS);</a>
+<a name="ln1794">    skill_type ret = SK_FIGHTING;</a>
+<a name="ln1795">    unsigned int best_skill_level = 0;</a>
+<a name="ln1796">    unsigned int best_position = 1000;</a>
+<a name="ln1797"> </a>
+<a name="ln1798">    for (int i = min_skill; i &lt;= max_skill; i++)</a>
+<a name="ln1799">    {</a>
+<a name="ln1800">        skill_type sk = static_cast&lt;skill_type&gt;(i);</a>
+<a name="ln1801">        if (sk == excl_skill)</a>
+<a name="ln1802">            continue;</a>
+<a name="ln1803"> </a>
+<a name="ln1804">        const unsigned int skill_level = you.skill(sk, 10, true);</a>
+<a name="ln1805">        if (skill_level &gt; best_skill_level)</a>
+<a name="ln1806">        {</a>
+<a name="ln1807">            ret = sk;</a>
+<a name="ln1808">            best_skill_level = skill_level;</a>
+<a name="ln1809">            best_position = you.skill_order[sk];</a>
+<a name="ln1810"> </a>
+<a name="ln1811">        }</a>
+<a name="ln1812">        else if (skill_level == best_skill_level</a>
+<a name="ln1813">                 &amp;&amp; you.skill_order[sk] &lt; best_position)</a>
+<a name="ln1814">        {</a>
+<a name="ln1815">            ret = sk;</a>
+<a name="ln1816">            best_position = you.skill_order[sk];</a>
+<a name="ln1817">        }</a>
+<a name="ln1818">    }</a>
+<a name="ln1819"> </a>
+<a name="ln1820">    return ret;</a>
+<a name="ln1821">}</a>
+<a name="ln1822"> </a>
+<a name="ln1823">// Calculate the skill_order array from scratch.</a>
+<a name="ln1824">//</a>
+<a name="ln1825">// The skill order array is used for breaking ties in best_skill.</a>
+<a name="ln1826">// This is done by ranking each skill by the order in which it</a>
+<a name="ln1827">// has attained its current level (the values are the number of</a>
+<a name="ln1828">// skills at or above that level when the current skill reached it).</a>
+<a name="ln1829">//</a>
+<a name="ln1830">// In this way, the skill which has been at a level for the longest</a>
+<a name="ln1831">// is judged to be the best skill (thus, nicknames are sticky)...</a>
+<a name="ln1832">// other skills will have to attain the next level higher to be</a>
+<a name="ln1833">// considered a better skill (thus, the first skill to reach level 27</a>
+<a name="ln1834">// becomes the characters final nickname). -- bwr</a>
+<a name="ln1835">void init_skill_order()</a>
+<a name="ln1836">{</a>
+<a name="ln1837">    for (skill_type si = SK_FIRST_SKILL; si &lt; NUM_SKILLS; ++si)</a>
+<a name="ln1838">    {</a>
+<a name="ln1839">        const unsigned int i_points = you.skill_points[si]</a>
+<a name="ln1840">                                      / species_apt_factor(si);</a>
+<a name="ln1841"> </a>
+<a name="ln1842">        you.skill_order[si] = 0;</a>
+<a name="ln1843"> </a>
+<a name="ln1844">        for (skill_type sj = SK_FIRST_SKILL; sj &lt; NUM_SKILLS; ++sj)</a>
+<a name="ln1845">        {</a>
+<a name="ln1846">            if (si == sj)</a>
+<a name="ln1847">                continue;</a>
+<a name="ln1848"> </a>
+<a name="ln1849">            const unsigned int j_points = you.skill_points[sj]</a>
+<a name="ln1850">                                          / species_apt_factor(sj);</a>
+<a name="ln1851"> </a>
+<a name="ln1852">            if (you.skills[sj] == you.skills[si]</a>
+<a name="ln1853">                &amp;&amp; (j_points &gt; i_points</a>
+<a name="ln1854">                    || (j_points == i_points &amp;&amp; sj &gt; si)))</a>
+<a name="ln1855">            {</a>
+<a name="ln1856">                you.skill_order[si]++;</a>
+<a name="ln1857">            }</a>
+<a name="ln1858">        }</a>
+<a name="ln1859">    }</a>
+<a name="ln1860">}</a>
+<a name="ln1861"> </a>
+<a name="ln1862">bool is_removed_skill(skill_type skill)</a>
+<a name="ln1863">{</a>
+<a name="ln1864">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1865">    if (skill == SK_STABBING || skill == SK_TRAPS)</a>
+<a name="ln1866">        return true;</a>
+<a name="ln1867">#endif</a>
+<a name="ln1868">    return false;</a>
+<a name="ln1869">}</a>
+<a name="ln1870"> </a>
+<a name="ln1871">bool is_useless_skill(skill_type skill)</a>
+<a name="ln1872">{</a>
+<a name="ln1873">    if (is_removed_skill(skill)</a>
+<a name="ln1874">        || (skill == SK_AIR_MAGIC &amp;&amp; you.get_mutation_level(MUT_NO_AIR_MAGIC))</a>
+<a name="ln1875">        || (skill == SK_CHARMS &amp;&amp; you.get_mutation_level(MUT_NO_CHARM_MAGIC))</a>
+<a name="ln1876">        || (skill == SK_CONJURATIONS</a>
+<a name="ln1877">            &amp;&amp; you.get_mutation_level(MUT_NO_CONJURATION_MAGIC))</a>
+<a name="ln1878">        || (skill == SK_EARTH_MAGIC</a>
+<a name="ln1879">            &amp;&amp; you.get_mutation_level(MUT_NO_EARTH_MAGIC))</a>
+<a name="ln1880">        || (skill == SK_FIRE_MAGIC &amp;&amp; you.get_mutation_level(MUT_NO_FIRE_MAGIC))</a>
+<a name="ln1881">        || (skill == SK_HEXES &amp;&amp; you.get_mutation_level(MUT_NO_HEXES_MAGIC))</a>
+<a name="ln1882">        || (skill == SK_ICE_MAGIC &amp;&amp; you.get_mutation_level(MUT_NO_ICE_MAGIC))</a>
+<a name="ln1883">        || (skill == SK_NECROMANCY</a>
+<a name="ln1884">            &amp;&amp; you.get_mutation_level(MUT_NO_NECROMANCY_MAGIC))</a>
+<a name="ln1885">        || (skill == SK_POISON_MAGIC</a>
+<a name="ln1886">            &amp;&amp; you.get_mutation_level(MUT_NO_POISON_MAGIC))</a>
+<a name="ln1887">        || (skill == SK_SUMMONINGS</a>
+<a name="ln1888">            &amp;&amp; you.get_mutation_level(MUT_NO_SUMMONING_MAGIC))</a>
+<a name="ln1889">        || (skill == SK_TRANSLOCATIONS</a>
+<a name="ln1890">            &amp;&amp; you.get_mutation_level(MUT_NO_TRANSLOCATION_MAGIC))</a>
+<a name="ln1891">        || (skill == SK_TRANSMUTATIONS</a>
+<a name="ln1892">            &amp;&amp; you.get_mutation_level(MUT_NO_TRANSMUTATION_MAGIC))</a>
+<a name="ln1893">        || (skill == SK_DODGING &amp;&amp; you.get_mutation_level(MUT_NO_DODGING))</a>
+<a name="ln1894">        || (skill == SK_ARMOUR &amp;&amp; you.get_mutation_level(MUT_NO_ARMOUR))</a>
+<a name="ln1895">        || (skill == SK_SHIELDS &amp;&amp; you.get_mutation_level(MUT_MISSING_HAND))</a>
+<a name="ln1896">        || (skill == SK_EVOCATIONS &amp;&amp; you.get_mutation_level(MUT_NO_ARTIFICE))</a>
+<a name="ln1897">        || (skill == SK_STEALTH &amp;&amp; you.get_mutation_level(MUT_NO_STEALTH))</a>
+<a name="ln1898">    )</a>
+<a name="ln1899">    {</a>
+<a name="ln1900">        return true;</a>
+<a name="ln1901">    }</a>
+<a name="ln1902"> </a>
+<a name="ln1903">    return species_apt(skill) == UNUSABLE_SKILL;</a>
+<a name="ln1904">}</a>
+<a name="ln1905"> </a>
+<a name="ln1906">bool is_harmful_skill(skill_type skill)</a>
+<a name="ln1907">{</a>
+<a name="ln1908">    return is_magic_skill(skill) &amp;&amp; you_worship(GOD_TROG);</a>
+<a name="ln1909">}</a>
+<a name="ln1910"> </a>
+<a name="ln1911">/**</a>
+<a name="ln1912"> * Does the player have trainable skills?</a>
+<a name="ln1913"> *</a>
+<a name="ln1914"> * @param check_all If true, also consider skills that are harmful and/or</a>
+<a name="ln1915"> *        currently untrainable. Useless skills are never considered.</a>
+<a name="ln1916"> *        Defaults to false.</a>
+<a name="ln1917"> */</a>
+<a name="ln1918">bool trainable_skills(bool check_all)</a>
+<a name="ln1919">{</a>
+<a name="ln1920">    for (skill_type i = SK_FIRST_SKILL; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln1921">    {</a>
+<a name="ln1922">        skill_type sk = static_cast&lt;skill_type&gt;(i);</a>
+<a name="ln1923">        if (can_enable_skill(sk, check_all))</a>
+<a name="ln1924">            return true;</a>
+<a name="ln1925">    }</a>
+<a name="ln1926"> </a>
+<a name="ln1927">    return false;</a>
+<a name="ln1928">}</a>
+<a name="ln1929"> </a>
+<a name="ln1930">int skill_bump(skill_type skill, int scale)</a>
+<a name="ln1931">{</a>
+<a name="ln1932">    const int sk = you.skill_rdiv(skill, scale);</a>
+<a name="ln1933">    return sk + min(sk, 3 * scale);</a>
+<a name="ln1934">}</a>
+<a name="ln1935"> </a>
+<a name="ln1936">// What aptitude value corresponds to doubled skill learning</a>
+<a name="ln1937">// (i.e., old-style aptitude 50).</a>
+<a name="ln1938">#define APT_DOUBLE 4</a>
+<a name="ln1939"> </a>
+<a name="ln1940">float apt_to_factor(int apt)</a>
+<a name="ln1941">{</a>
+<a name="ln1942">    return 1 / exp(log(2) * apt / APT_DOUBLE);</a>
+<a name="ln1943">}</a>
+<a name="ln1944"> </a>
+<a name="ln1945">unsigned int skill_exp_needed(int lev, skill_type sk, species_type sp)</a>
+<a name="ln1946">{</a>
+<a name="ln1947">    const int exp[28] =</a>
+<a name="ln1948">          { 0, 50, 150, 300, 500, 750,          // 0-5</a>
+<a name="ln1949">            1050, 1400, 1800, 2250, 2800,       // 6-10</a>
+<a name="ln1950">            3450, 4200, 5050, 6000, 7050,       // 11-15</a>
+<a name="ln1951">            8200, 9450, 10800, 12300, 13950,    // 16-20</a>
+<a name="ln1952">            15750, 17700, 19800, 22050, 24450,  // 21-25</a>
+<a name="ln1953">            27000, 29750 };</a>
+<a name="ln1954"> </a>
+<a name="ln1955">    ASSERT_RANGE(lev, 0, MAX_SKILL_LEVEL + 1);</a>
+<a name="ln1956">    return exp[lev] * species_apt_factor(sk, sp);</a>
+<a name="ln1957">}</a>
+<a name="ln1958"> </a>
+<a name="ln1959">int species_apt(skill_type skill, species_type species)</a>
+<a name="ln1960">{</a>
+<a name="ln1961">    static bool spec_skills_initialised = false;</a>
+<a name="ln1962">    if (!spec_skills_initialised)</a>
+<a name="ln1963">    {</a>
+<a name="ln1964">        // Setup sentinel values to find errors more easily.</a>
+<a name="ln1965">        const int sentinel = -20; // this gives cost 3200</a>
+<a name="ln1966">        for (int sp = 0; sp &lt; NUM_SPECIES; ++sp)</a>
+<a name="ln1967">            for (int sk = 0; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln1968">                _spec_skills[sp][sk] = sentinel;</a>
+<a name="ln1969">        for (const species_skill_aptitude &amp;ssa : species_skill_aptitudes)</a>
+<a name="ln1970">        {</a>
+<a name="ln1971">            ASSERT(_spec_skills[ssa.species][ssa.skill] == sentinel);</a>
+<a name="ln1972">            _spec_skills[ssa.species][ssa.skill] = ssa.aptitude;</a>
+<a name="ln1973">        }</a>
+<a name="ln1974">        spec_skills_initialised = true;</a>
+<a name="ln1975">    }</a>
+<a name="ln1976"> </a>
+<a name="ln1977">    return max(UNUSABLE_SKILL, _spec_skills[species][skill]</a>
+<a name="ln1978">                               - you.get_mutation_level(MUT_UNSKILLED));</a>
+<a name="ln1979">}</a>
+<a name="ln1980"> </a>
+<a name="ln1981">float species_apt_factor(skill_type sk, species_type sp)</a>
+<a name="ln1982">{</a>
+<a name="ln1983">    return apt_to_factor(species_apt(sk, sp));</a>
+<a name="ln1984">}</a>
+<a name="ln1985"> </a>
+<a name="ln1986">vector&lt;skill_type&gt; get_crosstrain_skills(skill_type sk)</a>
+<a name="ln1987">{</a>
+<a name="ln1988">    // Gnolls do not have crosstraining.</a>
+<a name="ln1989">    if (_player_is_gnoll())</a>
+<a name="ln1990">        return {};</a>
+<a name="ln1991"> </a>
+<a name="ln1992">    switch (sk)</a>
+<a name="ln1993">    {</a>
+<a name="ln1994">    case SK_SHORT_BLADES:</a>
+<a name="ln1995">        return { SK_LONG_BLADES };</a>
+<a name="ln1996">    case SK_LONG_BLADES:</a>
+<a name="ln1997">        return { SK_SHORT_BLADES };</a>
+<a name="ln1998">    case SK_AXES:</a>
+<a name="ln1999">    case SK_STAVES:</a>
+<a name="ln2000">        return { SK_POLEARMS, SK_MACES_FLAILS };</a>
+<a name="ln2001">    case SK_MACES_FLAILS:</a>
+<a name="ln2002">    case SK_POLEARMS:</a>
+<a name="ln2003">        return { SK_AXES, SK_STAVES };</a>
+<a name="ln2004">    case SK_SLINGS:</a>
+<a name="ln2005">        return { SK_THROWING };</a>
+<a name="ln2006">    case SK_THROWING:</a>
+<a name="ln2007">        return { SK_SLINGS };</a>
+<a name="ln2008">    default:</a>
+<a name="ln2009">        return {};</a>
+<a name="ln2010">    }</a>
+<a name="ln2011">}</a>
+<a name="ln2012"> </a>
+<a name="ln2013">/**</a>
+<a name="ln2014"> * Calculate the current crosstraining bonus for skill `sk`, in skill points.</a>
+<a name="ln2015"> */</a>
+<a name="ln2016">int get_crosstrain_points(skill_type sk)</a>
+<a name="ln2017">{</a>
+<a name="ln2018">    int points = 0;</a>
+<a name="ln2019">    for (skill_type cross : get_crosstrain_skills(sk))</a>
+<a name="ln2020">        points += you.skill_points[cross] * 2 / 5;</a>
+<a name="ln2021">    return points;</a>
+<a name="ln2022"> </a>
+<a name="ln2023">}</a>
+<a name="ln2024"> </a>
+<a name="ln2025">/**</a>
+<a name="ln2026"> * Is the provided skill one of the elemental spellschools?</a>
+<a name="ln2027"> *</a>
+<a name="ln2028"> * @param sk    The skill in question.</a>
+<a name="ln2029"> * @return      Whether it is fire, ice, earth, or air.</a>
+<a name="ln2030"> */</a>
+<a name="ln2031">static bool _skill_is_elemental(skill_type sk)</a>
+<a name="ln2032">{</a>
+<a name="ln2033">    return sk == SK_FIRE_MAGIC || sk == SK_EARTH_MAGIC</a>
+<a name="ln2034">           || sk == SK_AIR_MAGIC || sk == SK_ICE_MAGIC;</a>
+<a name="ln2035">}</a>
+<a name="ln2036"> </a>
+<a name="ln2037">/**</a>
+<a name="ln2038"> * How skilled is the player at the elemental components of a spell?</a>
+<a name="ln2039"> *</a>
+<a name="ln2040"> * @param spell     The type of spell in question.</a>
+<a name="ln2041"> * @param scale     Scaling factor for skill.</a>
+<a name="ln2042"> * @return          The player's skill at the elemental parts of a given spell.</a>
+<a name="ln2043"> */</a>
+<a name="ln2044">int elemental_preference(spell_type spell, int scale)</a>
+<a name="ln2045">{</a>
+<a name="ln2046">    skill_set skill_list;</a>
+<a name="ln2047">    spell_skills(spell, skill_list);</a>
+<a name="ln2048">    int preference = 0;</a>
+<a name="ln2049">    for (skill_type sk : skill_list)</a>
+<a name="ln2050">        if (_skill_is_elemental(sk))</a>
+<a name="ln2051">            preference += you.skill(sk, scale);</a>
+<a name="ln2052">    return preference;</a>
+<a name="ln2053">}</a>
+<a name="ln2054"> </a>
+<a name="ln2055">/**</a>
+<a name="ln2056"> * Compare skill levels</a>
+<a name="ln2057"> *</a>
+<a name="ln2058"> * It compares the level of 2 skills, and breaks ties by using skill order.</a>
+<a name="ln2059"> *</a>
+<a name="ln2060"> * @param sk1 First skill.</a>
+<a name="ln2061"> * @param sk2 Second skill.</a>
+<a name="ln2062"> * @return Whether first skill is higher than second skill.</a>
+<a name="ln2063"> */</a>
+<a name="ln2064">bool compare_skills(skill_type sk1, skill_type sk2)</a>
+<a name="ln2065">{</a>
+<a name="ln2066">    if (is_invalid_skill(sk1))</a>
+<a name="ln2067">        return false;</a>
+<a name="ln2068">    else if (is_invalid_skill(sk2))</a>
+<a name="ln2069">        return true;</a>
+<a name="ln2070">    else</a>
+<a name="ln2071">        return you.skill(sk1, 10, true) &gt; you.skill(sk2, 10, true)</a>
+<a name="ln2072">               || you.skill(sk1, 10, true) == you.skill(sk2, 10, true)</a>
+<a name="ln2073">                  &amp;&amp; you.skill_order[sk1] &lt; you.skill_order[sk2];</a>
+<a name="ln2074">}</a>
+<a name="ln2075"> </a>
+<a name="ln2076">void dump_skills(string &amp;text)</a>
+<a name="ln2077">{</a>
+<a name="ln2078">    for (uint8_t i = 0; i &lt; NUM_SKILLS; i++)</a>
+<a name="ln2079">    {</a>
+<a name="ln2080">        int real = you.skill((skill_type)i, 10, true);</a>
+<a name="ln2081">        int cur  = you.skill((skill_type)i, 10);</a>
+<a name="ln2082">        if (real &gt; 0 || (!you.auto_training &amp;&amp; you.train[i] &gt; 0))</a>
+<a name="ln2083">        {</a>
+<a name="ln2084">            text += make_stringf(&quot; %c Level %.*f%s %s\n&quot;,</a>
+<a name="ln2085">                                 real == 270       ? 'O' :</a>
+<a name="ln2086">                                 !you.can_currently_train[i] ? ' ' :</a>
+<a name="ln2087">                                 you.train[i] == 2 ? '*' :</a>
+<a name="ln2088">                                 you.train[i]      ? '+' :</a>
+<a name="ln2089">                                                     '-',</a>
+<a name="ln2090">                                 real == 270 ? 0 : 1,</a>
+<a name="ln2091">                                 real * 0.1,</a>
+<a name="ln2092">                                 real != cur</a>
+<a name="ln2093">                                     ? make_stringf(&quot;(%.*f)&quot;,</a>
+<a name="ln2094">                                           cur == 270 ? 0 : 1,</a>
+<a name="ln2095">                                           cur * 0.1).c_str()</a>
+<a name="ln2096">                                     : &quot;&quot;,</a>
+<a name="ln2097">                                 skill_name(static_cast&lt;skill_type&gt;(i)));</a>
+<a name="ln2098">        }</a>
+<a name="ln2099">    }</a>
+<a name="ln2100">}</a>
+<a name="ln2101"> </a>
+<a name="ln2102">int skill_transfer_amount(skill_type sk)</a>
+<a name="ln2103">{</a>
+<a name="ln2104">    ASSERT(!is_invalid_skill(sk));</a>
+<a name="ln2105">    if (you.skill_points[sk] &lt; 1000)</a>
+<a name="ln2106">        return you.skill_points[sk];</a>
+<a name="ln2107">    else</a>
+<a name="ln2108">        return max&lt;int&gt;(1000, you.skill_points[sk] / 2);</a>
+<a name="ln2109">}</a>
+<a name="ln2110"> </a>
+<a name="ln2111">// Transfer skill points from one skill to another (Ashenzari transfer</a>
+<a name="ln2112">// knowledge ability). If simu, it just simulates the transfer and don't</a>
+<a name="ln2113">// change anything. It returns the new level of tsk.</a>
+<a name="ln2114">int transfer_skill_points(skill_type fsk, skill_type tsk, int skp_max,</a>
+<a name="ln2115">                          bool simu, bool boost)</a>
+<a name="ln2116">{</a>
+<a name="ln2117">    ASSERT(!_player_is_gnoll());</a>
+<a name="ln2118">    ASSERT(!is_invalid_skill(fsk) &amp;&amp; !is_invalid_skill(tsk));</a>
+<a name="ln2119"> </a>
+<a name="ln2120">    const int penalty = 90; // 10% XP penalty</a>
+<a name="ln2121">    int total_skp_lost   = 0; // skill points lost in fsk.</a>
+<a name="ln2122">    int total_skp_gained = 0; // skill points gained in tsk.</a>
+<a name="ln2123">    int fsk_level = you.skills[fsk];</a>
+<a name="ln2124">    int tsk_level = you.skills[tsk];</a>
+<a name="ln2125">    int fsk_points = you.skill_points[fsk];</a>
+<a name="ln2126">    int tsk_points = you.skill_points[tsk];</a>
+<a name="ln2127">    int fsk_ct_points = you.ct_skill_points[fsk];</a>
+<a name="ln2128">    int tsk_ct_points = you.ct_skill_points[tsk];</a>
+<a name="ln2129"> </a>
+<a name="ln2130">    if (!simu &amp;&amp; you.ct_skill_points[fsk] &gt; 0)</a>
+<a name="ln2131">    {</a>
+<a name="ln2132">        dprf(DIAG_SKILLS, &quot;ct_skill_points[%s]: %d&quot;,</a>
+<a name="ln2133">             skill_name(fsk), you.ct_skill_points[fsk]);</a>
+<a name="ln2134">    }</a>
+<a name="ln2135"> </a>
+<a name="ln2136">    // We need to transfer by small steps and update skill levels each time</a>
+<a name="ln2137">    // so that cross-training is handled properly.</a>
+<a name="ln2138">    while (total_skp_lost &lt; skp_max</a>
+<a name="ln2139">           &amp;&amp; (simu || total_skp_lost &lt; (int)you.transfer_skill_points))</a>
+<a name="ln2140">    {</a>
+<a name="ln2141">        int skp_lost = min(20, skp_max - total_skp_lost);</a>
+<a name="ln2142">        int skp_gained = skp_lost * penalty / 100;</a>
+<a name="ln2143"> </a>
+<a name="ln2144">        ASSERT(you.skill_points[fsk] &gt; you.ct_skill_points[fsk]);</a>
+<a name="ln2145"> </a>
+<a name="ln2146">        int ct_penalty = skp_lost * you.ct_skill_points[fsk]</a>
+<a name="ln2147">                          / (you.skill_points[fsk] - you.ct_skill_points[fsk]);</a>
+<a name="ln2148">        ct_penalty = min&lt;int&gt;(ct_penalty, you.ct_skill_points[fsk]);</a>
+<a name="ln2149">        you.ct_skill_points[fsk] -= ct_penalty;</a>
+<a name="ln2150">        skp_lost += ct_penalty;</a>
+<a name="ln2151"> </a>
+<a name="ln2152">        if (!simu)</a>
+<a name="ln2153">        {</a>
+<a name="ln2154">            skp_lost = min&lt;int&gt;(skp_lost, you.transfer_skill_points</a>
+<a name="ln2155">                                          - total_skp_lost);</a>
+<a name="ln2156">        }</a>
+<a name="ln2157"> </a>
+<a name="ln2158">        total_skp_lost += skp_lost;</a>
+<a name="ln2159">        change_skill_points(fsk, -skp_lost, false);</a>
+<a name="ln2160"> </a>
+<a name="ln2161">        // If reducing fighting would reduce your maxHP to 0 or below,</a>
+<a name="ln2162">        // we cancel the last step and end the transfer.</a>
+<a name="ln2163">        if (fsk == SK_FIGHTING &amp;&amp; get_real_hp(false, false) &lt;= 0)</a>
+<a name="ln2164">        {</a>
+<a name="ln2165">            change_skill_points(fsk, skp_lost, false);</a>
+<a name="ln2166">            total_skp_lost -= skp_lost;</a>
+<a name="ln2167">            if (!simu)</a>
+<a name="ln2168">                you.transfer_skill_points = total_skp_lost;</a>
+<a name="ln2169">            break;</a>
+<a name="ln2170">        }</a>
+<a name="ln2171"> </a>
+<a name="ln2172">        total_skp_gained += skp_gained;</a>
+<a name="ln2173"> </a>
+<a name="ln2174">        if (fsk != tsk)</a>
+<a name="ln2175">        {</a>
+<a name="ln2176">            change_skill_points(tsk, skp_gained, false);</a>
+<a name="ln2177">            if (you.skills[tsk] == MAX_SKILL_LEVEL)</a>
+<a name="ln2178">                break;</a>
+<a name="ln2179">        }</a>
+<a name="ln2180">    }</a>
+<a name="ln2181"> </a>
+<a name="ln2182">    int new_level = you.skill(tsk, 10, !boost);</a>
+<a name="ln2183">    // Restore the level</a>
+<a name="ln2184">    you.skills[fsk] = fsk_level;</a>
+<a name="ln2185">    you.skills[tsk] = tsk_level;</a>
+<a name="ln2186"> </a>
+<a name="ln2187">    if (simu)</a>
+<a name="ln2188">    {</a>
+<a name="ln2189">        you.skill_points[fsk] = fsk_points;</a>
+<a name="ln2190">        you.skill_points[tsk] = tsk_points;</a>
+<a name="ln2191">        you.ct_skill_points[fsk] = fsk_ct_points;</a>
+<a name="ln2192">        you.ct_skill_points[tsk] = tsk_ct_points;</a>
+<a name="ln2193">    }</a>
+<a name="ln2194">    else</a>
+<a name="ln2195">    {</a>
+<a name="ln2196">        // Perform the real level up</a>
+<a name="ln2197">        check_skill_level_change(fsk);</a>
+<a name="ln2198">        check_skill_level_change(tsk);</a>
+<a name="ln2199">        if ((int)you.transfer_skill_points &lt; total_skp_lost)</a>
+<a name="ln2200">            you.transfer_skill_points = 0;</a>
+<a name="ln2201">        else</a>
+<a name="ln2202">            you.transfer_skill_points -= total_skp_lost;</a>
+<a name="ln2203"> </a>
+<a name="ln2204">        dprf(DIAG_SKILLS, &quot;skill %s lost %d points&quot;,</a>
+<a name="ln2205">             skill_name(fsk), total_skp_lost);</a>
+<a name="ln2206">        dprf(DIAG_SKILLS, &quot;skill %s gained %d points&quot;,</a>
+<a name="ln2207">             skill_name(tsk), total_skp_gained);</a>
+<a name="ln2208">        if (you.ct_skill_points[fsk] &gt; 0)</a>
+<a name="ln2209">        {</a>
+<a name="ln2210">            dprf(DIAG_SKILLS, &quot;ct_skill_points[%s]: %d&quot;,</a>
+<a name="ln2211">                 skill_name(fsk), you.ct_skill_points[fsk]);</a>
+<a name="ln2212">        }</a>
+<a name="ln2213"> </a>
+<a name="ln2214">        if (you.transfer_skill_points == 0</a>
+<a name="ln2215">            || you.skills[tsk] == MAX_SKILL_LEVEL)</a>
+<a name="ln2216">        {</a>
+<a name="ln2217">            ashenzari_end_transfer(true);</a>
+<a name="ln2218">        }</a>
+<a name="ln2219">        else</a>
+<a name="ln2220">        {</a>
+<a name="ln2221">            dprf(DIAG_SKILLS, &quot;%d skill points left to transfer&quot;,</a>
+<a name="ln2222">                 you.transfer_skill_points);</a>
+<a name="ln2223">        }</a>
+<a name="ln2224">    }</a>
+<a name="ln2225">    return new_level;</a>
+<a name="ln2226">}</a>
+<a name="ln2227"> </a>
+<a name="ln2228">skill_state::skill_state() :</a>
+<a name="ln2229">        skill_cost_level(0), total_experience(0), auto_training(true),</a>
+<a name="ln2230">        exp_available(0), saved(false)</a>
+<a name="ln2231">{</a>
+<a name="ln2232">}</a>
+<a name="ln2233"> </a>
+<a name="ln2234">void skill_state::save()</a>
+<a name="ln2235">{</a>
+<a name="ln2236">    can_currently_train = you.can_currently_train;</a>
+<a name="ln2237">    skills              = you.skills;</a>
+<a name="ln2238">    train               = you.train;</a>
+<a name="ln2239">    training            = you.training;</a>
+<a name="ln2240">    skill_points        = you.skill_points;</a>
+<a name="ln2241">    training_targets    = you.training_targets;</a>
+<a name="ln2242">    ct_skill_points     = you.ct_skill_points;</a>
+<a name="ln2243">    skill_cost_level    = you.skill_cost_level;</a>
+<a name="ln2244">    skill_order         = you.skill_order;</a>
+<a name="ln2245">    auto_training       = you.auto_training;</a>
+<a name="ln2246">    exp_available       = you.exp_available;</a>
+<a name="ln2247">    total_experience    = you.total_experience;</a>
+<a name="ln2248">    get_all_manual_charges(manual_charges);</a>
+<a name="ln2249">    for (int i = 0; i &lt; NUM_SKILLS; i++)</a>
+<a name="ln2250">    {</a>
+<a name="ln2251">        real_skills[i] = you.skill((skill_type)i, 10, true);</a>
+<a name="ln2252">        changed_skills[i] = you.skill((skill_type)i, 10);</a>
+<a name="ln2253">    }</a>
+<a name="ln2254">    saved = true;</a>
+<a name="ln2255">}</a>
+<a name="ln2256"> </a>
+<a name="ln2257">bool skill_state::state_saved() const</a>
+<a name="ln2258">{</a>
+<a name="ln2259">    return saved;</a>
+<a name="ln2260">}</a>
+<a name="ln2261"> </a>
+<a name="ln2262">void skill_state::restore_levels()</a>
+<a name="ln2263">{</a>
+<a name="ln2264">    you.skills                      = skills;</a>
+<a name="ln2265">    you.skill_points                = skill_points;</a>
+<a name="ln2266">    you.ct_skill_points             = ct_skill_points;</a>
+<a name="ln2267">    you.skill_cost_level            = skill_cost_level;</a>
+<a name="ln2268">    you.skill_order                 = skill_order;</a>
+<a name="ln2269">    you.exp_available               = exp_available;</a>
+<a name="ln2270">    you.total_experience            = total_experience;</a>
+<a name="ln2271">    set_all_manual_charges(manual_charges);</a>
+<a name="ln2272">}</a>
+<a name="ln2273"> </a>
+<a name="ln2274">void skill_state::restore_training()</a>
+<a name="ln2275">{</a>
+<a name="ln2276">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln2277">    {</a>
+<a name="ln2278">        // Don't resume training if it's impossible or a target was met</a>
+<a name="ln2279">        // after our backup was made.</a>
+<a name="ln2280">        if (you.skills[sk] &lt; MAX_SKILL_LEVEL)</a>
+<a name="ln2281">        {</a>
+<a name="ln2282">            you.train[sk] = train[sk];</a>
+<a name="ln2283">            you.training_targets[sk] = training_targets[sk];</a>
+<a name="ln2284">        }</a>
+<a name="ln2285">    }</a>
+<a name="ln2286"> </a>
+<a name="ln2287">    you.can_currently_train         = can_currently_train;</a>
+<a name="ln2288">    you.auto_training               = auto_training;</a>
+<a name="ln2289">    reset_training();</a>
+<a name="ln2290">    check_training_targets();</a>
+<a name="ln2291">}</a>
+<a name="ln2292"> </a>
+<a name="ln2293">// Sanitize skills after an upgrade, racechange, etc.</a>
+<a name="ln2294">void fixup_skills()</a>
+<a name="ln2295">{</a>
+<a name="ln2296">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln2297">    {</a>
+<a name="ln2298">        if (is_useless_skill(sk))</a>
+<a name="ln2299">        {</a>
+<a name="ln2300">            you.skill_points[sk] = 0;</a>
+<a name="ln2301">            // gnolls have everything existent enabled, so that the</a>
+<a name="ln2302">            // training percentage is calculated correctly. (Useless</a>
+<a name="ln2303">            // skills still won't be trained for them.)</a>
+<a name="ln2304">            if (_player_is_gnoll() &amp;&amp; !is_removed_skill(sk))</a>
+<a name="ln2305">                you.train[sk] = TRAINING_ENABLED;</a>
+<a name="ln2306">            else</a>
+<a name="ln2307">                you.train[sk] = TRAINING_DISABLED;</a>
+<a name="ln2308">        }</a>
+<a name="ln2309">        else if (_player_is_gnoll())</a>
+<a name="ln2310">            you.train[sk] = TRAINING_ENABLED;</a>
+<a name="ln2311">        you.skill_points[sk] = min(you.skill_points[sk],</a>
+<a name="ln2312">                                   skill_exp_needed(MAX_SKILL_LEVEL, sk));</a>
+<a name="ln2313">        check_skill_level_change(sk);</a>
+<a name="ln2314">    }</a>
+<a name="ln2315">    init_can_currently_train();</a>
+<a name="ln2316">    reset_training();</a>
+<a name="ln2317"> </a>
+<a name="ln2318">    if (you.exp_available &gt;= 10 * calc_skill_cost(you.skill_cost_level) &amp;&amp; !_player_is_gnoll())</a>
+<a name="ln2319">        skill_menu(SKMF_EXPERIENCE);</a>
+<a name="ln2320"> </a>
+<a name="ln2321">    check_training_targets();</a>
+<a name="ln2322">}</a>
+<a name="ln2323"> </a>
+<a name="ln2324">/** Can the player enable training for this skill?</a>
+<a name="ln2325"> *</a>
+<a name="ln2326"> * @param sk The skill to check.</a>
+<a name="ln2327"> * @param override if true, don't consider whether the skill is currently</a>
+<a name="ln2328"> *                 untrainable / harmful.</a>
+<a name="ln2329"> * @returns True if the skill can be enabled for training, false otherwise.</a>
+<a name="ln2330"> */</a>
+<a name="ln2331">bool can_enable_skill(skill_type sk, bool override)</a>
+<a name="ln2332">{</a>
+<a name="ln2333">    // TODO: should this check you.skill_points or you.skills?</a>
+<a name="ln2334">    return !_player_is_gnoll()</a>
+<a name="ln2335">       &amp;&amp; you.skills[sk] &lt; MAX_SKILL_LEVEL</a>
+<a name="ln2336">       &amp;&amp; !is_useless_skill(sk)</a>
+<a name="ln2337">       &amp;&amp; (override || (you.can_currently_train[sk] &amp;&amp; !is_harmful_skill(sk)));</a>
+<a name="ln2338">}</a>
+
+</code></pre>
+<div class="balloon" rel="300"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: n > 0.</p></div>
+<div class="balloon" rel="312"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: n > 0.</p></div>
+<div class="balloon" rel="1406"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'you_skill' should be used inside 'ash_has_skill_boost' function.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

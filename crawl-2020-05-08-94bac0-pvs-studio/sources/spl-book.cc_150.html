@@ -1,0 +1,1121 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>spl-book.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Spellbook contents array and management functions</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;spl-book.h&quot;</a>
+<a name="ln9">#include &quot;book-data.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &lt;algorithm&gt;</a>
+<a name="ln12">#include &lt;cstdio&gt;</a>
+<a name="ln13">#include &lt;cstdlib&gt;</a>
+<a name="ln14">#include &lt;cstring&gt;</a>
+<a name="ln15">#include &lt;iomanip&gt;</a>
+<a name="ln16">#include &lt;unordered_set&gt;</a>
+<a name="ln17"> </a>
+<a name="ln18">#include &quot;artefact.h&quot;</a>
+<a name="ln19">#include &quot;colour.h&quot;</a>
+<a name="ln20">#include &quot;command.h&quot;</a>
+<a name="ln21">#include &quot;database.h&quot;</a>
+<a name="ln22">#include &quot;delay.h&quot;</a>
+<a name="ln23">#include &quot;describe.h&quot;</a>
+<a name="ln24">#include &quot;end.h&quot;</a>
+<a name="ln25">#include &quot;god-conduct.h&quot;</a>
+<a name="ln26">#include &quot;invent.h&quot;</a>
+<a name="ln27">#include &quot;item-prop.h&quot;</a>
+<a name="ln28">#include &quot;libutil.h&quot;</a>
+<a name="ln29">#include &quot;message.h&quot;</a>
+<a name="ln30">#include &quot;output.h&quot;</a>
+<a name="ln31">#include &quot;prompt.h&quot;</a>
+<a name="ln32">#include &quot;religion.h&quot;</a>
+<a name="ln33">#include &quot;spl-cast.h&quot;</a>
+<a name="ln34">#include &quot;spl-util.h&quot;</a>
+<a name="ln35">#include &quot;state.h&quot;</a>
+<a name="ln36">#include &quot;stringutil.h&quot;</a>
+<a name="ln37">#ifdef USE_TILE</a>
+<a name="ln38"> #include &quot;tilepick.h&quot;</a>
+<a name="ln39">#endif</a>
+<a name="ln40">#include &quot;transform.h&quot;</a>
+<a name="ln41">#include &quot;unicode.h&quot;</a>
+<a name="ln42"> </a>
+<a name="ln43">#define RANDART_BOOK_TYPE_KEY  &quot;randart_book_type&quot;</a>
+<a name="ln44">#define RANDART_BOOK_LEVEL_KEY &quot;randart_book_level&quot;</a>
+<a name="ln45"> </a>
+<a name="ln46">#define RANDART_BOOK_TYPE_LEVEL &quot;level&quot;</a>
+<a name="ln47">#define RANDART_BOOK_TYPE_THEME &quot;theme&quot;</a>
+<a name="ln48"> </a>
+<a name="ln49">struct sortable_spell</a>
+<a name="ln50">{</a>
+<a name="ln51">    sortable_spell(spell_type s) : spell(s),</a>
+<a name="ln52">                raw_fail(raw_spell_fail(s)),</a>
+<a name="ln53">                fail_rate(failure_rate_to_int(raw_fail)),</a>
+<a name="ln54">                fail_rate_colour(failure_rate_colour(s)),</a>
+<a name="ln55">                level(spell_levels_required(s)),</a>
+<a name="ln56">                difficulty(spell_difficulty(s)),</a>
+<a name="ln57">                name(spell_title(s)),</a>
+<a name="ln58">                school(spell_schools_string(s))</a>
+<a name="ln59">    {</a>
+<a name="ln60">    }</a>
+<a name="ln61"> </a>
+<a name="ln62">    spell_type spell;</a>
+<a name="ln63">    int raw_fail;</a>
+<a name="ln64">    int fail_rate;</a>
+<a name="ln65">    int fail_rate_colour;</a>
+<a name="ln66">    int level;</a>
+<a name="ln67">    int difficulty;</a>
+<a name="ln68">    string name;</a>
+<a name="ln69">    string school; // TODO: set?</a>
+<a name="ln70"> </a>
+<a name="ln71">    friend bool operator==(const sortable_spell&amp; x, const sortable_spell&amp; y)</a>
+<a name="ln72">    {</a>
+<a name="ln73">        return x.spell == y.spell;</a>
+<a name="ln74">    }</a>
+<a name="ln75">};</a>
+<a name="ln76"> </a>
+<a name="ln77"> </a>
+<a name="ln78">struct hash_sortable_spell</a>
+<a name="ln79">{</a>
+<a name="ln80">    spell_type operator()(const sortable_spell&amp; s) const</a>
+<a name="ln81">    {</a>
+<a name="ln82">        return s.spell;</a>
+<a name="ln83">    }</a>
+<a name="ln84">};</a>
+<a name="ln85"> </a>
+<a name="ln86">typedef vector&lt;sortable_spell&gt;                 spell_list;</a>
+<a name="ln87">typedef unordered_set&lt;spell_type, hash&lt;int&gt;&gt;   spell_set;</a>
+<a name="ln88"> </a>
+<a name="ln89">static const map&lt;wand_type, spell_type&gt; _wand_spells =</a>
+<a name="ln90">{</a>
+<a name="ln91">    { WAND_FLAME, SPELL_THROW_FLAME },</a>
+<a name="ln92">    { WAND_PARALYSIS, SPELL_PARALYSE },</a>
+<a name="ln93">    { WAND_DIGGING, SPELL_DIG },</a>
+<a name="ln94">    { WAND_ICEBLAST, SPELL_ICEBLAST },</a>
+<a name="ln95">    { WAND_POLYMORPH, SPELL_POLYMORPH },</a>
+<a name="ln96">    { WAND_ENSLAVEMENT, SPELL_ENSLAVEMENT },</a>
+<a name="ln97">    { WAND_ACID, SPELL_CORROSIVE_BOLT },</a>
+<a name="ln98">    { WAND_DISINTEGRATION, SPELL_DISINTEGRATE },</a>
+<a name="ln99">    { WAND_CLOUDS, SPELL_CLOUD_CONE },</a>
+<a name="ln100">    { WAND_SCATTERSHOT, SPELL_SCATTERSHOT },</a>
+<a name="ln101">    { WAND_RANDOM_EFFECTS, SPELL_RANDOM_EFFECTS },</a>
+<a name="ln102">};</a>
+<a name="ln103"> </a>
+<a name="ln104"> </a>
+<a name="ln105">spell_type spell_in_wand(wand_type wand)</a>
+<a name="ln106">{</a>
+<a name="ln107">    if (item_type_removed(OBJ_WANDS, wand))</a>
+<a name="ln108">        return SPELL_NO_SPELL;</a>
+<a name="ln109"> </a>
+<a name="ln110">    if (const spell_type* const spl = map_find(_wand_spells, wand))</a>
+<a name="ln111">        return *spl;</a>
+<a name="ln112"> </a>
+<a name="ln113">    die(&quot;Unknown wand: %d&quot;, wand);</a>
+<a name="ln114">}</a>
+<a name="ln115"> </a>
+<a name="ln116">vector&lt;spell_type&gt; spells_in_book(const item_def &amp;book)</a>
+<a name="ln117">{</a>
+<a name="ln118">    ASSERT(book.base_type == OBJ_BOOKS);</a>
+<a name="ln119"> </a>
+<a name="ln120">    vector&lt;spell_type&gt; ret;</a>
+<a name="ln121">    const CrawlHashTable &amp;props = book.props;</a>
+<a name="ln122">    if (!props.exists(SPELL_LIST_KEY))</a>
+<a name="ln123">        return spellbook_template(static_cast&lt;book_type&gt;(book.sub_type));</a>
+<a name="ln124"> </a>
+<a name="ln125">    const CrawlVector &amp;spells = props[SPELL_LIST_KEY].get_vector();</a>
+<a name="ln126"> </a>
+<a name="ln127">    ASSERT(spells.get_type() == SV_INT);</a>
+<a name="ln128">    ASSERT(spells.size() == RANDBOOK_SIZE);</a>
+<a name="ln129"> </a>
+<a name="ln130">    for (int spell : spells)</a>
+<a name="ln131">        //TODO: don't put SPELL_NO_SPELL in them in the first place.</a>
+<a name="ln132">        if (spell != SPELL_NO_SPELL)</a>
+<a name="ln133">            ret.emplace_back(static_cast&lt;spell_type&gt;(spell));</a>
+<a name="ln134"> </a>
+<a name="ln135">    return ret;</a>
+<a name="ln136">}</a>
+<a name="ln137"> </a>
+<a name="ln138">vector&lt;spell_type&gt; spellbook_template(book_type book)</a>
+<a name="ln139">{</a>
+<a name="ln140">    ASSERT_RANGE(book, 0, (int)ARRAYSZ(spellbook_templates));</a>
+<a name="ln141">    return spellbook_templates[book];</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">// Rarity 100 is reserved for unused books.</a>
+<a name="ln145">int book_rarity(book_type which_book)</a>
+<a name="ln146">{</a>
+<a name="ln147">    if (item_type_removed(OBJ_BOOKS, which_book))</a>
+<a name="ln148">        return 100;</a>
+<a name="ln149"> </a>
+<a name="ln150">    switch (which_book)</a>
+<a name="ln151">    {</a>
+<a name="ln152">    case BOOK_MINOR_MAGIC:</a>
+<a name="ln153">    case BOOK_MISFORTUNE:</a>
+<a name="ln154">    case BOOK_CANTRIPS:</a>
+<a name="ln155">        return 1;</a>
+<a name="ln156"> </a>
+<a name="ln157">    case BOOK_CHANGES:</a>
+<a name="ln158">    case BOOK_MALEDICT:</a>
+<a name="ln159">        return 2;</a>
+<a name="ln160"> </a>
+<a name="ln161">    case BOOK_CONJURATIONS:</a>
+<a name="ln162">    case BOOK_NECROMANCY:</a>
+<a name="ln163">    case BOOK_CALLINGS:</a>
+<a name="ln164">        return 3;</a>
+<a name="ln165"> </a>
+<a name="ln166">    case BOOK_FLAMES:</a>
+<a name="ln167">    case BOOK_FROST:</a>
+<a name="ln168">    case BOOK_AIR:</a>
+<a name="ln169">    case BOOK_GEOMANCY:</a>
+<a name="ln170">        return 4;</a>
+<a name="ln171"> </a>
+<a name="ln172">    case BOOK_YOUNG_POISONERS:</a>
+<a name="ln173">    case BOOK_BATTLE:</a>
+<a name="ln174">    case BOOK_DEBILITATION:</a>
+<a name="ln175">        return 5;</a>
+<a name="ln176"> </a>
+<a name="ln177">    case BOOK_CLOUDS:</a>
+<a name="ln178">    case BOOK_POWER:</a>
+<a name="ln179">        return 6;</a>
+<a name="ln180"> </a>
+<a name="ln181">    case BOOK_HEXES:</a>
+<a name="ln182">    case BOOK_PARTY_TRICKS:</a>
+<a name="ln183">        return 7;</a>
+<a name="ln184"> </a>
+<a name="ln185">    case BOOK_TRANSFIGURATIONS:</a>
+<a name="ln186">    case BOOK_BEASTS:</a>
+<a name="ln187">        return 8;</a>
+<a name="ln188"> </a>
+<a name="ln189">    case BOOK_FIRE:</a>
+<a name="ln190">    case BOOK_ICE:</a>
+<a name="ln191">    case BOOK_SKY:</a>
+<a name="ln192">    case BOOK_EARTH:</a>
+<a name="ln193">    case BOOK_UNLIFE:</a>
+<a name="ln194">    case BOOK_SPATIAL_TRANSLOCATIONS:</a>
+<a name="ln195">        return 10;</a>
+<a name="ln196"> </a>
+<a name="ln197">    case BOOK_TEMPESTS:</a>
+<a name="ln198">    case BOOK_DEATH:</a>
+<a name="ln199">    case BOOK_SUMMONINGS:</a>
+<a name="ln200">        return 11;</a>
+<a name="ln201"> </a>
+<a name="ln202">    case BOOK_BURGLARY:</a>
+<a name="ln203">    case BOOK_ALCHEMY:</a>
+<a name="ln204">    case BOOK_DREAMS:</a>
+<a name="ln205">    case BOOK_FEN:</a>
+<a name="ln206">        return 12;</a>
+<a name="ln207"> </a>
+<a name="ln208">    case BOOK_WARP:</a>
+<a name="ln209">    case BOOK_DRAGON:</a>
+<a name="ln210">        return 15;</a>
+<a name="ln211"> </a>
+<a name="ln212">    case BOOK_ANNIHILATIONS:</a>
+<a name="ln213">    case BOOK_GRAND_GRIMOIRE:</a>
+<a name="ln214">    case BOOK_NECRONOMICON:  // Kikubaaqudgha special</a>
+<a name="ln215">    case BOOK_MANUAL:</a>
+<a name="ln216">        return 20;</a>
+<a name="ln217"> </a>
+<a name="ln218">    default:</a>
+<a name="ln219">        return 1;</a>
+<a name="ln220">    }</a>
+<a name="ln221">}</a>
+<a name="ln222"> </a>
+<a name="ln223">static uint8_t _lowest_rarity[NUM_SPELLS];</a>
+<a name="ln224"> </a>
+<a name="ln225">static const set&lt;book_type&gt; rare_books =</a>
+<a name="ln226">{</a>
+<a name="ln227">    BOOK_ANNIHILATIONS, BOOK_GRAND_GRIMOIRE, BOOK_NECRONOMICON,</a>
+<a name="ln228">};</a>
+<a name="ln229"> </a>
+<a name="ln230">bool is_rare_book(book_type type)</a>
+<a name="ln231">{</a>
+<a name="ln232">    return rare_books.find(type) != rare_books.end();</a>
+<a name="ln233">}</a>
+<a name="ln234"> </a>
+<a name="ln235">void init_spell_rarities()</a>
+<a name="ln236">{</a>
+<a name="ln237">    for (int i = 0; i &lt; NUM_SPELLS; ++i)</a>
+<a name="ln238">        _lowest_rarity[i] = 255;</a>
+<a name="ln239"> </a>
+<a name="ln240">    for (int i = 0; i &lt; NUM_FIXED_BOOKS; ++i)</a>
+<a name="ln241">    {</a>
+<a name="ln242">        const book_type book = static_cast&lt;book_type&gt;(i);</a>
+<a name="ln243">        // Manuals and books of destruction are not even part of this loop.</a>
+<a name="ln244">        if (is_rare_book(book))</a>
+<a name="ln245">            continue;</a>
+<a name="ln246"> </a>
+<a name="ln247">#ifdef DEBUG</a>
+<a name="ln248">        spell_type last = SPELL_NO_SPELL;</a>
+<a name="ln249">#endif</a>
+<a name="ln250">        for (spell_type spell : spellbook_template(book))</a>
+<a name="ln251">        {</a>
+<a name="ln252">#ifdef DEBUG</a>
+<a name="ln253">            ASSERT(spell != SPELL_NO_SPELL);</a>
+<a name="ln254">            if (last != SPELL_NO_SPELL</a>
+<a name="ln255">                &amp;&amp; spell_difficulty(last) &gt; spell_difficulty(spell))</a>
+<a name="ln256">            {</a>
+<a name="ln257">                item_def item;</a>
+<a name="ln258">                item.base_type = OBJ_BOOKS;</a>
+<a name="ln259">                item.sub_type  = i;</a>
+<a name="ln260"> </a>
+<a name="ln261">                end(1, false, &quot;Spellbook '%s' has spells out of level order &quot;</a>
+<a name="ln262">                    &quot;('%s' is before '%s')&quot;,</a>
+<a name="ln263">                    item.name(DESC_PLAIN, false, true).c_str(),</a>
+<a name="ln264">                    spell_title(last),</a>
+<a name="ln265">                    spell_title(spell));</a>
+<a name="ln266">            }</a>
+<a name="ln267">            last = spell;</a>
+<a name="ln268"> </a>
+<a name="ln269">            spell_flags flags = get_spell_flags(spell);</a>
+<a name="ln270"> </a>
+<a name="ln271">            if (flags &amp; (spflag::monster | spflag::testing))</a>
+<a name="ln272">            {</a>
+<a name="ln273">                item_def item;</a>
+<a name="ln274">                item.base_type = OBJ_BOOKS;</a>
+<a name="ln275">                item.sub_type  = i;</a>
+<a name="ln276"> </a>
+<a name="ln277">                end(1, false, &quot;Spellbook '%s' contains invalid spell &quot;</a>
+<a name="ln278">                             &quot;'%s'&quot;,</a>
+<a name="ln279">                    item.name(DESC_PLAIN, false, true).c_str(),</a>
+<a name="ln280">                    spell_title(spell));</a>
+<a name="ln281">            }</a>
+<a name="ln282">#endif</a>
+<a name="ln283"> </a>
+<a name="ln284">            const int rarity = book_rarity(book);</a>
+<a name="ln285">            if (rarity &lt; _lowest_rarity[spell])</a>
+<a name="ln286">                _lowest_rarity[spell] = rarity;</a>
+<a name="ln287">        }</a>
+<a name="ln288">    }</a>
+<a name="ln289">}</a>
+<a name="ln290"> </a>
+<a name="ln291">bool is_player_spell(spell_type which_spell)</a>
+<a name="ln292">{</a>
+<a name="ln293">    for (int i = 0; i &lt; NUM_FIXED_BOOKS; ++i)</a>
+<a name="ln294">        for (spell_type spell : spellbook_template(static_cast&lt;book_type&gt;(i)))</a>
+<a name="ln295">            if (spell == which_spell)</a>
+<a name="ln296">                return true;</a>
+<a name="ln297">    return false;</a>
+<a name="ln298">}</a>
+<a name="ln299"> </a>
+<a name="ln300">int spell_rarity(spell_type which_spell)</a>
+<a name="ln301">{</a>
+<a name="ln302">    const int rarity = _lowest_rarity[which_spell];</a>
+<a name="ln303"> </a>
+<a name="ln304">    if (rarity == 255)</a>
+<a name="ln305">        return -1;</a>
+<a name="ln306"> </a>
+<a name="ln307">    return rarity;</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">void read_book(item_def &amp;book)</a>
+<a name="ln311">{</a>
+<a name="ln312">    describe_item(book);</a>
+<a name="ln313">}</a>
+<a name="ln314"> </a>
+<a name="ln315">/**</a>
+<a name="ln316"> * Is the player ever allowed to memorise the given spell? (Based on race, not</a>
+<a name="ln317"> * spell slot restrictions, etc)</a>
+<a name="ln318"> *</a>
+<a name="ln319"> * @param spell     The type of spell in question.</a>
+<a name="ln320"> * @return          Whether the the player is allowed to memorise the spell.</a>
+<a name="ln321"> */</a>
+<a name="ln322">bool you_can_memorise(spell_type spell)</a>
+<a name="ln323">{</a>
+<a name="ln324">    return !spell_is_useless(spell, false, true);</a>
+<a name="ln325">}</a>
+<a name="ln326"> </a>
+<a name="ln327">bool player_can_memorise(const item_def &amp;book)</a>
+<a name="ln328">{</a>
+<a name="ln329">    if (!item_is_spellbook(book) || !player_spell_levels())</a>
+<a name="ln330">        return false;</a>
+<a name="ln331"> </a>
+<a name="ln332">    for (spell_type stype : spells_in_book(book))</a>
+<a name="ln333">    {</a>
+<a name="ln334">        // Easiest spell already too difficult?</a>
+<a name="ln335">        if (spell_difficulty(stype) &gt; you.experience_level</a>
+<a name="ln336">            || player_spell_levels() &lt; spell_levels_required(stype))</a>
+<a name="ln337">        {</a>
+<a name="ln338">            return false;</a>
+<a name="ln339">        }</a>
+<a name="ln340"> </a>
+<a name="ln341">        if (!you.has_spell(stype))</a>
+<a name="ln342">            return true;</a>
+<a name="ln343">    }</a>
+<a name="ln344">    return false;</a>
+<a name="ln345">}</a>
+<a name="ln346"> </a>
+<a name="ln347">/**</a>
+<a name="ln348"> * Populate the given list with all spells the player can currently memorise,</a>
+<a name="ln349"> * from library or Vehumet. Does not filter by currently known spells, spell</a>
+<a name="ln350"> * levels, etc.</a>
+<a name="ln351"> *</a>
+<a name="ln352"> * @param available_spells  A list to be populated with available spells.</a>
+<a name="ln353"> */</a>
+<a name="ln354">static void _list_available_spells(spell_set &amp;available_spells)</a>
+<a name="ln355">{</a>
+<a name="ln356">    for (spell_type st = SPELL_NO_SPELL; st &lt; NUM_SPELLS; st++)</a>
+<a name="ln357">    {</a>
+<a name="ln358">        if (you.spell_library[st])</a>
+<a name="ln359">            available_spells.insert(st);</a>
+<a name="ln360">    }</a>
+<a name="ln361"> </a>
+<a name="ln362">    // Handle Vehumet gifts</a>
+<a name="ln363">    for (auto gift : you.vehumet_gifts)</a>
+<a name="ln364">        available_spells.insert(gift);</a>
+<a name="ln365">}</a>
+<a name="ln366"> </a>
+<a name="ln367">bool player_has_available_spells()</a>
+<a name="ln368">{</a>
+<a name="ln369">    spell_set available_spells;</a>
+<a name="ln370">    _list_available_spells(available_spells);</a>
+<a name="ln371"> </a>
+<a name="ln372">    const int avail_slots = player_spell_levels();</a>
+<a name="ln373"> </a>
+<a name="ln374">    for (const spell_type spell : available_spells)</a>
+<a name="ln375">    {</a>
+<a name="ln376">        if (!you.has_spell(spell) &amp;&amp; you_can_memorise(spell)</a>
+<a name="ln377">            &amp;&amp; spell_difficulty(spell) &lt;= avail_slots</a>
+<a name="ln378">            &amp;&amp; spell_difficulty(spell) &lt;= you.experience_level)</a>
+<a name="ln379">        {</a>
+<a name="ln380">            return true;</a>
+<a name="ln381">        }</a>
+<a name="ln382">    }</a>
+<a name="ln383">    return false;</a>
+<a name="ln384">}</a>
+<a name="ln385"> </a>
+<a name="ln386">static spell_list _get_spell_list(bool just_check = false,</a>
+<a name="ln387">                                  bool memorise_only = true)</a>
+<a name="ln388">{</a>
+<a name="ln389">    spell_list mem_spells;</a>
+<a name="ln390">    spell_set available_spells;</a>
+<a name="ln391">    _list_available_spells(available_spells);</a>
+<a name="ln392"> </a>
+<a name="ln393">    if (available_spells.empty())</a>
+<a name="ln394">    {</a>
+<a name="ln395">        if (!just_check)</a>
+<a name="ln396">            mprf(MSGCH_PROMPT, &quot;Your library has no spells.&quot;);</a>
+<a name="ln397">        return mem_spells;</a>
+<a name="ln398">    }</a>
+<a name="ln399"> </a>
+<a name="ln400">    int num_known      = 0;</a>
+<a name="ln401">    int num_misc       = 0;</a>
+<a name="ln402">    int num_restricted = 0;</a>
+<a name="ln403">    int num_low_xl     = 0;</a>
+<a name="ln404">    int num_low_levels = 0;</a>
+<a name="ln405">    int num_memable    = 0;</a>
+<a name="ln406"> </a>
+<a name="ln407">    for (const spell_type spell : available_spells)</a>
+<a name="ln408">    {</a>
+<a name="ln409">        if (you.has_spell(spell))</a>
+<a name="ln410">        {</a>
+<a name="ln411">            num_known++;</a>
+<a name="ln412"> </a>
+<a name="ln413">            // Divine Exegesis includes spells the player already knows.</a>
+<a name="ln414">            if (you.divine_exegesis)</a>
+<a name="ln415">                mem_spells.emplace_back(spell);</a>
+<a name="ln416">        }</a>
+<a name="ln417">        else if (!you_can_memorise(spell))</a>
+<a name="ln418">        {</a>
+<a name="ln419">            if (!memorise_only)</a>
+<a name="ln420">                mem_spells.emplace_back(spell);</a>
+<a name="ln421"> </a>
+<a name="ln422">            if (cannot_use_schools(get_spell_disciplines(spell)))</a>
+<a name="ln423">                num_restricted++;</a>
+<a name="ln424">            else</a>
+<a name="ln425">                num_misc++;</a>
+<a name="ln426">        }</a>
+<a name="ln427">        else</a>
+<a name="ln428">        {</a>
+<a name="ln429">            mem_spells.emplace_back(spell);</a>
+<a name="ln430"> </a>
+<a name="ln431">            const int avail_slots = player_spell_levels();</a>
+<a name="ln432"> </a>
+<a name="ln433">            // don't filter out spells that are too high-level for us; we</a>
+<a name="ln434">            // probably still want to see them. (since that's temporary.)</a>
+<a name="ln435"> </a>
+<a name="ln436">            if (mem_spells.back().difficulty &gt; you.experience_level)</a>
+<a name="ln437">                num_low_xl++;</a>
+<a name="ln438">            else if (avail_slots &lt; mem_spells.back().level)</a>
+<a name="ln439">                num_low_levels++;</a>
+<a name="ln440">            else</a>
+<a name="ln441">                num_memable++;</a>
+<a name="ln442">        }</a>
+<a name="ln443">    }</a>
+<a name="ln444"> </a>
+<a name="ln445">    const int total = num_known + num_misc + num_low_xl + num_low_levels</a>
+<a name="ln446">                      + num_restricted;</a>
+<a name="ln447"> </a>
+<a name="ln448">    const char* unavail_reason;</a>
+<a name="ln449"> </a>
+<a name="ln450">    if (num_memable || num_low_levels &gt; 0 || num_low_xl &gt; 0)</a>
+<a name="ln451">        unavail_reason = &quot;&quot;;</a>
+<a name="ln452">    else if (num_known == total)</a>
+<a name="ln453">        unavail_reason = &quot;You already know all available spells.&quot;;</a>
+<a name="ln454">    else if (num_restricted == total || num_restricted + num_known == total)</a>
+<a name="ln455">    {</a>
+<a name="ln456">        unavail_reason = &quot;You cannot currently memorise any of the available &quot;</a>
+<a name="ln457">                         &quot;spells because you cannot use those schools of &quot;</a>
+<a name="ln458">                         &quot;magic.&quot;;</a>
+<a name="ln459">    }</a>
+<a name="ln460">    else if (num_misc == total || (num_known + num_misc) == total</a>
+<a name="ln461">             || num_misc + num_known + num_restricted == total)</a>
+<a name="ln462">    {</a>
+<a name="ln463">        unavail_reason = &quot;You cannot memorise any of the available spells.&quot;;</a>
+<a name="ln464">    }</a>
+<a name="ln465">    else</a>
+<a name="ln466">    {</a>
+<a name="ln467">        unavail_reason = &quot;You can't memorise any new spells for an unknown &quot;</a>
+<a name="ln468">                         &quot;reason; please file a bug report.&quot;;</a>
+<a name="ln469">    }</a>
+<a name="ln470"> </a>
+<a name="ln471">    if (!just_check &amp;&amp; *unavail_reason)</a>
+<a name="ln472">        mprf(MSGCH_PROMPT, &quot;%s&quot;, unavail_reason);</a>
+<a name="ln473">    return mem_spells;</a>
+<a name="ln474">}</a>
+<a name="ln475"> </a>
+<a name="ln476">bool has_spells_to_memorise(bool silent)</a>
+<a name="ln477">{</a>
+<a name="ln478">    // TODO: this is a bit dumb</a>
+<a name="ln479">    spell_list mem_spells(_get_spell_list(silent, true));</a>
+<a name="ln480">    return !mem_spells.empty();</a>
+<a name="ln481">}</a>
+<a name="ln482"> </a>
+<a name="ln483">static bool _sort_mem_spells(const sortable_spell &amp;a, const sortable_spell &amp;b)</a>
+<a name="ln484">{</a>
+<a name="ln485">    // Put unmemorisable spells last</a>
+<a name="ln486">    const bool mem_a = you_can_memorise(a.spell);</a>
+<a name="ln487">    const bool mem_b = you_can_memorise(b.spell);</a>
+<a name="ln488">    if (mem_a != mem_b)</a>
+<a name="ln489">        return mem_a;</a>
+<a name="ln490"> </a>
+<a name="ln491">    // List the Vehumet gifts at the very top.</a>
+<a name="ln492">    const bool offering_a = vehumet_is_offering(a.spell);</a>
+<a name="ln493">    const bool offering_b = vehumet_is_offering(b.spell);</a>
+<a name="ln494">    if (offering_a != offering_b)</a>
+<a name="ln495">        return offering_a;</a>
+<a name="ln496"> </a>
+<a name="ln497">    // List spells we can memorise right away first.</a>
+<a name="ln498">    const int player_levels = player_spell_levels();</a>
+<a name="ln499">    if (player_levels &gt;= a.level &amp;&amp; player_spell_levels() &lt; b.level)</a>
+<a name="ln500">        return true;</a>
+<a name="ln501">    else if (player_spell_levels() &lt; a.level &amp;&amp; player_spell_levels() &gt;= b.level)</a>
+<a name="ln502">        return false;</a>
+<a name="ln503"> </a>
+<a name="ln504">    // Don't sort by failure rate beyond what the player can see in the</a>
+<a name="ln505">    // success descriptions.</a>
+<a name="ln506">    if (a.fail_rate != b.fail_rate)</a>
+<a name="ln507">        return a.fail_rate &lt; b.fail_rate;</a>
+<a name="ln508"> </a>
+<a name="ln509">    if (a.difficulty != b.difficulty)</a>
+<a name="ln510">        return a.difficulty &lt; b.difficulty;</a>
+<a name="ln511"> </a>
+<a name="ln512">    return strcasecmp(spell_title(a.spell), spell_title(b.spell)) &lt; 0;</a>
+<a name="ln513">}</a>
+<a name="ln514"> </a>
+<a name="ln515">static bool _sort_divine_spells(const sortable_spell &amp;a, const sortable_spell &amp;b)</a>
+<a name="ln516">{</a>
+<a name="ln517">    // Put useless spells last</a>
+<a name="ln518">    const bool useful_a = !spell_is_useless(a.spell, true, true);</a>
+<a name="ln519">    const bool useful_b = !spell_is_useless(b.spell, true, true);</a>
+<a name="ln520">    if (useful_a != useful_b)</a>
+<a name="ln521">        return useful_a;</a>
+<a name="ln522"> </a>
+<a name="ln523">    // Put higher levels spells first, as they're more likely to be what we</a>
+<a name="ln524">    // want.</a>
+<a name="ln525">    if (a.difficulty != b.difficulty)</a>
+<a name="ln526">        return a.difficulty &gt; b.difficulty;</a>
+<a name="ln527"> </a>
+<a name="ln528">    return strcasecmp(spell_title(a.spell), spell_title(b.spell)) &lt; 0;</a>
+<a name="ln529">}</a>
+<a name="ln530"> </a>
+<a name="ln531">vector&lt;spell_type&gt; get_sorted_spell_list(bool silent, bool memorise_only)</a>
+<a name="ln532">{</a>
+<a name="ln533">    spell_list mem_spells(_get_spell_list(silent, memorise_only));</a>
+<a name="ln534"> </a>
+<a name="ln535">    if (you.divine_exegesis)</a>
+<a name="ln536">        sort(mem_spells.begin(), mem_spells.end(), _sort_divine_spells);</a>
+<a name="ln537">    else</a>
+<a name="ln538">        sort(mem_spells.begin(), mem_spells.end(), _sort_mem_spells);</a>
+<a name="ln539"> </a>
+<a name="ln540">    vector&lt;spell_type&gt; result;</a>
+<a name="ln541">    for (auto s : mem_spells)</a>
+<a name="ln542">        result.push_back(s.spell);</a>
+<a name="ln543"> </a>
+<a name="ln544">    return result;</a>
+<a name="ln545">}</a>
+<a name="ln546"> </a>
+<a name="ln547">class SpellLibraryMenu : public Menu</a>
+<a name="ln548">{</a>
+<a name="ln549">public:</a>
+<a name="ln550">    enum class action { cast, memorise, describe, hide, unhide } current_action;</a>
+<a name="ln551"> </a>
+<a name="ln552">protected:</a>
+<a name="ln553">    virtual formatted_string calc_title() override</a>
+<a name="ln554">    {</a>
+<a name="ln555">        return formatted_string::parse_string(</a>
+<a name="ln556">                    make_stringf(&quot;&lt;w&gt;Spells %s                 Type                          %sLevel&quot;,</a>
+<a name="ln557">                        current_action == action::cast ? &quot;(Cast)&quot; :</a>
+<a name="ln558">                        current_action == action::memorise ? &quot;(Memorise)&quot; :</a>
+<a name="ln559">                        current_action == action::describe ? &quot;(Describe)&quot; :</a>
+<a name="ln560">                        current_action == action::hide ? &quot;(Hide)    &quot; :</a>
+<a name="ln561">                            &quot;(Show)    &quot;,</a>
+<a name="ln562">                        you.divine_exegesis ? &quot;&quot; : &quot;Failure  &quot;));</a>
+<a name="ln563">    }</a>
+<a name="ln564"> </a>
+<a name="ln565">private:</a>
+<a name="ln566">    spell_list&amp; spells;</a>
+<a name="ln567">    string spell_levels_str;</a>
+<a name="ln568">    string search_text;</a>
+<a name="ln569">    int hidden_count;</a>
+<a name="ln570"> </a>
+<a name="ln571">    void update_more()</a>
+<a name="ln572">    {</a>
+<a name="ln573">        // TODO: convert this all to widgets</a>
+<a name="ln574">        ostringstream desc;</a>
+<a name="ln575"> </a>
+<a name="ln576">        // line 1</a>
+<a name="ln577">        desc &lt;&lt; spell_levels_str &lt;&lt; &quot;    &quot;;</a>
+<a name="ln578">        if (search_text.size())</a>
+<a name="ln579">        {</a>
+<a name="ln580">            // TODO: couldn't figure out how to do this in pure c++</a>
+<a name="ln581">            const string match_text = make_stringf(&quot;Matches: '&lt;w&gt;%.20s&lt;/w&gt;'&quot;,</a>
+<a name="ln582">                            replace_all(search_text, &quot;&lt;&quot;, &quot;&lt;&lt;&quot;).c_str());</a>
+<a name="ln583">            int escaped_count = (int) std::count(search_text.begin(),</a>
+<a name="ln584">                                                    search_text.end(), '&lt;');</a>
+<a name="ln585">            // the width here is a bit complicated because it needs to ignore</a>
+<a name="ln586">            // any color codes and escaped '&lt;'s.</a>
+<a name="ln587">            desc &lt;&lt; std::left &lt;&lt; std::setw(43 + escaped_count) &lt;&lt; match_text;</a>
+<a name="ln588">        }</a>
+<a name="ln589">        else</a>
+<a name="ln590">            desc &lt;&lt; std::setw(36) &lt;&lt; &quot;&quot;;</a>
+<a name="ln591">        if (hidden_count)</a>
+<a name="ln592">        {</a>
+<a name="ln593">            desc &lt;&lt; std::right &lt;&lt; std::setw(hidden_count == 1 ? 3 : 2)</a>
+<a name="ln594">                 &lt;&lt; hidden_count</a>
+<a name="ln595">                 &lt;&lt; (hidden_count &gt; 1 ? &quot; spells&quot; : &quot; spell&quot;)</a>
+<a name="ln596">                 &lt;&lt; &quot; hidden&quot;;</a>
+<a name="ln597">        }</a>
+<a name="ln598">        desc &lt;&lt; &quot;\n&quot;;</a>
+<a name="ln599"> </a>
+<a name="ln600">        const string act = you.divine_exegesis ? &quot;Cast&quot; : &quot;Memorise&quot;;</a>
+<a name="ln601">        // line 2</a>
+<a name="ln602">        desc &lt;&lt; &quot;[&lt;yellow&gt;?&lt;/yellow&gt;] help                &quot;</a>
+<a name="ln603">                &quot;[&lt;yellow&gt;Ctrl-f&lt;/yellow&gt;] search      &quot;</a>
+<a name="ln604">                &quot;[&lt;yellow&gt;!&lt;/yellow&gt;] &quot;;</a>
+<a name="ln605">        desc &lt;&lt; ( current_action == action::cast</a>
+<a name="ln606">                            ? &quot;&lt;w&gt;Cast&lt;/w&gt;|Describe|Hide|Show&quot;</a>
+<a name="ln607">                 : current_action == action::memorise</a>
+<a name="ln608">                            ? &quot;&lt;w&gt;Memorise&lt;/w&gt;|Describe|Hide|Show&quot;</a>
+<a name="ln609">                 : current_action == action::describe</a>
+<a name="ln610">                            ? act + &quot;|&lt;w&gt;Describe&lt;/w&gt;|Hide|Show&quot;</a>
+<a name="ln611">                 : current_action == action::hide</a>
+<a name="ln612">                            ? act + &quot;|Describe|&lt;w&gt;Hide&lt;/w&gt;|Show&quot;</a>
+<a name="ln613">                 : act + &quot;|Describe|Hide|&lt;w&gt;Show&lt;/w&gt;&quot;);</a>
+<a name="ln614"> </a>
+<a name="ln615">        set_more(formatted_string::parse_string(desc.str()));</a>
+<a name="ln616">    }</a>
+<a name="ln617"> </a>
+<a name="ln618">    virtual bool process_key(int keyin) override</a>
+<a name="ln619">    {</a>
+<a name="ln620">        bool entries_changed = false;</a>
+<a name="ln621">        switch (keyin)</a>
+<a name="ln622">        {</a>
+<a name="ln623">        case '!':</a>
+<a name="ln624">#ifdef TOUCH_UI</a>
+<a name="ln625">        case CK_TOUCH_DUMMY:</a>
+<a name="ln626">#endif</a>
+<a name="ln627">            switch (current_action)</a>
+<a name="ln628">            {</a>
+<a name="ln629">                case action::cast:</a>
+<a name="ln630">                case action::memorise:</a>
+<a name="ln631">                    current_action = action::describe;</a>
+<a name="ln632">                    entries_changed = true; // need to add hotkeys</a>
+<a name="ln633">                    break;</a>
+<a name="ln634">                case action::describe:</a>
+<a name="ln635">                    current_action = action::hide;</a>
+<a name="ln636">                    break;</a>
+<a name="ln637">                case action::hide:</a>
+<a name="ln638">                    current_action = action::unhide;</a>
+<a name="ln639">                    entries_changed = true;</a>
+<a name="ln640">                    break;</a>
+<a name="ln641">                case action::unhide:</a>
+<a name="ln642">                    current_action = you.divine_exegesis ? action::cast</a>
+<a name="ln643">                                                          : action::memorise;</a>
+<a name="ln644">                    entries_changed = true;</a>
+<a name="ln645">                    break;</a>
+<a name="ln646">            }</a>
+<a name="ln647">            update_title();</a>
+<a name="ln648">            update_more();</a>
+<a name="ln649">            break;</a>
+<a name="ln650"> </a>
+<a name="ln651">        case CONTROL('F'):</a>
+<a name="ln652">        {</a>
+<a name="ln653">            char linebuf[80] = &quot;&quot;;</a>
+<a name="ln654">            const bool validline = title_prompt(linebuf, sizeof linebuf,</a>
+<a name="ln655">                                                &quot;Search for what? (regex) &quot;);</a>
+<a name="ln656">            string old_search = search_text;</a>
+<a name="ln657">            if (validline)</a>
+<a name="ln658">                search_text = linebuf;</a>
+<a name="ln659">            else</a>
+<a name="ln660">                search_text = &quot;&quot;;</a>
+<a name="ln661">            entries_changed = old_search != search_text;</a>
+<a name="ln662">            break;</a>
+<a name="ln663">        }</a>
+<a name="ln664"> </a>
+<a name="ln665">        case '?':</a>
+<a name="ln666">            show_spell_library_help();</a>
+<a name="ln667">            break;</a>
+<a name="ln668">        case CK_MOUSE_B2:</a>
+<a name="ln669">        case CK_MOUSE_CMD:</a>
+<a name="ln670">        CASE_ESCAPE</a>
+<a name="ln671">            if (search_text.size())</a>
+<a name="ln672">            {</a>
+<a name="ln673">                search_text = &quot;&quot;;</a>
+<a name="ln674">                entries_changed = true;</a>
+<a name="ln675">                break;</a>
+<a name="ln676">            }</a>
+<a name="ln677">            // intentional fallthrough if search is empty</a>
+<a name="ln678">        default:</a>
+<a name="ln679">            return Menu::process_key(keyin);</a>
+<a name="ln680">        }</a>
+<a name="ln681"> </a>
+<a name="ln682">        if (entries_changed)</a>
+<a name="ln683">        {</a>
+<a name="ln684">            update_entries();</a>
+<a name="ln685">            update_more();</a>
+<a name="ln686">        }</a>
+<a name="ln687">        return true;</a>
+<a name="ln688">    }</a>
+<a name="ln689"> </a>
+<a name="ln690">    colour_t entry_colour(const sortable_spell&amp; entry)</a>
+<a name="ln691">    {</a>
+<a name="ln692">        if (vehumet_is_offering(entry.spell))</a>
+<a name="ln693">            return LIGHTBLUE;</a>
+<a name="ln694">        else</a>
+<a name="ln695">        {</a>
+<a name="ln696">            return spell_highlight_by_utility(entry.spell, COL_UNKNOWN, false,</a>
+<a name="ln697">                    you.divine_exegesis ? false : true);</a>
+<a name="ln698">        }</a>
+<a name="ln699">    }</a>
+<a name="ln700"> </a>
+<a name="ln701">    // Update the list of spells. If show_hidden is true, show only hidden</a>
+<a name="ln702">    // ones; otherwise, show only non-hidden ones.</a>
+<a name="ln703">    void update_entries()</a>
+<a name="ln704">    {</a>
+<a name="ln705">        clear();</a>
+<a name="ln706">        hidden_count = 0;</a>
+<a name="ln707">        const bool show_hidden = current_action == action::unhide;</a>
+<a name="ln708">        menu_letter hotkey;</a>
+<a name="ln709">        text_pattern pat(search_text, true);</a>
+<a name="ln710">        for (auto&amp; spell : spells)</a>
+<a name="ln711">        {</a>
+<a name="ln712">            if (!search_text.empty()</a>
+<a name="ln713">                &amp;&amp; !pat.matches(spell.name)</a>
+<a name="ln714">                &amp;&amp; !pat.matches(spell.school))</a>
+<a name="ln715">            {</a>
+<a name="ln716">                continue;</a>
+<a name="ln717">            }</a>
+<a name="ln718"> </a>
+<a name="ln719">            const bool spell_hidden = you.hidden_spells.get(spell.spell);</a>
+<a name="ln720"> </a>
+<a name="ln721">            if (spell_hidden)</a>
+<a name="ln722">                hidden_count++;</a>
+<a name="ln723"> </a>
+<a name="ln724">            if (spell_hidden != show_hidden)</a>
+<a name="ln725">                continue;</a>
+<a name="ln726"> </a>
+<a name="ln727">            const int colour = entry_colour(spell);</a>
+<a name="ln728"> </a>
+<a name="ln729">            ostringstream desc;</a>
+<a name="ln730">            desc &lt;&lt; &quot;&lt;&quot; &lt;&lt; colour_to_str(colour) &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln731"> </a>
+<a name="ln732">            desc &lt;&lt; left;</a>
+<a name="ln733">            desc &lt;&lt; chop_string(spell.name, 30);</a>
+<a name="ln734">            desc &lt;&lt; spell.school;</a>
+<a name="ln735"> </a>
+<a name="ln736">            int so_far = strwidth(desc.str()) - (colour_to_str(colour).length()+2);</a>
+<a name="ln737">            if (so_far &lt; 60)</a>
+<a name="ln738">                desc &lt;&lt; string(60 - so_far, ' ');</a>
+<a name="ln739">            desc &lt;&lt; &quot;&lt;/&quot; &lt;&lt; colour_to_str(colour) &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln740"> </a>
+<a name="ln741">            if (!you.divine_exegesis)</a>
+<a name="ln742">            {</a>
+<a name="ln743">                desc &lt;&lt; &quot;&lt;&quot; &lt;&lt; colour_to_str(spell.fail_rate_colour) &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln744">                desc &lt;&lt; chop_string(failure_rate_to_string(spell.raw_fail), 12);</a>
+<a name="ln745">                desc &lt;&lt; &quot;&lt;/&quot; &lt;&lt; colour_to_str(spell.fail_rate_colour) &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln746">            }</a>
+<a name="ln747"> </a>
+<a name="ln748">            desc &lt;&lt; spell.difficulty;</a>
+<a name="ln749"> </a>
+<a name="ln750">            MenuEntry* me = new MenuEntry(desc.str(), MEL_ITEM, 1,</a>
+<a name="ln751">            // don't add a hotkey if you can't memorise/cast it</a>
+<a name="ln752">                    (current_action == action::memorise &amp;&amp;</a>
+<a name="ln753">                        !you_can_memorise(spell.spell))</a>
+<a name="ln754">                     || current_action == action::cast &amp;&amp;</a>
+<a name="ln755">                        spell_is_useless(spell.spell, true, true)</a>
+<a name="ln756">                     ? ' ' : char(hotkey));</a>
+<a name="ln757">            // But do increment hotkeys anyway, to keep the hotkeys consistent.</a>
+<a name="ln758">            ++hotkey;</a>
+<a name="ln759"> </a>
+<a name="ln760">            me-&gt;colour = colour;</a>
+<a name="ln761">#ifdef USE_TILE</a>
+<a name="ln762">            me-&gt;add_tile(tile_def(tileidx_spell(spell.spell), TEX_GUI));</a>
+<a name="ln763">#endif</a>
+<a name="ln764"> </a>
+<a name="ln765">            me-&gt;data = &amp;(spell.spell);</a>
+<a name="ln766">            add_entry(me);</a>
+<a name="ln767">        }</a>
+<a name="ln768">        update_menu(true);</a>
+<a name="ln769">    }</a>
+<a name="ln770"> </a>
+<a name="ln771">public:</a>
+<a name="ln772">    SpellLibraryMenu(spell_list&amp; list)</a>
+<a name="ln773">        : Menu(MF_SINGLESELECT | MF_ANYPRINTABLE</a>
+<a name="ln774">               | MF_ALWAYS_SHOW_MORE | MF_ALLOW_FORMATTING</a>
+<a name="ln775">               // To have the ctrl-f menu show up in webtiles</a>
+<a name="ln776">               | MF_ALLOW_FILTER, &quot;spell&quot;),</a>
+<a name="ln777">        current_action(you.divine_exegesis ? action::cast : action::memorise),</a>
+<a name="ln778">        spells(list),</a>
+<a name="ln779">        hidden_count(0)</a>
+<a name="ln780">    {</a>
+<a name="ln781">        set_highlighter(nullptr);</a>
+<a name="ln782">        // Actual text handled by calc_title</a>
+<a name="ln783">        set_title(new MenuEntry(&quot;&quot;), true, true);</a>
+<a name="ln784"> </a>
+<a name="ln785">        if (!you.divine_exegesis)</a>
+<a name="ln786">        {</a>
+<a name="ln787">            spell_levels_str = make_stringf(&quot;&lt;lightgreen&gt;%d spell level%s&quot;</a>
+<a name="ln788">                        &quot;&lt;/lightgreen&gt;&quot;, player_spell_levels(),</a>
+<a name="ln789">                        (player_spell_levels() &gt; 1 || player_spell_levels() == 0)</a>
+<a name="ln790">                                                    ? &quot;s left&quot; : &quot; left &quot;);</a>
+<a name="ln791">            if (player_spell_levels() &lt; 9)</a>
+<a name="ln792">                spell_levels_str += &quot; &quot;;</a>
+<a name="ln793"> </a>
+<a name="ln794">            set_more(formatted_string::parse_string(spell_levels_str + &quot;\n&quot;));</a>
+<a name="ln795">        }</a>
+<a name="ln796"> </a>
+<a name="ln797">#ifdef USE_TILE_LOCAL</a>
+<a name="ln798">        FontWrapper *font = tiles.get_crt_font();</a>
+<a name="ln799">        int title_width = font-&gt;string_width(calc_title());</a>
+<a name="ln800">        m_ui.vbox-&gt;min_size().width = 38 + title_width + 10;</a>
+<a name="ln801">#endif</a>
+<a name="ln802">        m_ui.scroller-&gt;expand_v = true; // TODO: doesn't work on webtiles</a>
+<a name="ln803"> </a>
+<a name="ln804">        update_entries();</a>
+<a name="ln805">        update_more();</a>
+<a name="ln806">        on_single_selection = [this](const MenuEntry&amp; item)</a>
+<a name="ln807">        {</a>
+<a name="ln808">            const spell_type spell = *static_cast&lt;spell_type*&gt;(item.data);</a>
+<a name="ln809">            ASSERT(is_valid_spell(spell));</a>
+<a name="ln810"> </a>
+<a name="ln811">            switch (current_action)</a>
+<a name="ln812">            {</a>
+<a name="ln813">            case action::memorise:</a>
+<a name="ln814">            case action::cast:</a>
+<a name="ln815">                return false;</a>
+<a name="ln816">            case action::describe:</a>
+<a name="ln817">                describe_spell(spell, nullptr);</a>
+<a name="ln818">                break;</a>
+<a name="ln819">            case action::hide:</a>
+<a name="ln820">            case action::unhide:</a>
+<a name="ln821">                you.hidden_spells.set(spell, !you.hidden_spells.get(spell));</a>
+<a name="ln822">                update_entries();</a>
+<a name="ln823">                update_menu(true);</a>
+<a name="ln824">                update_more();</a>
+<a name="ln825">                break;</a>
+<a name="ln826">            }</a>
+<a name="ln827">            return true;</a>
+<a name="ln828">        };</a>
+<a name="ln829">    }</a>
+<a name="ln830">};</a>
+<a name="ln831"> </a>
+<a name="ln832">static spell_type _choose_mem_spell(spell_list &amp;spells)</a>
+<a name="ln833">{</a>
+<a name="ln834">    // If we've gotten this far, we know that at least one spell here is</a>
+<a name="ln835">    // memorisable, which is enough.</a>
+<a name="ln836"> </a>
+<a name="ln837">    SpellLibraryMenu spell_menu(spells);</a>
+<a name="ln838"> </a>
+<a name="ln839">    const vector&lt;MenuEntry*&gt; sel = spell_menu.show();</a>
+<a name="ln840">    if (!crawl_state.doing_prev_cmd_again)</a>
+<a name="ln841">        redraw_screen();</a>
+<a name="ln842">    if (sel.empty())</a>
+<a name="ln843">        return SPELL_NO_SPELL;</a>
+<a name="ln844">    const spell_type spell = *static_cast&lt;spell_type*&gt;(sel[0]-&gt;data);</a>
+<a name="ln845">    ASSERT(is_valid_spell(spell));</a>
+<a name="ln846">    return spell;</a>
+<a name="ln847">}</a>
+<a name="ln848"> </a>
+<a name="ln849">bool can_learn_spell(bool silent)</a>
+<a name="ln850">{</a>
+<a name="ln851">    if (you.duration[DUR_BRAINLESS])</a>
+<a name="ln852">    {</a>
+<a name="ln853">        if (!silent)</a>
+<a name="ln854">            mpr(&quot;Your brain is not functional enough to learn spells.&quot;);</a>
+<a name="ln855">        return false;</a>
+<a name="ln856">    }</a>
+<a name="ln857"> </a>
+<a name="ln858">    if (you.confused())</a>
+<a name="ln859">    {</a>
+<a name="ln860">        if (!silent)</a>
+<a name="ln861">            canned_msg(MSG_TOO_CONFUSED);</a>
+<a name="ln862">        return false;</a>
+<a name="ln863">    }</a>
+<a name="ln864"> </a>
+<a name="ln865">    if (you.berserk())</a>
+<a name="ln866">    {</a>
+<a name="ln867">        if (!silent)</a>
+<a name="ln868">            canned_msg(MSG_TOO_BERSERK);</a>
+<a name="ln869">        return false;</a>
+<a name="ln870">    }</a>
+<a name="ln871"> </a>
+<a name="ln872">    return true;</a>
+<a name="ln873">}</a>
+<a name="ln874"> </a>
+<a name="ln875">bool learn_spell()</a>
+<a name="ln876">{</a>
+<a name="ln877">    spell_list spells(_get_spell_list());</a>
+<a name="ln878">    if (spells.empty())</a>
+<a name="ln879">        return false;</a>
+<a name="ln880"> </a>
+<a name="ln881">    sort(spells.begin(), spells.end(), _sort_mem_spells);</a>
+<a name="ln882"> </a>
+<a name="ln883">    spell_type specspell = _choose_mem_spell(spells);</a>
+<a name="ln884"> </a>
+<a name="ln885">    if (specspell == SPELL_NO_SPELL)</a>
+<a name="ln886">    {</a>
+<a name="ln887">        canned_msg(MSG_OK);</a>
+<a name="ln888">        return false;</a>
+<a name="ln889">    }</a>
+<a name="ln890"> </a>
+<a name="ln891">    return learn_spell(specspell);</a>
+<a name="ln892">}</a>
+<a name="ln893"> </a>
+<a name="ln894">/**</a>
+<a name="ln895"> * Why can't the player memorise the given spell?</a>
+<a name="ln896"> *</a>
+<a name="ln897"> * @param spell     The spell in question.</a>
+<a name="ln898"> * @return          A string describing (one of) the reason(s) the player</a>
+<a name="ln899"> *                  can't memorise this spell.</a>
+<a name="ln900"> */</a>
+<a name="ln901">string desc_cannot_memorise_reason(spell_type spell)</a>
+<a name="ln902">{</a>
+<a name="ln903">    return spell_uselessness_reason(spell, false, true);</a>
+<a name="ln904">}</a>
+<a name="ln905"> </a>
+<a name="ln906">/**</a>
+<a name="ln907"> * Can the player learn the given spell?</a>
+<a name="ln908"> *</a>
+<a name="ln909"> * @param   specspell  The spell to be learned.</a>
+<a name="ln910"> * @param   wizard     Whether to skip some checks for wizmode memorisation.</a>
+<a name="ln911"> * @return             false if the player can't learn the spell for any</a>
+<a name="ln912"> *                     reason, true otherwise.</a>
+<a name="ln913">*/</a>
+<a name="ln914">static bool _learn_spell_checks(spell_type specspell, bool wizard = false)</a>
+<a name="ln915">{</a>
+<a name="ln916">    if (spell_removed(specspell))</a>
+<a name="ln917">    {</a>
+<a name="ln918">        mpr(&quot;Sorry, this spell is gone!&quot;);</a>
+<a name="ln919">        return false;</a>
+<a name="ln920">    }</a>
+<a name="ln921"> </a>
+<a name="ln922">    if (!wizard &amp;&amp; !can_learn_spell())</a>
+<a name="ln923">        return false;</a>
+<a name="ln924"> </a>
+<a name="ln925">    if (already_learning_spell((int) specspell))</a>
+<a name="ln926">        return false;</a>
+<a name="ln927"> </a>
+<a name="ln928">    if (!you_can_memorise(specspell))</a>
+<a name="ln929">    {</a>
+<a name="ln930">        mpr(desc_cannot_memorise_reason(specspell));</a>
+<a name="ln931">        return false;</a>
+<a name="ln932">    }</a>
+<a name="ln933"> </a>
+<a name="ln934">    if (you.has_spell(specspell))</a>
+<a name="ln935">    {</a>
+<a name="ln936">        mpr(&quot;You already know that spell!&quot;);</a>
+<a name="ln937">        return false;</a>
+<a name="ln938">    }</a>
+<a name="ln939"> </a>
+<a name="ln940">    if (you.spell_no &gt;= MAX_KNOWN_SPELLS)</a>
+<a name="ln941">    {</a>
+<a name="ln942">        mpr(&quot;Your head is already too full of spells!&quot;);</a>
+<a name="ln943">        return false;</a>
+<a name="ln944">    }</a>
+<a name="ln945"> </a>
+<a name="ln946">    if (you.experience_level &lt; spell_difficulty(specspell) &amp;&amp; !wizard)</a>
+<a name="ln947">    {</a>
+<a name="ln948">        mpr(&quot;You're too inexperienced to learn that spell!&quot;);</a>
+<a name="ln949">        return false;</a>
+<a name="ln950">    }</a>
+<a name="ln951"> </a>
+<a name="ln952">    if (player_spell_levels() &lt; spell_levels_required(specspell) &amp;&amp; !wizard)</a>
+<a name="ln953">    {</a>
+<a name="ln954">        mpr(&quot;You can't memorise that many levels of magic yet!&quot;);</a>
+<a name="ln955">        return false;</a>
+<a name="ln956">    }</a>
+<a name="ln957"> </a>
+<a name="ln958">    return true;</a>
+<a name="ln959">}</a>
+<a name="ln960"> </a>
+<a name="ln961">/**</a>
+<a name="ln962"> * Attempt to make the player learn the given spell.</a>
+<a name="ln963"> *</a>
+<a name="ln964"> * @param   specspell  The spell to be learned.</a>
+<a name="ln965"> * @param   wizard     Whether to memorise instantly and skip some checks for</a>
+<a name="ln966"> *                     wizmode memorisation.</a>
+<a name="ln967"> * @return             true if the player learned the spell, false</a>
+<a name="ln968"> *                     otherwise.</a>
+<a name="ln969">*/</a>
+<a name="ln970">bool learn_spell(spell_type specspell, bool wizard)</a>
+<a name="ln971">{</a>
+<a name="ln972">    if (!_learn_spell_checks(specspell, wizard))</a>
+<a name="ln973">        return false;</a>
+<a name="ln974"> </a>
+<a name="ln975">    string mem_spell_warning_string = god_spell_warn_string(specspell, you.religion);</a>
+<a name="ln976"> </a>
+<a name="ln977">    if (!mem_spell_warning_string.empty())</a>
+<a name="ln978">        mprf(MSGCH_WARN, &quot;%s&quot;, mem_spell_warning_string.c_str());</a>
+<a name="ln979"> </a>
+<a name="ln980">    if (!wizard)</a>
+<a name="ln981">    {</a>
+<a name="ln982">        if (specspell == SPELL_OZOCUBUS_ARMOUR</a>
+<a name="ln983">            &amp;&amp; !player_effectively_in_light_armour())</a>
+<a name="ln984">        {</a>
+<a name="ln985">            mprf(MSGCH_WARN,</a>
+<a name="ln986">                 &quot;Your armour is too heavy for you to cast this spell!&quot;);</a>
+<a name="ln987">        }</a>
+<a name="ln988"> </a>
+<a name="ln989">        const int severity = fail_severity(specspell);</a>
+<a name="ln990"> </a>
+<a name="ln991">        if (raw_spell_fail(specspell) &gt;= 100 &amp;&amp; !vehumet_is_offering(specspell))</a>
+<a name="ln992">            mprf(MSGCH_WARN, &quot;This spell is impossible to cast!&quot;);</a>
+<a name="ln993">        else if (severity &gt; 0)</a>
+<a name="ln994">        {</a>
+<a name="ln995">            mprf(MSGCH_WARN, &quot;This spell is %s to cast%s&quot;,</a>
+<a name="ln996">                             fail_severity_adjs[severity],</a>
+<a name="ln997">                             severity &gt; 1 ? &quot;!&quot; : &quot;.&quot;);</a>
+<a name="ln998">        }</a>
+<a name="ln999">    }</a>
+<a name="ln1000"> </a>
+<a name="ln1001">    const string prompt = make_stringf(</a>
+<a name="ln1002">             &quot;Memorise %s, consuming %d spell level%s and leaving %d?&quot;,</a>
+<a name="ln1003">             spell_title(specspell), spell_levels_required(specspell),</a>
+<a name="ln1004">             spell_levels_required(specspell) != 1 ? &quot;s&quot; : &quot;&quot;,</a>
+<a name="ln1005">             player_spell_levels() - spell_levels_required(specspell));</a>
+<a name="ln1006"> </a>
+<a name="ln1007">    if (!yesno(prompt.c_str(), true, 'n', false))</a>
+<a name="ln1008">    {</a>
+<a name="ln1009">        canned_msg(MSG_OK);</a>
+<a name="ln1010">        return false;</a>
+<a name="ln1011">    }</a>
+<a name="ln1012"> </a>
+<a name="ln1013">    if (wizard)</a>
+<a name="ln1014">        add_spell_to_memory(specspell);</a>
+<a name="ln1015">    else</a>
+<a name="ln1016">    {</a>
+<a name="ln1017">        if (!already_learning_spell(specspell))</a>
+<a name="ln1018">            start_delay&lt;MemoriseDelay&gt;(spell_difficulty(specspell), specspell);</a>
+<a name="ln1019">        you.turn_is_over = true;</a>
+<a name="ln1020"> </a>
+<a name="ln1021">        did_god_conduct(DID_SPELL_CASTING, 2 + random2(5));</a>
+<a name="ln1022">    }</a>
+<a name="ln1023"> </a>
+<a name="ln1024">    return true;</a>
+<a name="ln1025">}</a>
+<a name="ln1026"> </a>
+<a name="ln1027">bool book_has_title(const item_def &amp;book)</a>
+<a name="ln1028">{</a>
+<a name="ln1029">    ASSERT(book.base_type == OBJ_BOOKS);</a>
+<a name="ln1030"> </a>
+<a name="ln1031">    if (!is_artefact(book))</a>
+<a name="ln1032">        return false;</a>
+<a name="ln1033"> </a>
+<a name="ln1034">    return book.props.exists(BOOK_TITLED_KEY)</a>
+<a name="ln1035">           &amp;&amp; book.props[BOOK_TITLED_KEY].get_bool() == true;</a>
+<a name="ln1036">}</a>
+<a name="ln1037"> </a>
+<a name="ln1038">spret divine_exegesis(bool fail)</a>
+<a name="ln1039">{</a>
+<a name="ln1040">    unwind_var&lt;bool&gt; dk(you.divine_exegesis, true);</a>
+<a name="ln1041"> </a>
+<a name="ln1042">    spell_list spells(_get_spell_list(true, true));</a>
+<a name="ln1043">    if (spells.empty())</a>
+<a name="ln1044">    {</a>
+<a name="ln1045">        mpr(&quot;You don't know of any spells!&quot;);</a>
+<a name="ln1046">        return spret::abort;</a>
+<a name="ln1047">    }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">    sort(spells.begin(), spells.end(), _sort_divine_spells);</a>
+<a name="ln1050">    // If we've gotten this far, we know at least one useful spell.</a>
+<a name="ln1051"> </a>
+<a name="ln1052">    SpellLibraryMenu spell_menu(spells);</a>
+<a name="ln1053"> </a>
+<a name="ln1054">    const vector&lt;MenuEntry*&gt; sel = spell_menu.show();</a>
+<a name="ln1055">    if (!crawl_state.doing_prev_cmd_again)</a>
+<a name="ln1056">        redraw_screen();</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    if (sel.empty())</a>
+<a name="ln1059">        return spret::abort;</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    const spell_type spell = *static_cast&lt;spell_type*&gt;(sel[0]-&gt;data);</a>
+<a name="ln1062">    if (spell == SPELL_NO_SPELL)</a>
+<a name="ln1063">        return spret::abort;</a>
+<a name="ln1064"> </a>
+<a name="ln1065">    ASSERT(is_valid_spell(spell));</a>
+<a name="ln1066"> </a>
+<a name="ln1067">    if (fail)</a>
+<a name="ln1068">        return spret::fail;</a>
+<a name="ln1069"> </a>
+<a name="ln1070">    if (cast_a_spell(false, spell))</a>
+<a name="ln1071">        return spret::success;</a>
+<a name="ln1072"> </a>
+<a name="ln1073">    return spret::abort;</a>
+<a name="ln1074">}</a>
+
+</code></pre>
+<div class="balloon" rel="754"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="799"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1053/" target="_blank">V1053</a> Calling the 'calc_title' virtual function in the constructor may lead to unexpected result at runtime.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

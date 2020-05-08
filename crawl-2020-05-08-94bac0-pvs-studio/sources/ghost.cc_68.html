@@ -1,0 +1,892 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ghost.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Player ghost and random Pandemonium demon handling.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;ghost.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;vector&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;act-iter.h&quot;</a>
+<a name="ln13">#include &quot;colour.h&quot;</a>
+<a name="ln14">#include &quot;database.h&quot;</a>
+<a name="ln15">#include &quot;env.h&quot;</a>
+<a name="ln16">#include &quot;god-type.h&quot;</a>
+<a name="ln17">#include &quot;item-name.h&quot;</a>
+<a name="ln18">#include &quot;item-prop.h&quot;</a>
+<a name="ln19">#include &quot;jobs.h&quot;</a>
+<a name="ln20">#include &quot;mon-cast.h&quot;</a>
+<a name="ln21">#include &quot;mon-transit.h&quot;</a>
+<a name="ln22">#include &quot;ng-input.h&quot;</a>
+<a name="ln23">#include &quot;skills.h&quot;</a>
+<a name="ln24">#include &quot;spl-util.h&quot;</a>
+<a name="ln25">#include &quot;state.h&quot;</a>
+<a name="ln26">#include &quot;stringutil.h&quot;</a>
+<a name="ln27">#include &quot;unwind.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29">#define MAX_GHOST_DAMAGE     50</a>
+<a name="ln30">#define MAX_GHOST_HP        400</a>
+<a name="ln31">#define MAX_GHOST_EVASION    60</a>
+<a name="ln32"> </a>
+<a name="ln33">// Pan lord AOE conjuration spell list.</a>
+<a name="ln34">static spell_type search_order_aoe_conj[] =</a>
+<a name="ln35">{</a>
+<a name="ln36">    SPELL_SYMBOL_OF_TORMENT,</a>
+<a name="ln37">    SPELL_FIRE_STORM,</a>
+<a name="ln38">    SPELL_GLACIATE,</a>
+<a name="ln39">    SPELL_CHAIN_LIGHTNING,</a>
+<a name="ln40">    SPELL_FREEZING_CLOUD,</a>
+<a name="ln41">    SPELL_POISONOUS_CLOUD,</a>
+<a name="ln42">    SPELL_METAL_SPLINTERS,</a>
+<a name="ln43">    SPELL_ENERGY_BOLT,</a>
+<a name="ln44">    SPELL_ORB_OF_ELECTRICITY,</a>
+<a name="ln45">};</a>
+<a name="ln46"> </a>
+<a name="ln47">// Pan lord conjuration spell list.</a>
+<a name="ln48">static spell_type search_order_conj[] =</a>
+<a name="ln49">{</a>
+<a name="ln50">    SPELL_CALL_DOWN_DAMNATION,</a>
+<a name="ln51">    SPELL_LEHUDIBS_CRYSTAL_SPEAR,</a>
+<a name="ln52">    SPELL_CORROSIVE_BOLT,</a>
+<a name="ln53">    SPELL_QUICKSILVER_BOLT,</a>
+<a name="ln54">    SPELL_IOOD,</a>
+<a name="ln55">    SPELL_ENERGY_BOLT,</a>
+<a name="ln56">    SPELL_DISINTEGRATE,</a>
+<a name="ln57">    SPELL_BOLT_OF_FIRE,</a>
+<a name="ln58">    SPELL_BOLT_OF_COLD,</a>
+<a name="ln59">    SPELL_IRON_SHOT,</a>
+<a name="ln60">    SPELL_POISON_ARROW,</a>
+<a name="ln61">    SPELL_BOLT_OF_DRAINING,</a>
+<a name="ln62">    SPELL_LIGHTNING_BOLT,</a>
+<a name="ln63">};</a>
+<a name="ln64"> </a>
+<a name="ln65">// Pan lord self-enchantment spell list.</a>
+<a name="ln66">static spell_type search_order_selfench[] =</a>
+<a name="ln67">{</a>
+<a name="ln68">    SPELL_HASTE,</a>
+<a name="ln69">    SPELL_SILENCE,</a>
+<a name="ln70">    SPELL_INVISIBILITY,</a>
+<a name="ln71">    SPELL_BLINK,</a>
+<a name="ln72">    SPELL_BLINKBOLT,</a>
+<a name="ln73">};</a>
+<a name="ln74"> </a>
+<a name="ln75">// Pan lord summoning spell list.</a>
+<a name="ln76">static spell_type search_order_summon[] =</a>
+<a name="ln77">{</a>
+<a name="ln78">    SPELL_HAUNT,</a>
+<a name="ln79">    SPELL_MALIGN_GATEWAY,</a>
+<a name="ln80">    SPELL_SUMMON_DRAGON,</a>
+<a name="ln81">    SPELL_SUMMON_HORRIBLE_THINGS,</a>
+<a name="ln82">    SPELL_SHADOW_CREATURES,</a>
+<a name="ln83">    SPELL_SUMMON_EYEBALLS,</a>
+<a name="ln84">    SPELL_SUMMON_VERMIN, // funny</a>
+<a name="ln85">    SPELL_SUMMON_BUTTERFLIES, // funny</a>
+<a name="ln86">};</a>
+<a name="ln87"> </a>
+<a name="ln88">// Pan lord misc spell list.</a>
+<a name="ln89">static spell_type search_order_misc[] =</a>
+<a name="ln90">{</a>
+<a name="ln91">    SPELL_DISPEL_UNDEAD_RANGE,</a>
+<a name="ln92">    SPELL_PARALYSE,</a>
+<a name="ln93">    SPELL_SLEEP,</a>
+<a name="ln94">    SPELL_MASS_CONFUSION,</a>
+<a name="ln95">    SPELL_DRAIN_MAGIC,</a>
+<a name="ln96">    SPELL_PETRIFY,</a>
+<a name="ln97">    SPELL_POLYMORPH,</a>
+<a name="ln98">    SPELL_FORCE_LANCE,</a>
+<a name="ln99">    SPELL_SLOW,</a>
+<a name="ln100">};</a>
+<a name="ln101"> </a>
+<a name="ln102">ghost_demon::ghost_demon()</a>
+<a name="ln103">{</a>
+<a name="ln104">    reset();</a>
+<a name="ln105">}</a>
+<a name="ln106"> </a>
+<a name="ln107">void ghost_demon::reset()</a>
+<a name="ln108">{</a>
+<a name="ln109">    name.clear();</a>
+<a name="ln110">    species          = SP_UNKNOWN;</a>
+<a name="ln111">    job              = JOB_UNKNOWN;</a>
+<a name="ln112">    religion         = GOD_NO_GOD;</a>
+<a name="ln113">    best_skill       = SK_FIGHTING;</a>
+<a name="ln114">    best_skill_level = 0;</a>
+<a name="ln115">    xl               = 0;</a>
+<a name="ln116">    max_hp           = 0;</a>
+<a name="ln117">    ev               = 0;</a>
+<a name="ln118">    ac               = 0;</a>
+<a name="ln119">    damage           = 0;</a>
+<a name="ln120">    speed            = 10;</a>
+<a name="ln121">    move_energy      = 10;</a>
+<a name="ln122">    see_invis        = false;</a>
+<a name="ln123">    brand            = SPWPN_NORMAL;</a>
+<a name="ln124">    att_type         = AT_HIT;</a>
+<a name="ln125">    att_flav         = AF_PLAIN;</a>
+<a name="ln126">    resists          = 0;</a>
+<a name="ln127">    colour           = COLOUR_UNDEF;</a>
+<a name="ln128">    flies            = false;</a>
+<a name="ln129">}</a>
+<a name="ln130"> </a>
+<a name="ln131">/**</a>
+<a name="ln132"> * Choose a random brand for a pandemonium lord's melee attacks.</a>
+<a name="ln133"> *</a>
+<a name="ln134"> * @return  A random valid brand type (not holy wrath, protection, etc)</a>
+<a name="ln135"> */</a>
+<a name="ln136">static brand_type _random_special_pan_lord_brand()</a>
+<a name="ln137">{</a>
+<a name="ln138">    return random_choose_weighted(10, SPWPN_FLAMING,</a>
+<a name="ln139">                                  10, SPWPN_FREEZING,</a>
+<a name="ln140">                                  10, SPWPN_ELECTROCUTION,</a>
+<a name="ln141">                                  10, SPWPN_VENOM,</a>
+<a name="ln142">                                  // Lower chance</a>
+<a name="ln143">                                  5, SPWPN_DRAINING,</a>
+<a name="ln144">                                  // Higher chance</a>
+<a name="ln145">                                  20, SPWPN_VAMPIRISM,</a>
+<a name="ln146">                                  20, SPWPN_PAIN,</a>
+<a name="ln147">                                  20, SPWPN_ANTIMAGIC,</a>
+<a name="ln148">                                  20, SPWPN_DISTORTION,</a>
+<a name="ln149">                                  20, SPWPN_CHAOS);</a>
+<a name="ln150">}</a>
+<a name="ln151"> </a>
+<a name="ln152">#define ADD_SPELL(which_spell) \</a>
+<a name="ln153">    do { \</a>
+<a name="ln154">        const auto spell = (which_spell); \</a>
+<a name="ln155">        if (spell != SPELL_NO_SPELL) \</a>
+<a name="ln156">            spells.emplace_back(spell, 0, MON_SPELL_MAGICAL); \</a>
+<a name="ln157">    } while (0)</a>
+<a name="ln158"> </a>
+<a name="ln159">static int _panlord_random_resist_level()</a>
+<a name="ln160">{</a>
+<a name="ln161">    return random_choose_weighted(1, -1,</a>
+<a name="ln162">                                  3,  0,</a>
+<a name="ln163">                                  3,  1,</a>
+<a name="ln164">                                  2,  2,</a>
+<a name="ln165">                                  1,  3);</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">static int _panlord_random_elec_resist_level()</a>
+<a name="ln169">{</a>
+<a name="ln170">    return random_choose_weighted(3, 0,</a>
+<a name="ln171">                                  6, 1,</a>
+<a name="ln172">                                  1, 3);</a>
+<a name="ln173">}</a>
+<a name="ln174"> </a>
+<a name="ln175">void ghost_demon::init_pandemonium_lord()</a>
+<a name="ln176">{</a>
+<a name="ln177">    do</a>
+<a name="ln178">    {</a>
+<a name="ln179">        name = make_name();</a>
+<a name="ln180">    }</a>
+<a name="ln181">    while (!getLongDescription(name).empty());</a>
+<a name="ln182"> </a>
+<a name="ln183">    // Is demon a spellcaster?</a>
+<a name="ln184">    // Non-spellcasters always have branded melee and faster/tougher.</a>
+<a name="ln185">    const bool spellcaster = x_chance_in_y(3,4);</a>
+<a name="ln186"> </a>
+<a name="ln187">    max_hp = 100 + roll_dice(3, 50);</a>
+<a name="ln188"> </a>
+<a name="ln189">    // Panlord AC/EV should tend to be weighted towards one or the other.</a>
+<a name="ln190">    int total_def = 10 + random2avg(40, 3);</a>
+<a name="ln191">    int split = 1 + biased_random2(4, 2);</a>
+<a name="ln192">    ac = div_rand_round(total_def * split, 10);</a>
+<a name="ln193">    ev = total_def - ac;</a>
+<a name="ln194">    if (coinflip())</a>
+<a name="ln195">        swap(ac, ev);</a>
+<a name="ln196"> </a>
+<a name="ln197">    see_invis = true;</a>
+<a name="ln198"> </a>
+<a name="ln199">    resists = 0;</a>
+<a name="ln200">    resists |= mrd(MR_RES_FIRE, _panlord_random_resist_level());</a>
+<a name="ln201">    resists |= mrd(MR_RES_COLD, _panlord_random_resist_level());</a>
+<a name="ln202">    resists |= mrd(MR_RES_ELEC, _panlord_random_elec_resist_level());</a>
+<a name="ln203">    // Demons, like ghosts, automatically get poison res. and life prot.</a>
+<a name="ln204"> </a>
+<a name="ln205">    // HTH damage:</a>
+<a name="ln206">    damage = 20 + roll_dice(2, 20);</a>
+<a name="ln207"> </a>
+<a name="ln208">    // Does demon fly?</a>
+<a name="ln209">    flies = x_chance_in_y(2, 3);</a>
+<a name="ln210"> </a>
+<a name="ln211">    // hit dice:</a>
+<a name="ln212">    xl = 10 + roll_dice(2, 10);</a>
+<a name="ln213"> </a>
+<a name="ln214">    // Non-spellcasters get upgrades to HD, HP, AC, EV and damage</a>
+<a name="ln215">    if (!spellcaster)</a>
+<a name="ln216">    {</a>
+<a name="ln217">        max_hp = max_hp * 3 / 2;</a>
+<a name="ln218">        ac += 5;</a>
+<a name="ln219">        ev += 5;</a>
+<a name="ln220">        damage += 10;</a>
+<a name="ln221">        xl += 5;</a>
+<a name="ln222">    }</a>
+<a name="ln223"> </a>
+<a name="ln224">    if (one_chance_in(3) || !spellcaster)</a>
+<a name="ln225">        brand = _random_special_pan_lord_brand();</a>
+<a name="ln226">    else</a>
+<a name="ln227">        brand = SPWPN_NORMAL;</a>
+<a name="ln228"> </a>
+<a name="ln229">    // Non-caster demons are fast, casters may get haste.</a>
+<a name="ln230">    if (!spellcaster)</a>
+<a name="ln231">        speed = 11 + roll_dice(2,4);</a>
+<a name="ln232">    else if (one_chance_in(3))</a>
+<a name="ln233">        speed = 10;</a>
+<a name="ln234">    else</a>
+<a name="ln235">        speed = 8 + roll_dice(2,5);</a>
+<a name="ln236"> </a>
+<a name="ln237">    spells.clear();</a>
+<a name="ln238"> </a>
+<a name="ln239">    if (spellcaster)</a>
+<a name="ln240">    {</a>
+<a name="ln241">        if (!one_chance_in(10))</a>
+<a name="ln242">            ADD_SPELL(RANDOM_ELEMENT(search_order_conj));</a>
+<a name="ln243"> </a>
+<a name="ln244">        if (!one_chance_in(10))</a>
+<a name="ln245">        {</a>
+<a name="ln246">            if (coinflip())</a>
+<a name="ln247">                ADD_SPELL(RANDOM_ELEMENT(search_order_summon));</a>
+<a name="ln248">            else</a>
+<a name="ln249">                ADD_SPELL(RANDOM_ELEMENT(search_order_aoe_conj));</a>
+<a name="ln250">        }</a>
+<a name="ln251"> </a>
+<a name="ln252">        if (coinflip())</a>
+<a name="ln253">            ADD_SPELL(RANDOM_ELEMENT(search_order_selfench));</a>
+<a name="ln254"> </a>
+<a name="ln255">        if (coinflip())</a>
+<a name="ln256">            ADD_SPELL(RANDOM_ELEMENT(search_order_misc));</a>
+<a name="ln257"> </a>
+<a name="ln258">        // Demon-summoning should be fairly common.</a>
+<a name="ln259">        if (coinflip())</a>
+<a name="ln260">            ADD_SPELL(random_choose(SPELL_SUMMON_DEMON, SPELL_SUMMON_GREATER_DEMON));</a>
+<a name="ln261"> </a>
+<a name="ln262">        normalize_spell_freq(spells, spell_freq_for_hd(xl));</a>
+<a name="ln263">    }</a>
+<a name="ln264"> </a>
+<a name="ln265">    colour = one_chance_in(10) ? colour_t{ETC_RANDOM} : random_monster_colour();</a>
+<a name="ln266">}</a>
+<a name="ln267"> </a>
+<a name="ln268">static const set&lt;brand_type&gt; ghost_banned_brands =</a>
+<a name="ln269">                { SPWPN_HOLY_WRATH, SPWPN_CHAOS };</a>
+<a name="ln270"> </a>
+<a name="ln271">void ghost_demon::init_player_ghost()</a>
+<a name="ln272">{</a>
+<a name="ln273">    // don't preserve transformations for ghosty purposes</a>
+<a name="ln274">    unwind_var&lt;transformation&gt; form(you.form, transformation::none);</a>
+<a name="ln275">    unwind_var&lt;FixedBitVector&lt;NUM_EQUIP&gt;&gt; melded(you.melded,</a>
+<a name="ln276">                                                 FixedBitVector&lt;NUM_EQUIP&gt;());</a>
+<a name="ln277">    unwind_var&lt;bool&gt; fishtail(you.fishtail, false);</a>
+<a name="ln278"> </a>
+<a name="ln279">    name   = you.your_name;</a>
+<a name="ln280">    max_hp = min(get_real_hp(false, false), MAX_GHOST_HP);</a>
+<a name="ln281">    ev     = min(you.evasion(ev_ignore::helpless), MAX_GHOST_EVASION);</a>
+<a name="ln282">    ac     = you.armour_class();</a>
+<a name="ln283">    dprf(&quot;ghost ac: %d, ev: %d&quot;, ac, ev);</a>
+<a name="ln284"> </a>
+<a name="ln285">    see_invis      = you.can_see_invisible();</a>
+<a name="ln286">    resists        = 0;</a>
+<a name="ln287">    set_resist(resists, MR_RES_FIRE, player_res_fire());</a>
+<a name="ln288">    set_resist(resists, MR_RES_COLD, player_res_cold());</a>
+<a name="ln289">    set_resist(resists, MR_RES_ELEC, player_res_electricity());</a>
+<a name="ln290">    // clones might lack innate rPois, copy it. pghosts don't care.</a>
+<a name="ln291">    set_resist(resists, MR_RES_POISON, player_res_poison());</a>
+<a name="ln292">    set_resist(resists, MR_RES_NEG, you.res_negative_energy());</a>
+<a name="ln293">    set_resist(resists, MR_RES_ACID, player_res_acid());</a>
+<a name="ln294">    // multi-level for players, boolean as an innate monster resistance</a>
+<a name="ln295">    set_resist(resists, MR_RES_STEAM, player_res_steam() ? 1 : 0);</a>
+<a name="ln296">    set_resist(resists, MR_RES_STICKY_FLAME, player_res_sticky_flame());</a>
+<a name="ln297">    set_resist(resists, MR_RES_ROTTING, you.res_rotting());</a>
+<a name="ln298">    set_resist(resists, MR_RES_PETRIFY, you.res_petrify());</a>
+<a name="ln299"> </a>
+<a name="ln300">    move_energy = 10;</a>
+<a name="ln301">    speed       = 10;</a>
+<a name="ln302"> </a>
+<a name="ln303">    damage = 4;</a>
+<a name="ln304">    brand = SPWPN_NORMAL;</a>
+<a name="ln305"> </a>
+<a name="ln306">    if (you.weapon())</a>
+<a name="ln307">    {</a>
+<a name="ln308">        // This includes ranged weapons, but they're treated as melee.</a>
+<a name="ln309"> </a>
+<a name="ln310">        const item_def&amp; weapon = *you.weapon();</a>
+<a name="ln311">        if (is_weapon(weapon))</a>
+<a name="ln312">        {</a>
+<a name="ln313">            damage = property(weapon, PWPN_DAMAGE);</a>
+<a name="ln314"> </a>
+<a name="ln315">            // Bows skill doesn't make bow-bashing better.</a>
+<a name="ln316">            skill_type sk = is_range_weapon(weapon) ? SK_FIGHTING</a>
+<a name="ln317">                                                    : item_attack_skill(weapon);</a>
+<a name="ln318">            damage *= 25 + you.skills[sk];</a>
+<a name="ln319">            damage /= 25;</a>
+<a name="ln320"> </a>
+<a name="ln321">            if (weapon.base_type == OBJ_WEAPONS)</a>
+<a name="ln322">            {</a>
+<a name="ln323">                brand = static_cast&lt;brand_type&gt;(get_weapon_brand(weapon));</a>
+<a name="ln324"> </a>
+<a name="ln325">                // normalize banned weapon brands</a>
+<a name="ln326">                if (ghost_banned_brands.count(brand) &gt; 0)</a>
+<a name="ln327">                    brand = SPWPN_NORMAL;</a>
+<a name="ln328"> </a>
+<a name="ln329">                // Don't copy ranged- or artefact-only brands (reaping etc.).</a>
+<a name="ln330">                if (brand &gt; MAX_GHOST_BRAND)</a>
+<a name="ln331">                    brand = SPWPN_NORMAL;</a>
+<a name="ln332">            }</a>
+<a name="ln333">            else if (weapon.base_type == OBJ_STAVES)</a>
+<a name="ln334">            {</a>
+<a name="ln335">                switch (static_cast&lt;stave_type&gt;(weapon.sub_type))</a>
+<a name="ln336">                {</a>
+<a name="ln337">                // very bad approximations</a>
+<a name="ln338">                case STAFF_FIRE: brand = SPWPN_FLAMING; break;</a>
+<a name="ln339">                case STAFF_COLD: brand = SPWPN_FREEZING; break;</a>
+<a name="ln340">                case STAFF_POISON: brand = SPWPN_VENOM; break;</a>
+<a name="ln341">                case STAFF_DEATH: brand = SPWPN_PAIN; break;</a>
+<a name="ln342">                case STAFF_AIR: brand = SPWPN_ELECTROCUTION; break;</a>
+<a name="ln343">                case STAFF_EARTH: brand = SPWPN_VORPAL; break;</a>
+<a name="ln344">                default: ;</a>
+<a name="ln345">                }</a>
+<a name="ln346">            }</a>
+<a name="ln347">        }</a>
+<a name="ln348">    }</a>
+<a name="ln349">    else</a>
+<a name="ln350">    {</a>
+<a name="ln351">        // Unarmed combat.</a>
+<a name="ln352">        if (you.has_innate_mutation(MUT_CLAWS))</a>
+<a name="ln353">            damage += you.experience_level;</a>
+<a name="ln354"> </a>
+<a name="ln355">        damage += you.skills[SK_UNARMED_COMBAT];</a>
+<a name="ln356">    }</a>
+<a name="ln357"> </a>
+<a name="ln358">    damage *= 30 + you.skills[SK_FIGHTING];</a>
+<a name="ln359">    damage /= 30;</a>
+<a name="ln360"> </a>
+<a name="ln361">    damage += you.strength() / 4;</a>
+<a name="ln362"> </a>
+<a name="ln363">    if (damage &gt; MAX_GHOST_DAMAGE)</a>
+<a name="ln364">        damage = MAX_GHOST_DAMAGE;</a>
+<a name="ln365"> </a>
+<a name="ln366">    species = you.species;</a>
+<a name="ln367">    job = you.char_class;</a>
+<a name="ln368"> </a>
+<a name="ln369">    religion = you.religion;</a>
+<a name="ln370"> </a>
+<a name="ln371">    best_skill = ::best_skill(SK_FIRST_SKILL, SK_LAST_SKILL);</a>
+<a name="ln372">    best_skill_level = you.skills[best_skill];</a>
+<a name="ln373">    xl = you.experience_level;</a>
+<a name="ln374"> </a>
+<a name="ln375">    flies = true;</a>
+<a name="ln376"> </a>
+<a name="ln377">    add_spells();</a>
+<a name="ln378">}</a>
+<a name="ln379"> </a>
+<a name="ln380">static colour_t _ugly_thing_assign_colour(colour_t force_colour,</a>
+<a name="ln381">                                          colour_t force_not_colour)</a>
+<a name="ln382">{</a>
+<a name="ln383">    colour_t colour;</a>
+<a name="ln384"> </a>
+<a name="ln385">    if (force_colour != COLOUR_UNDEF)</a>
+<a name="ln386">        colour = force_colour;</a>
+<a name="ln387">    else</a>
+<a name="ln388">    {</a>
+<a name="ln389">        do</a>
+<a name="ln390">        {</a>
+<a name="ln391">            colour = ugly_thing_random_colour();</a>
+<a name="ln392">        }</a>
+<a name="ln393">        while (force_not_colour != COLOUR_UNDEF &amp;&amp; colour == force_not_colour);</a>
+<a name="ln394">    }</a>
+<a name="ln395"> </a>
+<a name="ln396">    return colour;</a>
+<a name="ln397">}</a>
+<a name="ln398"> </a>
+<a name="ln399">static attack_flavour _very_ugly_thing_flavour_upgrade(attack_flavour u_att_flav)</a>
+<a name="ln400">{</a>
+<a name="ln401">    switch (u_att_flav)</a>
+<a name="ln402">    {</a>
+<a name="ln403">    case AF_FIRE:</a>
+<a name="ln404">        u_att_flav = AF_STICKY_FLAME;</a>
+<a name="ln405">        break;</a>
+<a name="ln406"> </a>
+<a name="ln407">    case AF_POISON:</a>
+<a name="ln408">        u_att_flav = AF_POISON_STRONG;</a>
+<a name="ln409">        break;</a>
+<a name="ln410"> </a>
+<a name="ln411">    default:</a>
+<a name="ln412">        break;</a>
+<a name="ln413">    }</a>
+<a name="ln414"> </a>
+<a name="ln415">    return u_att_flav;</a>
+<a name="ln416">}</a>
+<a name="ln417"> </a>
+<a name="ln418">static attack_flavour _ugly_thing_colour_to_flavour(colour_t u_colour)</a>
+<a name="ln419">{</a>
+<a name="ln420">    attack_flavour u_att_flav = AF_PLAIN;</a>
+<a name="ln421"> </a>
+<a name="ln422">    switch (make_low_colour(u_colour))</a>
+<a name="ln423">    {</a>
+<a name="ln424">    case RED:</a>
+<a name="ln425">        u_att_flav = AF_FIRE;</a>
+<a name="ln426">        break;</a>
+<a name="ln427"> </a>
+<a name="ln428">    case BROWN:</a>
+<a name="ln429">        u_att_flav = AF_ACID;</a>
+<a name="ln430">        break;</a>
+<a name="ln431"> </a>
+<a name="ln432">    case GREEN:</a>
+<a name="ln433">        u_att_flav = AF_POISON;</a>
+<a name="ln434">        break;</a>
+<a name="ln435"> </a>
+<a name="ln436">    case CYAN:</a>
+<a name="ln437">        u_att_flav = AF_ELEC;</a>
+<a name="ln438">        break;</a>
+<a name="ln439"> </a>
+<a name="ln440">    case LIGHTGREY:</a>
+<a name="ln441">        u_att_flav = AF_COLD;</a>
+<a name="ln442">        break;</a>
+<a name="ln443"> </a>
+<a name="ln444">    default:</a>
+<a name="ln445">        break;</a>
+<a name="ln446">    }</a>
+<a name="ln447"> </a>
+<a name="ln448">    if (is_high_colour(u_colour))</a>
+<a name="ln449">        u_att_flav = _very_ugly_thing_flavour_upgrade(u_att_flav);</a>
+<a name="ln450"> </a>
+<a name="ln451">    return u_att_flav;</a>
+<a name="ln452">}</a>
+<a name="ln453"> </a>
+<a name="ln454">/**</a>
+<a name="ln455"> * Init a ghost demon object corresponding to an ugly thing monster.</a>
+<a name="ln456"> *</a>
+<a name="ln457"> * @param very_ugly     Whether the ugly thing is a very ugly thing.</a>
+<a name="ln458"> * @param only_mutate   Whether to mutate the ugly thing's colour away from its</a>
+<a name="ln459"> *                      old colour (the force_colour).</a>
+<a name="ln460"> * @param force_colour  The ugly thing's colour. (Default COLOUR_UNDEF = random)</a>
+<a name="ln461"> */</a>
+<a name="ln462">void ghost_demon::init_ugly_thing(bool very_ugly, bool only_mutate,</a>
+<a name="ln463">                                  colour_t force_colour)</a>
+<a name="ln464">{</a>
+<a name="ln465">    const monster_type type = very_ugly ? MONS_VERY_UGLY_THING</a>
+<a name="ln466">                                        : MONS_UGLY_THING;</a>
+<a name="ln467">    const monsterentry* stats = get_monster_data(type);</a>
+<a name="ln468"> </a>
+<a name="ln469">    speed = stats-&gt;speed;</a>
+<a name="ln470">    ev = stats-&gt;ev;</a>
+<a name="ln471">    ac = stats-&gt;AC;</a>
+<a name="ln472">    damage = stats-&gt;attack[0].damage;</a>
+<a name="ln473">    move_energy = stats-&gt;energy_usage.move;</a>
+<a name="ln474"> </a>
+<a name="ln475">    // If we're mutating an ugly thing, leave its experience level, hit</a>
+<a name="ln476">    // dice and maximum hit points as they are.</a>
+<a name="ln477">    if (!only_mutate)</a>
+<a name="ln478">    {</a>
+<a name="ln479">        xl = stats-&gt;HD;</a>
+<a name="ln480">        max_hp = hit_points(stats-&gt;avg_hp_10x);</a>
+<a name="ln481">    }</a>
+<a name="ln482"> </a>
+<a name="ln483">    const attack_type att_types[] =</a>
+<a name="ln484">    {</a>
+<a name="ln485">        AT_BITE, AT_STING, AT_ENGULF, AT_CLAW, AT_PECK, AT_HEADBUTT, AT_PUNCH,</a>
+<a name="ln486">        AT_KICK, AT_TENTACLE_SLAP, AT_TAIL_SLAP, AT_GORE, AT_TRUNK_SLAP</a>
+<a name="ln487">    };</a>
+<a name="ln488"> </a>
+<a name="ln489">    att_type = RANDOM_ELEMENT(att_types);</a>
+<a name="ln490"> </a>
+<a name="ln491">    // An ugly thing always gets a low-intensity colour. If we're</a>
+<a name="ln492">    // mutating it, it always gets a different colour from what it had</a>
+<a name="ln493">    // before.</a>
+<a name="ln494">    colour = _ugly_thing_assign_colour(make_low_colour(force_colour),</a>
+<a name="ln495">                                       only_mutate ? make_low_colour(colour)</a>
+<a name="ln496">                                                   : colour_t{COLOUR_UNDEF});</a>
+<a name="ln497"> </a>
+<a name="ln498">    // Pick a compatible attack flavour for this colour.</a>
+<a name="ln499">    att_flav = _ugly_thing_colour_to_flavour(colour);</a>
+<a name="ln500">    if (colour == MAGENTA)</a>
+<a name="ln501">        damage = damage * 4 / 3; // +5 for uglies, +9 for v uglies</a>
+<a name="ln502"> </a>
+<a name="ln503">    // Pick a compatible resistance for this attack flavour.</a>
+<a name="ln504">    ugly_thing_add_resistance(false, att_flav);</a>
+<a name="ln505"> </a>
+<a name="ln506">    // If this is a very ugly thing, upgrade it properly.</a>
+<a name="ln507">    if (very_ugly)</a>
+<a name="ln508">        ugly_thing_to_very_ugly_thing();</a>
+<a name="ln509">}</a>
+<a name="ln510"> </a>
+<a name="ln511">void ghost_demon::ugly_thing_to_very_ugly_thing()</a>
+<a name="ln512">{</a>
+<a name="ln513">    // A very ugly thing always gets a high-intensity colour.</a>
+<a name="ln514">    colour = make_high_colour(colour);</a>
+<a name="ln515"> </a>
+<a name="ln516">    // A very ugly thing sometimes gets an upgraded attack flavour.</a>
+<a name="ln517">    att_flav = _very_ugly_thing_flavour_upgrade(att_flav);</a>
+<a name="ln518"> </a>
+<a name="ln519">    // Pick a compatible resistance for this attack flavour.</a>
+<a name="ln520">    ugly_thing_add_resistance(true, att_flav);</a>
+<a name="ln521">}</a>
+<a name="ln522"> </a>
+<a name="ln523">static resists_t _ugly_thing_resists(bool very_ugly, attack_flavour u_att_flav)</a>
+<a name="ln524">{</a>
+<a name="ln525">    switch (u_att_flav)</a>
+<a name="ln526">    {</a>
+<a name="ln527">    case AF_FIRE:</a>
+<a name="ln528">    case AF_STICKY_FLAME:</a>
+<a name="ln529">        return MR_RES_FIRE * (very_ugly ? 2 : 1) | MR_RES_STICKY_FLAME;</a>
+<a name="ln530"> </a>
+<a name="ln531">    case AF_ACID:</a>
+<a name="ln532">        return MR_RES_ACID;</a>
+<a name="ln533"> </a>
+<a name="ln534">    case AF_POISON:</a>
+<a name="ln535">    case AF_POISON_STRONG:</a>
+<a name="ln536">        return MR_RES_POISON * (very_ugly ? 2 : 1);</a>
+<a name="ln537"> </a>
+<a name="ln538">    case AF_ELEC:</a>
+<a name="ln539">        return MR_RES_ELEC * (very_ugly ? 2 : 1);</a>
+<a name="ln540"> </a>
+<a name="ln541">    case AF_COLD:</a>
+<a name="ln542">        return MR_RES_COLD * (very_ugly ? 2 : 1);</a>
+<a name="ln543"> </a>
+<a name="ln544">    default:</a>
+<a name="ln545">        return 0;</a>
+<a name="ln546">    }</a>
+<a name="ln547">}</a>
+<a name="ln548"> </a>
+<a name="ln549">void ghost_demon::ugly_thing_add_resistance(bool very_ugly,</a>
+<a name="ln550">                                            attack_flavour u_att_flav)</a>
+<a name="ln551">{</a>
+<a name="ln552">    resists = _ugly_thing_resists(very_ugly, u_att_flav);</a>
+<a name="ln553">}</a>
+<a name="ln554"> </a>
+<a name="ln555">void ghost_demon::init_dancing_weapon(const item_def&amp; weapon, int power)</a>
+<a name="ln556">{</a>
+<a name="ln557">    int delay = property(weapon, PWPN_SPEED);</a>
+<a name="ln558">    int damg  = property(weapon, PWPN_DAMAGE);</a>
+<a name="ln559"> </a>
+<a name="ln560">    if (power &gt; 100)</a>
+<a name="ln561">        power = 100;</a>
+<a name="ln562"> </a>
+<a name="ln563">    colour = weapon.get_colour();</a>
+<a name="ln564">    flies = true;</a>
+<a name="ln565"> </a>
+<a name="ln566">    // We want Tukima to reward characters who invest heavily in</a>
+<a name="ln567">    // Hexes skill. Therefore, weapons benefit from very high skill.</a>
+<a name="ln568"> </a>
+<a name="ln569">    // First set up what the monsters will look like with 100 power.</a>
+<a name="ln570">    // Daggers are weak here! In the table, &quot;44+22&quot; means d44+d22 with</a>
+<a name="ln571">    // d22 being base damage and d44 coming from power.</a>
+<a name="ln572">    // Giant spiked club: speed 12, 44+22 damage, 22 AC, 36 HP, 16 EV</a>
+<a name="ln573">    // Bardiche:          speed 10, 40+20 damage, 18 AC, 40 HP, 15 EV</a>
+<a name="ln574">    // Dagger:            speed 20,  8+ 4 damage,  4 AC, 20 HP, 20 EV</a>
+<a name="ln575">    // Quick blade:       speed 23, 10+ 5 damage,  5 AC, 14 HP, 22 EV</a>
+<a name="ln576">    // Rapier:            speed 18, 14+ 7 damage,  7 AC, 24 HP, 19 EV</a>
+<a name="ln577"> </a>
+<a name="ln578">    xl = 15;</a>
+<a name="ln579"> </a>
+<a name="ln580">    speed   = 30 - delay;</a>
+<a name="ln581">    ev      = 25 - delay / 2;</a>
+<a name="ln582">    ac      = damg;</a>
+<a name="ln583">    damage  = 2 * damg;</a>
+<a name="ln584">    max_hp  = delay * 2;</a>
+<a name="ln585"> </a>
+<a name="ln586">    // Don't allow the speed to become too low.</a>
+<a name="ln587">    speed = max(3, (speed / 2) * (1 + power / 100));</a>
+<a name="ln588"> </a>
+<a name="ln589">    ev    = max(3, ev * power / 100);</a>
+<a name="ln590">    ac = ac * power / 100;</a>
+<a name="ln591">    max_hp = max(5, max_hp * power / 100);</a>
+<a name="ln592">    damage = max(1, damage * power / 100);</a>
+<a name="ln593">}</a>
+<a name="ln594"> </a>
+<a name="ln595">void ghost_demon::init_spectral_weapon(const item_def&amp; weapon, int power)</a>
+<a name="ln596">{</a>
+<a name="ln597">    int damg = property(weapon, PWPN_DAMAGE);</a>
+<a name="ln598"> </a>
+<a name="ln599">    if (power &gt; 100)</a>
+<a name="ln600">        power = 100;</a>
+<a name="ln601"> </a>
+<a name="ln602">    colour = weapon.get_colour();</a>
+<a name="ln603">    flies = true;</a>
+<a name="ln604"> </a>
+<a name="ln605">    // Offense and defenses all scale with power.</a>
+<a name="ln606">    xl        = 2 + div_rand_round(power, 4);</a>
+<a name="ln607">    damage    = damg;</a>
+<a name="ln608">    int scale = 250 * 150 / (50 + power);</a>
+<a name="ln609">    damage   *= scale + 125;</a>
+<a name="ln610">    damage   /= scale;</a>
+<a name="ln611"> </a>
+<a name="ln612">    speed  = 30;</a>
+<a name="ln613">    ev     = 10 + div_rand_round(power, 10);</a>
+<a name="ln614">    ac     = 2 + div_rand_round(power, 10);</a>
+<a name="ln615">    max_hp = 10 + div_rand_round(power, 3);</a>
+<a name="ln616">}</a>
+<a name="ln617"> </a>
+<a name="ln618">// Used when creating ghosts: goes through and finds spells for the</a>
+<a name="ln619">// ghost to cast. Death is a traumatic experience, so ghosts only</a>
+<a name="ln620">// remember a few spells.</a>
+<a name="ln621">void ghost_demon::add_spells()</a>
+<a name="ln622">{</a>
+<a name="ln623">    spells.clear();</a>
+<a name="ln624"> </a>
+<a name="ln625">    for (int i = 0; i &lt; you.spell_no; i++)</a>
+<a name="ln626">    {</a>
+<a name="ln627">        const int chance = max(0, 50 - failure_rate_to_int(raw_spell_fail(you.spells[i])));</a>
+<a name="ln628">        const spell_type spell = translate_spell(you.spells[i]);</a>
+<a name="ln629">        if (spell != SPELL_NO_SPELL</a>
+<a name="ln630">            &amp;&amp; !(get_spell_flags(spell) &amp; spflag::no_ghost)</a>
+<a name="ln631">            &amp;&amp; is_valid_mon_spell(spell)</a>
+<a name="ln632">            &amp;&amp; x_chance_in_y(chance*chance, 50*50))</a>
+<a name="ln633">        {</a>
+<a name="ln634">            spells.emplace_back(spell, 0, MON_SPELL_WIZARD);</a>
+<a name="ln635">        }</a>
+<a name="ln636">    }</a>
+<a name="ln637"> </a>
+<a name="ln638">    normalize_spell_freq(spells, spell_freq_for_hd(xl));</a>
+<a name="ln639">}</a>
+<a name="ln640"> </a>
+<a name="ln641">bool ghost_demon::has_spells() const</a>
+<a name="ln642">{</a>
+<a name="ln643">    return spells.size() &gt; 0;</a>
+<a name="ln644">}</a>
+<a name="ln645"> </a>
+<a name="ln646">// When passed the number for a player spell, returns the equivalent</a>
+<a name="ln647">// monster spell. Returns SPELL_NO_SPELL on failure (no equivalent).</a>
+<a name="ln648">spell_type ghost_demon::translate_spell(spell_type spell) const</a>
+<a name="ln649">{</a>
+<a name="ln650">    switch (spell)</a>
+<a name="ln651">    {</a>
+<a name="ln652">    case SPELL_CONTROLLED_BLINK:</a>
+<a name="ln653">        return SPELL_BLINK;        // approximate</a>
+<a name="ln654">    case SPELL_DRAGON_CALL:</a>
+<a name="ln655">        return SPELL_SUMMON_DRAGON;</a>
+<a name="ln656">    case SPELL_SWIFTNESS:</a>
+<a name="ln657">        return SPELL_SPRINT;</a>
+<a name="ln658">    default:</a>
+<a name="ln659">        break;</a>
+<a name="ln660">    }</a>
+<a name="ln661"> </a>
+<a name="ln662">    return spell;</a>
+<a name="ln663">}</a>
+<a name="ln664"> </a>
+<a name="ln665">const vector&lt;ghost_demon&gt; ghost_demon::find_ghosts(bool include_player)</a>
+<a name="ln666">{</a>
+<a name="ln667">    vector&lt;ghost_demon&gt; gs;</a>
+<a name="ln668"> </a>
+<a name="ln669">    if (include_player &amp;&amp; you.undead_state(false) == US_ALIVE)</a>
+<a name="ln670">    {</a>
+<a name="ln671">        ghost_demon player;</a>
+<a name="ln672">        player.init_player_ghost();</a>
+<a name="ln673">        announce_ghost(player);</a>
+<a name="ln674">        gs.push_back(player);</a>
+<a name="ln675">    }</a>
+<a name="ln676"> </a>
+<a name="ln677">    // Pick up any other ghosts that happen to be on the level if we</a>
+<a name="ln678">    // have space. If the player is undead, add one to the ghost quota</a>
+<a name="ln679">    // for the level.</a>
+<a name="ln680">    find_extra_ghosts(gs);</a>
+<a name="ln681"> </a>
+<a name="ln682">    return gs;</a>
+<a name="ln683">}</a>
+<a name="ln684"> </a>
+<a name="ln685">void ghost_demon::find_transiting_ghosts(</a>
+<a name="ln686">    vector&lt;ghost_demon&gt; &amp;gs)</a>
+<a name="ln687">{</a>
+<a name="ln688">    const m_transit_list *mt = get_transit_list(level_id::current());</a>
+<a name="ln689">    if (mt)</a>
+<a name="ln690">    {</a>
+<a name="ln691">        for (auto i = mt-&gt;begin(); i != mt-&gt;end(); ++i)</a>
+<a name="ln692">        {</a>
+<a name="ln693">            if (i-&gt;mons.type == MONS_PLAYER_GHOST)</a>
+<a name="ln694">            {</a>
+<a name="ln695">                const monster&amp; m = i-&gt;mons;</a>
+<a name="ln696">                if (m.ghost &amp;&amp; !m.props.exists(MIRRORED_GHOST_KEY))</a>
+<a name="ln697">                {</a>
+<a name="ln698">                    announce_ghost(*m.ghost);</a>
+<a name="ln699">                    gs.push_back(*m.ghost);</a>
+<a name="ln700">                }</a>
+<a name="ln701">            }</a>
+<a name="ln702">        }</a>
+<a name="ln703">    }</a>
+<a name="ln704">}</a>
+<a name="ln705"> </a>
+<a name="ln706">void ghost_demon::announce_ghost(const ghost_demon &amp;g)</a>
+<a name="ln707">{</a>
+<a name="ln708">    UNUSED(g);</a>
+<a name="ln709">#if defined(DEBUG_BONES) || defined(DEBUG_DIAGNOSTICS)</a>
+<a name="ln710">    mprf(MSGCH_DIAGNOSTICS, &quot;Saving ghost: %s&quot;, g.name.c_str());</a>
+<a name="ln711">#endif</a>
+<a name="ln712">}</a>
+<a name="ln713"> </a>
+<a name="ln714">void ghost_demon::find_extra_ghosts(vector&lt;ghost_demon&gt; &amp;gs)</a>
+<a name="ln715">{</a>
+<a name="ln716">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln717">    {</a>
+<a name="ln718">        if (mi-&gt;type == MONS_PLAYER_GHOST</a>
+<a name="ln719">            &amp;&amp; mi-&gt;ghost</a>
+<a name="ln720">            &amp;&amp; !mi-&gt;props.exists(MIRRORED_GHOST_KEY))</a>
+<a name="ln721">        {</a>
+<a name="ln722">            // Bingo!</a>
+<a name="ln723">            announce_ghost(*(mi-&gt;ghost));</a>
+<a name="ln724">            gs.push_back(*(mi-&gt;ghost));</a>
+<a name="ln725">        }</a>
+<a name="ln726">    }</a>
+<a name="ln727"> </a>
+<a name="ln728">    // Check the transit list for the current level.</a>
+<a name="ln729">    find_transiting_ghosts(gs);</a>
+<a name="ln730">}</a>
+<a name="ln731"> </a>
+<a name="ln732">static const set&lt;branch_type&gt; ghosts_nosave =</a>
+<a name="ln733">            { BRANCH_ABYSS, BRANCH_WIZLAB, BRANCH_DESOLATION, BRANCH_TEMPLE,</a>
+<a name="ln734">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln735">              BRANCH_LABYRINTH,</a>
+<a name="ln736">#endif</a>
+<a name="ln737">            };</a>
+<a name="ln738"> </a>
+<a name="ln739"> </a>
+<a name="ln740">/// Is the current location eligible for saving ghosts?</a>
+<a name="ln741">bool ghost_demon::ghost_eligible()</a>
+<a name="ln742">{</a>
+<a name="ln743">    return !crawl_state.game_is_tutorial()</a>
+<a name="ln744">        &amp;&amp; (!player_in_branch(BRANCH_DUNGEON) || you.depth &gt; 2)</a>
+<a name="ln745">        &amp;&amp; ghosts_nosave.count(you.where_are_you) == 0;</a>
+<a name="ln746">}</a>
+<a name="ln747"> </a>
+<a name="ln748">bool debug_check_ghost(const ghost_demon &amp;ghost)</a>
+<a name="ln749">{</a>
+<a name="ln750">    // Values greater than the allowed maximum or less then the</a>
+<a name="ln751">    // allowed minimum signalise bugginess.</a>
+<a name="ln752">    if (ghost.damage &lt; 0 || ghost.damage &gt; MAX_GHOST_DAMAGE)</a>
+<a name="ln753">        return false;</a>
+<a name="ln754">    if (ghost.max_hp &lt; 1 || ghost.max_hp &gt; MAX_GHOST_HP)</a>
+<a name="ln755">        return false;</a>
+<a name="ln756">    if (ghost.xl &lt; 1 || ghost.xl &gt; 27)</a>
+<a name="ln757">        return false;</a>
+<a name="ln758">    if (ghost.ev &gt; MAX_GHOST_EVASION)</a>
+<a name="ln759">        return false;</a>
+<a name="ln760">    if (get_resist(ghost.resists, MR_RES_ELEC) &lt; 0)</a>
+<a name="ln761">        return false;</a>
+<a name="ln762">    if (ghost.brand &lt; SPWPN_NORMAL || ghost.brand &gt; MAX_GHOST_BRAND)</a>
+<a name="ln763">        return false;</a>
+<a name="ln764">    if (!species_type_valid(ghost.species))</a>
+<a name="ln765">        return false;</a>
+<a name="ln766">    if (!job_type_valid(ghost.job))</a>
+<a name="ln767">        return false;</a>
+<a name="ln768">    if (ghost.best_skill &lt; SK_FIGHTING || ghost.best_skill &gt;= NUM_SKILLS)</a>
+<a name="ln769">        return false;</a>
+<a name="ln770">    if (ghost.best_skill_level &lt; 0 || ghost.best_skill_level &gt; 27)</a>
+<a name="ln771">        return false;</a>
+<a name="ln772">    if (ghost.religion &lt; GOD_NO_GOD || ghost.religion &gt;= NUM_GODS)</a>
+<a name="ln773">        return false;</a>
+<a name="ln774"> </a>
+<a name="ln775">    if (ghost.brand == SPWPN_HOLY_WRATH)</a>
+<a name="ln776">        return false;</a>
+<a name="ln777"> </a>
+<a name="ln778">    // Only (very) ugly things get non-plain attack types and</a>
+<a name="ln779">    // flavours.</a>
+<a name="ln780">    if (ghost.att_type != AT_HIT || ghost.att_flav != AF_PLAIN)</a>
+<a name="ln781">        return false;</a>
+<a name="ln782"> </a>
+<a name="ln783">    // Name validation.</a>
+<a name="ln784">    if (!validate_player_name(ghost.name))</a>
+<a name="ln785">        return false;</a>
+<a name="ln786">    // Many combining characters can come per every letter, but if there's</a>
+<a name="ln787">    // that much, it's probably a maliciously forged ghost of some kind.</a>
+<a name="ln788">    if (ghost.name.length() &gt; MAX_NAME_LENGTH * 10 || ghost.name.empty())</a>
+<a name="ln789">        return false;</a>
+<a name="ln790">    if (ghost.name != trimmed_string(ghost.name))</a>
+<a name="ln791">        return false;</a>
+<a name="ln792"> </a>
+<a name="ln793">    // Check for non-existing spells.</a>
+<a name="ln794">    for (const mon_spell_slot &amp;slot : ghost.spells)</a>
+<a name="ln795">        if (slot.spell &lt; 0 || slot.spell &gt;= NUM_SPELLS)</a>
+<a name="ln796">            return false;</a>
+<a name="ln797"> </a>
+<a name="ln798">    return true;</a>
+<a name="ln799">}</a>
+<a name="ln800"> </a>
+<a name="ln801">// Sanity checks for some ghost values.</a>
+<a name="ln802">bool debug_check_ghosts(vector&lt;ghost_demon&gt; &amp;ghosts)</a>
+<a name="ln803">{</a>
+<a name="ln804">    for (const ghost_demon &amp;ghost : ghosts)</a>
+<a name="ln805">        if (!debug_check_ghost(ghost))</a>
+<a name="ln806">            return false;</a>
+<a name="ln807">    return true;</a>
+<a name="ln808">}</a>
+<a name="ln809"> </a>
+<a name="ln810">int ghost_level_to_rank(const int xl)</a>
+<a name="ln811">{</a>
+<a name="ln812">    if (xl &lt;  4) return 0;</a>
+<a name="ln813">    if (xl &lt;  7) return 1;</a>
+<a name="ln814">    if (xl &lt; 11) return 2;</a>
+<a name="ln815">    if (xl &lt; 16) return 3;</a>
+<a name="ln816">    if (xl &lt; 22) return 4;</a>
+<a name="ln817">    if (xl &lt; 26) return 5;</a>
+<a name="ln818">    if (xl &lt; 27) return 6;</a>
+<a name="ln819">    return 7;</a>
+<a name="ln820">}</a>
+<a name="ln821"> </a>
+<a name="ln822">// Approximate inverse, in the middle of the range</a>
+<a name="ln823">int ghost_rank_to_level(const int rank)</a>
+<a name="ln824">{</a>
+<a name="ln825">    switch (rank)</a>
+<a name="ln826">    {</a>
+<a name="ln827">    case 0:</a>
+<a name="ln828">        return 2;</a>
+<a name="ln829">    case 1:</a>
+<a name="ln830">        return 5;</a>
+<a name="ln831">    case 2:</a>
+<a name="ln832">        return 9;</a>
+<a name="ln833">    case 3:</a>
+<a name="ln834">        return 13;</a>
+<a name="ln835">    case 4:</a>
+<a name="ln836">        return 19;</a>
+<a name="ln837">    case 5:</a>
+<a name="ln838">        return 24;</a>
+<a name="ln839">    case 6:</a>
+<a name="ln840">        return 26;</a>
+<a name="ln841">    case 7:</a>
+<a name="ln842">        return 27;</a>
+<a name="ln843">    default:</a>
+<a name="ln844">        die(&quot;Bad ghost rank %d&quot;, rank);</a>
+<a name="ln845">    }</a>
+<a name="ln846">}</a>
+
+</code></pre>
+<div class="balloon" rel="772"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1016/" target="_blank">V1016</a> Expression 'ghost.religion < GOD_NO_GOD' is always false.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

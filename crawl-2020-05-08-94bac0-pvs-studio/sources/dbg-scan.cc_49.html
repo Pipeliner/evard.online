@@ -1,0 +1,736 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>dbg-scan.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Debugging code to scan the list of items and monsters.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;dbg-scan.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cerrno&gt;</a>
+<a name="ln11">#include &lt;cmath&gt;</a>
+<a name="ln12">#include &lt;sstream&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;artefact.h&quot;</a>
+<a name="ln15">#include &quot;branch.h&quot;</a>
+<a name="ln16">#include &quot;chardump.h&quot;</a>
+<a name="ln17">#include &quot;coord.h&quot;</a>
+<a name="ln18">#include &quot;coordit.h&quot;</a>
+<a name="ln19">#include &quot;dbg-util.h&quot;</a>
+<a name="ln20">#include &quot;dungeon.h&quot;</a>
+<a name="ln21">#include &quot;end.h&quot;</a>
+<a name="ln22">#include &quot;env.h&quot;</a>
+<a name="ln23">#include &quot;god-abil.h&quot;</a>
+<a name="ln24">#include &quot;invent.h&quot;</a>
+<a name="ln25">#include &quot;item-prop.h&quot;</a>
+<a name="ln26">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln27">#include &quot;items.h&quot;</a>
+<a name="ln28">#include &quot;libutil.h&quot;</a>
+<a name="ln29">#include &quot;maps.h&quot;</a>
+<a name="ln30">#include &quot;message.h&quot;</a>
+<a name="ln31">#include &quot;mon-util.h&quot;</a>
+<a name="ln32">#include &quot;shopping.h&quot;</a>
+<a name="ln33">#include &quot;state.h&quot;</a>
+<a name="ln34">#include &quot;stepdown.h&quot;</a>
+<a name="ln35">#include &quot;stringutil.h&quot;</a>
+<a name="ln36">#include &quot;terrain.h&quot;</a>
+<a name="ln37">#include &quot;traps.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39">#ifdef DEBUG_ITEM_SCAN</a>
+<a name="ln40"> </a>
+<a name="ln41">void debug_item_scan()</a>
+<a name="ln42">{</a>
+<a name="ln43">    int   i;</a>
+<a name="ln44">    char  name[256];</a>
+<a name="ln45"> </a>
+<a name="ln46">    FixedBitVector&lt;MAX_ITEMS&gt; visited;</a>
+<a name="ln47"> </a>
+<a name="ln48">    // First we're going to check all the stacks on the level:</a>
+<a name="ln49">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln50">    {</a>
+<a name="ln51">        // Unlinked temporary items.</a>
+<a name="ln52">        if (*ri == coord_def())</a>
+<a name="ln53">            continue;</a>
+<a name="ln54"> </a>
+<a name="ln55">        // Looking for infinite stacks (ie more links than items allowed)</a>
+<a name="ln56">        // and for items which have bad coordinates (can't find their stack)</a>
+<a name="ln57">        for (int obj = igrd(*ri); obj != NON_ITEM; obj = mitm[obj].link)</a>
+<a name="ln58">        {</a>
+<a name="ln59">            if (obj &lt; 0 || obj &gt; MAX_ITEMS)</a>
+<a name="ln60">            {</a>
+<a name="ln61">                if (igrd(*ri) == obj)</a>
+<a name="ln62">                {</a>
+<a name="ln63">                    mprf(MSGCH_ERROR, &quot;Igrd has invalid item index %d &quot;</a>
+<a name="ln64">                                      &quot;at (%d, %d)&quot;,</a>
+<a name="ln65">                         obj, ri-&gt;x, ri-&gt;y);</a>
+<a name="ln66">                }</a>
+<a name="ln67">                else</a>
+<a name="ln68">                {</a>
+<a name="ln69">                    mprf(MSGCH_ERROR, &quot;Item in stack at (%d, %d) has &quot;</a>
+<a name="ln70">                                      &quot;invalid link %d&quot;,</a>
+<a name="ln71">                         ri-&gt;x, ri-&gt;y, obj);</a>
+<a name="ln72">                }</a>
+<a name="ln73">                break;</a>
+<a name="ln74">            }</a>
+<a name="ln75"> </a>
+<a name="ln76">            // Check for invalid (zero quantity) items that are linked in.</a>
+<a name="ln77">            if (!mitm[obj].defined())</a>
+<a name="ln78">            {</a>
+<a name="ln79">                debug_dump_item(mitm[obj].name(DESC_PLAIN).c_str(), obj, mitm[obj],</a>
+<a name="ln80">                           &quot;Linked invalid item at (%d,%d)!&quot;, ri-&gt;x, ri-&gt;y);</a>
+<a name="ln81">            }</a>
+<a name="ln82"> </a>
+<a name="ln83">            // Check that item knows what stack it's in.</a>
+<a name="ln84">            if (mitm[obj].pos != *ri)</a>
+<a name="ln85">            {</a>
+<a name="ln86">                debug_dump_item(mitm[obj].name(DESC_PLAIN).c_str(), obj, mitm[obj],</a>
+<a name="ln87">                           &quot;Item position incorrect at (%d,%d)!&quot;, ri-&gt;x, ri-&gt;y);</a>
+<a name="ln88">            }</a>
+<a name="ln89"> </a>
+<a name="ln90">            // If we run into a premarked item we're in real trouble,</a>
+<a name="ln91">            // this will also keep this from being an infinite loop.</a>
+<a name="ln92">            if (visited[obj])</a>
+<a name="ln93">            {</a>
+<a name="ln94">                mprf(MSGCH_ERROR,</a>
+<a name="ln95">                     &quot;Potential INFINITE STACK at (%d, %d)&quot;, ri-&gt;x, ri-&gt;y);</a>
+<a name="ln96">                break;</a>
+<a name="ln97">            }</a>
+<a name="ln98">            visited.set(obj);</a>
+<a name="ln99">        }</a>
+<a name="ln100">    }</a>
+<a name="ln101"> </a>
+<a name="ln102">    // Now scan all the items on the level:</a>
+<a name="ln103">    for (i = 0; i &lt; MAX_ITEMS; ++i)</a>
+<a name="ln104">    {</a>
+<a name="ln105">        if (!mitm[i].defined())</a>
+<a name="ln106">            continue;</a>
+<a name="ln107"> </a>
+<a name="ln108">        strlcpy(name, mitm[i].name(DESC_PLAIN).c_str(), sizeof(name));</a>
+<a name="ln109"> </a>
+<a name="ln110">        const monster* mon = mitm[i].holding_monster();</a>
+<a name="ln111"> </a>
+<a name="ln112">        // Don't check (-1, -1) player items or (-2, -2) monster items</a>
+<a name="ln113">        // (except to make sure that the monster is alive).</a>
+<a name="ln114">        if (mitm[i].pos.origin())</a>
+<a name="ln115">            debug_dump_item(name, i, mitm[i], &quot;Unlinked temporary item:&quot;);</a>
+<a name="ln116">        else if (mon != nullptr &amp;&amp; mon-&gt;type == MONS_NO_MONSTER)</a>
+<a name="ln117">            debug_dump_item(name, i, mitm[i], &quot;Unlinked item held by dead monster:&quot;);</a>
+<a name="ln118">        else if ((mitm[i].pos.x &gt; 0 || mitm[i].pos.y &gt; 0) &amp;&amp; !visited[i])</a>
+<a name="ln119">        {</a>
+<a name="ln120">            debug_dump_item(name, i, mitm[i], &quot;Unlinked item:&quot;);</a>
+<a name="ln121"> </a>
+<a name="ln122">            if (!in_bounds(mitm[i].pos))</a>
+<a name="ln123">            {</a>
+<a name="ln124">                mprf(MSGCH_ERROR, &quot;Item position (%d, %d) is out of bounds&quot;,</a>
+<a name="ln125">                     mitm[i].pos.x, mitm[i].pos.y);</a>
+<a name="ln126">            }</a>
+<a name="ln127">            else</a>
+<a name="ln128">            {</a>
+<a name="ln129">                mprf(&quot;igrd(%d,%d) = %d&quot;,</a>
+<a name="ln130">                     mitm[i].pos.x, mitm[i].pos.y, igrd(mitm[i].pos));</a>
+<a name="ln131">            }</a>
+<a name="ln132"> </a>
+<a name="ln133">            // Let's check to see if it's an errant monster object:</a>
+<a name="ln134">            for (int j = 0; j &lt; MAX_MONSTERS; ++j)</a>
+<a name="ln135">            {</a>
+<a name="ln136">                monster&amp; mons(menv[j]);</a>
+<a name="ln137">                for (mon_inv_iterator ii(mons); ii; ++ii)</a>
+<a name="ln138">                {</a>
+<a name="ln139">                    if (ii-&gt;index() == i)</a>
+<a name="ln140">                    {</a>
+<a name="ln141">                        mprf(&quot;Held by monster #%d: %s at (%d,%d)&quot;,</a>
+<a name="ln142">                             j, mons.name(DESC_A, true).c_str(),</a>
+<a name="ln143">                             mons.pos().x, mons.pos().y);</a>
+<a name="ln144">                    }</a>
+<a name="ln145">                }</a>
+<a name="ln146">            }</a>
+<a name="ln147">        }</a>
+<a name="ln148"> </a>
+<a name="ln149">        // Current bad items of interest:</a>
+<a name="ln150">        //   -- armour and weapons with large enchantments/illegal special vals</a>
+<a name="ln151">        //</a>
+<a name="ln152">        //   -- items described as questionable (the class 100 bug)</a>
+<a name="ln153">        //</a>
+<a name="ln154">        //   -- eggplant is an illegal throwing weapon</a>
+<a name="ln155">        //</a>
+<a name="ln156">        //   -- items described as buggy (typically adjectives out of range)</a>
+<a name="ln157">        //      (note: covers buggy, bugginess, buggily, whatever else)</a>
+<a name="ln158">        //</a>
+<a name="ln159">        // Theoretically some of these could match random names.</a>
+<a name="ln160">        //</a>
+<a name="ln161">        if (strstr(name, &quot;questionable&quot;) != nullptr</a>
+<a name="ln162">            || strstr(name, &quot;eggplant&quot;) != nullptr</a>
+<a name="ln163">            || strstr(name, &quot;buggy&quot;) != nullptr</a>
+<a name="ln164">            || strstr(name, &quot;buggi&quot;) != nullptr)</a>
+<a name="ln165">        {</a>
+<a name="ln166">            debug_dump_item(name, i, mitm[i], &quot;Bad item:&quot;);</a>
+<a name="ln167">        }</a>
+<a name="ln168">        else if (abs(mitm[i].plus) &gt; 30 &amp;&amp;</a>
+<a name="ln169">                    (mitm[i].base_type == OBJ_WEAPONS</a>
+<a name="ln170">                     || mitm[i].base_type == OBJ_ARMOUR))</a>
+<a name="ln171">        {</a>
+<a name="ln172">            debug_dump_item(name, i, mitm[i], &quot;Bad plus:&quot;);</a>
+<a name="ln173">        }</a>
+<a name="ln174">        else if (!is_artefact(mitm[i])</a>
+<a name="ln175">                 &amp;&amp; (mitm[i].base_type == OBJ_WEAPONS</a>
+<a name="ln176">                        &amp;&amp; mitm[i].brand &gt;= NUM_SPECIAL_WEAPONS</a>
+<a name="ln177">                     || mitm[i].base_type == OBJ_ARMOUR</a>
+<a name="ln178">                        &amp;&amp; mitm[i].brand &gt;= NUM_SPECIAL_ARMOURS))</a>
+<a name="ln179">        {</a>
+<a name="ln180">            debug_dump_item(name, i, mitm[i], &quot;Bad special value:&quot;);</a>
+<a name="ln181">        }</a>
+<a name="ln182">        else if (mitm[i].flags &amp; ISFLAG_SUMMONED &amp;&amp; in_bounds(mitm[i].pos))</a>
+<a name="ln183">            debug_dump_item(name, i, mitm[i], &quot;Summoned item on floor:&quot;);</a>
+<a name="ln184">    }</a>
+<a name="ln185"> </a>
+<a name="ln186">    // Quickly scan monsters for &quot;program bug&quot;s.</a>
+<a name="ln187">    for (i = 0; i &lt; MAX_MONSTERS; ++i)</a>
+<a name="ln188">    {</a>
+<a name="ln189">        const monster&amp; mons = menv[i];</a>
+<a name="ln190"> </a>
+<a name="ln191">        if (mons.type == MONS_NO_MONSTER)</a>
+<a name="ln192">            continue;</a>
+<a name="ln193"> </a>
+<a name="ln194">        if (mons.name(DESC_PLAIN, true).find(&quot;questionable&quot;) != string::npos)</a>
+<a name="ln195">        {</a>
+<a name="ln196">            mprf(MSGCH_ERROR, &quot;Program bug detected!&quot;);</a>
+<a name="ln197">            mprf(MSGCH_ERROR,</a>
+<a name="ln198">                 &quot;Buggy monster detected: monster #%d; position (%d,%d)&quot;,</a>
+<a name="ln199">                 i, mons.pos().x, mons.pos().y);</a>
+<a name="ln200">        }</a>
+<a name="ln201">    }</a>
+<a name="ln202">}</a>
+<a name="ln203">#endif</a>
+<a name="ln204"> </a>
+<a name="ln205">#define DEBUG_MONS_SCAN</a>
+<a name="ln206">#ifdef DEBUG_MONS_SCAN</a>
+<a name="ln207">static void _announce_level_prob(bool warned)</a>
+<a name="ln208">{</a>
+<a name="ln209">    if (!warned &amp;&amp; crawl_state.generating_level)</a>
+<a name="ln210">    {</a>
+<a name="ln211">        mprf(MSGCH_ERROR, &quot;!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!&quot;);</a>
+<a name="ln212">        mprf(MSGCH_ERROR, &quot;mgrd problem occurred during level generation&quot;);</a>
+<a name="ln213"> </a>
+<a name="ln214">        debug_dump_levgen();</a>
+<a name="ln215">    }</a>
+<a name="ln216">}</a>
+<a name="ln217"> </a>
+<a name="ln218">static bool _inside_vault(const vault_placement&amp; place, const coord_def &amp;pos)</a>
+<a name="ln219">{</a>
+<a name="ln220">    const coord_def delta = pos - place.pos;</a>
+<a name="ln221"> </a>
+<a name="ln222">    return delta.x &gt;= 0 &amp;&amp; delta.y &gt;= 0</a>
+<a name="ln223">           &amp;&amp; delta.x &lt; place.size.x &amp;&amp; delta.y &lt; place.size.y;</a>
+<a name="ln224">}</a>
+<a name="ln225"> </a>
+<a name="ln226">static vector&lt;string&gt; _in_vaults(const coord_def &amp;pos)</a>
+<a name="ln227">{</a>
+<a name="ln228">    vector&lt;string&gt; out;</a>
+<a name="ln229"> </a>
+<a name="ln230">    for (auto &amp;vault : env.level_vaults)</a>
+<a name="ln231">        if (_inside_vault(*vault, pos))</a>
+<a name="ln232">            out.push_back(vault-&gt;map.name);</a>
+<a name="ln233"> </a>
+<a name="ln234">    for (const vault_placement &amp;vault : Temp_Vaults)</a>
+<a name="ln235">        if (_inside_vault(vault, pos))</a>
+<a name="ln236">            out.push_back(vault.map.name);</a>
+<a name="ln237"> </a>
+<a name="ln238">    return out;</a>
+<a name="ln239">}</a>
+<a name="ln240"> </a>
+<a name="ln241">static string _vault_desc(const coord_def pos)</a>
+<a name="ln242">{</a>
+<a name="ln243">    int mi = env.level_map_ids(pos);</a>
+<a name="ln244">    if (mi == INVALID_MAP_INDEX)</a>
+<a name="ln245">        return &quot;&quot;;</a>
+<a name="ln246"> </a>
+<a name="ln247">    string out;</a>
+<a name="ln248"> </a>
+<a name="ln249">    for (auto &amp;vault : env.level_vaults)</a>
+<a name="ln250">    {</a>
+<a name="ln251">        if (_inside_vault(*vault, pos))</a>
+<a name="ln252">        {</a>
+<a name="ln253">            coord_def br = vault-&gt;pos + vault-&gt;size - 1;</a>
+<a name="ln254">            out += make_stringf(&quot; [vault: %s (%d,%d)-(%d,%d) (%dx%d)]&quot;,</a>
+<a name="ln255">                        vault-&gt;map_name_at(pos).c_str(),</a>
+<a name="ln256">                        vault-&gt;pos.x, vault-&gt;pos.y,</a>
+<a name="ln257">                        br.x, br.y,</a>
+<a name="ln258">                        vault-&gt;size.x, vault-&gt;size.y);</a>
+<a name="ln259">        }</a>
+<a name="ln260">    }</a>
+<a name="ln261"> </a>
+<a name="ln262">    return out;</a>
+<a name="ln263">}</a>
+<a name="ln264"> </a>
+<a name="ln265">void debug_mons_scan()</a>
+<a name="ln266">{</a>
+<a name="ln267">    vector&lt;coord_def&gt; bogus_pos;</a>
+<a name="ln268">    vector&lt;int&gt;       bogus_idx;</a>
+<a name="ln269"> </a>
+<a name="ln270">    bool warned = false;</a>
+<a name="ln271">    for (int y = 0; y &lt; GYM; ++y)</a>
+<a name="ln272">        for (int x = 0; x &lt; GXM; ++x)</a>
+<a name="ln273">        {</a>
+<a name="ln274">            const int mons = mgrd[x][y];</a>
+<a name="ln275">            if (mons == NON_MONSTER)</a>
+<a name="ln276">                continue;</a>
+<a name="ln277"> </a>
+<a name="ln278">            if (invalid_monster_index(mons))</a>
+<a name="ln279">            {</a>
+<a name="ln280">                mprf(MSGCH_ERROR, &quot;mgrd at (%d, %d) has invalid monster &quot;</a>
+<a name="ln281">                                  &quot;index %d&quot;,</a>
+<a name="ln282">                     x, y, mons);</a>
+<a name="ln283">                continue;</a>
+<a name="ln284">            }</a>
+<a name="ln285"> </a>
+<a name="ln286">            const monster* m = &amp;menv[mons];</a>
+<a name="ln287">            const coord_def pos(x, y);</a>
+<a name="ln288">            if (m-&gt;pos() != pos)</a>
+<a name="ln289">            {</a>
+<a name="ln290">                bogus_pos.push_back(pos);</a>
+<a name="ln291">                bogus_idx.push_back(mons);</a>
+<a name="ln292"> </a>
+<a name="ln293">                _announce_level_prob(warned);</a>
+<a name="ln294">                mprf(MSGCH_WARN,</a>
+<a name="ln295">                     &quot;Bogosity: mgrd at (%d,%d) points at %s, &quot;</a>
+<a name="ln296">                     &quot;but monster is at (%d,%d)&quot;,</a>
+<a name="ln297">                     x, y, m-&gt;name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln298">                     m-&gt;pos().x, m-&gt;pos().y);</a>
+<a name="ln299">                if (!m-&gt;alive())</a>
+<a name="ln300">                    mprf(MSGCH_WARN, &quot;Additionally, it isn't alive.&quot;);</a>
+<a name="ln301">                warned = true;</a>
+<a name="ln302">            }</a>
+<a name="ln303">            else if (!m-&gt;alive())</a>
+<a name="ln304">            {</a>
+<a name="ln305">                _announce_level_prob(warned);</a>
+<a name="ln306">                mprf_nocap(MSGCH_ERROR,</a>
+<a name="ln307">                     &quot;mgrd at (%d,%d) points at dead monster %s&quot;,</a>
+<a name="ln308">                     x, y, m-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln309">                warned = true;</a>
+<a name="ln310">            }</a>
+<a name="ln311">        }</a>
+<a name="ln312"> </a>
+<a name="ln313">    ASSERT(you.type == MONS_PLAYER);</a>
+<a name="ln314">    ASSERT(you.mid == MID_PLAYER);</a>
+<a name="ln315"> </a>
+<a name="ln316">    vector&lt;int&gt; floating_mons;</a>
+<a name="ln317">    bool             is_floating[MAX_MONSTERS];</a>
+<a name="ln318"> </a>
+<a name="ln319">    for (int i = 0; i &lt; MAX_MONSTERS; ++i)</a>
+<a name="ln320">    {</a>
+<a name="ln321">        is_floating[i] = false;</a>
+<a name="ln322"> </a>
+<a name="ln323">        const monster* m = &amp;menv[i];</a>
+<a name="ln324">        if (!m-&gt;alive())</a>
+<a name="ln325">            continue;</a>
+<a name="ln326"> </a>
+<a name="ln327">        ASSERT(m-&gt;mid &gt; 0);</a>
+<a name="ln328">        coord_def pos = m-&gt;pos();</a>
+<a name="ln329"> </a>
+<a name="ln330">        if (invalid_monster_type(m-&gt;type))</a>
+<a name="ln331">        {</a>
+<a name="ln332">            mprf(MSGCH_ERROR, &quot;Bogus monster type %d at (%d, %d), midx = %d&quot;,</a>
+<a name="ln333">                              m-&gt;type, pos.x, pos.y, i);</a>
+<a name="ln334">        }</a>
+<a name="ln335"> </a>
+<a name="ln336">        if (!in_bounds(pos))</a>
+<a name="ln337">        {</a>
+<a name="ln338">            mprf(MSGCH_ERROR, &quot;Out of bounds monster: %s at (%d, %d), &quot;</a>
+<a name="ln339">                              &quot;midx = %d&quot;,</a>
+<a name="ln340">                 m-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln341">                 pos.x, pos.y, i);</a>
+<a name="ln342">        }</a>
+<a name="ln343">        else if (mgrd(pos) != i)</a>
+<a name="ln344">        {</a>
+<a name="ln345">            floating_mons.push_back(i);</a>
+<a name="ln346">            is_floating[i] = true;</a>
+<a name="ln347"> </a>
+<a name="ln348">            _announce_level_prob(warned);</a>
+<a name="ln349">            mprf(MSGCH_WARN, &quot;Floating monster: %s at (%d,%d), midx = %d&quot;,</a>
+<a name="ln350">                 m-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln351">                 pos.x, pos.y, i);</a>
+<a name="ln352">            warned = true;</a>
+<a name="ln353">            for (int j = 0; j &lt; MAX_MONSTERS; ++j)</a>
+<a name="ln354">            {</a>
+<a name="ln355">                if (i == j)</a>
+<a name="ln356">                    continue;</a>
+<a name="ln357"> </a>
+<a name="ln358">                const monster* m2 = &amp;menv[j];</a>
+<a name="ln359"> </a>
+<a name="ln360">                if (m2-&gt;pos() != m-&gt;pos())</a>
+<a name="ln361">                    continue;</a>
+<a name="ln362"> </a>
+<a name="ln363">                string full = m2-&gt;full_name(DESC_PLAIN);</a>
+<a name="ln364">                if (m2-&gt;alive())</a>
+<a name="ln365">                {</a>
+<a name="ln366">                    mprf(MSGCH_WARN, &quot;Also at (%d, %d): %s, midx = %d&quot;,</a>
+<a name="ln367">                         pos.x, pos.y, full.c_str(), j);</a>
+<a name="ln368">                }</a>
+<a name="ln369">                else if (m2-&gt;type != MONS_NO_MONSTER)</a>
+<a name="ln370">                {</a>
+<a name="ln371">                    mprf(MSGCH_WARN, &quot;Dead mon also at (%d, %d): %s,&quot;</a>
+<a name="ln372">                                     &quot;midx = %d&quot;,</a>
+<a name="ln373">                         pos.x, pos.y, full.c_str(), j);</a>
+<a name="ln374">                }</a>
+<a name="ln375">            }</a>
+<a name="ln376">        } // if (mgrd(m-&gt;pos()) != i)</a>
+<a name="ln377"> </a>
+<a name="ln378">        if (feat_is_wall(grd(pos)))</a>
+<a name="ln379">        {</a>
+<a name="ln380">#if defined(DEBUG_FATAL)</a>
+<a name="ln381">            // if we're going to dump, point out the culprit</a>
+<a name="ln382">            env.pgrid(pos) |= FPROP_HIGHLIGHT;</a>
+<a name="ln383">#endif</a>
+<a name="ln384">            mprf(MSGCH_ERROR, &quot;Monster %s in %s at (%d, %d)%s&quot;,</a>
+<a name="ln385">                 m-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln386">                 dungeon_feature_name(grd(pos)),</a>
+<a name="ln387">                 pos.x, pos.y,</a>
+<a name="ln388">                 _vault_desc(pos).c_str());</a>
+<a name="ln389">        }</a>
+<a name="ln390"> </a>
+<a name="ln391">        for (int j = 0; j &lt; NUM_MONSTER_SLOTS; ++j)</a>
+<a name="ln392">        {</a>
+<a name="ln393">            const int idx = m-&gt;inv[j];</a>
+<a name="ln394">            if (idx == NON_ITEM)</a>
+<a name="ln395">                continue;</a>
+<a name="ln396"> </a>
+<a name="ln397">            if (idx &lt; 0 || idx &gt; MAX_ITEMS)</a>
+<a name="ln398">            {</a>
+<a name="ln399">                mprf(MSGCH_ERROR, &quot;Monster %s (%d, %d) has invalid item &quot;</a>
+<a name="ln400">                                  &quot;index %d in slot %d.&quot;,</a>
+<a name="ln401">                     m-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln402">                     pos.x, pos.y, idx, j);</a>
+<a name="ln403">                continue;</a>
+<a name="ln404">            }</a>
+<a name="ln405">            item_def &amp;item(mitm[idx]);</a>
+<a name="ln406"> </a>
+<a name="ln407">            if (!item.defined())</a>
+<a name="ln408">            {</a>
+<a name="ln409">                _announce_level_prob(warned);</a>
+<a name="ln410">                warned = true;</a>
+<a name="ln411">                mprf(MSGCH_WARN, &quot;Monster %s (%d, %d) holding invalid item in &quot;</a>
+<a name="ln412">                                 &quot;slot %d (midx = %d)&quot;,</a>
+<a name="ln413">                     m-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln414">                     pos.x, pos.y, j, i);</a>
+<a name="ln415">                continue;</a>
+<a name="ln416">            }</a>
+<a name="ln417"> </a>
+<a name="ln418">            const monster* holder = item.holding_monster();</a>
+<a name="ln419"> </a>
+<a name="ln420">            if (holder == nullptr)</a>
+<a name="ln421">            {</a>
+<a name="ln422">                _announce_level_prob(warned);</a>
+<a name="ln423">                warned = true;</a>
+<a name="ln424">                debug_dump_item(item.name(DESC_PLAIN, false, true).c_str(),</a>
+<a name="ln425">                            idx, item,</a>
+<a name="ln426">                           &quot;Monster %s (%d, %d) holding non-monster &quot;</a>
+<a name="ln427">                           &quot;item (midx = %d)&quot;,</a>
+<a name="ln428">                           m-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln429">                           pos.x, pos.y, i);</a>
+<a name="ln430">                continue;</a>
+<a name="ln431">            }</a>
+<a name="ln432"> </a>
+<a name="ln433">            if (holder != m)</a>
+<a name="ln434">            {</a>
+<a name="ln435">                _announce_level_prob(warned);</a>
+<a name="ln436">                warned = true;</a>
+<a name="ln437">                mprf(MSGCH_WARN, &quot;Monster %s (%d, %d) [midx = %d] holding &quot;</a>
+<a name="ln438">                                 &quot;item %s, but item thinks it's held by &quot;</a>
+<a name="ln439">                                 &quot;monster %s (%d, %d) [midx = %d]&quot;,</a>
+<a name="ln440">                     m-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln441">                     m-&gt;pos().x, m-&gt;pos().y, i,</a>
+<a name="ln442">                     item.name(DESC_PLAIN).c_str(),</a>
+<a name="ln443">                     holder-&gt;full_name(DESC_PLAIN).c_str(),</a>
+<a name="ln444">                     holder-&gt;pos().x, holder-&gt;pos().y, holder-&gt;mindex());</a>
+<a name="ln445"> </a>
+<a name="ln446">                bool found = false;</a>
+<a name="ln447">                for (int k = 0; k &lt; NUM_MONSTER_SLOTS; ++k)</a>
+<a name="ln448">                {</a>
+<a name="ln449">                    if (holder-&gt;inv[k] == idx)</a>
+<a name="ln450">                    {</a>
+<a name="ln451">                        mprf(MSGCH_WARN, &quot;Other monster thinks it's holding the item, too.&quot;);</a>
+<a name="ln452">                        found = true;</a>
+<a name="ln453">                        break;</a>
+<a name="ln454">                    }</a>
+<a name="ln455">                }</a>
+<a name="ln456">                if (!found)</a>
+<a name="ln457">                    mprf(MSGCH_WARN, &quot;Other monster isn't holding it, though.&quot;);</a>
+<a name="ln458">            } // if (holder != m)</a>
+<a name="ln459">        } // for (int j = 0; j &lt; NUM_MONSTER_SLOTS; j++)</a>
+<a name="ln460"> </a>
+<a name="ln461">        monster* m1 = monster_by_mid(m-&gt;mid);</a>
+<a name="ln462">        if (m1 != m)</a>
+<a name="ln463">        {</a>
+<a name="ln464">            if (!m1)</a>
+<a name="ln465">                die(&quot;mid cache bogosity: no monster for %d&quot;, m-&gt;mid);</a>
+<a name="ln466">            else if (m1-&gt;mid == m-&gt;mid)</a>
+<a name="ln467">            {</a>
+<a name="ln468">                mprf(MSGCH_ERROR,</a>
+<a name="ln469">                     &quot;Error: monster %s(%d) has same mid as %s(%d) (%d)&quot;,</a>
+<a name="ln470">                     m-&gt;name(DESC_PLAIN, true).c_str(), m-&gt;mindex(),</a>
+<a name="ln471">                     m1-&gt;name(DESC_PLAIN, true).c_str(), m1-&gt;mindex(), m-&gt;mid);</a>
+<a name="ln472">            }</a>
+<a name="ln473">            else</a>
+<a name="ln474">                die(&quot;mid cache bogosity: wanted %d got %d&quot;, m-&gt;mid, m1-&gt;mid);</a>
+<a name="ln475">        }</a>
+<a name="ln476"> </a>
+<a name="ln477">        if (you.constricted_by == m-&gt;mid &amp;&amp; (!m-&gt;constricting</a>
+<a name="ln478">              || m-&gt;constricting-&gt;find(MID_PLAYER) == m-&gt;constricting-&gt;end()))</a>
+<a name="ln479">        {</a>
+<a name="ln480">            mprf(MSGCH_ERROR, &quot;Error: constricting[you] entry missing for monster %s(%d)&quot;,</a>
+<a name="ln481">                 m-&gt;name(DESC_PLAIN, true).c_str(), m-&gt;mindex());</a>
+<a name="ln482">        }</a>
+<a name="ln483"> </a>
+<a name="ln484">        if (m-&gt;constricted_by)</a>
+<a name="ln485">        {</a>
+<a name="ln486">            const actor *h = actor_by_mid(m-&gt;constricted_by);</a>
+<a name="ln487">            if (!h)</a>
+<a name="ln488">            {</a>
+<a name="ln489">                mprf(MSGCH_ERROR, &quot;Error: constrictor missing for monster %s(%d)&quot;,</a>
+<a name="ln490">                     m-&gt;name(DESC_PLAIN, true).c_str(), m-&gt;mindex());</a>
+<a name="ln491">            }</a>
+<a name="ln492">            else if (!h-&gt;constricting</a>
+<a name="ln493">                     || h-&gt;constricting-&gt;find(m-&gt;mid) == h-&gt;constricting-&gt;end())</a>
+<a name="ln494">            {</a>
+<a name="ln495">                mprf(MSGCH_ERROR, &quot;Error: constricting[%s(mindex=%d mid=%d)] &quot;</a>
+<a name="ln496">                                  &quot;entry missing for monster %s(mindex=%d mid=%d)&quot;,</a>
+<a name="ln497">                     m-&gt;name(DESC_PLAIN, true).c_str(), m-&gt;mindex(), m-&gt;mid,</a>
+<a name="ln498">                     h-&gt;name(DESC_PLAIN, true).c_str(), h-&gt;mindex(), h-&gt;mid);</a>
+<a name="ln499">            }</a>
+<a name="ln500">        }</a>
+<a name="ln501">    } // for (int i = 0; i &lt; MAX_MONSTERS; ++i)</a>
+<a name="ln502"> </a>
+<a name="ln503">    for (const auto &amp;entry : env.mid_cache)</a>
+<a name="ln504">    {</a>
+<a name="ln505">        unsigned short idx = entry.second;</a>
+<a name="ln506">        ASSERT(!invalid_monster_index(idx));</a>
+<a name="ln507">        if (menv[idx].mid != entry.first)</a>
+<a name="ln508">        {</a>
+<a name="ln509">            monster &amp;m(menv[idx]);</a>
+<a name="ln510">            die(&quot;mid cache bogosity: mid %d points to %s mindex=%d mid=%d&quot;,</a>
+<a name="ln511">                entry.first, m.name(DESC_PLAIN, true).c_str(), m.mindex(),</a>
+<a name="ln512">                m.mid);</a>
+<a name="ln513">        }</a>
+<a name="ln514">    }</a>
+<a name="ln515"> </a>
+<a name="ln516">    if (in_bounds(you.pos()))</a>
+<a name="ln517">        if (const monster* m = monster_at(you.pos()))</a>
+<a name="ln518">            if (!m-&gt;submerged() &amp;&amp; !fedhas_passthrough(m))</a>
+<a name="ln519">            {</a>
+<a name="ln520">                mprf(MSGCH_ERROR, &quot;Error: player on same spot as monster: %s(%d)&quot;,</a>
+<a name="ln521">                      m-&gt;name(DESC_PLAIN, true).c_str(), m-&gt;mindex());</a>
+<a name="ln522">            }</a>
+<a name="ln523"> </a>
+<a name="ln524">    // No problems?</a>
+<a name="ln525">    if (!warned)</a>
+<a name="ln526">        return;</a>
+<a name="ln527"> </a>
+<a name="ln528">    // If this wasn't the result of generating a level then there's nothing</a>
+<a name="ln529">    // more to report.</a>
+<a name="ln530">    if (!crawl_state.generating_level)</a>
+<a name="ln531">    {</a>
+<a name="ln532">        // Force the dev to notice problems. :P</a>
+<a name="ln533">        more();</a>
+<a name="ln534">        return;</a>
+<a name="ln535">    }</a>
+<a name="ln536"> </a>
+<a name="ln537">    // No vaults to report on?</a>
+<a name="ln538">    if (env.level_vaults.empty() &amp;&amp; Temp_Vaults.empty())</a>
+<a name="ln539">    {</a>
+<a name="ln540">        mprf(MSGCH_ERROR, &quot;!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!&quot;);</a>
+<a name="ln541">        // Force the dev to notice problems. :P</a>
+<a name="ln542">        more();</a>
+<a name="ln543">        return;</a>
+<a name="ln544">    }</a>
+<a name="ln545"> </a>
+<a name="ln546">    mpr(&quot;&quot;);</a>
+<a name="ln547"> </a>
+<a name="ln548">    for (int idx : floating_mons)</a>
+<a name="ln549">    {</a>
+<a name="ln550">        const monster* mon = &amp;menv[idx];</a>
+<a name="ln551">        vector&lt;string&gt; vaults = _in_vaults(mon-&gt;pos());</a>
+<a name="ln552"> </a>
+<a name="ln553">        string str = make_stringf(&quot;Floating monster %s (%d, %d)&quot;,</a>
+<a name="ln554">                                  mon-&gt;name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln555">                                  mon-&gt;pos().x, mon-&gt;pos().y);</a>
+<a name="ln556"> </a>
+<a name="ln557">        if (vaults.empty())</a>
+<a name="ln558">            mprf(MSGCH_WARN, &quot;%s not in any vaults.&quot;, str.c_str());</a>
+<a name="ln559">        else</a>
+<a name="ln560">        {</a>
+<a name="ln561">            mpr_comma_separated_list(str + &quot; in vault(s) &quot;, vaults,</a>
+<a name="ln562">                                     &quot; and &quot;, &quot;, &quot;, MSGCH_WARN);</a>
+<a name="ln563">        }</a>
+<a name="ln564">    }</a>
+<a name="ln565"> </a>
+<a name="ln566">    mpr(&quot;&quot;);</a>
+<a name="ln567"> </a>
+<a name="ln568">    for (unsigned int i = 0; i &lt; bogus_pos.size(); ++i)</a>
+<a name="ln569">    {</a>
+<a name="ln570">        const coord_def pos = bogus_pos[i];</a>
+<a name="ln571">        const int       idx = bogus_idx[i];</a>
+<a name="ln572">        const monster* mon = &amp;menv[idx];</a>
+<a name="ln573"> </a>
+<a name="ln574">        string str = make_stringf(&quot;Bogus mgrd (%d, %d) pointing to %s&quot;, pos.x,</a>
+<a name="ln575">                                  pos.y, mon-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln576"> </a>
+<a name="ln577">        vector&lt;string&gt; vaults = _in_vaults(pos);</a>
+<a name="ln578"> </a>
+<a name="ln579">        if (vaults.empty())</a>
+<a name="ln580">            mprf(MSGCH_WARN, &quot;%s not in any vaults.&quot;, str.c_str());</a>
+<a name="ln581">        else</a>
+<a name="ln582">        {</a>
+<a name="ln583">            mpr_comma_separated_list(str + &quot; in vault(s) &quot;, vaults,</a>
+<a name="ln584">                                     &quot; and &quot;, &quot;, &quot;, MSGCH_WARN);</a>
+<a name="ln585">        }</a>
+<a name="ln586"> </a>
+<a name="ln587">        // Don't report on same monster twice.</a>
+<a name="ln588">        if (is_floating[idx])</a>
+<a name="ln589">            continue;</a>
+<a name="ln590"> </a>
+<a name="ln591">        str    = &quot;Monster pointed to&quot;;</a>
+<a name="ln592">        vaults = _in_vaults(mon-&gt;pos());</a>
+<a name="ln593"> </a>
+<a name="ln594">        if (vaults.empty())</a>
+<a name="ln595">            mprf(MSGCH_WARN, &quot;%s not in any vaults.&quot;, str.c_str());</a>
+<a name="ln596">        else</a>
+<a name="ln597">        {</a>
+<a name="ln598">            mpr_comma_separated_list(str + &quot; in vault(s) &quot;, vaults,</a>
+<a name="ln599">                                     &quot; and &quot;, &quot;, &quot;, MSGCH_WARN);</a>
+<a name="ln600">        }</a>
+<a name="ln601">    }</a>
+<a name="ln602"> </a>
+<a name="ln603">    mprf(MSGCH_ERROR, &quot;!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!&quot;);</a>
+<a name="ln604">    // Force the dev to notice problems. :P</a>
+<a name="ln605">    more();</a>
+<a name="ln606">}</a>
+<a name="ln607">#endif</a>
+<a name="ln608"> </a>
+<a name="ln609">/**</a>
+<a name="ln610"> * Check the map for validity, generating a crash if not.</a>
+<a name="ln611"> *</a>
+<a name="ln612"> * This checks the loaded map to make sure all dungeon features and shops are</a>
+<a name="ln613"> * valid, all branch exits are generated, and all portals generated at fixed</a>
+<a name="ln614"> * levels in the Depths are actually present.</a>
+<a name="ln615"> */</a>
+<a name="ln616">void check_map_validity()</a>
+<a name="ln617">{</a>
+<a name="ln618">#ifdef ASSERTS</a>
+<a name="ln619">    dungeon_feature_type portal = DNGN_UNSEEN;</a>
+<a name="ln620">    if (player_in_branch(BRANCH_DEPTHS))</a>
+<a name="ln621">    {</a>
+<a name="ln622">        if (you.depth == 3)</a>
+<a name="ln623">            portal = DNGN_ENTER_PANDEMONIUM;</a>
+<a name="ln624">        else if (you.depth == 4)</a>
+<a name="ln625">            portal = DNGN_ENTER_ABYSS;</a>
+<a name="ln626">        else if (you.depth == 2)</a>
+<a name="ln627">            portal = DNGN_ENTER_HELL;</a>
+<a name="ln628">    }</a>
+<a name="ln629"> </a>
+<a name="ln630">    dungeon_feature_type exit = DNGN_UNSEEN;</a>
+<a name="ln631">    if (you.depth == 1 &amp;&amp; !player_in_branch(root_branch))</a>
+<a name="ln632">        exit = branches[you.where_are_you].exit_stairs;</a>
+<a name="ln633"> </a>
+<a name="ln634">    // these may require you to look farther:</a>
+<a name="ln635">    if (exit == DNGN_EXIT_PANDEMONIUM)</a>
+<a name="ln636">        exit = DNGN_TRANSIT_PANDEMONIUM;</a>
+<a name="ln637">    if (exit == DNGN_EXIT_ABYSS)</a>
+<a name="ln638">        exit = DNGN_UNSEEN;</a>
+<a name="ln639"> </a>
+<a name="ln640">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln641">    {</a>
+<a name="ln642">        dungeon_feature_type feat = grd(*ri);</a>
+<a name="ln643">        if (feat &lt;= DNGN_UNSEEN || feat &gt;= NUM_FEATURES)</a>
+<a name="ln644">            die(&quot;invalid feature %d at (%d,%d)&quot;, feat, ri-&gt;x, ri-&gt;y);</a>
+<a name="ln645">        const char *name = dungeon_feature_name(feat);</a>
+<a name="ln646">        ASSERT(name);</a>
+<a name="ln647">        ASSERT(*name); // placeholders get empty names</a>
+<a name="ln648"> </a>
+<a name="ln649">        trap_at(*ri); // this has all needed asserts already</a>
+<a name="ln650"> </a>
+<a name="ln651">        if (shop_struct *shop = shop_at(*ri))</a>
+<a name="ln652">            ASSERT_RANGE(shop-&gt;type, 0, NUM_SHOPS);</a>
+<a name="ln653"> </a>
+<a name="ln654">        // border must be impassable</a>
+<a name="ln655">        if (!in_bounds(*ri))</a>
+<a name="ln656">            ASSERT(feat_is_solid(feat));</a>
+<a name="ln657"> </a>
+<a name="ln658">        if (env.level_map_mask(*ri) &amp; MMT_MIMIC)</a>
+<a name="ln659">            continue;</a>
+<a name="ln660">        // no mimics below</a>
+<a name="ln661"> </a>
+<a name="ln662">        const dungeon_feature_type orig = orig_terrain(*ri);</a>
+<a name="ln663">        if (feat == portal || orig == portal)</a>
+<a name="ln664">            portal = DNGN_UNSEEN;</a>
+<a name="ln665">        if (feat == exit || orig == exit)</a>
+<a name="ln666">            exit = DNGN_UNSEEN;</a>
+<a name="ln667">    }</a>
+<a name="ln668"> </a>
+<a name="ln669">    if (portal)</a>
+<a name="ln670">    {</a>
+<a name="ln671">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln672">        dump_map(&quot;missing_portal.map&quot;, true);</a>
+<a name="ln673">#endif</a>
+<a name="ln674">        die(&quot;Portal %s[%d] didn't get generated.&quot;, dungeon_feature_name(portal), portal);</a>
+<a name="ln675">    }</a>
+<a name="ln676">    if (exit)</a>
+<a name="ln677">    {</a>
+<a name="ln678">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln679">        dump_map(&quot;missing_exit.map&quot;, true);</a>
+<a name="ln680">#endif</a>
+<a name="ln681">        die(&quot;Exit %s[%d] didn't get generated.&quot;, dungeon_feature_name(exit), exit);</a>
+<a name="ln682">    }</a>
+<a name="ln683"> </a>
+<a name="ln684">    // And just for good measure:</a>
+<a name="ln685">    debug_item_scan();</a>
+<a name="ln686">    debug_mons_scan();</a>
+<a name="ln687">#endif</a>
+<a name="ln688">}</a>
+
+</code></pre>
+<div class="balloon" rel="129"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v510/" target="_blank">V510</a> The 'mprf' function is not expected to receive class-type variable as fourth actual argument.</p></div>
+<div class="balloon" rel="669"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'portal' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+<div class="balloon" rel="676"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'exit' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

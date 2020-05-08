@@ -1,0 +1,985 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>fontwrapper-ft.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#ifdef USE_TILE_LOCAL</a>
+<a name="ln4">#ifdef USE_FT</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;fontwrapper-ft.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &lt;ft2build.h&gt;</a>
+<a name="ln9">#include FT_FREETYPE_H</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &quot;defines.h&quot;</a>
+<a name="ln12">#include &quot;end.h&quot;</a>
+<a name="ln13">#include &quot;errno.h&quot;</a>
+<a name="ln14">#include &quot;files.h&quot;</a>
+<a name="ln15">#include &quot;format.h&quot;</a>
+<a name="ln16">#include &quot;glwrapper.h&quot;</a>
+<a name="ln17">#include &quot;options.h&quot;</a>
+<a name="ln18">#include &quot;syscalls.h&quot;</a>
+<a name="ln19">#include &quot;tilebuf.h&quot;</a>
+<a name="ln20">#include &quot;tilefont.h&quot;</a>
+<a name="ln21">#include &quot;tilesdl.h&quot;</a>
+<a name="ln22">#include &quot;unicode.h&quot;</a>
+<a name="ln23">#include &quot;unwind.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">// maximum number of unique glyphs that can be rendered with this font at once; e.g. 4096, 256, 36</a>
+<a name="ln26">#define MAX_GLYPHS 256</a>
+<a name="ln27">// dimensions of glyph grid; GLYPHS_PER_ROWCOL^2 &lt;= MAX_GLYPHS; e.g. 64, 16, 6</a>
+<a name="ln28">#define GLYPHS_PER_ROWCOL 16</a>
+<a name="ln29">// char to use if we can't find it in the font (upside-down question mark)</a>
+<a name="ln30">#define MISSING_CHAR 0xbf</a>
+<a name="ln31"> </a>
+<a name="ln32">#if 0</a>
+<a name="ln33"># define dprintf(...) debuglog(__VA_ARGS__)</a>
+<a name="ln34">#else</a>
+<a name="ln35"># define dprintf(...) (void)0</a>
+<a name="ln36">#endif</a>
+<a name="ln37"> </a>
+<a name="ln38">class FontLibrary {</a>
+<a name="ln39">public:</a>
+<a name="ln40">    static FT_Library &amp;get() {</a>
+<a name="ln41">        static FontLibrary instance;</a>
+<a name="ln42">        return instance.library;</a>
+<a name="ln43">    }</a>
+<a name="ln44">private:</a>
+<a name="ln45">    FT_Library library;</a>
+<a name="ln46">    FontLibrary ()</a>
+<a name="ln47">    {</a>
+<a name="ln48">        if (FT_Init_FreeType(&amp;library))</a>
+<a name="ln49">            die_noline(&quot;Failed to initialise freetype library.\n&quot;);</a>
+<a name="ln50">    };</a>
+<a name="ln51">    ~FontLibrary ()</a>
+<a name="ln52">    {</a>
+<a name="ln53">        if (FT_Done_FreeType(library))</a>
+<a name="ln54">            die_noline(&quot;Failed to unload freetype library.\n&quot;);</a>
+<a name="ln55">    };</a>
+<a name="ln56">};</a>
+<a name="ln57"> </a>
+<a name="ln58">FontWrapper* FontWrapper::create()</a>
+<a name="ln59">{</a>
+<a name="ln60">    return new FTFontWrapper();</a>
+<a name="ln61">}</a>
+<a name="ln62"> </a>
+<a name="ln63">FTFontWrapper::FTFontWrapper() :</a>
+<a name="ln64">    m_atlas(nullptr),</a>
+<a name="ln65">    m_max_advance(0, 0),</a>
+<a name="ln66">    m_min_offset(0),</a>
+<a name="ln67">    charsz(1,1),</a>
+<a name="ln68">    m_max_width(0),</a>
+<a name="ln69">    m_max_height(0),</a>
+<a name="ln70">    ttf(nullptr),</a>
+<a name="ln71">    face(nullptr),</a>
+<a name="ln72">    pixels(nullptr),</a>
+<a name="ln73">    fsize(0)</a>
+<a name="ln74">{</a>
+<a name="ln75">    m_buf = GLShapeBuffer::create(true, true);</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">FTFontWrapper::~FTFontWrapper()</a>
+<a name="ln79">{</a>
+<a name="ln80">    delete[] m_atlas;</a>
+<a name="ln81">    delete[] pixels;</a>
+<a name="ln82">    delete m_buf;</a>
+<a name="ln83">    if (face)</a>
+<a name="ln84">        FT_Done_Face(face);</a>
+<a name="ln85">    delete[] ttf;</a>
+<a name="ln86">}</a>
+<a name="ln87"> </a>
+<a name="ln88">/**</a>
+<a name="ln89"> * Configure the font based on metrics, and initialize caches. This may be</a>
+<a name="ln90"> * called multiple times when cached information needs to be reset, e.g. upon</a>
+<a name="ln91"> * changing DPI.</a>
+<a name="ln92"> */</a>
+<a name="ln93">bool FTFontWrapper::configure_font()</a>
+<a name="ln94">{</a>
+<a name="ln95">    FT_Error error;</a>
+<a name="ln96">    error = FT_Set_Pixel_Sizes(face,</a>
+<a name="ln97">                                display_density.logical_to_device(fsize),</a>
+<a name="ln98">                                display_density.logical_to_device(fsize));</a>
+<a name="ln99">    ASSERT(!error);</a>
+<a name="ln100"> </a>
+<a name="ln101">    // Get maximum advance and other global metrics</a>
+<a name="ln102">    FT_Size_Metrics metrics = face-&gt;size-&gt;metrics;</a>
+<a name="ln103">    m_max_advance   = coord_def(0,0);</a>
+<a name="ln104">    m_max_advance.x = metrics.max_advance &gt;&gt; 6;</a>
+<a name="ln105">    m_max_advance.y = (metrics.ascender-metrics.descender)&gt;&gt;6;</a>
+<a name="ln106">    m_ascender      = (metrics.ascender&gt;&gt;6);</a>
+<a name="ln107">    // if you're looking for realistic glyph sizes uses m_max_advance</a>
+<a name="ln108">    // or char_width, these are still scaled.</a>
+<a name="ln109">    m_max_width     = (face-&gt;bbox.xMax &gt;&gt; 6) - (face-&gt;bbox.xMin &gt;&gt; 6);</a>
+<a name="ln110">    m_max_height    = (face-&gt;bbox.yMax &gt;&gt; 6) - (face-&gt;bbox.yMin &gt;&gt; 6);</a>
+<a name="ln111">    m_min_offset    = 0;</a>
+<a name="ln112"> </a>
+<a name="ln113">    charsz = coord_def(1,1);</a>
+<a name="ln114">    // Grow character size to power of 2</a>
+<a name="ln115">    while (charsz.x &lt; m_max_width)</a>
+<a name="ln116">        charsz.x *= 2;</a>
+<a name="ln117">    while (charsz.y &lt; m_max_height)</a>
+<a name="ln118">        charsz.y *= 2;</a>
+<a name="ln119"> </a>
+<a name="ln120">    // Fill out texture to be (16*charsz.x) X (16*charsz.y) X (32-bit)</a>
+<a name="ln121">    // Having to blow out 8-bit alpha values into full 32-bit textures is</a>
+<a name="ln122">    // kind of frustrating, but not all OpenGL implementations support the</a>
+<a name="ln123">    // &quot;esoteric&quot; ALPHA8 format and it's not like this texture is very large.</a>
+<a name="ln124"> </a>
+<a name="ln125">    // [frogbotherer] I think we can get memory usage lower by blowing out</a>
+<a name="ln126">    // the texture as a whole out to a power of 2, instead of each individual</a>
+<a name="ln127">    // character. Also, whilst GLES baulks at ALPHA8, there might be some</a>
+<a name="ln128">    // other compression format that we can use to get the size down a bit</a>
+<a name="ln129">    m_ft_width  = GLYPHS_PER_ROWCOL * charsz.x;</a>
+<a name="ln130">    m_ft_height = GLYPHS_PER_ROWCOL * charsz.y;</a>
+<a name="ln131"> </a>
+<a name="ln132">    delete[] pixels; // for repeated calls</a>
+<a name="ln133"> </a>
+<a name="ln134">    pixels = new unsigned char[4 * charsz.x * charsz.y];</a>
+<a name="ln135">    memset(pixels, 0, sizeof(unsigned char) * 4 * charsz.x * charsz.y);</a>
+<a name="ln136"> </a>
+<a name="ln137">    dprintf(&quot;new font tex %d x %d x 4 = %dpx %d bytes\n&quot;,</a>
+<a name="ln138">            m_ft_width, m_ft_height, m_ft_width * m_ft_height,</a>
+<a name="ln139">            4 * m_ft_width * m_ft_height);</a>
+<a name="ln140"> </a>
+<a name="ln141">    // initialise empty texture of correct size</a>
+<a name="ln142">    unwind_bool noscaling(Options.tile_filter_scaling, false);</a>
+<a name="ln143">    m_tex.load_texture(nullptr, m_ft_width, m_ft_height, MIPMAP_NONE);</a>
+<a name="ln144"> </a>
+<a name="ln145">    m_glyphs.clear();</a>
+<a name="ln146"> </a>
+<a name="ln147">    for (int i = 0; i &lt; MAX_GLYPHS; i++)</a>
+<a name="ln148">        m_atlas[i] = FontAtlasEntry();</a>
+<a name="ln149"> </a>
+<a name="ln150">    // atlas[0] always contains a full-white block (never evicted)</a>
+<a name="ln151">    // this is currently used by colour_bar</a>
+<a name="ln152">    {</a>
+<a name="ln153">        for (int x = 0; x &lt; m_max_width; x++)</a>
+<a name="ln154">            for (int y = 0; y &lt; m_max_height; y++)</a>
+<a name="ln155">            {</a>
+<a name="ln156">                unsigned int idx = x + y * m_max_width;</a>
+<a name="ln157">                idx *= 4;</a>
+<a name="ln158">                pixels[idx]     = 255;</a>
+<a name="ln159">                pixels[idx + 1] = 255;</a>
+<a name="ln160">                pixels[idx + 2] = 255;</a>
+<a name="ln161">                pixels[idx + 3] = 255;</a>
+<a name="ln162">            }</a>
+<a name="ln163"> </a>
+<a name="ln164">        bool success = m_tex.load_texture(pixels, charsz.x, charsz.y,</a>
+<a name="ln165">                                          MIPMAP_NONE, 0, 0);</a>
+<a name="ln166">        ASSERT(success);</a>
+<a name="ln167">    }</a>
+<a name="ln168"> </a>
+<a name="ln169">    // precache common chars</a>
+<a name="ln170">    for (int i = 0x20; i &lt; 0x7f; i++)</a>
+<a name="ln171">        map_unicode(i);</a>
+<a name="ln172">    return true;</a>
+<a name="ln173">}</a>
+<a name="ln174"> </a>
+<a name="ln175">bool FTFontWrapper::load_font(const char *font_name, unsigned int font_size)</a>
+<a name="ln176">{</a>
+<a name="ln177">    FT_Error error;</a>
+<a name="ln178">    FT_Library library = FontLibrary::get();</a>
+<a name="ln179"> </a>
+<a name="ln180">    fsize = font_size;</a>
+<a name="ln181"> </a>
+<a name="ln182">    // TODO enne - need to find a cross-platform way to also</a>
+<a name="ln183">    // attempt to locate system fonts by name...</a>
+<a name="ln184">    // 1KB: fontconfig if we are not scared of hefty libraries</a>
+<a name="ln185"> </a>
+<a name="ln186">    // TODO: probably don't want to end here, but try a fallback font in</a>
+<a name="ln187">    // the calling function.</a>
+<a name="ln188">    string font_path = datafile_path(font_name, false, true);</a>
+<a name="ln189">    if (font_path.c_str()[0] == 0)</a>
+<a name="ln190">        end(1, false, &quot;Could not find font '%s'&quot;, font_name);</a>
+<a name="ln191"> </a>
+<a name="ln192">    // Certain versions of freetype have problems reading files on Windows,</a>
+<a name="ln193">    // do that ourselves.</a>
+<a name="ln194">    FILE *f = fopen_u(font_path.c_str(), &quot;rb&quot;);</a>
+<a name="ln195">    if (!f)</a>
+<a name="ln196">        end(1, false, &quot;Could not read font '%s'\n&quot;, font_name);</a>
+<a name="ln197">    unsigned long size = file_size(f);</a>
+<a name="ln198">    ttf = new FT_Byte[size];</a>
+<a name="ln199">    ASSERT(ttf);</a>
+<a name="ln200">    if (fread(ttf, 1, size, f) != size)</a>
+<a name="ln201">        end(1, false, &quot;Could not read font '%s': %s\n&quot;, font_name, strerror(errno));</a>
+<a name="ln202">    fclose(f);</a>
+<a name="ln203"> </a>
+<a name="ln204">    error = FT_New_Memory_Face(library, ttf, size, 0, &amp;face);</a>
+<a name="ln205">    if (error == FT_Err_Unknown_File_Format)</a>
+<a name="ln206">        end(1, false, &quot;Unknown font format for file '%s'\n&quot;, font_path.c_str());</a>
+<a name="ln207">    else if (error)</a>
+<a name="ln208">    {</a>
+<a name="ln209">        end(1, false, &quot;Invalid font from file '%s' (size %lu): 0x%0x\n&quot;,</a>
+<a name="ln210">                   font_path.c_str(), size, error);</a>
+<a name="ln211">    }</a>
+<a name="ln212"> </a>
+<a name="ln213">    m_atlas = new FontAtlasEntry[MAX_GLYPHS];</a>
+<a name="ln214">    m_atlas_lru.clear();</a>
+<a name="ln215">    m_atlas_lru.reserve(MAX_GLYPHS);</a>
+<a name="ln216"> </a>
+<a name="ln217">    return configure_font();</a>
+<a name="ln218">}</a>
+<a name="ln219"> </a>
+<a name="ln220">FTFontWrapper::GlyphInfo&amp; FTFontWrapper::get_glyph_info(char32_t ch)</a>
+<a name="ln221">{</a>
+<a name="ln222">    // cache glyph info in a single large buffer by unicode codepoint</a>
+<a name="ln223">    // currently dat/ only has codepoints going up to around 65536</a>
+<a name="ln224">    if (ch &gt;= m_glyphs.size())</a>
+<a name="ln225">    {</a>
+<a name="ln226">        auto old_sz = m_glyphs.size();</a>
+<a name="ln227">        m_glyphs.resize(ch+1);</a>
+<a name="ln228">        for (size_t i = old_sz; i &lt; m_glyphs.size(); i++)</a>
+<a name="ln229">            m_glyphs[i].valid = false;</a>
+<a name="ln230">    }</a>
+<a name="ln231">    GlyphInfo &amp;glyph = m_glyphs[ch];</a>
+<a name="ln232">    if (!glyph.valid)</a>
+<a name="ln233">    {</a>
+<a name="ln234">        FT_Int glyph_index = FT_Get_Char_Index(face, ch);</a>
+<a name="ln235">        if (!glyph_index)</a>
+<a name="ln236">            glyph_index = FT_Get_Char_Index(face, MISSING_CHAR);</a>
+<a name="ln237">        // need to use FT_LOAD_RENDER, otherwise glyph-&gt;bitmap isn't loaded</a>
+<a name="ln238">        FT_Error error = FT_Load_Glyph(face, glyph_index, FT_LOAD_RENDER |</a>
+<a name="ln239">                (Options.tile_font_ft_light ? FT_LOAD_TARGET_LIGHT : 0));</a>
+<a name="ln240">        ASSERT(!error);</a>
+<a name="ln241">        FT_Bitmap *bmp = &amp;face-&gt;glyph-&gt;bitmap;</a>
+<a name="ln242">        ASSERT(bmp);</a>
+<a name="ln243"> </a>
+<a name="ln244">        glyph.offset = face-&gt;glyph-&gt;bitmap_left;</a>
+<a name="ln245">        glyph.advance = face-&gt;glyph-&gt;advance.x &gt;&gt; 6;</a>
+<a name="ln246">        glyph.ascender = face-&gt;glyph-&gt;bitmap_top;</a>
+<a name="ln247">        glyph.width = bmp-&gt;width;</a>
+<a name="ln248">        glyph.renderable = !!bmp-&gt;buffer;</a>
+<a name="ln249">        glyph.valid = true;</a>
+<a name="ln250">    }</a>
+<a name="ln251">    return glyph;</a>
+<a name="ln252">}</a>
+<a name="ln253"> </a>
+<a name="ln254">void FTFontWrapper::load_glyph(unsigned int c, char32_t uchar)</a>
+<a name="ln255">{</a>
+<a name="ln256">    // get on with rendering the new glyph</a>
+<a name="ln257">    FT_Error error;</a>
+<a name="ln258">    FT_Int glyph_index = FT_Get_Char_Index(face, uchar);</a>
+<a name="ln259"> </a>
+<a name="ln260">    if (!glyph_index)</a>
+<a name="ln261">        glyph_index = FT_Get_Char_Index(face, MISSING_CHAR);</a>
+<a name="ln262"> </a>
+<a name="ln263">    error = FT_Load_Glyph(face, glyph_index, FT_LOAD_RENDER |</a>
+<a name="ln264">        (Options.tile_font_ft_light ? FT_LOAD_TARGET_LIGHT : 0));</a>
+<a name="ln265">    ASSERT(!error);</a>
+<a name="ln266"> </a>
+<a name="ln267">    FT_Bitmap *bmp = &amp;face-&gt;glyph-&gt;bitmap;</a>
+<a name="ln268">    ASSERT(bmp);</a>
+<a name="ln269"> </a>
+<a name="ln270">    // Was int prior to freetype 2.5.4, then became unsigned.</a>
+<a name="ln271">    typedef decltype(bmp-&gt;width) ftint;</a>
+<a name="ln272"> </a>
+<a name="ln273">    // Some glyphs (e.g. ' ') don't get a buffer.</a>
+<a name="ln274">    if (bmp-&gt;buffer)</a>
+<a name="ln275">    {</a>
+<a name="ln276">        ASSERT(bmp-&gt;pixel_mode == FT_PIXEL_MODE_GRAY);</a>
+<a name="ln277">        ASSERT(bmp-&gt;num_grays == 256);</a>
+<a name="ln278"> </a>
+<a name="ln279">        // Horizontal offset stored in m_atlas and handled when drawing</a>
+<a name="ln280">        const unsigned int offset_x = 0;</a>
+<a name="ln281">        const unsigned int offset_y = 0;</a>
+<a name="ln282">        memset(pixels, 0, sizeof(unsigned char) * 4 * charsz.x * charsz.y);</a>
+<a name="ln283"> </a>
+<a name="ln284">        // Some fonts have wrong size info</a>
+<a name="ln285">        const ftint charw = bmp-&gt;width;</a>
+<a name="ln286">        bmp-&gt;width = min(bmp-&gt;width, ftint(charsz.x));</a>
+<a name="ln287">        bmp-&gt;rows = min(bmp-&gt;rows, ftint(charsz.y));</a>
+<a name="ln288"> </a>
+<a name="ln289">        for (ftint x = 0; x &lt; bmp-&gt;width; x++)</a>
+<a name="ln290">            for (ftint y = 0; y &lt; bmp-&gt;rows; y++)</a>
+<a name="ln291">            {</a>
+<a name="ln292">                unsigned int idx = offset_x + x + (offset_y + y) * charsz.x;</a>
+<a name="ln293">                idx *= 4;</a>
+<a name="ln294">                if (x &lt; bmp-&gt;width &amp;&amp; y &lt; bmp-&gt;rows)</a>
+<a name="ln295">                {</a>
+<a name="ln296">                    unsigned char alpha = bmp-&gt;buffer[x + charw * y];</a>
+<a name="ln297">                    pixels[idx] = 255;</a>
+<a name="ln298">                    pixels[idx + 1] = 255;</a>
+<a name="ln299">                    pixels[idx + 2] = 255;</a>
+<a name="ln300">                    pixels[idx + 3] = alpha;</a>
+<a name="ln301">                }</a>
+<a name="ln302">            }</a>
+<a name="ln303"> </a>
+<a name="ln304">        unwind_bool noscaling(Options.tile_filter_scaling, false);</a>
+<a name="ln305">        bool success = m_tex.load_texture(pixels, charsz.x, charsz.y,</a>
+<a name="ln306">                            MIPMAP_NONE,</a>
+<a name="ln307">                            (c % GLYPHS_PER_ROWCOL) * charsz.x,</a>
+<a name="ln308">                            (c / GLYPHS_PER_ROWCOL) * charsz.y);</a>
+<a name="ln309">        ASSERT(success);</a>
+<a name="ln310">    }</a>
+<a name="ln311">}</a>
+<a name="ln312"> </a>
+<a name="ln313">unsigned int FTFontWrapper::map_unicode(char *ch)</a>
+<a name="ln314">{</a>
+<a name="ln315">    char32_t c;</a>
+<a name="ln316">    utf8towc(&amp;c, ch);</a>
+<a name="ln317">    return map_unicode(c);</a>
+<a name="ln318">}</a>
+<a name="ln319"> </a>
+<a name="ln320">unsigned int FTFontWrapper::map_unicode(char32_t uchar)</a>
+<a name="ln321">{</a>
+<a name="ln322">    unsigned int c = MAX_GLYPHS;</a>
+<a name="ln323">    for (unsigned int i = 1; i &lt; MAX_GLYPHS; i++)</a>
+<a name="ln324">        if (m_atlas[i].uchar == uchar)</a>
+<a name="ln325">        {</a>
+<a name="ln326">            c = i;</a>
+<a name="ln327">            break;</a>
+<a name="ln328">        }</a>
+<a name="ln329"> </a>
+<a name="ln330">    if (c == MAX_GLYPHS) // not found: need to load into atlas</a>
+<a name="ln331">    {</a>
+<a name="ln332">        bool atlas_full = m_atlas_lru.size() == MAX_GLYPHS-1;</a>
+<a name="ln333">        c = atlas_full ? m_atlas_lru[0] : m_atlas_lru.size()+1;</a>
+<a name="ln334">        m_atlas[c].uchar = uchar;</a>
+<a name="ln335">        load_glyph(c, uchar);</a>
+<a name="ln336">        n_subst++;</a>
+<a name="ln337">    }</a>
+<a name="ln338"> </a>
+<a name="ln339">    auto it = find(m_atlas_lru.begin(), m_atlas_lru.end(), (uint8_t)c);</a>
+<a name="ln340">    if (it != m_atlas_lru.end())</a>
+<a name="ln341">        m_atlas_lru.erase(it);</a>
+<a name="ln342">    m_atlas_lru.push_back(c);</a>
+<a name="ln343"> </a>
+<a name="ln344">    return c;</a>
+<a name="ln345">}</a>
+<a name="ln346"> </a>
+<a name="ln347">void FTFontWrapper::render_textblock(unsigned int x_pos, unsigned int y_pos,</a>
+<a name="ln348">                                     char32_t *chars,</a>
+<a name="ln349">                                     uint8_t *colours,</a>
+<a name="ln350">                                     unsigned int width, unsigned int height,</a>
+<a name="ln351">                                     bool drop_shadow)</a>
+<a name="ln352">{</a>
+<a name="ln353">    if (!chars || !colours || !width || !height || !m_atlas)</a>
+<a name="ln354">        return;</a>
+<a name="ln355"> </a>
+<a name="ln356">    coord_def adv(max(-m_min_offset, 0), 0);</a>
+<a name="ln357">    unsigned int i = 0;</a>
+<a name="ln358"> </a>
+<a name="ln359">    ASSERT(m_buf);</a>
+<a name="ln360">    m_buf-&gt;clear();</a>
+<a name="ln361">    n_subst = 0;</a>
+<a name="ln362"> </a>
+<a name="ln363">    float texcoord_dy = (float)m_max_height / (float)m_tex.height();</a>
+<a name="ln364">    for (unsigned int y = 0; y &lt; height; y++)</a>
+<a name="ln365">    {</a>
+<a name="ln366">        for (unsigned int x = 0; x &lt; width; x++)</a>
+<a name="ln367">        {</a>
+<a name="ln368">            GlyphInfo &amp;glyph = get_glyph_info(chars[i]);</a>
+<a name="ln369">            uint8_t col_bg = colours[i] &gt;&gt; 4;</a>
+<a name="ln370">            uint8_t col_fg = colours[i] &amp; 0xF;</a>
+<a name="ln371"> </a>
+<a name="ln372">            if (col_bg != 0)</a>
+<a name="ln373">            {</a>
+<a name="ln374">                GLWPrim rect(adv.x, adv.y,</a>
+<a name="ln375">                             adv.x + m_max_advance.x, adv.y + m_max_advance.y);</a>
+<a name="ln376">                // Leave tex coords at their default 0.0f</a>
+<a name="ln377">                VColour col(term_colours[col_bg].r,</a>
+<a name="ln378">                            term_colours[col_bg].g,</a>
+<a name="ln379">                            term_colours[col_bg].b);</a>
+<a name="ln380">                rect.set_col(col);</a>
+<a name="ln381">                m_buf-&gt;add(rect);</a>
+<a name="ln382">            }</a>
+<a name="ln383"> </a>
+<a name="ln384">            adv.x += glyph.offset;</a>
+<a name="ln385"> </a>
+<a name="ln386">            if (glyph.renderable)</a>
+<a name="ln387">            {</a>
+<a name="ln388">                unsigned int c = map_unicode(chars[i]);</a>
+<a name="ln389">                int this_width = glyph.width;</a>
+<a name="ln390"> </a>
+<a name="ln391">                float tex_x = (float)(c % GLYPHS_PER_ROWCOL) / (float)GLYPHS_PER_ROWCOL;</a>
+<a name="ln392">                float tex_y = (float)(c / GLYPHS_PER_ROWCOL) / (float)GLYPHS_PER_ROWCOL;</a>
+<a name="ln393">                float tex_x2 = tex_x + (float)this_width / (float)m_tex.width();</a>
+<a name="ln394">                float tex_y2 = tex_y + texcoord_dy;</a>
+<a name="ln395"> </a>
+<a name="ln396">                GLWPrim rect(adv.x, adv.y - glyph.ascender + m_ascender,</a>
+<a name="ln397">                             adv.x + this_width, adv.y + m_max_height - glyph.ascender + m_ascender);</a>
+<a name="ln398"> </a>
+<a name="ln399">                VColour col(term_colours[col_fg].r,</a>
+<a name="ln400">                            term_colours[col_fg].g,</a>
+<a name="ln401">                            term_colours[col_fg].b);</a>
+<a name="ln402">                rect.set_col(col);</a>
+<a name="ln403">                rect.set_tex(tex_x, tex_y, tex_x2, tex_y2);</a>
+<a name="ln404"> </a>
+<a name="ln405">                m_buf-&gt;add(rect);</a>
+<a name="ln406">            }</a>
+<a name="ln407"> </a>
+<a name="ln408">            i++;</a>
+<a name="ln409">            adv.x += glyph.advance - glyph.offset;</a>
+<a name="ln410"> </a>
+<a name="ln411">            // See if we need to flush prematurely.</a>
+<a name="ln412">            if (n_subst == MAX_GLYPHS - 1)</a>
+<a name="ln413">            {</a>
+<a name="ln414">                draw_m_buf(x_pos, y_pos, drop_shadow);</a>
+<a name="ln415">                m_buf-&gt;clear();</a>
+<a name="ln416">                n_subst = 0;</a>
+<a name="ln417">            }</a>
+<a name="ln418">        }</a>
+<a name="ln419"> </a>
+<a name="ln420">        adv.x = 0;</a>
+<a name="ln421">        adv.y += m_max_advance.y;</a>
+<a name="ln422">    }</a>
+<a name="ln423"> </a>
+<a name="ln424">    draw_m_buf(x_pos, y_pos, drop_shadow);</a>
+<a name="ln425">}</a>
+<a name="ln426"> </a>
+<a name="ln427">void FTFontWrapper::draw_m_buf(unsigned int x_pos, unsigned int y_pos,</a>
+<a name="ln428">                               bool drop_shadow)</a>
+<a name="ln429">{</a>
+<a name="ln430">    if (!m_buf-&gt;size())</a>
+<a name="ln431">        return;</a>
+<a name="ln432"> </a>
+<a name="ln433">    GLState state;</a>
+<a name="ln434">    state.array_vertex = true;</a>
+<a name="ln435">    state.array_texcoord = true;</a>
+<a name="ln436">    state.array_colour = true;</a>
+<a name="ln437">    state.blend = true;</a>
+<a name="ln438">    state.texture = true;</a>
+<a name="ln439"> </a>
+<a name="ln440">    m_tex.bind();</a>
+<a name="ln441"> </a>
+<a name="ln442">    GLW_3VF trans(x_pos, y_pos, 0.0f);</a>
+<a name="ln443">    GLW_3VF scale(display_density.scale_to_logical(),</a>
+<a name="ln444">                  display_density.scale_to_logical(), 1);</a>
+<a name="ln445"> </a>
+<a name="ln446">    if (drop_shadow)</a>
+<a name="ln447">    {</a>
+<a name="ln448">        GLState state_shadow;</a>
+<a name="ln449">        state_shadow.array_colour = false;</a>
+<a name="ln450">        state_shadow.colour = VColour::black;</a>
+<a name="ln451"> </a>
+<a name="ln452">        GLW_3VF trans_shadow(trans.x + 1, trans.y + 1, 0.0f);</a>
+<a name="ln453">        glmanager-&gt;set_transform(trans_shadow, scale);</a>
+<a name="ln454"> </a>
+<a name="ln455">        m_buf-&gt;draw(state_shadow);</a>
+<a name="ln456">    }</a>
+<a name="ln457"> </a>
+<a name="ln458">    glmanager-&gt;set_transform(trans, scale);</a>
+<a name="ln459">    m_buf-&gt;draw(state);</a>
+<a name="ln460"> </a>
+<a name="ln461">    glmanager-&gt;reset_transform();</a>
+<a name="ln462">}</a>
+<a name="ln463"> </a>
+<a name="ln464">static void _draw_box(int x_pos, int y_pos, int width, int height, VColour colour)</a>
+<a name="ln465">{</a>
+<a name="ln466">    unique_ptr&lt;GLShapeBuffer&gt; buf(GLShapeBuffer::create(false, true));</a>
+<a name="ln467">    GLWPrim rect(x_pos, y_pos, x_pos + width, y_pos + height);</a>
+<a name="ln468"> </a>
+<a name="ln469">    rect.set_col(colour);</a>
+<a name="ln470"> </a>
+<a name="ln471">    buf-&gt;add(rect);</a>
+<a name="ln472"> </a>
+<a name="ln473">    // Load identity matrix</a>
+<a name="ln474">    glmanager-&gt;reset_transform();</a>
+<a name="ln475"> </a>
+<a name="ln476">    GLState state;</a>
+<a name="ln477">    state.array_vertex = true;</a>
+<a name="ln478">    state.array_colour = true;</a>
+<a name="ln479">    state.blend = true;</a>
+<a name="ln480">    buf-&gt;draw(state);</a>
+<a name="ln481">}</a>
+<a name="ln482"> </a>
+<a name="ln483">unsigned int FTFontWrapper::string_height(const formatted_string &amp;str, bool logical) const</a>
+<a name="ln484">{</a>
+<a name="ln485">    string temp = str.tostring();</a>
+<a name="ln486">    return string_height(temp.c_str(), logical);</a>
+<a name="ln487">}</a>
+<a name="ln488"> </a>
+<a name="ln489">unsigned int FTFontWrapper::string_height(const char *text, bool logical) const</a>
+<a name="ln490">{</a>
+<a name="ln491">    int height = 1;</a>
+<a name="ln492">    for (char *itr = (char *)text; *itr; itr = next_glyph(itr))</a>
+<a name="ln493">        if (*itr == '\n')</a>
+<a name="ln494">            height++;</a>
+<a name="ln495"> </a>
+<a name="ln496">    return max_height(height, logical);</a>
+<a name="ln497">}</a>
+<a name="ln498"> </a>
+<a name="ln499">unsigned int FTFontWrapper::string_width(const formatted_string &amp;str, bool logical)</a>
+<a name="ln500">{</a>
+<a name="ln501">    string temp = str.tostring();</a>
+<a name="ln502">    return string_width(temp.c_str(), logical);</a>
+<a name="ln503">}</a>
+<a name="ln504"> </a>
+<a name="ln505">unsigned int FTFontWrapper::string_width(const char *text, bool logical)</a>
+<a name="ln506">{</a>
+<a name="ln507">    unsigned int base_width = max(-m_min_offset, 0);</a>
+<a name="ln508">    unsigned int max_str_width = 0;</a>
+<a name="ln509"> </a>
+<a name="ln510">    unsigned int width = base_width;</a>
+<a name="ln511">    unsigned int adjust = 0;</a>
+<a name="ln512">    for (char *itr = (char *)text; *itr; itr = next_glyph(itr))</a>
+<a name="ln513">    {</a>
+<a name="ln514">        if (*itr == '\n')</a>
+<a name="ln515">        {</a>
+<a name="ln516">            max_str_width = max(width + adjust, max_str_width);</a>
+<a name="ln517">            width = base_width;</a>
+<a name="ln518">            adjust = 0;</a>
+<a name="ln519">        }</a>
+<a name="ln520">        else</a>
+<a name="ln521">        {</a>
+<a name="ln522">            char32_t ch;</a>
+<a name="ln523">            utf8towc(&amp;ch, itr);</a>
+<a name="ln524">            GlyphInfo &amp;glyph = get_glyph_info(ch);</a>
+<a name="ln525">            width += glyph.advance;</a>
+<a name="ln526">            adjust = max(0, glyph.width - glyph.advance);</a>
+<a name="ln527">        }</a>
+<a name="ln528">    }</a>
+<a name="ln529"> </a>
+<a name="ln530">    max_str_width = max(width + adjust, max_str_width);</a>
+<a name="ln531">    return logical ? display_density.device_to_logical(max_str_width)</a>
+<a name="ln532">                   : max_str_width;</a>
+<a name="ln533">}</a>
+<a name="ln534"> </a>
+<a name="ln535">int FTFontWrapper::find_index_before_width(const char *text, int max_str_width)</a>
+<a name="ln536">{</a>
+<a name="ln537">    int width = max(-m_min_offset, 0);</a>
+<a name="ln538"> </a>
+<a name="ln539">    max_str_width *= display_density.scale_to_device();</a>
+<a name="ln540"> </a>
+<a name="ln541">    for (char *itr = (char *)text; *itr; itr = next_glyph(itr))</a>
+<a name="ln542">    {</a>
+<a name="ln543">        if (*itr == '\n')</a>
+<a name="ln544">        {</a>
+<a name="ln545">            width = 0;</a>
+<a name="ln546">            continue;</a>
+<a name="ln547">        }</a>
+<a name="ln548">        char32_t ch;</a>
+<a name="ln549">        utf8towc(&amp;ch, itr);</a>
+<a name="ln550">        GlyphInfo &amp;glyph = get_glyph_info(ch);</a>
+<a name="ln551">        width += glyph.advance;</a>
+<a name="ln552">        int adjust = max(0, glyph.width - glyph.advance);</a>
+<a name="ln553">        if (width + adjust &gt; max_str_width)</a>
+<a name="ln554">            return itr-text;</a>
+<a name="ln555">    }</a>
+<a name="ln556"> </a>
+<a name="ln557">    return INT_MAX;</a>
+<a name="ln558">}</a>
+<a name="ln559"> </a>
+<a name="ln560">static int _find_newline(const char *s)</a>
+<a name="ln561">{</a>
+<a name="ln562">    const char *nl = strchr(s, '\n');</a>
+<a name="ln563">    return nl ? nl-s : INT_MAX;</a>
+<a name="ln564">}</a>
+<a name="ln565"> </a>
+<a name="ln566">formatted_string FTFontWrapper::split(const formatted_string &amp;str,</a>
+<a name="ln567">                                      unsigned int max_str_width,</a>
+<a name="ln568">                                      unsigned int max_str_height)</a>
+<a name="ln569">{</a>
+<a name="ln570">    int max_lines = display_density.logical_to_device(max_str_height)</a>
+<a name="ln571">                                                        / char_height(false);</a>
+<a name="ln572"> </a>
+<a name="ln573">    if (max_lines &lt; 1)</a>
+<a name="ln574">        return formatted_string();</a>
+<a name="ln575"> </a>
+<a name="ln576">    formatted_string ret;</a>
+<a name="ln577">    ret += str;</a>
+<a name="ln578"> </a>
+<a name="ln579">    string base = str.tostring();</a>
+<a name="ln580">    int num_lines = 0;</a>
+<a name="ln581"> </a>
+<a name="ln582">    char *line = &amp;base[0];</a>
+<a name="ln583">    while (true)</a>
+<a name="ln584">    {</a>
+<a name="ln585">        int nl = _find_newline(line);</a>
+<a name="ln586">        int line_end = find_index_before_width(line, max_str_width);</a>
+<a name="ln587">        if (line_end == INT_MAX &amp;&amp; nl == INT_MAX)</a>
+<a name="ln588">            break;</a>
+<a name="ln589"> </a>
+<a name="ln590">        int space_idx = 0;</a>
+<a name="ln591">        if (nl &lt; line_end)</a>
+<a name="ln592">            space_idx = nl;</a>
+<a name="ln593">        else</a>
+<a name="ln594">        {</a>
+<a name="ln595">            space_idx = -1;</a>
+<a name="ln596">            for (char *search = &amp;line[line_end];</a>
+<a name="ln597">                 search &gt; line;</a>
+<a name="ln598">                 search = prev_glyph(search, line))</a>
+<a name="ln599">            {</a>
+<a name="ln600">                if (*search == ' ')</a>
+<a name="ln601">                {</a>
+<a name="ln602">                    space_idx = search - line;</a>
+<a name="ln603">                    break;</a>
+<a name="ln604">                }</a>
+<a name="ln605">            }</a>
+<a name="ln606">        }</a>
+<a name="ln607"> </a>
+<a name="ln608">        if (++num_lines &gt;= max_lines || space_idx == -1)</a>
+<a name="ln609">        {</a>
+<a name="ln610">            line_end = min(line_end, nl);</a>
+<a name="ln611">            int ellipses;</a>
+<a name="ln612">            if (space_idx != -1 &amp;&amp; space_idx - line_end &gt; 2)</a>
+<a name="ln613">                ellipses = space_idx;</a>
+<a name="ln614">            else</a>
+<a name="ln615">            {</a>
+<a name="ln616">                ellipses = line_end;</a>
+<a name="ln617">                for (unsigned i = 0; i &lt; strlen(&quot;..&quot;); i++)</a>
+<a name="ln618">                {</a>
+<a name="ln619">                    char *prev = prev_glyph(&amp;line[ellipses], line);</a>
+<a name="ln620">                    ellipses = (prev ? prev : line) - line;</a>
+<a name="ln621">                }</a>
+<a name="ln622">            }</a>
+<a name="ln623"> </a>
+<a name="ln624">            ret = ret.chop_bytes(&amp;line[ellipses] - &amp;base[0]);</a>
+<a name="ln625">            ret += &quot;..&quot;;</a>
+<a name="ln626">            return ret;</a>
+<a name="ln627">        }</a>
+<a name="ln628">        else</a>
+<a name="ln629">        {</a>
+<a name="ln630">            line[space_idx] = '\n';</a>
+<a name="ln631">            ret[&amp;line[space_idx] - &amp;base[0]] = '\n';</a>
+<a name="ln632">        }</a>
+<a name="ln633"> </a>
+<a name="ln634">        line = &amp;line[space_idx+1];</a>
+<a name="ln635">    }</a>
+<a name="ln636"> </a>
+<a name="ln637">    return ret;</a>
+<a name="ln638">}</a>
+<a name="ln639"> </a>
+<a name="ln640">/**</a>
+<a name="ln641"> * Render a tooltip around the given position.</a>
+<a name="ln642"> *</a>
+<a name="ln643"> * @param px the x coordinate</a>
+<a name="ln644"> * @param py the y coordinate</a>
+<a name="ln645"> * @param text the string to render</a>
+<a name="ln646"> * @param min_pos the top-left boundary of the screen</a>
+<a name="ln647"> * @param max_pos the bottom-right boundary of the screen</a>
+<a name="ln648"> */</a>
+<a name="ln649">void FTFontWrapper::render_tooltip(unsigned int px, unsigned int py,</a>
+<a name="ln650">                                  const formatted_string &amp;text,</a>
+<a name="ln651">                                  const coord_def &amp;min_pos,</a>
+<a name="ln652">                                  const coord_def &amp;max_pos)</a>
+<a name="ln653">{</a>
+<a name="ln654">    int outline = 7;</a>
+<a name="ln655">    const int wx = string_width(text);</a>
+<a name="ln656">    const int wy = string_height(text);</a>
+<a name="ln657"> </a>
+<a name="ln658">    // text starting location</a>
+<a name="ln659">    int tx = px - 15, ty = py + 20;</a>
+<a name="ln660"> </a>
+<a name="ln661">    // box position, before shifting</a>
+<a name="ln662">    const int sx = tx - outline;</a>
+<a name="ln663">    const int sy = ty - outline;</a>
+<a name="ln664">    const int ex = tx + wx + outline;</a>
+<a name="ln665">    const int ey = ty + wy + outline;</a>
+<a name="ln666"> </a>
+<a name="ln667">    if (ex &gt; max_pos.x)</a>
+<a name="ln668">        tx += max_pos.x - ex;</a>
+<a name="ln669">    else if (sx &lt; min_pos.x)</a>
+<a name="ln670">        tx -= sx - min_pos.x;</a>
+<a name="ln671"> </a>
+<a name="ln672">    if (ey &gt; max_pos.y)</a>
+<a name="ln673">        ty += max_pos.y - ey;</a>
+<a name="ln674">    else if (sy &lt; min_pos.y)</a>
+<a name="ln675">        ty -= sy - min_pos.y;</a>
+<a name="ln676"> </a>
+<a name="ln677">    const VColour border_colour(125, 98, 60);</a>
+<a name="ln678">    const VColour bg_colour(4, 2, 4);</a>
+<a name="ln679">    _draw_box(tx-outline, ty-outline, wx+2*outline, wy+2*outline, border_colour);</a>
+<a name="ln680">    outline -= 2;</a>
+<a name="ln681">    _draw_box(tx-outline, ty-outline, wx+2*outline, wy+2*outline, bg_colour);</a>
+<a name="ln682"> </a>
+<a name="ln683">    render_string(tx, ty, text);</a>
+<a name="ln684">}</a>
+<a name="ln685"> </a>
+<a name="ln686">/**</a>
+<a name="ln687"> * Render a string at the given position.</a>
+<a name="ln688"> *</a>
+<a name="ln689"> * @param px the x coordinate</a>
+<a name="ln690"> * @param py the y coordinate</a>
+<a name="ln691"> * @param text the string to render</a>
+<a name="ln692"> * @param font_colour the text colour to use</a>
+<a name="ln693"> */</a>
+<a name="ln694">void FTFontWrapper::render_string(unsigned int px, unsigned int py,</a>
+<a name="ln695">                                  const formatted_string &amp;text)</a>
+<a name="ln696">{</a>
+<a name="ln697">    glmanager-&gt;reset_transform();</a>
+<a name="ln698">    FontBuffer m_font_buf(this);</a>
+<a name="ln699">    m_font_buf.add(text, px, py);</a>
+<a name="ln700">    m_font_buf.draw();</a>
+<a name="ln701">}</a>
+<a name="ln702"> </a>
+<a name="ln703">/**</a>
+<a name="ln704"> * Render a string hovering above the given position, centred horizontally.</a>
+<a name="ln705"> *</a>
+<a name="ln706"> * @param px the x coordinate</a>
+<a name="ln707"> * @param py the y coordinate</a>
+<a name="ln708"> * @param text the string to render</a>
+<a name="ln709"> * @param font_colour the text colour to use</a>
+<a name="ln710"> */</a>
+<a name="ln711">void FTFontWrapper::render_hover_string(unsigned int px, unsigned int py,</a>
+<a name="ln712">                                  const formatted_string &amp;text)</a>
+<a name="ln713">{</a>
+<a name="ln714">    const int wx = string_width(text);</a>
+<a name="ln715">    const int wy = string_height(text);</a>
+<a name="ln716">    const int ty = py - wy;</a>
+<a name="ln717">    const int tx = px - wx / 2;</a>
+<a name="ln718"> </a>
+<a name="ln719">    render_string(tx, ty, text);</a>
+<a name="ln720">}</a>
+<a name="ln721"> </a>
+<a name="ln722">/**</a>
+<a name="ln723"> * Store a string in a FontBuffer.</a>
+<a name="ln724"> *</a>
+<a name="ln725"> * @param buf the FontBuffer to store the glyph in.</a>
+<a name="ln726"> * @param x the x coordinate</a>
+<a name="ln727"> * @param y the y coordinate</a>
+<a name="ln728"> * @param str the string to store</a>
+<a name="ln729"> * @param col a foreground color</a>
+<a name="ln730"> */</a>
+<a name="ln731">void FTFontWrapper::store(FontBuffer &amp;buf, float &amp;x, float &amp;y,</a>
+<a name="ln732">                          const string &amp;str, const VColour &amp;col)</a>
+<a name="ln733">{</a>
+<a name="ln734">    store(buf, x, y, str, col, x);</a>
+<a name="ln735">}</a>
+<a name="ln736"> </a>
+<a name="ln737">/**</a>
+<a name="ln738"> * Store a string in a FontBuffer.</a>
+<a name="ln739"> *</a>
+<a name="ln740"> * @param buf the FontBuffer to store the glyph in.</a>
+<a name="ln741"> * @param x the x coordinate</a>
+<a name="ln742"> * @param y the y coordinate</a>
+<a name="ln743"> * @param str the string to store</a>
+<a name="ln744"> * @param col a foreground color</a>
+<a name="ln745"> * @param orig_x an x offset to use as an origin</a>
+<a name="ln746"> */</a>
+<a name="ln747">void FTFontWrapper::store(FontBuffer &amp;buf, float &amp;x, float &amp;y,</a>
+<a name="ln748">                          const string &amp;str, const VColour &amp;col, float orig_x)</a>
+<a name="ln749">{</a>
+<a name="ln750">    const char *sp = str.c_str();</a>
+<a name="ln751">    char32_t c;</a>
+<a name="ln752">    while (int s = utf8towc(&amp;c, sp))</a>
+<a name="ln753">    {</a>
+<a name="ln754">        sp += s;</a>
+<a name="ln755">        if (c == '\n')</a>
+<a name="ln756">        {</a>
+<a name="ln757">            x = orig_x;</a>
+<a name="ln758">            y += m_max_advance.y * display_density.scale_to_logical();</a>
+<a name="ln759">        }</a>
+<a name="ln760">        else</a>
+<a name="ln761">            store(buf, x, y, c, col);</a>
+<a name="ln762">    }</a>
+<a name="ln763">}</a>
+<a name="ln764"> </a>
+<a name="ln765">/**</a>
+<a name="ln766"> * Store a formatted_string in a FontBuffer.</a>
+<a name="ln767"> *</a>
+<a name="ln768"> * @param buf the FontBuffer to store the glyph in.</a>
+<a name="ln769"> * @param x the x coordinate</a>
+<a name="ln770"> * @param y the y coordinate</a>
+<a name="ln771"> * @param fs the formatted string to store</a>
+<a name="ln772"> */</a>
+<a name="ln773">void FTFontWrapper::store(FontBuffer &amp;buf, float &amp;x, float &amp;y,</a>
+<a name="ln774">                          const formatted_string &amp;fs)</a>
+<a name="ln775">{</a>
+<a name="ln776">    store(buf, x, y, fs, x);</a>
+<a name="ln777">}</a>
+<a name="ln778"> </a>
+<a name="ln779">/**</a>
+<a name="ln780"> * Store a formatted_string in a FontBuffer.</a>
+<a name="ln781"> *</a>
+<a name="ln782"> * @param buf the FontBuffer to store the glyph in.</a>
+<a name="ln783"> * @param x the x coordinate</a>
+<a name="ln784"> * @param y the y coordinate</a>
+<a name="ln785"> * @param fs the formatted string to store</a>
+<a name="ln786"> * @param orig_x an x offset to use as an origin</a>
+<a name="ln787"> */</a>
+<a name="ln788">void FTFontWrapper::store(FontBuffer &amp;buf, float &amp;x, float &amp;y,</a>
+<a name="ln789">                          const formatted_string &amp;fs, float orig_x)</a>
+<a name="ln790">{</a>
+<a name="ln791">    int colour = LIGHTGREY;</a>
+<a name="ln792">    for (const formatted_string::fs_op &amp;op : fs.ops)</a>
+<a name="ln793">    {</a>
+<a name="ln794">        switch (op.type)</a>
+<a name="ln795">        {</a>
+<a name="ln796">            case FSOP_COLOUR:</a>
+<a name="ln797">                // Only foreground colors for now...</a>
+<a name="ln798">                colour = op.colour &amp; 0xF;</a>
+<a name="ln799">                break;</a>
+<a name="ln800">            case FSOP_TEXT:</a>
+<a name="ln801">                store(buf, x, y, op.text, term_colours[colour], orig_x);</a>
+<a name="ln802">                break;</a>
+<a name="ln803">            default:</a>
+<a name="ln804">                break;</a>
+<a name="ln805">        }</a>
+<a name="ln806">    }</a>
+<a name="ln807">}</a>
+<a name="ln808"> </a>
+<a name="ln809">/**</a>
+<a name="ln810"> * Store a single glyph in a FontBuffer.</a>
+<a name="ln811"> *</a>
+<a name="ln812"> * @param buf the FontBuffer to store the glyph in.</a>
+<a name="ln813"> * @param x the x coordinate</a>
+<a name="ln814"> * @param y the y coordinate</a>
+<a name="ln815"> * @param ch a (unicode) character</a>
+<a name="ln816"> * @param fg_col the foreground color to print</a>
+<a name="ln817"> */</a>
+<a name="ln818">void FTFontWrapper::store(FontBuffer &amp;buf, float &amp;x, float &amp;y,</a>
+<a name="ln819">                          char32_t ch, const VColour &amp;col)</a>
+<a name="ln820">{</a>
+<a name="ln821">    GlyphInfo &amp;glyph = get_glyph_info(ch);</a>
+<a name="ln822">    float density_mult = display_density.scale_to_logical();</a>
+<a name="ln823"> </a>
+<a name="ln824">    if (!glyph.renderable)</a>
+<a name="ln825">    {</a>
+<a name="ln826">        x += glyph.advance * density_mult;</a>
+<a name="ln827">        return;</a>
+<a name="ln828">    }</a>
+<a name="ln829"> </a>
+<a name="ln830">    unsigned int c = map_unicode(ch);</a>
+<a name="ln831">    int this_width = glyph.width;</a>
+<a name="ln832"> </a>
+<a name="ln833">    float pos_sx = x + glyph.offset * density_mult;</a>
+<a name="ln834">    float pos_sy = y - (glyph.ascender - m_ascender) * density_mult;</a>
+<a name="ln835">    float pos_ex = pos_sx + this_width * density_mult;</a>
+<a name="ln836">    float pos_ey = y + (m_max_height - glyph.ascender + m_ascender)</a>
+<a name="ln837">                   * density_mult;</a>
+<a name="ln838"> </a>
+<a name="ln839">    float tex_sx = (float)(c % GLYPHS_PER_ROWCOL) / (float)GLYPHS_PER_ROWCOL;</a>
+<a name="ln840">    float tex_sy = (float)(c / GLYPHS_PER_ROWCOL) / (float)GLYPHS_PER_ROWCOL;</a>
+<a name="ln841">    float tex_ex = tex_sx + (float)this_width / (float)(GLYPHS_PER_ROWCOL*charsz.x);</a>
+<a name="ln842">    float tex_ey = tex_sy + (float)m_max_height / (float)(GLYPHS_PER_ROWCOL*charsz.y);</a>
+<a name="ln843"> </a>
+<a name="ln844">    GLWPrim rect(pos_sx, pos_sy, pos_ex, pos_ey);</a>
+<a name="ln845">    rect.set_tex(tex_sx, tex_sy, tex_ex, tex_ey);</a>
+<a name="ln846">    rect.set_col(col);</a>
+<a name="ln847">    buf.add_primitive(rect);</a>
+<a name="ln848"> </a>
+<a name="ln849"> </a>
+<a name="ln850">    x += glyph.advance * density_mult;</a>
+<a name="ln851">}</a>
+<a name="ln852"> </a>
+<a name="ln853">/**</a>
+<a name="ln854"> * Store a single glyph, with both a background and a foreground color.</a>
+<a name="ln855"> *</a>
+<a name="ln856"> * @param buf the FontBuffer to store the glyph in.</a>
+<a name="ln857"> * @param x the x coordinate</a>
+<a name="ln858"> * @param y the y coordinate</a>
+<a name="ln859"> * @param ch a (unicode) character</a>
+<a name="ln860"> * @param fg_col the foreground color to print</a>
+<a name="ln861"> * @param bg_col the background color to print</a>
+<a name="ln862"> */</a>
+<a name="ln863">void FTFontWrapper::store(FontBuffer &amp;buf, float &amp;x, float &amp;y,</a>
+<a name="ln864">                          char32_t ch, const VColour &amp;fg_col, const VColour &amp;bg_col)</a>
+<a name="ln865">{</a>
+<a name="ln866">    GlyphInfo &amp;glyph = get_glyph_info(ch);</a>
+<a name="ln867">    const float density_mult = display_density.scale_to_logical();</a>
+<a name="ln868"> </a>
+<a name="ln869">    // if the advance is 0, use the max width</a>
+<a name="ln870">    const int this_width = glyph.advance ? glyph.advance : char_width(false);</a>
+<a name="ln871">    const float bg_width = this_width * density_mult;</a>
+<a name="ln872">    const float bg_height = char_height(false) * density_mult;</a>
+<a name="ln873">    const float pos_sx = x + glyph.offset * density_mult;</a>
+<a name="ln874"> </a>
+<a name="ln875">    GLWPrim bg_rect(pos_sx, y, pos_sx + bg_width, y + bg_height);</a>
+<a name="ln876">    bg_rect.set_col(bg_col);</a>
+<a name="ln877">    buf.add_primitive(bg_rect);</a>
+<a name="ln878"> </a>
+<a name="ln879">    store(buf, x, y, ch, fg_col);</a>
+<a name="ln880">}</a>
+<a name="ln881"> </a>
+<a name="ln882">/**</a>
+<a name="ln883"> * Find the (max) width of a character, in device or logical pixels.</a>
+<a name="ln884"> *</a>
+<a name="ln885"> * This will round up if a font uses logically fractional advances! It is</a>
+<a name="ln886"> * better to use max_width or string_width if you need multiple characters.</a>
+<a name="ln887"> */</a>
+<a name="ln888">unsigned int FTFontWrapper::char_width(bool logical) const</a>
+<a name="ln889">{</a>
+<a name="ln890">    return max_width(1, logical);</a>
+<a name="ln891">}</a>
+<a name="ln892"> </a>
+<a name="ln893">/**</a>
+<a name="ln894"> * Find the (max) height of a character, in device or logical pixels.</a>
+<a name="ln895"> *</a>
+<a name="ln896"> * This will round up if a font uses logically fractional advances! It is</a>
+<a name="ln897"> * better to use max_height or string_height if you need multiple characters.</a>
+<a name="ln898"> */</a>
+<a name="ln899">unsigned int FTFontWrapper::char_height(bool logical) const</a>
+<a name="ln900">{</a>
+<a name="ln901">    return max_height(1, logical);</a>
+<a name="ln902">}</a>
+<a name="ln903"> </a>
+<a name="ln904">/**</a>
+<a name="ln905"> * Find the (max) width of `length` characters, in device or logical pixels.</a>
+<a name="ln906"> *</a>
+<a name="ln907"> * This will take into account sub-logical-pixel advances. For non-fixed-width</a>
+<a name="ln908"> * fonts use string_width.</a>
+<a name="ln909"> */</a>
+<a name="ln910">unsigned int FTFontWrapper::max_width(int length, bool logical) const</a>
+<a name="ln911">{</a>
+<a name="ln912">    const int device_length = m_max_advance.x * length;</a>
+<a name="ln913"> </a>
+<a name="ln914">    return logical ? display_density.device_to_logical(device_length)</a>
+<a name="ln915">                   : device_length;</a>
+<a name="ln916">}</a>
+<a name="ln917"> </a>
+<a name="ln918">/**</a>
+<a name="ln919"> * Find the (max) height of `length` lines, in device or logical pixels.</a>
+<a name="ln920"> *</a>
+<a name="ln921"> * This will take into account sub-logical-pixel advances. For non-fixed-width</a>
+<a name="ln922"> * fonts use string_height.</a>
+<a name="ln923"> */</a>
+<a name="ln924">unsigned int FTFontWrapper::max_height(int length, bool logical) const</a>
+<a name="ln925">{</a>
+<a name="ln926">    const int device_height = m_max_advance.y * length;</a>
+<a name="ln927"> </a>
+<a name="ln928">    return logical ? display_density.device_to_logical(device_height)</a>
+<a name="ln929">                   : device_height;</a>
+<a name="ln930">}</a>
+<a name="ln931"> </a>
+<a name="ln932"> </a>
+<a name="ln933">const GenericTexture *FTFontWrapper::font_tex() const</a>
+<a name="ln934">{</a>
+<a name="ln935">    return &amp;m_tex;</a>
+<a name="ln936">}</a>
+<a name="ln937"> </a>
+<a name="ln938">#endif // USE_FT</a>
+<a name="ln939">#endif // USE_TILE_LOCAL</a>
+
+</code></pre>
+<div class="balloon" rel="294"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: y < bmp->rows.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1777 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>attack.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*</a>
+<a name="ln2"> *  File:       attack.cc</a>
+<a name="ln3"> *  Summary:    Methods of the attack class, generalized functions which may</a>
+<a name="ln4"> *              be overloaded by inheriting classes.</a>
+<a name="ln5"> *  Written by: Robert Burnham</a>
+<a name="ln6"> */</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;AppHdr.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;attack.h&quot;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &lt;algorithm&gt;</a>
+<a name="ln13">#include &lt;cmath&gt;</a>
+<a name="ln14">#include &lt;cstdio&gt;</a>
+<a name="ln15">#include &lt;cstdlib&gt;</a>
+<a name="ln16">#include &lt;cstring&gt;</a>
+<a name="ln17">#include &lt;functional&gt;</a>
+<a name="ln18"> </a>
+<a name="ln19">#include &quot;art-enum.h&quot;</a>
+<a name="ln20">#include &quot;chardump.h&quot;</a>
+<a name="ln21">#include &quot;delay.h&quot;</a>
+<a name="ln22">#include &quot;english.h&quot;</a>
+<a name="ln23">#include &quot;env.h&quot;</a>
+<a name="ln24">#include &quot;exercise.h&quot;</a>
+<a name="ln25">#include &quot;fight.h&quot;</a>
+<a name="ln26">#include &quot;fineff.h&quot;</a>
+<a name="ln27">#include &quot;food.h&quot;</a>
+<a name="ln28">#include &quot;god-conduct.h&quot;</a>
+<a name="ln29">#include &quot;god-passive.h&quot; // passive_t::no_haste</a>
+<a name="ln30">#include &quot;item-name.h&quot;</a>
+<a name="ln31">#include &quot;item-prop.h&quot;</a>
+<a name="ln32">#include &quot;message.h&quot;</a>
+<a name="ln33">#include &quot;mon-behv.h&quot;</a>
+<a name="ln34">#include &quot;mon-clone.h&quot;</a>
+<a name="ln35">#include &quot;mon-death.h&quot;</a>
+<a name="ln36">#include &quot;nearby-danger.h&quot;</a>
+<a name="ln37">#include &quot;pronoun-type.h&quot;</a>
+<a name="ln38">#include &quot;religion.h&quot;</a>
+<a name="ln39">#include &quot;spl-util.h&quot;</a>
+<a name="ln40">#include &quot;state.h&quot;</a>
+<a name="ln41">#include &quot;stepdown.h&quot;</a>
+<a name="ln42">#include &quot;stringutil.h&quot;</a>
+<a name="ln43">#include &quot;transform.h&quot;</a>
+<a name="ln44">#include &quot;xom.h&quot;</a>
+<a name="ln45"> </a>
+<a name="ln46">/*</a>
+<a name="ln47"> **************************************************</a>
+<a name="ln48"> *             BEGIN PUBLIC FUNCTIONS             *</a>
+<a name="ln49"> **************************************************</a>
+<a name="ln50">*/</a>
+<a name="ln51">attack::attack(actor *attk, actor *defn, actor *blame)</a>
+<a name="ln52">    : attacker(attk), defender(defn), responsible(blame ? blame : attk),</a>
+<a name="ln53">      attack_occurred(false), cancel_attack(false), did_hit(false),</a>
+<a name="ln54">      needs_message(false), attacker_visible(false), defender_visible(false),</a>
+<a name="ln55">      perceived_attack(false), obvious_effect(false), to_hit(0),</a>
+<a name="ln56">      damage_done(0), special_damage(0), aux_damage(0), min_delay(0),</a>
+<a name="ln57">      final_attack_delay(0), special_damage_flavour(BEAM_NONE),</a>
+<a name="ln58">      stab_attempt(false), stab_bonus(0), ev_margin(0), weapon(nullptr),</a>
+<a name="ln59">      damage_brand(SPWPN_NORMAL), wpn_skill(SK_UNARMED_COMBAT),</a>
+<a name="ln60">      shield(nullptr), art_props(0), unrand_entry(nullptr),</a>
+<a name="ln61">      attacker_to_hit_penalty(0), attack_verb(&quot;bug&quot;), verb_degree(),</a>
+<a name="ln62">      no_damage_message(), special_damage_message(), aux_attack(), aux_verb(),</a>
+<a name="ln63">      attacker_armour_tohit_penalty(0), attacker_shield_tohit_penalty(0),</a>
+<a name="ln64">      defender_shield(nullptr), fake_chaos_attack(false), simu(false),</a>
+<a name="ln65">      aux_source(&quot;&quot;), kill_type(KILLED_BY_MONSTER)</a>
+<a name="ln66">{</a>
+<a name="ln67">    // No effective code should execute, we'll call init_attack again from</a>
+<a name="ln68">    // the child class, since initializing an attack will vary based the within</a>
+<a name="ln69">    // type of attack actually being made (melee, ranged, etc.)</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">bool attack::handle_phase_attempted()</a>
+<a name="ln73">{</a>
+<a name="ln74">    return true;</a>
+<a name="ln75">}</a>
+<a name="ln76"> </a>
+<a name="ln77">bool attack::handle_phase_blocked()</a>
+<a name="ln78">{</a>
+<a name="ln79">    damage_done = 0;</a>
+<a name="ln80">    return true;</a>
+<a name="ln81">}</a>
+<a name="ln82"> </a>
+<a name="ln83">bool attack::handle_phase_damaged()</a>
+<a name="ln84">{</a>
+<a name="ln85">    // We have to check in_bounds() because removed kraken tentacles are</a>
+<a name="ln86">    // temporarily returned to existence (without a position) when they</a>
+<a name="ln87">    // react to damage.</a>
+<a name="ln88">    if (defender-&gt;can_bleed()</a>
+<a name="ln89">        &amp;&amp; !defender-&gt;is_summoned()</a>
+<a name="ln90">        &amp;&amp; !defender-&gt;submerged()</a>
+<a name="ln91">        &amp;&amp; in_bounds(defender-&gt;pos())</a>
+<a name="ln92">        &amp;&amp; !simu)</a>
+<a name="ln93">    {</a>
+<a name="ln94">        int blood = damage_done;</a>
+<a name="ln95">        if (blood &gt; defender-&gt;stat_hp())</a>
+<a name="ln96">            blood = defender-&gt;stat_hp();</a>
+<a name="ln97">        if (blood)</a>
+<a name="ln98">            blood_fineff::schedule(defender, defender-&gt;pos(), blood);</a>
+<a name="ln99">    }</a>
+<a name="ln100"> </a>
+<a name="ln101">    announce_hit();</a>
+<a name="ln102">    // Inflict stored damage</a>
+<a name="ln103">    damage_done = inflict_damage(damage_done);</a>
+<a name="ln104"> </a>
+<a name="ln105">    // TODO: Unify these, added here so we can get rid of player_attack</a>
+<a name="ln106">    if (attacker-&gt;is_player())</a>
+<a name="ln107">    {</a>
+<a name="ln108">        if (damage_done)</a>
+<a name="ln109">            player_exercise_combat_skills();</a>
+<a name="ln110">    }</a>
+<a name="ln111">    else</a>
+<a name="ln112">    {</a>
+<a name="ln113">        if (!mons_attack_effects())</a>
+<a name="ln114">            return false;</a>
+<a name="ln115">    }</a>
+<a name="ln116"> </a>
+<a name="ln117">    // It's okay if a monster took lethal damage, but we should stop</a>
+<a name="ln118">    // the combat if it was already reset (e.g. a spectral weapon that</a>
+<a name="ln119">    // took damage and then noticed that its caster is gone).</a>
+<a name="ln120">    return defender-&gt;is_player() || !invalid_monster(defender-&gt;as_monster());</a>
+<a name="ln121">}</a>
+<a name="ln122"> </a>
+<a name="ln123">bool attack::handle_phase_killed()</a>
+<a name="ln124">{</a>
+<a name="ln125">    monster* mon = defender-&gt;as_monster();</a>
+<a name="ln126">    if (!invalid_monster(mon))</a>
+<a name="ln127">        monster_die(*mon, attacker);</a>
+<a name="ln128"> </a>
+<a name="ln129">    return true;</a>
+<a name="ln130">}</a>
+<a name="ln131"> </a>
+<a name="ln132">bool attack::handle_phase_end()</a>
+<a name="ln133">{</a>
+<a name="ln134">    // This may invalidate both the attacker and defender.</a>
+<a name="ln135">    fire_final_effects();</a>
+<a name="ln136"> </a>
+<a name="ln137">    return true;</a>
+<a name="ln138">}</a>
+<a name="ln139"> </a>
+<a name="ln140">/**</a>
+<a name="ln141"> * Calculate the to-hit for an attacker</a>
+<a name="ln142"> *</a>
+<a name="ln143"> * @param random If false, calculate average to-hit deterministically.</a>
+<a name="ln144"> */</a>
+<a name="ln145">int attack::calc_to_hit(bool random)</a>
+<a name="ln146">{</a>
+<a name="ln147">    int mhit = attacker-&gt;is_player() ?</a>
+<a name="ln148">                15 + (you.dex() / 2)</a>
+<a name="ln149">              : calc_mon_to_hit_base();</a>
+<a name="ln150"> </a>
+<a name="ln151">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln152">    const int base_hit = mhit;</a>
+<a name="ln153">#endif</a>
+<a name="ln154"> </a>
+<a name="ln155">    // This if statement is temporary, it should be removed when the</a>
+<a name="ln156">    // implementation of a more universal (and elegant) to-hit calculation</a>
+<a name="ln157">    // is designed. The actual code is copied from the old mons_to_hit and</a>
+<a name="ln158">    // player_to_hit methods.</a>
+<a name="ln159">    if (attacker-&gt;is_player())</a>
+<a name="ln160">    {</a>
+<a name="ln161">        // fighting contribution</a>
+<a name="ln162">        mhit += maybe_random_div(you.skill(SK_FIGHTING, 100), 100, random);</a>
+<a name="ln163"> </a>
+<a name="ln164">        // weapon skill contribution</a>
+<a name="ln165">        if (using_weapon())</a>
+<a name="ln166">        {</a>
+<a name="ln167">            if (wpn_skill != SK_FIGHTING)</a>
+<a name="ln168">            {</a>
+<a name="ln169">                if (you.skill(wpn_skill) &lt; 1 &amp;&amp; player_in_a_dangerous_place())</a>
+<a name="ln170">                    xom_is_stimulated(10); // Xom thinks that is mildly amusing.</a>
+<a name="ln171"> </a>
+<a name="ln172">                mhit += maybe_random_div(you.skill(wpn_skill, 100), 100,</a>
+<a name="ln173">                                         random);</a>
+<a name="ln174">            }</a>
+<a name="ln175">        }</a>
+<a name="ln176">        else if (you.form_uses_xl())</a>
+<a name="ln177">            mhit += maybe_random_div(you.experience_level * 100, 100, random);</a>
+<a name="ln178">        else</a>
+<a name="ln179">        {</a>
+<a name="ln180">            // Claws give a slight bonus to accuracy when active</a>
+<a name="ln181">            mhit += (you.get_mutation_level(MUT_CLAWS) &gt; 0</a>
+<a name="ln182">                     &amp;&amp; wpn_skill == SK_UNARMED_COMBAT) ? 4 : 2;</a>
+<a name="ln183"> </a>
+<a name="ln184">            mhit += maybe_random_div(you.skill(wpn_skill, 100), 100,</a>
+<a name="ln185">                                     random);</a>
+<a name="ln186">        }</a>
+<a name="ln187"> </a>
+<a name="ln188">        // weapon bonus contribution</a>
+<a name="ln189">        if (using_weapon())</a>
+<a name="ln190">        {</a>
+<a name="ln191">            if (weapon-&gt;base_type == OBJ_WEAPONS)</a>
+<a name="ln192">            {</a>
+<a name="ln193">                mhit += weapon-&gt;plus;</a>
+<a name="ln194">                mhit += property(*weapon, PWPN_HIT);</a>
+<a name="ln195">            }</a>
+<a name="ln196">            else if (weapon-&gt;base_type == OBJ_STAVES)</a>
+<a name="ln197">                mhit += property(*weapon, PWPN_HIT);</a>
+<a name="ln198">        }</a>
+<a name="ln199"> </a>
+<a name="ln200">        // slaying bonus</a>
+<a name="ln201">        mhit += slaying_bonus(wpn_skill == SK_THROWING</a>
+<a name="ln202">                              || (weapon &amp;&amp; is_range_weapon(*weapon)</a>
+<a name="ln203">                                         &amp;&amp; using_weapon()));</a>
+<a name="ln204"> </a>
+<a name="ln205">        // hunger penalty</a>
+<a name="ln206">        if (apply_starvation_penalties())</a>
+<a name="ln207">            mhit -= 3;</a>
+<a name="ln208"> </a>
+<a name="ln209">        // armour penalty</a>
+<a name="ln210">        mhit -= (attacker_armour_tohit_penalty + attacker_shield_tohit_penalty);</a>
+<a name="ln211"> </a>
+<a name="ln212">        // vertigo penalty</a>
+<a name="ln213">        if (you.duration[DUR_VERTIGO])</a>
+<a name="ln214">            mhit -= 5;</a>
+<a name="ln215"> </a>
+<a name="ln216">        // mutation</a>
+<a name="ln217">        if (you.get_mutation_level(MUT_EYEBALLS))</a>
+<a name="ln218">            mhit += 2 * you.get_mutation_level(MUT_EYEBALLS) + 1;</a>
+<a name="ln219"> </a>
+<a name="ln220">        // hit roll</a>
+<a name="ln221">        mhit = maybe_random2(mhit, random);</a>
+<a name="ln222">    }</a>
+<a name="ln223">    else    // Monster to-hit.</a>
+<a name="ln224">    {</a>
+<a name="ln225">        if (using_weapon())</a>
+<a name="ln226">            mhit += weapon-&gt;plus + property(*weapon, PWPN_HIT);</a>
+<a name="ln227"> </a>
+<a name="ln228">        const int jewellery = attacker-&gt;as_monster()-&gt;inv[MSLOT_JEWELLERY];</a>
+<a name="ln229">        if (jewellery != NON_ITEM</a>
+<a name="ln230">            &amp;&amp; mitm[jewellery].is_type(OBJ_JEWELLERY, RING_SLAYING))</a>
+<a name="ln231">        {</a>
+<a name="ln232">            mhit += mitm[jewellery].plus;</a>
+<a name="ln233">        }</a>
+<a name="ln234"> </a>
+<a name="ln235">        mhit += attacker-&gt;scan_artefacts(ARTP_SLAYING);</a>
+<a name="ln236">    }</a>
+<a name="ln237"> </a>
+<a name="ln238">    // Penalties for both players and monsters:</a>
+<a name="ln239">    mhit -= 5 * attacker-&gt;inaccuracy();</a>
+<a name="ln240"> </a>
+<a name="ln241">    if (attacker-&gt;confused())</a>
+<a name="ln242">        mhit -= 5;</a>
+<a name="ln243"> </a>
+<a name="ln244">    if (using_weapon()</a>
+<a name="ln245">        &amp;&amp; (is_unrandom_artefact(*weapon, UNRAND_WOE)</a>
+<a name="ln246">            || is_unrandom_artefact(*weapon, UNRAND_SNIPER)))</a>
+<a name="ln247">    {</a>
+<a name="ln248">        return AUTOMATIC_HIT;</a>
+<a name="ln249">    }</a>
+<a name="ln250"> </a>
+<a name="ln251">    // If no defender, we're calculating to-hit for debug-display</a>
+<a name="ln252">    // purposes, so don't drop down to defender code below</a>
+<a name="ln253">    if (defender == nullptr)</a>
+<a name="ln254">        return mhit;</a>
+<a name="ln255"> </a>
+<a name="ln256">    if (!defender-&gt;visible_to(attacker))</a>
+<a name="ln257">        if (attacker-&gt;is_player())</a>
+<a name="ln258">            mhit -= 6;</a>
+<a name="ln259">        else</a>
+<a name="ln260">            mhit = mhit * 65 / 100;</a>
+<a name="ln261">    else</a>
+<a name="ln262">    {</a>
+<a name="ln263">        // This can only help if you're visible!</a>
+<a name="ln264">        const int how_transparent = you.get_mutation_level(MUT_TRANSLUCENT_SKIN);</a>
+<a name="ln265">        if (defender-&gt;is_player() &amp;&amp; how_transparent)</a>
+<a name="ln266">            mhit -= 2 * how_transparent;</a>
+<a name="ln267"> </a>
+<a name="ln268">        if (defender-&gt;backlit(false))</a>
+<a name="ln269">            mhit += 2 + random2(8);</a>
+<a name="ln270">        else if (!attacker-&gt;nightvision()</a>
+<a name="ln271">                 &amp;&amp; defender-&gt;umbra())</a>
+<a name="ln272">            mhit -= 2 + random2(4);</a>
+<a name="ln273">    }</a>
+<a name="ln274">    // Don't delay doing this roll until test_hit().</a>
+<a name="ln275">    if (!attacker-&gt;is_player())</a>
+<a name="ln276">        mhit = random2(mhit + 1);</a>
+<a name="ln277"> </a>
+<a name="ln278">    dprf(DIAG_COMBAT, &quot;%s: Base to-hit: %d, Final to-hit: %d&quot;,</a>
+<a name="ln279">         attacker-&gt;name(DESC_PLAIN).c_str(),</a>
+<a name="ln280">         base_hit, mhit);</a>
+<a name="ln281"> </a>
+<a name="ln282">    return mhit;</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">/* Returns an actor's name</a>
+<a name="ln286"> *</a>
+<a name="ln287"> * Takes into account actor visibility/invisibility and the type of description</a>
+<a name="ln288"> * to be used (capitalization, possessiveness, etc.)</a>
+<a name="ln289"> */</a>
+<a name="ln290">string attack::actor_name(const actor *a, description_level_type desc,</a>
+<a name="ln291">                          bool actor_visible)</a>
+<a name="ln292">{</a>
+<a name="ln293">    return actor_visible ? a-&gt;name(desc) : anon_name(desc);</a>
+<a name="ln294">}</a>
+<a name="ln295"> </a>
+<a name="ln296">/* Returns an actor's pronoun</a>
+<a name="ln297"> *</a>
+<a name="ln298"> * Takes into account actor visibility</a>
+<a name="ln299"> */</a>
+<a name="ln300">string attack::actor_pronoun(const actor *a, pronoun_type pron,</a>
+<a name="ln301">                             bool actor_visible)</a>
+<a name="ln302">{</a>
+<a name="ln303">    return actor_visible ? a-&gt;pronoun(pron) : anon_pronoun(pron);</a>
+<a name="ln304">}</a>
+<a name="ln305"> </a>
+<a name="ln306">/* Returns an anonymous actor's name</a>
+<a name="ln307"> *</a>
+<a name="ln308"> * Given the actor visible or invisible, returns the</a>
+<a name="ln309"> * appropriate possessive pronoun.</a>
+<a name="ln310"> */</a>
+<a name="ln311">string attack::anon_name(description_level_type desc)</a>
+<a name="ln312">{</a>
+<a name="ln313">    switch (desc)</a>
+<a name="ln314">    {</a>
+<a name="ln315">    case DESC_NONE:</a>
+<a name="ln316">        return &quot;&quot;;</a>
+<a name="ln317">    case DESC_YOUR:</a>
+<a name="ln318">    case DESC_ITS:</a>
+<a name="ln319">        return &quot;something's&quot;;</a>
+<a name="ln320">    case DESC_THE:</a>
+<a name="ln321">    case DESC_A:</a>
+<a name="ln322">    case DESC_PLAIN:</a>
+<a name="ln323">    default:</a>
+<a name="ln324">        return &quot;something&quot;;</a>
+<a name="ln325">    }</a>
+<a name="ln326">}</a>
+<a name="ln327"> </a>
+<a name="ln328">/* Returns an anonymous actor's pronoun</a>
+<a name="ln329"> *</a>
+<a name="ln330"> * Given invisibility (whether out of LOS or just invisible), returns the</a>
+<a name="ln331"> * appropriate possessive, inflexive, capitalised pronoun.</a>
+<a name="ln332"> */</a>
+<a name="ln333">string attack::anon_pronoun(pronoun_type pron)</a>
+<a name="ln334">{</a>
+<a name="ln335">    return decline_pronoun(GENDER_NEUTER, pron);</a>
+<a name="ln336">}</a>
+<a name="ln337"> </a>
+<a name="ln338">/* Initializes an attack, setting up base variables and values</a>
+<a name="ln339"> *</a>
+<a name="ln340"> * Does not make any changes to any actors, items, or the environment,</a>
+<a name="ln341"> * in case the attack is cancelled or otherwise fails. Only initializations</a>
+<a name="ln342"> * that are universal to all types of attacks should go into this method,</a>
+<a name="ln343"> * any initialization properties that are specific to one attack or another</a>
+<a name="ln344"> * should go into their respective init_attack.</a>
+<a name="ln345"> *</a>
+<a name="ln346"> * Although this method will get overloaded by the derived class, we are</a>
+<a name="ln347"> * calling it from attack::attack(), before the overloading has taken place.</a>
+<a name="ln348"> */</a>
+<a name="ln349">void attack::init_attack(skill_type unarmed_skill, int attack_number)</a>
+<a name="ln350">{</a>
+<a name="ln351">    ASSERT(attacker);</a>
+<a name="ln352">    weapon          = attacker-&gt;weapon(attack_number);</a>
+<a name="ln353"> </a>
+<a name="ln354">    wpn_skill       = weapon ? item_attack_skill(*weapon) : unarmed_skill;</a>
+<a name="ln355">    if (attacker-&gt;is_player() &amp;&amp; you.form_uses_xl())</a>
+<a name="ln356">        wpn_skill = SK_FIGHTING; // for stabbing, mostly</a>
+<a name="ln357"> </a>
+<a name="ln358">    attacker_armour_tohit_penalty =</a>
+<a name="ln359">        div_rand_round(attacker-&gt;armour_tohit_penalty(true, 20), 20);</a>
+<a name="ln360">    attacker_shield_tohit_penalty =</a>
+<a name="ln361">        div_rand_round(attacker-&gt;shield_tohit_penalty(true, 20), 20);</a>
+<a name="ln362">    to_hit          = calc_to_hit(true);</a>
+<a name="ln363"> </a>
+<a name="ln364">    shield = attacker-&gt;shield();</a>
+<a name="ln365">    defender_shield = defender ? defender-&gt;shield() : defender_shield;</a>
+<a name="ln366"> </a>
+<a name="ln367">    if (weapon &amp;&amp; weapon-&gt;base_type == OBJ_WEAPONS &amp;&amp; is_artefact(*weapon))</a>
+<a name="ln368">    {</a>
+<a name="ln369">        artefact_properties(*weapon, art_props);</a>
+<a name="ln370">        if (is_unrandom_artefact(*weapon))</a>
+<a name="ln371">            unrand_entry = get_unrand_entry(weapon-&gt;unrand_idx);</a>
+<a name="ln372">    }</a>
+<a name="ln373"> </a>
+<a name="ln374">    attacker_visible   = attacker-&gt;observable();</a>
+<a name="ln375">    defender_visible   = defender &amp;&amp; defender-&gt;observable();</a>
+<a name="ln376">    needs_message      = (attacker_visible || defender_visible);</a>
+<a name="ln377"> </a>
+<a name="ln378">    if (attacker-&gt;is_monster())</a>
+<a name="ln379">    {</a>
+<a name="ln380">        mon_attack_def mon_attk = mons_attack_spec(*attacker-&gt;as_monster(),</a>
+<a name="ln381">                                                   attack_number,</a>
+<a name="ln382">                                                   false);</a>
+<a name="ln383"> </a>
+<a name="ln384">        attk_type       = mon_attk.type;</a>
+<a name="ln385">        attk_flavour    = mon_attk.flavour;</a>
+<a name="ln386"> </a>
+<a name="ln387">        // Don't scale damage for YOU_FAULTLESS etc.</a>
+<a name="ln388">        if (attacker-&gt;get_experience_level() == 0)</a>
+<a name="ln389">            attk_damage = mon_attk.damage;</a>
+<a name="ln390">        else</a>
+<a name="ln391">        {</a>
+<a name="ln392">            attk_damage = div_rand_round(mon_attk.damage</a>
+<a name="ln393">                                             * attacker-&gt;get_hit_dice(),</a>
+<a name="ln394">                                         attacker-&gt;get_experience_level());</a>
+<a name="ln395">        }</a>
+<a name="ln396"> </a>
+<a name="ln397">        if (attk_type == AT_WEAP_ONLY)</a>
+<a name="ln398">        {</a>
+<a name="ln399">            int weap = attacker-&gt;as_monster()-&gt;inv[MSLOT_WEAPON];</a>
+<a name="ln400">            if (weap == NON_ITEM || is_range_weapon(mitm[weap]))</a>
+<a name="ln401">                attk_type = AT_NONE;</a>
+<a name="ln402">            else</a>
+<a name="ln403">                attk_type = AT_HIT;</a>
+<a name="ln404">        }</a>
+<a name="ln405">        else if (attk_type == AT_TRUNK_SLAP &amp;&amp; attacker-&gt;type == MONS_SKELETON)</a>
+<a name="ln406">        {</a>
+<a name="ln407">            // Elephant trunks have no bones inside.</a>
+<a name="ln408">            attk_type = AT_NONE;</a>
+<a name="ln409">        }</a>
+<a name="ln410">    }</a>
+<a name="ln411">    else</a>
+<a name="ln412">    {</a>
+<a name="ln413">        attk_type    = AT_HIT;</a>
+<a name="ln414">        attk_flavour = AF_PLAIN;</a>
+<a name="ln415">    }</a>
+<a name="ln416">}</a>
+<a name="ln417"> </a>
+<a name="ln418">void attack::alert_defender()</a>
+<a name="ln419">{</a>
+<a name="ln420">    // Allow monster attacks to draw the ire of the defender. Player</a>
+<a name="ln421">    // attacks are handled elsewhere.</a>
+<a name="ln422">    if (perceived_attack</a>
+<a name="ln423">        &amp;&amp; defender-&gt;is_monster()</a>
+<a name="ln424">        &amp;&amp; attacker-&gt;is_monster()</a>
+<a name="ln425">        &amp;&amp; attacker-&gt;alive() &amp;&amp; defender-&gt;alive()</a>
+<a name="ln426">        &amp;&amp; (defender-&gt;as_monster()-&gt;foe == MHITNOT || one_chance_in(3)))</a>
+<a name="ln427">    {</a>
+<a name="ln428">        behaviour_event(defender-&gt;as_monster(), ME_WHACK, attacker);</a>
+<a name="ln429">    }</a>
+<a name="ln430"> </a>
+<a name="ln431">    // If an enemy attacked a friend, set the pet target if it isn't set</a>
+<a name="ln432">    // already, but not if sanctuary is in effect (pet target must be</a>
+<a name="ln433">    // set explicitly by the player during sanctuary).</a>
+<a name="ln434">    if (perceived_attack &amp;&amp; attacker-&gt;alive()</a>
+<a name="ln435">        &amp;&amp; (defender-&gt;is_player() || defender-&gt;as_monster()-&gt;friendly())</a>
+<a name="ln436">        &amp;&amp; !attacker-&gt;is_player()</a>
+<a name="ln437">        &amp;&amp; !crawl_state.game_is_arena()</a>
+<a name="ln438">        &amp;&amp; !attacker-&gt;as_monster()-&gt;wont_attack())</a>
+<a name="ln439">    {</a>
+<a name="ln440">        if (defender-&gt;is_player())</a>
+<a name="ln441">        {</a>
+<a name="ln442">            interrupt_activity(activity_interrupt::monster_attacks,</a>
+<a name="ln443">                               attacker-&gt;as_monster());</a>
+<a name="ln444">        }</a>
+<a name="ln445">        if (you.pet_target == MHITNOT &amp;&amp; env.sanctuary_time &lt;= 0)</a>
+<a name="ln446">            you.pet_target = attacker-&gt;mindex();</a>
+<a name="ln447">    }</a>
+<a name="ln448">}</a>
+<a name="ln449"> </a>
+<a name="ln450">bool attack::distortion_affects_defender()</a>
+<a name="ln451">{</a>
+<a name="ln452">    enum disto_effect</a>
+<a name="ln453">    {</a>
+<a name="ln454">        SMALL_DMG,</a>
+<a name="ln455">        BIG_DMG,</a>
+<a name="ln456">        BANISH,</a>
+<a name="ln457">        BLINK,</a>
+<a name="ln458">        NONE</a>
+<a name="ln459">    };</a>
+<a name="ln460"> </a>
+<a name="ln461">    const disto_effect choice = random_choose_weighted(35, SMALL_DMG,</a>
+<a name="ln462">                                                       25, BIG_DMG,</a>
+<a name="ln463">                                                       10,  BANISH,</a>
+<a name="ln464">                                                       20, BLINK,</a>
+<a name="ln465">                                                       10,  NONE);</a>
+<a name="ln466"> </a>
+<a name="ln467">    if (simu &amp;&amp; !(choice == SMALL_DMG || choice == BIG_DMG))</a>
+<a name="ln468">        return false;</a>
+<a name="ln469"> </a>
+<a name="ln470">    switch (choice)</a>
+<a name="ln471">    {</a>
+<a name="ln472">    case SMALL_DMG:</a>
+<a name="ln473">        special_damage += 1 + random2avg(7, 2);</a>
+<a name="ln474">        // No need to call attack_strength_punctuation here,</a>
+<a name="ln475">        // since special damage &lt; 7, so it will always return &quot;.&quot;</a>
+<a name="ln476">        special_damage_message = make_stringf(&quot;Space bends around %s.&quot;,</a>
+<a name="ln477">                                              defender_name(false).c_str());</a>
+<a name="ln478">        break;</a>
+<a name="ln479">    case BIG_DMG:</a>
+<a name="ln480">        special_damage += 3 + random2avg(24, 2);</a>
+<a name="ln481">        special_damage_message =</a>
+<a name="ln482">            make_stringf(&quot;Space warps horribly around %s%s&quot;,</a>
+<a name="ln483">                         defender_name(false).c_str(),</a>
+<a name="ln484">                         attack_strength_punctuation(special_damage).c_str());</a>
+<a name="ln485">        break;</a>
+<a name="ln486">    case BLINK:</a>
+<a name="ln487">        if (defender_visible)</a>
+<a name="ln488">            obvious_effect = true;</a>
+<a name="ln489">        if (!defender-&gt;no_tele(true, false))</a>
+<a name="ln490">            blink_fineff::schedule(defender);</a>
+<a name="ln491">        break;</a>
+<a name="ln492">    case BANISH:</a>
+<a name="ln493">        if (defender_visible)</a>
+<a name="ln494">            obvious_effect = true;</a>
+<a name="ln495">        defender-&gt;banish(attacker, attacker-&gt;name(DESC_PLAIN, true),</a>
+<a name="ln496">                         attacker-&gt;get_experience_level());</a>
+<a name="ln497">        return true;</a>
+<a name="ln498">    case NONE:</a>
+<a name="ln499">        // Do nothing</a>
+<a name="ln500">        break;</a>
+<a name="ln501">    }</a>
+<a name="ln502"> </a>
+<a name="ln503">    return false;</a>
+<a name="ln504">}</a>
+<a name="ln505"> </a>
+<a name="ln506">void attack::antimagic_affects_defender(int pow)</a>
+<a name="ln507">{</a>
+<a name="ln508">    obvious_effect =</a>
+<a name="ln509">        enchant_actor_with_flavour(defender, nullptr, BEAM_DRAIN_MAGIC, pow);</a>
+<a name="ln510">}</a>
+<a name="ln511"> </a>
+<a name="ln512">/// Whose skill should be used for a pain-weapon effect?</a>
+<a name="ln513">static actor* _pain_weapon_user(actor* attacker)</a>
+<a name="ln514">{</a>
+<a name="ln515">    if (attacker-&gt;type != MONS_SPECTRAL_WEAPON)</a>
+<a name="ln516">        return attacker;</a>
+<a name="ln517"> </a>
+<a name="ln518">    const mid_t summoner_mid = attacker-&gt;as_monster()-&gt;summoner;</a>
+<a name="ln519">    if (summoner_mid == MID_NOBODY)</a>
+<a name="ln520">        return attacker;</a>
+<a name="ln521"> </a>
+<a name="ln522">    actor* summoner = actor_by_mid(attacker-&gt;as_monster()-&gt;summoner);</a>
+<a name="ln523">    if (!summoner || !summoner-&gt;alive())</a>
+<a name="ln524">        return attacker;</a>
+<a name="ln525">    return summoner;</a>
+<a name="ln526">}</a>
+<a name="ln527"> </a>
+<a name="ln528">void attack::pain_affects_defender()</a>
+<a name="ln529">{</a>
+<a name="ln530">    actor* user = _pain_weapon_user(attacker);</a>
+<a name="ln531">    if (!one_chance_in(user-&gt;skill_rdiv(SK_NECROMANCY) + 1))</a>
+<a name="ln532">    {</a>
+<a name="ln533">        special_damage += resist_adjust_damage(defender, BEAM_NEG,</a>
+<a name="ln534">                              random2(1 + user-&gt;skill_rdiv(SK_NECROMANCY)));</a>
+<a name="ln535"> </a>
+<a name="ln536">        if (special_damage &amp;&amp; defender_visible)</a>
+<a name="ln537">        {</a>
+<a name="ln538">            special_damage_message =</a>
+<a name="ln539">                make_stringf(&quot;%s %s in agony%s&quot;,</a>
+<a name="ln540">                             defender-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln541">                             defender-&gt;conj_verb(&quot;writhe&quot;).c_str(),</a>
+<a name="ln542">                           attack_strength_punctuation(special_damage).c_str());</a>
+<a name="ln543">        }</a>
+<a name="ln544">    }</a>
+<a name="ln545">}</a>
+<a name="ln546"> </a>
+<a name="ln547">static bool _is_chaos_polyable(const actor &amp;defender)</a>
+<a name="ln548">{</a>
+<a name="ln549">    if (!defender.can_safely_mutate())</a>
+<a name="ln550">        return false;  // no polymorphing undead</a>
+<a name="ln551"> </a>
+<a name="ln552">    const monster* mon = defender.as_monster();</a>
+<a name="ln553">    if (!mon)</a>
+<a name="ln554">        return true;</a>
+<a name="ln555"> </a>
+<a name="ln556">    return !mons_is_firewood(*mon) &amp;&amp; !mons_immune_magic(*mon);</a>
+<a name="ln557">}</a>
+<a name="ln558"> </a>
+<a name="ln559">static bool _is_chaos_slowable(const actor &amp;defender)</a>
+<a name="ln560">{</a>
+<a name="ln561">    const monster* mon = defender.as_monster();</a>
+<a name="ln562">    if (!mon)</a>
+<a name="ln563">        return true;</a>
+<a name="ln564"> </a>
+<a name="ln565">    return !mons_is_firewood(*mon) &amp;&amp; !mon-&gt;is_stationary();</a>
+<a name="ln566">}</a>
+<a name="ln567"> </a>
+<a name="ln568">struct chaos_effect</a>
+<a name="ln569">{</a>
+<a name="ln570">    string name;</a>
+<a name="ln571">    int chance;</a>
+<a name="ln572">    function&lt;bool(const actor&amp; def)&gt; valid;</a>
+<a name="ln573">    beam_type flavour;</a>
+<a name="ln574">    function&lt;bool(attack &amp;attack)&gt; misc_effect;</a>
+<a name="ln575">};</a>
+<a name="ln576"> </a>
+<a name="ln577">static const vector&lt;chaos_effect&gt; chaos_effects = {</a>
+<a name="ln578">    {</a>
+<a name="ln579">        &quot;clone&quot;, 1, [](const actor &amp;d) {</a>
+<a name="ln580">            return d.is_monster() &amp;&amp; mons_clonable(d.as_monster(), true);</a>
+<a name="ln581">        },</a>
+<a name="ln582">        BEAM_NONE, [](attack &amp;attack) {</a>
+<a name="ln583">            actor &amp;defender = *attack.defender;</a>
+<a name="ln584">            ASSERT(defender.is_monster());</a>
+<a name="ln585">            monster *clone = clone_mons(defender.as_monster(), true);</a>
+<a name="ln586">            if (!clone)</a>
+<a name="ln587">                return false;</a>
+<a name="ln588"> </a>
+<a name="ln589">            const bool obvious_effect = you.can_see(defender) &amp;&amp; you.can_see(*clone);</a>
+<a name="ln590"> </a>
+<a name="ln591">            if (one_chance_in(3))</a>
+<a name="ln592">                clone-&gt;attitude = coinflip() ? ATT_FRIENDLY : ATT_NEUTRAL;</a>
+<a name="ln593"> </a>
+<a name="ln594">            // The player shouldn't get new permanent followers from cloning.</a>
+<a name="ln595">            if (clone-&gt;attitude == ATT_FRIENDLY &amp;&amp; !clone-&gt;is_summoned())</a>
+<a name="ln596">                clone-&gt;mark_summoned(6, true, MON_SUMM_CLONE);</a>
+<a name="ln597"> </a>
+<a name="ln598">            // Monsters being cloned is interesting.</a>
+<a name="ln599">            xom_is_stimulated(clone-&gt;friendly() ? 12 : 25);</a>
+<a name="ln600">            return obvious_effect;</a>
+<a name="ln601">        },</a>
+<a name="ln602">    },</a>
+<a name="ln603">    {</a>
+<a name="ln604">        &quot;polymorph&quot;, 2, _is_chaos_polyable, BEAM_POLYMORPH,</a>
+<a name="ln605">    },</a>
+<a name="ln606">    {</a>
+<a name="ln607">        &quot;shifter&quot;, 1, [](const actor &amp;defender)</a>
+<a name="ln608">        {</a>
+<a name="ln609">            const monster *mon = defender.as_monster();</a>
+<a name="ln610">            return _is_chaos_polyable(defender)</a>
+<a name="ln611">                   &amp;&amp; mon &amp;&amp; !mon-&gt;is_shapeshifter()</a>
+<a name="ln612">                   &amp;&amp; defender.holiness() &amp; MH_NATURAL;</a>
+<a name="ln613">        },</a>
+<a name="ln614">        BEAM_NONE, [](attack &amp;attack) {</a>
+<a name="ln615">            monster* mon = attack.defender-&gt;as_monster();</a>
+<a name="ln616">            ASSERT(_is_chaos_polyable(*attack.defender));</a>
+<a name="ln617">            ASSERT(mon);</a>
+<a name="ln618">            ASSERT(!mon-&gt;is_shapeshifter());</a>
+<a name="ln619"> </a>
+<a name="ln620">            const bool obvious_effect = you.can_see(*attack.defender);</a>
+<a name="ln621">            mon-&gt;add_ench(one_chance_in(3) ? ENCH_GLOWING_SHAPESHIFTER</a>
+<a name="ln622">                                           : ENCH_SHAPESHIFTER);</a>
+<a name="ln623">            // Immediately polymorph monster, just to make the effect obvious.</a>
+<a name="ln624">            mon-&gt;polymorph();</a>
+<a name="ln625"> </a>
+<a name="ln626">            // Xom loves it if this happens!</a>
+<a name="ln627">            const int friend_factor = mon-&gt;friendly() ? 1 : 2;</a>
+<a name="ln628">            const int glow_factor   = mon-&gt;has_ench(ENCH_SHAPESHIFTER) ? 1 : 2;</a>
+<a name="ln629">            xom_is_stimulated(64 * friend_factor * glow_factor);</a>
+<a name="ln630"> </a>
+<a name="ln631">            return obvious_effect;</a>
+<a name="ln632">        },</a>
+<a name="ln633">    },</a>
+<a name="ln634">    {</a>
+<a name="ln635">        &quot;rage&quot;, 5, [](const actor &amp;defender) {</a>
+<a name="ln636">            return defender.can_go_berserk();</a>
+<a name="ln637">        }, BEAM_NONE, [](attack &amp;attack) {</a>
+<a name="ln638">            attack.defender-&gt;go_berserk(false);</a>
+<a name="ln639">            return you.can_see(*attack.defender);</a>
+<a name="ln640">        },</a>
+<a name="ln641">    },</a>
+<a name="ln642">    { &quot;hasting&quot;, 10, _is_chaos_slowable, BEAM_HASTE },</a>
+<a name="ln643">    { &quot;mighting&quot;, 10, nullptr, BEAM_MIGHT },</a>
+<a name="ln644">    { &quot;agilitying&quot;, 10, nullptr, BEAM_AGILITY },</a>
+<a name="ln645">    { &quot;invisible&quot;, 10, nullptr, BEAM_INVISIBILITY, },</a>
+<a name="ln646">    { &quot;slowing&quot;, 10, _is_chaos_slowable, BEAM_SLOW },</a>
+<a name="ln647">    {</a>
+<a name="ln648">        &quot;paralysis&quot;, 5, [](const actor &amp;defender) {</a>
+<a name="ln649">            return !defender.is_monster()</a>
+<a name="ln650">                    || !mons_is_firewood(*defender.as_monster());</a>
+<a name="ln651">        }, BEAM_PARALYSIS,</a>
+<a name="ln652">    },</a>
+<a name="ln653">    {</a>
+<a name="ln654">        &quot;petrify&quot;, 5, [](const actor &amp;defender) {</a>
+<a name="ln655">            return _is_chaos_slowable(defender) &amp;&amp; !defender.res_petrify();</a>
+<a name="ln656">        }, BEAM_PETRIFY,</a>
+<a name="ln657">    },</a>
+<a name="ln658">};</a>
+<a name="ln659"> </a>
+<a name="ln660">void attack::chaos_affects_defender()</a>
+<a name="ln661">{</a>
+<a name="ln662">    ASSERT(defender);</a>
+<a name="ln663"> </a>
+<a name="ln664">    vector&lt;pair&lt;const chaos_effect&amp;, int&gt;&gt; weights;</a>
+<a name="ln665">    for (const chaos_effect &amp;effect : chaos_effects)</a>
+<a name="ln666">        if (!effect.valid || effect.valid(*defender))</a>
+<a name="ln667">            weights.push_back({effect, effect.chance});</a>
+<a name="ln668"> </a>
+<a name="ln669">    const chaos_effect &amp;effect = *random_choose_weighted(weights);</a>
+<a name="ln670"> </a>
+<a name="ln671">#ifdef NOTE_DEBUG_CHAOS_EFFECTS</a>
+<a name="ln672">    take_note(Note(NOTE_MESSAGE, 0, 0, &quot;CHAOS effect: &quot; + effect.name), true);</a>
+<a name="ln673">#endif</a>
+<a name="ln674"> </a>
+<a name="ln675">    if (effect.misc_effect &amp;&amp; effect.misc_effect(*this))</a>
+<a name="ln676">        obvious_effect = true;</a>
+<a name="ln677"> </a>
+<a name="ln678">    bolt beam;</a>
+<a name="ln679">    beam.flavour = effect.flavour;</a>
+<a name="ln680">    if (beam.flavour != BEAM_NONE)</a>
+<a name="ln681">    {</a>
+<a name="ln682">        if (defender-&gt;is_player() &amp;&amp; have_passive(passive_t::no_haste)</a>
+<a name="ln683">            &amp;&amp; beam.flavour == BEAM_HASTE)</a>
+<a name="ln684">        {</a>
+<a name="ln685">            simple_god_message(&quot; protects you from inadvertent hurry.&quot;);</a>
+<a name="ln686">            obvious_effect = true;</a>
+<a name="ln687">            return;</a>
+<a name="ln688">        }</a>
+<a name="ln689"> </a>
+<a name="ln690">        beam.glyph        = 0;</a>
+<a name="ln691">        beam.range        = 0;</a>
+<a name="ln692">        beam.colour       = BLACK;</a>
+<a name="ln693">        beam.effect_known = false;</a>
+<a name="ln694">        // Wielded brand is always known, but maybe this was from a call</a>
+<a name="ln695">        // to chaos_affect_actor.</a>
+<a name="ln696">        beam.effect_wanton = !fake_chaos_attack;</a>
+<a name="ln697"> </a>
+<a name="ln698">        if (using_weapon() &amp;&amp; you.can_see(*attacker))</a>
+<a name="ln699">        {</a>
+<a name="ln700">            beam.name = wep_name(DESC_YOUR);</a>
+<a name="ln701">            beam.item = weapon;</a>
+<a name="ln702">        }</a>
+<a name="ln703">        else</a>
+<a name="ln704">            beam.name = atk_name(DESC_THE);</a>
+<a name="ln705"> </a>
+<a name="ln706">        beam.thrower =</a>
+<a name="ln707">            (attacker-&gt;is_player())           ? KILL_YOU</a>
+<a name="ln708">            : attacker-&gt;as_monster()-&gt;confused_by_you() ? KILL_YOU_CONF</a>
+<a name="ln709">                                                        : KILL_MON;</a>
+<a name="ln710"> </a>
+<a name="ln711">        if (beam.thrower == KILL_YOU || attacker-&gt;as_monster()-&gt;friendly())</a>
+<a name="ln712">            beam.attitude = ATT_FRIENDLY;</a>
+<a name="ln713"> </a>
+<a name="ln714">        beam.source_id = attacker-&gt;mid;</a>
+<a name="ln715"> </a>
+<a name="ln716">        beam.source = defender-&gt;pos();</a>
+<a name="ln717">        beam.target = defender-&gt;pos();</a>
+<a name="ln718"> </a>
+<a name="ln719">        beam.damage = dice_def(damage_done + special_damage + aux_damage, 1);</a>
+<a name="ln720"> </a>
+<a name="ln721">        beam.ench_power = beam.damage.num;</a>
+<a name="ln722"> </a>
+<a name="ln723">        const bool you_could_see = you.can_see(*defender);</a>
+<a name="ln724">        beam.fire();</a>
+<a name="ln725"> </a>
+<a name="ln726">        if (you_could_see)</a>
+<a name="ln727">            obvious_effect = beam.obvious_effect;</a>
+<a name="ln728">    }</a>
+<a name="ln729"> </a>
+<a name="ln730">    if (!you.can_see(*attacker))</a>
+<a name="ln731">        obvious_effect = false; // XXX: VERY dubious!</a>
+<a name="ln732">}</a>
+<a name="ln733"> </a>
+<a name="ln734">struct chaos_attack_type</a>
+<a name="ln735">{</a>
+<a name="ln736">    attack_flavour flavour;</a>
+<a name="ln737">    brand_type brand;</a>
+<a name="ln738">    int chance;</a>
+<a name="ln739">    function&lt;bool(const actor&amp; def)&gt; valid;</a>
+<a name="ln740">};</a>
+<a name="ln741"> </a>
+<a name="ln742">// Chaos melee attacks randomly choose a brand from here, with brands that</a>
+<a name="ln743">// definitely won't affect the target being invalid. Chaos itself should</a>
+<a name="ln744">// always be a valid option, triggering a more unpredictable chaos_effect</a>
+<a name="ln745">// instead of a normal attack brand when selected.</a>
+<a name="ln746">static const vector&lt;chaos_attack_type&gt; chaos_types = {</a>
+<a name="ln747">    { AF_FIRE,      SPWPN_FLAMING,       10,</a>
+<a name="ln748">      [](const actor &amp;d) { return !d.is_fiery(); } },</a>
+<a name="ln749">    { AF_COLD,      SPWPN_FREEZING,      10,</a>
+<a name="ln750">      [](const actor &amp;d) { return !d.is_icy(); } },</a>
+<a name="ln751">    { AF_ELEC,      SPWPN_ELECTROCUTION, 10,</a>
+<a name="ln752">      nullptr },</a>
+<a name="ln753">    { AF_POISON,    SPWPN_VENOM,         10,</a>
+<a name="ln754">      [](const actor &amp;d) {</a>
+<a name="ln755">          return !(d.holiness() &amp; (MH_UNDEAD | MH_NONLIVING)); } },</a>
+<a name="ln756">    { AF_CHAOTIC,   SPWPN_CHAOS,         10,</a>
+<a name="ln757">      nullptr },</a>
+<a name="ln758">    { AF_DRAIN_XP,  SPWPN_DRAINING,      5,</a>
+<a name="ln759">      [](const actor &amp;d) { return bool(d.holiness() &amp; MH_NATURAL); } },</a>
+<a name="ln760">    { AF_VAMPIRIC,  SPWPN_VAMPIRISM,     5,</a>
+<a name="ln761">      [](const actor &amp;d) {</a>
+<a name="ln762">          return !d.is_summoned() &amp;&amp; bool(d.holiness() &amp; MH_NATURAL); } },</a>
+<a name="ln763">    { AF_HOLY,      SPWPN_HOLY_WRATH,    5,</a>
+<a name="ln764">      [](const actor &amp;d) { return d.holy_wrath_susceptible(); } },</a>
+<a name="ln765">    { AF_ANTIMAGIC, SPWPN_ANTIMAGIC,     5,</a>
+<a name="ln766">      [](const actor &amp;d) { return d.antimagic_susceptible(); } },</a>
+<a name="ln767">    { AF_CONFUSE,   SPWPN_CONFUSE,       2,</a>
+<a name="ln768">      [](const actor &amp;d) {</a>
+<a name="ln769">          return !(d.holiness() &amp; (MH_NONLIVING | MH_PLANT)); } },</a>
+<a name="ln770">    { AF_DISTORT,   SPWPN_DISTORTION,    2,</a>
+<a name="ln771">      nullptr },</a>
+<a name="ln772">};</a>
+<a name="ln773"> </a>
+<a name="ln774">brand_type attack::random_chaos_brand()</a>
+<a name="ln775">{</a>
+<a name="ln776">    vector&lt;pair&lt;brand_type, int&gt;&gt; weights;</a>
+<a name="ln777">    for (const chaos_attack_type &amp;choice : chaos_types)</a>
+<a name="ln778">        if (!choice.valid || choice.valid(*defender))</a>
+<a name="ln779">            weights.push_back({choice.brand, choice.chance});</a>
+<a name="ln780"> </a>
+<a name="ln781">    ASSERT(!weights.empty());</a>
+<a name="ln782"> </a>
+<a name="ln783">    brand_type brand = *random_choose_weighted(weights);</a>
+<a name="ln784"> </a>
+<a name="ln785">#ifdef NOTE_DEBUG_CHAOS_BRAND</a>
+<a name="ln786">    string brand_name = &quot;CHAOS brand: &quot;;</a>
+<a name="ln787">    switch (brand)</a>
+<a name="ln788">    {</a>
+<a name="ln789">    case SPWPN_FLAMING:         brand_name += &quot;flaming&quot;; break;</a>
+<a name="ln790">    case SPWPN_FREEZING:        brand_name += &quot;freezing&quot;; break;</a>
+<a name="ln791">    case SPWPN_HOLY_WRATH:      brand_name += &quot;holy wrath&quot;; break;</a>
+<a name="ln792">    case SPWPN_ELECTROCUTION:   brand_name += &quot;electrocution&quot;; break;</a>
+<a name="ln793">    case SPWPN_VENOM:           brand_name += &quot;venom&quot;; break;</a>
+<a name="ln794">    case SPWPN_DRAINING:        brand_name += &quot;draining&quot;; break;</a>
+<a name="ln795">    case SPWPN_DISTORTION:      brand_name += &quot;distortion&quot;; break;</a>
+<a name="ln796">    case SPWPN_VAMPIRISM:       brand_name += &quot;vampirism&quot;; break;</a>
+<a name="ln797">    case SPWPN_ANTIMAGIC:       brand_name += &quot;antimagic&quot;; break;</a>
+<a name="ln798">    case SPWPN_CHAOS:           brand_name += &quot;chaos&quot;; break;</a>
+<a name="ln799">    case SPWPN_CONFUSE:         brand_name += &quot;confusion&quot;; break;</a>
+<a name="ln800">    default:                    brand_name += &quot;BUGGY&quot;; break;</a>
+<a name="ln801">    }</a>
+<a name="ln802"> </a>
+<a name="ln803">    // Pretty much duplicated by the chaos effect note,</a>
+<a name="ln804">    // which will be much more informative.</a>
+<a name="ln805">    if (brand != SPWPN_CHAOS)</a>
+<a name="ln806">        take_note(Note(NOTE_MESSAGE, 0, 0, brand_name), true);</a>
+<a name="ln807">#endif</a>
+<a name="ln808">    return brand;</a>
+<a name="ln809">}</a>
+<a name="ln810"> </a>
+<a name="ln811">attack_flavour attack::random_chaos_attack_flavour()</a>
+<a name="ln812">{</a>
+<a name="ln813">    vector&lt;pair&lt;attack_flavour, int&gt;&gt; weights;</a>
+<a name="ln814">    for (const chaos_attack_type &amp;choice : chaos_types)</a>
+<a name="ln815">        if (!choice.valid || choice.valid(*defender))</a>
+<a name="ln816">            weights.push_back({choice.flavour, choice.chance});</a>
+<a name="ln817"> </a>
+<a name="ln818">    ASSERT(!weights.empty());</a>
+<a name="ln819"> </a>
+<a name="ln820">    return *random_choose_weighted(weights);</a>
+<a name="ln821">}</a>
+<a name="ln822"> </a>
+<a name="ln823">void attack::drain_defender()</a>
+<a name="ln824">{</a>
+<a name="ln825">    if (defender-&gt;is_monster() &amp;&amp; coinflip())</a>
+<a name="ln826">        return;</a>
+<a name="ln827"> </a>
+<a name="ln828">    if (!(defender-&gt;holiness() &amp; MH_NATURAL))</a>
+<a name="ln829">        return;</a>
+<a name="ln830"> </a>
+<a name="ln831">    special_damage = resist_adjust_damage(defender, BEAM_NEG,</a>
+<a name="ln832">                                          (1 + random2(damage_done)) / 2);</a>
+<a name="ln833"> </a>
+<a name="ln834">    if (defender-&gt;drain_exp(attacker, true, 20 + min(35, damage_done)))</a>
+<a name="ln835">    {</a>
+<a name="ln836">        if (defender-&gt;is_player())</a>
+<a name="ln837">            obvious_effect = true;</a>
+<a name="ln838">        else if (defender_visible)</a>
+<a name="ln839">        {</a>
+<a name="ln840">            special_damage_message =</a>
+<a name="ln841">                make_stringf(</a>
+<a name="ln842">                    &quot;%s %s %s%s&quot;,</a>
+<a name="ln843">                    atk_name(DESC_THE).c_str(),</a>
+<a name="ln844">                    attacker-&gt;conj_verb(&quot;drain&quot;).c_str(),</a>
+<a name="ln845">                    defender_name(true).c_str(),</a>
+<a name="ln846">                    attack_strength_punctuation(special_damage).c_str());</a>
+<a name="ln847">        }</a>
+<a name="ln848">    }</a>
+<a name="ln849">}</a>
+<a name="ln850"> </a>
+<a name="ln851">void attack::drain_defender_speed()</a>
+<a name="ln852">{</a>
+<a name="ln853">    if (needs_message)</a>
+<a name="ln854">    {</a>
+<a name="ln855">        mprf(&quot;%s %s %s vigour!&quot;,</a>
+<a name="ln856">             atk_name(DESC_THE).c_str(),</a>
+<a name="ln857">             attacker-&gt;conj_verb(&quot;drain&quot;).c_str(),</a>
+<a name="ln858">             def_name(DESC_ITS).c_str());</a>
+<a name="ln859">    }</a>
+<a name="ln860">    defender-&gt;slow_down(attacker, 5 + random2(7));</a>
+<a name="ln861">}</a>
+<a name="ln862"> </a>
+<a name="ln863">int attack::inflict_damage(int dam, beam_type flavour, bool clean)</a>
+<a name="ln864">{</a>
+<a name="ln865">    if (flavour == NUM_BEAMS)</a>
+<a name="ln866">        flavour = special_damage_flavour;</a>
+<a name="ln867">    // Auxes temporarily clear damage_brand so we don't need to check</a>
+<a name="ln868">    if (damage_brand == SPWPN_REAPING</a>
+<a name="ln869">        || damage_brand == SPWPN_CHAOS &amp;&amp; one_chance_in(100))</a>
+<a name="ln870">    {</a>
+<a name="ln871">        defender-&gt;props[&quot;reaping_damage&quot;].get_int() += dam;</a>
+<a name="ln872">        // With two reapers of different friendliness, the most recent one</a>
+<a name="ln873">        // gets the zombie. Too rare a case to care any more.</a>
+<a name="ln874">        defender-&gt;props[&quot;reaper&quot;].get_int() = attacker-&gt;mid;</a>
+<a name="ln875">    }</a>
+<a name="ln876">    return defender-&gt;hurt(responsible, dam, flavour, kill_type,</a>
+<a name="ln877">                          &quot;&quot;, aux_source.c_str(), clean);</a>
+<a name="ln878">}</a>
+<a name="ln879"> </a>
+<a name="ln880">/* If debug, return formatted damage done</a>
+<a name="ln881"> *</a>
+<a name="ln882"> */</a>
+<a name="ln883">string attack::debug_damage_number()</a>
+<a name="ln884">{</a>
+<a name="ln885">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln886">    return make_stringf(&quot; for %d&quot;, damage_done);</a>
+<a name="ln887">#else</a>
+<a name="ln888">    return &quot;&quot;;</a>
+<a name="ln889">#endif</a>
+<a name="ln890">}</a>
+<a name="ln891"> </a>
+<a name="ln892">/* Returns standard attack punctuation</a>
+<a name="ln893"> *</a>
+<a name="ln894"> * Used in player / monster (both primary and aux) attacks</a>
+<a name="ln895"> */</a>
+<a name="ln896">string attack_strength_punctuation(int dmg)</a>
+<a name="ln897">{</a>
+<a name="ln898">    if (dmg &lt; HIT_WEAK)</a>
+<a name="ln899">        return &quot;.&quot;;</a>
+<a name="ln900">    else if (dmg &lt; HIT_MED)</a>
+<a name="ln901">        return &quot;!&quot;;</a>
+<a name="ln902">    else if (dmg &lt; HIT_STRONG)</a>
+<a name="ln903">        return &quot;!!&quot;;</a>
+<a name="ln904">    else</a>
+<a name="ln905">        return string(3 + (int) log2(dmg / HIT_STRONG), '!');</a>
+<a name="ln906">}</a>
+<a name="ln907"> </a>
+<a name="ln908">/* Returns evasion adverb</a>
+<a name="ln909"> *</a>
+<a name="ln910"> */</a>
+<a name="ln911">string attack::evasion_margin_adverb()</a>
+<a name="ln912">{</a>
+<a name="ln913">    return (ev_margin &lt;= -20) ? &quot; completely&quot; :</a>
+<a name="ln914">           (ev_margin &lt;= -12) ? &quot;&quot; :</a>
+<a name="ln915">           (ev_margin &lt;= -6)  ? &quot; closely&quot;</a>
+<a name="ln916">                              : &quot; barely&quot;;</a>
+<a name="ln917">}</a>
+<a name="ln918"> </a>
+<a name="ln919">void attack::stab_message()</a>
+<a name="ln920">{</a>
+<a name="ln921">    defender-&gt;props[&quot;helpless&quot;] = true;</a>
+<a name="ln922"> </a>
+<a name="ln923">    switch (stab_bonus)</a>
+<a name="ln924">    {</a>
+<a name="ln925">    case 6:     // big melee, monster surrounded/not paying attention</a>
+<a name="ln926">        if (coinflip())</a>
+<a name="ln927">        {</a>
+<a name="ln928">            mprf(&quot;You %s %s from a blind spot!&quot;,</a>
+<a name="ln929">                  (you.species == SP_FELID) ? &quot;pounce on&quot; : &quot;strike&quot;,</a>
+<a name="ln930">                  defender-&gt;name(DESC_THE).c_str());</a>
+<a name="ln931">        }</a>
+<a name="ln932">        else</a>
+<a name="ln933">        {</a>
+<a name="ln934">            mprf(&quot;You catch %s momentarily off-guard.&quot;,</a>
+<a name="ln935">                  defender-&gt;name(DESC_THE).c_str());</a>
+<a name="ln936">        }</a>
+<a name="ln937">        break;</a>
+<a name="ln938">    case 4:     // confused/fleeing</a>
+<a name="ln939">        if (!one_chance_in(3))</a>
+<a name="ln940">        {</a>
+<a name="ln941">            mprf(&quot;You catch %s completely off-guard!&quot;,</a>
+<a name="ln942">                  defender-&gt;name(DESC_THE).c_str());</a>
+<a name="ln943">        }</a>
+<a name="ln944">        else</a>
+<a name="ln945">        {</a>
+<a name="ln946">            mprf(&quot;You %s %s from behind!&quot;,</a>
+<a name="ln947">                  (you.species == SP_FELID) ? &quot;pounce on&quot; : &quot;strike&quot;,</a>
+<a name="ln948">                  defender-&gt;name(DESC_THE).c_str());</a>
+<a name="ln949">        }</a>
+<a name="ln950">        break;</a>
+<a name="ln951">    case 2:</a>
+<a name="ln952">    case 1:</a>
+<a name="ln953">        if (you.species == SP_FELID &amp;&amp; coinflip())</a>
+<a name="ln954">        {</a>
+<a name="ln955">            mprf(&quot;You pounce on the unaware %s!&quot;,</a>
+<a name="ln956">                 defender-&gt;name(DESC_PLAIN).c_str());</a>
+<a name="ln957">            break;</a>
+<a name="ln958">        }</a>
+<a name="ln959">        mprf(&quot;%s fails to defend %s.&quot;,</a>
+<a name="ln960">              defender-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln961">              defender-&gt;pronoun(PRONOUN_REFLEXIVE).c_str());</a>
+<a name="ln962">        break;</a>
+<a name="ln963">    }</a>
+<a name="ln964"> </a>
+<a name="ln965">    defender-&gt;props.erase(&quot;helpless&quot;);</a>
+<a name="ln966">}</a>
+<a name="ln967"> </a>
+<a name="ln968">/* Returns the attacker's name</a>
+<a name="ln969"> *</a>
+<a name="ln970"> * Helper method to easily access the attacker's name</a>
+<a name="ln971"> */</a>
+<a name="ln972">string attack::atk_name(description_level_type desc)</a>
+<a name="ln973">{</a>
+<a name="ln974">    return actor_name(attacker, desc, attacker_visible);</a>
+<a name="ln975">}</a>
+<a name="ln976"> </a>
+<a name="ln977">/* Returns the defender's name</a>
+<a name="ln978"> *</a>
+<a name="ln979"> * Helper method to easily access the defender's name</a>
+<a name="ln980"> */</a>
+<a name="ln981">string attack::def_name(description_level_type desc)</a>
+<a name="ln982">{</a>
+<a name="ln983">    return actor_name(defender, desc, defender_visible);</a>
+<a name="ln984">}</a>
+<a name="ln985"> </a>
+<a name="ln986">/* Returns the attacking weapon's name</a>
+<a name="ln987"> *</a>
+<a name="ln988"> * Sets upthe appropriate descriptive level and obtains the name of a weapon</a>
+<a name="ln989"> * based on if the attacker is a player or non-player (non-players use a</a>
+<a name="ln990"> * plain name and a manually entered pronoun)</a>
+<a name="ln991"> */</a>
+<a name="ln992">string attack::wep_name(description_level_type desc, iflags_t ignre_flags)</a>
+<a name="ln993">{</a>
+<a name="ln994">    ASSERT(weapon != nullptr);</a>
+<a name="ln995"> </a>
+<a name="ln996">    if (attacker-&gt;is_player())</a>
+<a name="ln997">        return weapon-&gt;name(desc, false, false, false, false, ignre_flags);</a>
+<a name="ln998"> </a>
+<a name="ln999">    string name;</a>
+<a name="ln1000">    bool possessive = false;</a>
+<a name="ln1001">    if (desc == DESC_YOUR)</a>
+<a name="ln1002">    {</a>
+<a name="ln1003">        desc       = DESC_THE;</a>
+<a name="ln1004">        possessive = true;</a>
+<a name="ln1005">    }</a>
+<a name="ln1006"> </a>
+<a name="ln1007">    if (possessive)</a>
+<a name="ln1008">        name = apostrophise(atk_name(desc)) + &quot; &quot;;</a>
+<a name="ln1009"> </a>
+<a name="ln1010">    name += weapon-&gt;name(DESC_PLAIN, false, false, false, false, ignre_flags);</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    return name;</a>
+<a name="ln1013">}</a>
+<a name="ln1014"> </a>
+<a name="ln1015">/* TODO: Remove this!</a>
+<a name="ln1016"> * Removing it may not really be practical, in retrospect. Its only used</a>
+<a name="ln1017"> * below, in calc_elemental_brand_damage, which is called for both frost and</a>
+<a name="ln1018"> * flame brands for both players and monsters.</a>
+<a name="ln1019"> */</a>
+<a name="ln1020">string attack::defender_name(bool allow_reflexive)</a>
+<a name="ln1021">{</a>
+<a name="ln1022">    if (allow_reflexive &amp;&amp; attacker == defender)</a>
+<a name="ln1023">        return actor_pronoun(attacker, PRONOUN_REFLEXIVE, attacker_visible);</a>
+<a name="ln1024">    else</a>
+<a name="ln1025">        return def_name(DESC_THE);</a>
+<a name="ln1026">}</a>
+<a name="ln1027"> </a>
+<a name="ln1028">int attack::player_stat_modify_damage(int damage)</a>
+<a name="ln1029">{</a>
+<a name="ln1030">    int dammod = 39;</a>
+<a name="ln1031"> </a>
+<a name="ln1032">    if (you.strength() &gt; 10)</a>
+<a name="ln1033">        dammod += (random2(you.strength() - 9) * 2);</a>
+<a name="ln1034">    else if (you.strength() &lt; 10)</a>
+<a name="ln1035">        dammod -= (random2(11 - you.strength()) * 3);</a>
+<a name="ln1036"> </a>
+<a name="ln1037">    damage *= dammod;</a>
+<a name="ln1038">    damage /= 39;</a>
+<a name="ln1039"> </a>
+<a name="ln1040">    return damage;</a>
+<a name="ln1041">}</a>
+<a name="ln1042"> </a>
+<a name="ln1043">int attack::player_apply_weapon_skill(int damage)</a>
+<a name="ln1044">{</a>
+<a name="ln1045">    if (using_weapon())</a>
+<a name="ln1046">    {</a>
+<a name="ln1047">        damage *= 2500 + (random2(you.skill(wpn_skill, 100) + 1));</a>
+<a name="ln1048">        damage /= 2500;</a>
+<a name="ln1049">    }</a>
+<a name="ln1050"> </a>
+<a name="ln1051">    return damage;</a>
+<a name="ln1052">}</a>
+<a name="ln1053"> </a>
+<a name="ln1054">int attack::player_apply_fighting_skill(int damage, bool aux)</a>
+<a name="ln1055">{</a>
+<a name="ln1056">    const int base = aux? 40 : 30;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    damage *= base * 100 + (random2(you.skill(SK_FIGHTING, 100) + 1));</a>
+<a name="ln1059">    damage /= base * 100;</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    return damage;</a>
+<a name="ln1062">}</a>
+<a name="ln1063"> </a>
+<a name="ln1064">int attack::player_apply_misc_modifiers(int damage)</a>
+<a name="ln1065">{</a>
+<a name="ln1066">    return damage;</a>
+<a name="ln1067">}</a>
+<a name="ln1068"> </a>
+<a name="ln1069">/**</a>
+<a name="ln1070"> * Get the damage bonus from a weapon's enchantment.</a>
+<a name="ln1071"> */</a>
+<a name="ln1072">int attack::get_weapon_plus()</a>
+<a name="ln1073">{</a>
+<a name="ln1074">    if (weapon-&gt;base_type == OBJ_STAVES</a>
+<a name="ln1075">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1076">        || weapon-&gt;sub_type == WPN_BLOWGUN</a>
+<a name="ln1077">        || weapon-&gt;base_type == OBJ_RODS</a>
+<a name="ln1078">#endif</a>
+<a name="ln1079">       )</a>
+<a name="ln1080">    {</a>
+<a name="ln1081">        return 0;</a>
+<a name="ln1082">    }</a>
+<a name="ln1083">    return weapon-&gt;plus;</a>
+<a name="ln1084">}</a>
+<a name="ln1085"> </a>
+<a name="ln1086">// Slaying and weapon enchantment. Apply this for slaying even if not</a>
+<a name="ln1087">// using a weapon to attack.</a>
+<a name="ln1088">int attack::player_apply_slaying_bonuses(int damage, bool aux)</a>
+<a name="ln1089">{</a>
+<a name="ln1090">    int damage_plus = 0;</a>
+<a name="ln1091">    if (!aux &amp;&amp; using_weapon())</a>
+<a name="ln1092">        damage_plus = get_weapon_plus();</a>
+<a name="ln1093">    if (you.duration[DUR_CORROSION])</a>
+<a name="ln1094">        damage_plus -= 4 * you.props[&quot;corrosion_amount&quot;].get_int();</a>
+<a name="ln1095">    damage_plus += slaying_bonus(!weapon &amp;&amp; wpn_skill == SK_THROWING</a>
+<a name="ln1096">                                 || (weapon &amp;&amp; is_range_weapon(*weapon)</a>
+<a name="ln1097">                                            &amp;&amp; using_weapon()));</a>
+<a name="ln1098"> </a>
+<a name="ln1099">    damage += (damage_plus &gt; -1) ? (random2(1 + damage_plus))</a>
+<a name="ln1100">                                 : (-random2(1 - damage_plus));</a>
+<a name="ln1101">    return damage;</a>
+<a name="ln1102">}</a>
+<a name="ln1103"> </a>
+<a name="ln1104">int attack::player_apply_final_multipliers(int damage)</a>
+<a name="ln1105">{</a>
+<a name="ln1106">    // Can't affect much of anything as a shadow.</a>
+<a name="ln1107">    if (you.form == transformation::shadow)</a>
+<a name="ln1108">        damage = div_rand_round(damage, 2);</a>
+<a name="ln1109"> </a>
+<a name="ln1110">    return damage;</a>
+<a name="ln1111">}</a>
+<a name="ln1112"> </a>
+<a name="ln1113">void attack::player_exercise_combat_skills()</a>
+<a name="ln1114">{</a>
+<a name="ln1115">}</a>
+<a name="ln1116"> </a>
+<a name="ln1117">/* Returns attacker base unarmed damage</a>
+<a name="ln1118"> *</a>
+<a name="ln1119"> * Scales for current mutations and unarmed effects</a>
+<a name="ln1120"> * TODO: Complete symmetry for base_unarmed damage</a>
+<a name="ln1121"> * between monsters and players.</a>
+<a name="ln1122"> */</a>
+<a name="ln1123">int attack::calc_base_unarmed_damage()</a>
+<a name="ln1124">{</a>
+<a name="ln1125">    // Should only get here if we're not wielding something that's a weapon.</a>
+<a name="ln1126">    // If there's a non-weapon in hand, it has no base damage.</a>
+<a name="ln1127">    if (weapon)</a>
+<a name="ln1128">        return 0;</a>
+<a name="ln1129"> </a>
+<a name="ln1130">    if (!attacker-&gt;is_player())</a>
+<a name="ln1131">        return 0;</a>
+<a name="ln1132"> </a>
+<a name="ln1133">    int damage = get_form()-&gt;get_base_unarmed_damage();</a>
+<a name="ln1134"> </a>
+<a name="ln1135">    // Claw damage only applies for bare hands.</a>
+<a name="ln1136">    if (you.has_usable_claws())</a>
+<a name="ln1137">        damage += you.has_claws() * 2;</a>
+<a name="ln1138"> </a>
+<a name="ln1139">    if (you.form_uses_xl())</a>
+<a name="ln1140">        damage += div_rand_round(you.experience_level, 3);</a>
+<a name="ln1141">    else</a>
+<a name="ln1142">        damage += you.skill_rdiv(wpn_skill);</a>
+<a name="ln1143"> </a>
+<a name="ln1144">    if (damage &lt; 0)</a>
+<a name="ln1145">        damage = 0;</a>
+<a name="ln1146"> </a>
+<a name="ln1147">    return damage;</a>
+<a name="ln1148">}</a>
+<a name="ln1149"> </a>
+<a name="ln1150">int attack::calc_damage()</a>
+<a name="ln1151">{</a>
+<a name="ln1152">    if (attacker-&gt;is_monster())</a>
+<a name="ln1153">    {</a>
+<a name="ln1154">        int damage = 0;</a>
+<a name="ln1155">        int damage_max = 0;</a>
+<a name="ln1156">        if (using_weapon() || wpn_skill == SK_THROWING)</a>
+<a name="ln1157">        {</a>
+<a name="ln1158">            damage_max = weapon_damage();</a>
+<a name="ln1159">            damage += random2(damage_max);</a>
+<a name="ln1160"> </a>
+<a name="ln1161">            int wpn_damage_plus = 0;</a>
+<a name="ln1162">            if (weapon) // can be 0 for throwing projectiles</a>
+<a name="ln1163">                wpn_damage_plus = get_weapon_plus();</a>
+<a name="ln1164"> </a>
+<a name="ln1165">            const int jewellery = attacker-&gt;as_monster()-&gt;inv[MSLOT_JEWELLERY];</a>
+<a name="ln1166">            if (jewellery != NON_ITEM</a>
+<a name="ln1167">                &amp;&amp; mitm[jewellery].is_type(OBJ_JEWELLERY, RING_SLAYING))</a>
+<a name="ln1168">            {</a>
+<a name="ln1169">                wpn_damage_plus += mitm[jewellery].plus;</a>
+<a name="ln1170">            }</a>
+<a name="ln1171"> </a>
+<a name="ln1172">            wpn_damage_plus += attacker-&gt;scan_artefacts(ARTP_SLAYING);</a>
+<a name="ln1173"> </a>
+<a name="ln1174">            if (wpn_damage_plus &gt;= 0)</a>
+<a name="ln1175">                damage += random2(wpn_damage_plus);</a>
+<a name="ln1176">            else</a>
+<a name="ln1177">                damage -= random2(1 - wpn_damage_plus);</a>
+<a name="ln1178"> </a>
+<a name="ln1179">            damage -= 1 + random2(3);</a>
+<a name="ln1180">        }</a>
+<a name="ln1181"> </a>
+<a name="ln1182">        damage_max += attk_damage;</a>
+<a name="ln1183">        damage     += 1 + random2(attk_damage);</a>
+<a name="ln1184"> </a>
+<a name="ln1185">        damage = apply_damage_modifiers(damage);</a>
+<a name="ln1186"> </a>
+<a name="ln1187">        set_attack_verb(damage);</a>
+<a name="ln1188">        return apply_defender_ac(damage, damage_max);</a>
+<a name="ln1189">    }</a>
+<a name="ln1190">    else</a>
+<a name="ln1191">    {</a>
+<a name="ln1192">        int potential_damage, damage;</a>
+<a name="ln1193"> </a>
+<a name="ln1194">        potential_damage = using_weapon() || wpn_skill == SK_THROWING</a>
+<a name="ln1195">            ? weapon_damage() : calc_base_unarmed_damage();</a>
+<a name="ln1196"> </a>
+<a name="ln1197">        potential_damage = player_stat_modify_damage(potential_damage);</a>
+<a name="ln1198"> </a>
+<a name="ln1199">        damage = random2(potential_damage+1);</a>
+<a name="ln1200"> </a>
+<a name="ln1201">        damage = player_apply_weapon_skill(damage);</a>
+<a name="ln1202">        damage = player_apply_fighting_skill(damage, false);</a>
+<a name="ln1203">        damage = player_apply_misc_modifiers(damage);</a>
+<a name="ln1204">        damage = player_apply_slaying_bonuses(damage, false);</a>
+<a name="ln1205">        damage = player_stab(damage);</a>
+<a name="ln1206">        // A failed stab may have awakened monsters, but that could have</a>
+<a name="ln1207">        // caused the defender to cease to exist (spectral weapons with</a>
+<a name="ln1208">        // missing summoners; or pacified monsters on a stair). FIXME:</a>
+<a name="ln1209">        // The correct thing to do would be either to delay the call to</a>
+<a name="ln1210">        // alert_nearby_monsters (currently in player_stab) until later</a>
+<a name="ln1211">        // in the attack; or to avoid removing monsters in handle_behaviour.</a>
+<a name="ln1212">        if (!defender-&gt;alive())</a>
+<a name="ln1213">            return 0;</a>
+<a name="ln1214">        damage = player_apply_final_multipliers(damage);</a>
+<a name="ln1215">        damage = apply_defender_ac(damage);</a>
+<a name="ln1216"> </a>
+<a name="ln1217">        damage = max(0, damage);</a>
+<a name="ln1218">        set_attack_verb(damage);</a>
+<a name="ln1219"> </a>
+<a name="ln1220">        return damage;</a>
+<a name="ln1221">    }</a>
+<a name="ln1222"> </a>
+<a name="ln1223">    return 0;</a>
+<a name="ln1224">}</a>
+<a name="ln1225"> </a>
+<a name="ln1226">int attack::test_hit(int to_land, int ev, bool randomise_ev)</a>
+<a name="ln1227">{</a>
+<a name="ln1228">    int margin = AUTOMATIC_HIT;</a>
+<a name="ln1229">    if (randomise_ev)</a>
+<a name="ln1230">        ev = random2avg(2*ev, 2);</a>
+<a name="ln1231">    if (to_land &gt;= AUTOMATIC_HIT)</a>
+<a name="ln1232">        return true;</a>
+<a name="ln1233">    else if (x_chance_in_y(MIN_HIT_MISS_PERCENTAGE, 100))</a>
+<a name="ln1234">        margin = (random2(2) ? 1 : -1) * AUTOMATIC_HIT;</a>
+<a name="ln1235">    else</a>
+<a name="ln1236">        margin = to_land - ev;</a>
+<a name="ln1237"> </a>
+<a name="ln1238">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1239">    dprf(DIAG_COMBAT, &quot;to hit: %d; ev: %d; result: %s (%d)&quot;,</a>
+<a name="ln1240">         to_hit, ev, (margin &gt;= 0) ? &quot;hit&quot; : &quot;miss&quot;, margin);</a>
+<a name="ln1241">#endif</a>
+<a name="ln1242"> </a>
+<a name="ln1243">    return margin;</a>
+<a name="ln1244">}</a>
+<a name="ln1245"> </a>
+<a name="ln1246">int attack::apply_defender_ac(int damage, int damage_max) const</a>
+<a name="ln1247">{</a>
+<a name="ln1248">    ASSERT(defender);</a>
+<a name="ln1249">    int stab_bypass = 0;</a>
+<a name="ln1250">    if (stab_bonus)</a>
+<a name="ln1251">    {</a>
+<a name="ln1252">        stab_bypass = you.skill(wpn_skill, 50) + you.skill(SK_STEALTH, 50);</a>
+<a name="ln1253">        stab_bypass = random2(div_rand_round(stab_bypass, 100 * stab_bonus));</a>
+<a name="ln1254">    }</a>
+<a name="ln1255">    int after_ac = defender-&gt;apply_ac(damage, damage_max,</a>
+<a name="ln1256">                                      ac_type::normal, stab_bypass);</a>
+<a name="ln1257">    dprf(DIAG_COMBAT, &quot;AC: att: %s, def: %s, ac: %d, gdr: %d, dam: %d -&gt; %d&quot;,</a>
+<a name="ln1258">                 attacker-&gt;name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln1259">                 defender-&gt;name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln1260">                 defender-&gt;armour_class(),</a>
+<a name="ln1261">                 defender-&gt;gdr_perc(),</a>
+<a name="ln1262">                 damage,</a>
+<a name="ln1263">                 after_ac);</a>
+<a name="ln1264"> </a>
+<a name="ln1265">    return after_ac;</a>
+<a name="ln1266">}</a>
+<a name="ln1267"> </a>
+<a name="ln1268">/* Determine whether a block occurred</a>
+<a name="ln1269"> *</a>
+<a name="ln1270"> * No blocks if defender is incapacitated, would be nice to eventually expand</a>
+<a name="ln1271"> * this method to handle partial blocks as well as full blocks (although this</a>
+<a name="ln1272"> * would serve as a nerf to shields and - while more realistic - may not be a</a>
+<a name="ln1273"> * good mechanic for shields.</a>
+<a name="ln1274"> *</a>
+<a name="ln1275"> * Returns (block_occurred)</a>
+<a name="ln1276"> */</a>
+<a name="ln1277">bool attack::attack_shield_blocked(bool verbose)</a>
+<a name="ln1278">{</a>
+<a name="ln1279">    if (defender == attacker)</a>
+<a name="ln1280">        return false; // You can't block your own attacks!</a>
+<a name="ln1281"> </a>
+<a name="ln1282">    if (defender-&gt;incapacitated())</a>
+<a name="ln1283">        return false;</a>
+<a name="ln1284"> </a>
+<a name="ln1285">    const int con_block = random2(attacker-&gt;shield_bypass_ability(to_hit)</a>
+<a name="ln1286">                                  + defender-&gt;shield_block_penalty());</a>
+<a name="ln1287">    int pro_block = defender-&gt;shield_bonus();</a>
+<a name="ln1288"> </a>
+<a name="ln1289">    if (!attacker-&gt;visible_to(defender))</a>
+<a name="ln1290">        pro_block /= 3;</a>
+<a name="ln1291"> </a>
+<a name="ln1292">    dprf(DIAG_COMBAT, &quot;Defender: %s, Pro-block: %d, Con-block: %d&quot;,</a>
+<a name="ln1293">         def_name(DESC_PLAIN).c_str(), pro_block, con_block);</a>
+<a name="ln1294"> </a>
+<a name="ln1295">    if (pro_block &gt;= con_block)</a>
+<a name="ln1296">    {</a>
+<a name="ln1297">        perceived_attack = true;</a>
+<a name="ln1298"> </a>
+<a name="ln1299">        if (ignores_shield(verbose))</a>
+<a name="ln1300">            return false;</a>
+<a name="ln1301"> </a>
+<a name="ln1302">        if (needs_message &amp;&amp; verbose)</a>
+<a name="ln1303">        {</a>
+<a name="ln1304">            mprf(&quot;%s %s %s attack.&quot;,</a>
+<a name="ln1305">                 defender_name(false).c_str(),</a>
+<a name="ln1306">                 defender-&gt;conj_verb(&quot;block&quot;).c_str(),</a>
+<a name="ln1307">                 attacker == defender ? &quot;its own&quot;</a>
+<a name="ln1308">                                      : atk_name(DESC_ITS).c_str());</a>
+<a name="ln1309">        }</a>
+<a name="ln1310"> </a>
+<a name="ln1311">        defender-&gt;shield_block_succeeded(attacker);</a>
+<a name="ln1312"> </a>
+<a name="ln1313">        return true;</a>
+<a name="ln1314">    }</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    return false;</a>
+<a name="ln1317">}</a>
+<a name="ln1318"> </a>
+<a name="ln1319">bool attack::apply_poison_damage_brand()</a>
+<a name="ln1320">{</a>
+<a name="ln1321">    if (!one_chance_in(4))</a>
+<a name="ln1322">    {</a>
+<a name="ln1323">        int old_poison;</a>
+<a name="ln1324"> </a>
+<a name="ln1325">        if (defender-&gt;is_player())</a>
+<a name="ln1326">            old_poison = you.duration[DUR_POISONING];</a>
+<a name="ln1327">        else</a>
+<a name="ln1328">        {</a>
+<a name="ln1329">            old_poison =</a>
+<a name="ln1330">                (defender-&gt;as_monster()-&gt;get_ench(ENCH_POISON)).degree;</a>
+<a name="ln1331">        }</a>
+<a name="ln1332"> </a>
+<a name="ln1333">        defender-&gt;poison(attacker, 6 + random2(8) + random2(damage_done * 3 / 2));</a>
+<a name="ln1334"> </a>
+<a name="ln1335">        if (defender-&gt;is_player()</a>
+<a name="ln1336">               &amp;&amp; old_poison &lt; you.duration[DUR_POISONING]</a>
+<a name="ln1337">            || !defender-&gt;is_player()</a>
+<a name="ln1338">               &amp;&amp; old_poison &lt;</a>
+<a name="ln1339">                  (defender-&gt;as_monster()-&gt;get_ench(ENCH_POISON)).degree)</a>
+<a name="ln1340">        {</a>
+<a name="ln1341">            return true;</a>
+<a name="ln1342">        }</a>
+<a name="ln1343">    }</a>
+<a name="ln1344">    return false;</a>
+<a name="ln1345">}</a>
+<a name="ln1346"> </a>
+<a name="ln1347">bool attack::apply_damage_brand(const char *what)</a>
+<a name="ln1348">{</a>
+<a name="ln1349">    bool brand_was_known = false;</a>
+<a name="ln1350">    int brand = 0;</a>
+<a name="ln1351">    bool ret = false;</a>
+<a name="ln1352"> </a>
+<a name="ln1353">    if (using_weapon())</a>
+<a name="ln1354">        brand_was_known = item_brand_known(*weapon);</a>
+<a name="ln1355"> </a>
+<a name="ln1356">    special_damage = 0;</a>
+<a name="ln1357">    obvious_effect = false;</a>
+<a name="ln1358">    brand = damage_brand == SPWPN_CHAOS ? random_chaos_brand() : damage_brand;</a>
+<a name="ln1359"> </a>
+<a name="ln1360">    if (brand != SPWPN_FLAMING &amp;&amp; brand != SPWPN_FREEZING</a>
+<a name="ln1361">        &amp;&amp; brand != SPWPN_ELECTROCUTION &amp;&amp; brand != SPWPN_VAMPIRISM</a>
+<a name="ln1362">        &amp;&amp; brand != SPWPN_PROTECTION &amp;&amp; !defender-&gt;alive())</a>
+<a name="ln1363">    {</a>
+<a name="ln1364">        // Most brands have no extra effects on just killed enemies, and the</a>
+<a name="ln1365">        // effect would be often inappropriate.</a>
+<a name="ln1366">        return false;</a>
+<a name="ln1367">    }</a>
+<a name="ln1368"> </a>
+<a name="ln1369">    if (!damage_done</a>
+<a name="ln1370">        &amp;&amp; (brand == SPWPN_FLAMING || brand == SPWPN_FREEZING</a>
+<a name="ln1371">            || brand == SPWPN_HOLY_WRATH || brand == SPWPN_ANTIMAGIC</a>
+<a name="ln1372">            || brand == SPWPN_VORPAL || brand == SPWPN_VAMPIRISM))</a>
+<a name="ln1373">    {</a>
+<a name="ln1374">        // These brands require some regular damage to function.</a>
+<a name="ln1375">        return false;</a>
+<a name="ln1376">    }</a>
+<a name="ln1377"> </a>
+<a name="ln1378">    switch (brand)</a>
+<a name="ln1379">    {</a>
+<a name="ln1380">    case SPWPN_PROTECTION:</a>
+<a name="ln1381">        if (attacker-&gt;is_player())</a>
+<a name="ln1382">        {</a>
+<a name="ln1383">            const monster* mon = defender-&gt;as_monster();</a>
+<a name="ln1384">            if (mon &amp;&amp; !mons_is_firewood(*mon))</a>
+<a name="ln1385">                refresh_weapon_protection();</a>
+<a name="ln1386">        }</a>
+<a name="ln1387">        break;</a>
+<a name="ln1388"> </a>
+<a name="ln1389">    case SPWPN_FLAMING:</a>
+<a name="ln1390">        calc_elemental_brand_damage(BEAM_FIRE,</a>
+<a name="ln1391">                                    defender-&gt;is_icy() ? &quot;melt&quot; : &quot;burn&quot;,</a>
+<a name="ln1392">                                    what);</a>
+<a name="ln1393">        defender-&gt;expose_to_element(BEAM_FIRE, 2);</a>
+<a name="ln1394">        if (defender-&gt;is_player())</a>
+<a name="ln1395">            maybe_melt_player_enchantments(BEAM_FIRE, special_damage);</a>
+<a name="ln1396">        break;</a>
+<a name="ln1397"> </a>
+<a name="ln1398">    case SPWPN_FREEZING:</a>
+<a name="ln1399">        calc_elemental_brand_damage(BEAM_COLD, &quot;freeze&quot;, what);</a>
+<a name="ln1400">        defender-&gt;expose_to_element(BEAM_COLD, 2);</a>
+<a name="ln1401">        break;</a>
+<a name="ln1402"> </a>
+<a name="ln1403">    case SPWPN_HOLY_WRATH:</a>
+<a name="ln1404">        if (defender-&gt;holy_wrath_susceptible())</a>
+<a name="ln1405">            special_damage = 1 + (random2(damage_done * 15) / 10);</a>
+<a name="ln1406"> </a>
+<a name="ln1407">        if (special_damage &amp;&amp; defender_visible)</a>
+<a name="ln1408">        {</a>
+<a name="ln1409">            special_damage_message =</a>
+<a name="ln1410">                make_stringf(</a>
+<a name="ln1411">                    &quot;%s %s%s&quot;,</a>
+<a name="ln1412">                    defender_name(false).c_str(),</a>
+<a name="ln1413">                    defender-&gt;conj_verb(&quot;convulse&quot;).c_str(),</a>
+<a name="ln1414">                    attack_strength_punctuation(special_damage).c_str());</a>
+<a name="ln1415">        }</a>
+<a name="ln1416">        break;</a>
+<a name="ln1417"> </a>
+<a name="ln1418">    case SPWPN_ELECTROCUTION:</a>
+<a name="ln1419">        if (defender-&gt;res_elec() &gt; 0)</a>
+<a name="ln1420">            break;</a>
+<a name="ln1421">        else if (one_chance_in(3))</a>
+<a name="ln1422">        {</a>
+<a name="ln1423">            special_damage = 8 + random2(13);</a>
+<a name="ln1424">            const string punctuation =</a>
+<a name="ln1425">                    attack_strength_punctuation(special_damage);</a>
+<a name="ln1426">            special_damage_message =</a>
+<a name="ln1427">                defender-&gt;is_player()</a>
+<a name="ln1428">                ? make_stringf(&quot;You are electrocuted%s&quot;, punctuation.c_str())</a>
+<a name="ln1429">                : make_stringf(&quot;Lightning courses through %s%s&quot;,</a>
+<a name="ln1430">                               defender-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1431">                               punctuation.c_str());</a>
+<a name="ln1432">            special_damage_flavour = BEAM_ELECTRICITY;</a>
+<a name="ln1433">            defender-&gt;expose_to_element(BEAM_ELECTRICITY, 2);</a>
+<a name="ln1434">        }</a>
+<a name="ln1435"> </a>
+<a name="ln1436">        break;</a>
+<a name="ln1437"> </a>
+<a name="ln1438">    case SPWPN_VENOM:</a>
+<a name="ln1439">        obvious_effect = apply_poison_damage_brand();</a>
+<a name="ln1440">        break;</a>
+<a name="ln1441"> </a>
+<a name="ln1442">    case SPWPN_DRAINING:</a>
+<a name="ln1443">        drain_defender();</a>
+<a name="ln1444">        break;</a>
+<a name="ln1445"> </a>
+<a name="ln1446">    case SPWPN_VORPAL:</a>
+<a name="ln1447">        special_damage = 1 + random2(damage_done) / 3;</a>
+<a name="ln1448">        // Note: Leaving special_damage_message empty because there isn't one.</a>
+<a name="ln1449">        break;</a>
+<a name="ln1450"> </a>
+<a name="ln1451">    case SPWPN_VAMPIRISM:</a>
+<a name="ln1452">    {</a>
+<a name="ln1453">        if (!weapon</a>
+<a name="ln1454">            || damage_done &lt; 1</a>
+<a name="ln1455">            || !actor_is_susceptible_to_vampirism(*defender)</a>
+<a name="ln1456">            || attacker-&gt;stat_hp() == attacker-&gt;stat_maxhp()</a>
+<a name="ln1457">            || attacker-&gt;is_player() &amp;&amp; you.duration[DUR_DEATHS_DOOR]</a>
+<a name="ln1458">            || x_chance_in_y(2, 5)</a>
+<a name="ln1459">               &amp;&amp; !is_unrandom_artefact(*weapon, UNRAND_LEECH))</a>
+<a name="ln1460">        {</a>
+<a name="ln1461">            break;</a>
+<a name="ln1462">        }</a>
+<a name="ln1463"> </a>
+<a name="ln1464">        int hp_boost = is_unrandom_artefact(*weapon, UNRAND_VAMPIRES_TOOTH)</a>
+<a name="ln1465">                       ? damage_done : 1 + random2(damage_done);</a>
+<a name="ln1466">        hp_boost = resist_adjust_damage(defender, BEAM_NEG, hp_boost);</a>
+<a name="ln1467"> </a>
+<a name="ln1468">        if (hp_boost)</a>
+<a name="ln1469">        {</a>
+<a name="ln1470">            obvious_effect = true;</a>
+<a name="ln1471"> </a>
+<a name="ln1472">            if (attacker-&gt;is_player())</a>
+<a name="ln1473">                canned_msg(MSG_GAIN_HEALTH);</a>
+<a name="ln1474">            else if (attacker_visible)</a>
+<a name="ln1475">            {</a>
+<a name="ln1476">                if (defender-&gt;is_player())</a>
+<a name="ln1477">                {</a>
+<a name="ln1478">                    mprf(&quot;%s draws strength from your wounds!&quot;,</a>
+<a name="ln1479">                         attacker-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1480">                }</a>
+<a name="ln1481">                else</a>
+<a name="ln1482">                {</a>
+<a name="ln1483">                    mprf(&quot;%s is healed.&quot;,</a>
+<a name="ln1484">                         attacker-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1485">                }</a>
+<a name="ln1486">            }</a>
+<a name="ln1487"> </a>
+<a name="ln1488">            dprf(DIAG_COMBAT, &quot;Vampiric Healing: damage %d, healed %d&quot;,</a>
+<a name="ln1489">                 damage_done, hp_boost);</a>
+<a name="ln1490">            attacker-&gt;heal(hp_boost);</a>
+<a name="ln1491">        }</a>
+<a name="ln1492">        break;</a>
+<a name="ln1493">    }</a>
+<a name="ln1494">    case SPWPN_PAIN:</a>
+<a name="ln1495">        pain_affects_defender();</a>
+<a name="ln1496">        break;</a>
+<a name="ln1497"> </a>
+<a name="ln1498">    case SPWPN_DISTORTION:</a>
+<a name="ln1499">        ret = distortion_affects_defender();</a>
+<a name="ln1500">        break;</a>
+<a name="ln1501"> </a>
+<a name="ln1502">    case SPWPN_CONFUSE:</a>
+<a name="ln1503">    {</a>
+<a name="ln1504">        // If a monster with a chaos weapon gets this brand, act like</a>
+<a name="ln1505">        // AF_CONFUSE.</a>
+<a name="ln1506">        if (attacker-&gt;is_monster())</a>
+<a name="ln1507">        {</a>
+<a name="ln1508">            if (one_chance_in(3))</a>
+<a name="ln1509">            {</a>
+<a name="ln1510">                defender-&gt;confuse(attacker,</a>
+<a name="ln1511">                                  1 + random2(3+attacker-&gt;get_hit_dice()));</a>
+<a name="ln1512">            }</a>
+<a name="ln1513">            break;</a>
+<a name="ln1514">        }</a>
+<a name="ln1515"> </a>
+<a name="ln1516">        // Also used for players in fungus form.</a>
+<a name="ln1517">        if (attacker-&gt;is_player()</a>
+<a name="ln1518">            &amp;&amp; you.form == transformation::fungus</a>
+<a name="ln1519">            &amp;&amp; !you.duration[DUR_CONFUSING_TOUCH]</a>
+<a name="ln1520">            &amp;&amp; defender-&gt;is_unbreathing())</a>
+<a name="ln1521">        {</a>
+<a name="ln1522">            break;</a>
+<a name="ln1523">        }</a>
+<a name="ln1524"> </a>
+<a name="ln1525">        // Declaring these just to pass to the enchant function.</a>
+<a name="ln1526">        bolt beam_temp;</a>
+<a name="ln1527">        beam_temp.thrower   = attacker-&gt;is_player() ? KILL_YOU : KILL_MON;</a>
+<a name="ln1528">        beam_temp.flavour   = BEAM_CONFUSION;</a>
+<a name="ln1529">        beam_temp.source_id = attacker-&gt;mid;</a>
+<a name="ln1530"> </a>
+<a name="ln1531">        if (attacker-&gt;is_player() &amp;&amp; damage_brand == SPWPN_CONFUSE</a>
+<a name="ln1532">            &amp;&amp; you.duration[DUR_CONFUSING_TOUCH])</a>
+<a name="ln1533">        {</a>
+<a name="ln1534">            beam_temp.ench_power = you.props[&quot;confusing touch power&quot;].get_int();</a>
+<a name="ln1535">            int margin;</a>
+<a name="ln1536">            if (beam_temp.try_enchant_monster(defender-&gt;as_monster(), margin)</a>
+<a name="ln1537">                    == MON_AFFECTED)</a>
+<a name="ln1538">            {</a>
+<a name="ln1539">                you.duration[DUR_CONFUSING_TOUCH] = 0;</a>
+<a name="ln1540">                obvious_effect = false;</a>
+<a name="ln1541">            }</a>
+<a name="ln1542">        }</a>
+<a name="ln1543">        else if (!x_chance_in_y(melee_confuse_chance(defender-&gt;get_hit_dice()),</a>
+<a name="ln1544">                                                     100)</a>
+<a name="ln1545">                 || defender-&gt;as_monster()-&gt;check_clarity())</a>
+<a name="ln1546">        {</a>
+<a name="ln1547">            beam_temp.apply_enchantment_to_monster(defender-&gt;as_monster());</a>
+<a name="ln1548">            obvious_effect = beam_temp.obvious_effect;</a>
+<a name="ln1549">            break;</a>
+<a name="ln1550">        }</a>
+<a name="ln1551"> </a>
+<a name="ln1552">        break;</a>
+<a name="ln1553">    }</a>
+<a name="ln1554"> </a>
+<a name="ln1555">    case SPWPN_CHAOS:</a>
+<a name="ln1556">        chaos_affects_defender();</a>
+<a name="ln1557">        break;</a>
+<a name="ln1558"> </a>
+<a name="ln1559">    case SPWPN_ANTIMAGIC:</a>
+<a name="ln1560">        antimagic_affects_defender(damage_done * 8);</a>
+<a name="ln1561">        break;</a>
+<a name="ln1562"> </a>
+<a name="ln1563">    case SPWPN_ACID:</a>
+<a name="ln1564">        defender-&gt;splash_with_acid(attacker, 3);</a>
+<a name="ln1565">        break;</a>
+<a name="ln1566"> </a>
+<a name="ln1567"> </a>
+<a name="ln1568">    default:</a>
+<a name="ln1569">        if (using_weapon() &amp;&amp; is_unrandom_artefact(*weapon, UNRAND_DAMNATION))</a>
+<a name="ln1570">            attacker-&gt;god_conduct(DID_EVIL, 2 + random2(3));</a>
+<a name="ln1571">        break;</a>
+<a name="ln1572">    }</a>
+<a name="ln1573"> </a>
+<a name="ln1574">    if (damage_brand == SPWPN_CHAOS)</a>
+<a name="ln1575">    {</a>
+<a name="ln1576">        if (responsible-&gt;is_player())</a>
+<a name="ln1577">            did_god_conduct(DID_CHAOS, 2 + random2(3), brand_was_known);</a>
+<a name="ln1578">    }</a>
+<a name="ln1579"> </a>
+<a name="ln1580">    if (!obvious_effect)</a>
+<a name="ln1581">        obvious_effect = !special_damage_message.empty();</a>
+<a name="ln1582"> </a>
+<a name="ln1583">    if (needs_message &amp;&amp; !special_damage_message.empty())</a>
+<a name="ln1584">    {</a>
+<a name="ln1585">        mpr(special_damage_message);</a>
+<a name="ln1586"> </a>
+<a name="ln1587">        special_damage_message.clear();</a>
+<a name="ln1588">    }</a>
+<a name="ln1589"> </a>
+<a name="ln1590">    // Preserve Nessos's brand stacking in a hacky way -- but to be fair, it</a>
+<a name="ln1591">    // was always a bit of a hack.</a>
+<a name="ln1592">    if (attacker-&gt;type == MONS_NESSOS &amp;&amp; weapon &amp;&amp; is_range_weapon(*weapon))</a>
+<a name="ln1593">        apply_poison_damage_brand();</a>
+<a name="ln1594"> </a>
+<a name="ln1595">    if (special_damage &gt; 0)</a>
+<a name="ln1596">        inflict_damage(special_damage, special_damage_flavour);</a>
+<a name="ln1597"> </a>
+<a name="ln1598">    if (obvious_effect &amp;&amp; attacker_visible &amp;&amp; using_weapon())</a>
+<a name="ln1599">    {</a>
+<a name="ln1600">        if (is_artefact(*weapon))</a>
+<a name="ln1601">            artefact_learn_prop(*weapon, ARTP_BRAND);</a>
+<a name="ln1602">        else</a>
+<a name="ln1603">            set_ident_flags(*weapon, ISFLAG_KNOW_TYPE);</a>
+<a name="ln1604">    }</a>
+<a name="ln1605"> </a>
+<a name="ln1606">    return ret;</a>
+<a name="ln1607">}</a>
+<a name="ln1608"> </a>
+<a name="ln1609">/* Calculates special damage, prints appropriate combat text</a>
+<a name="ln1610"> *</a>
+<a name="ln1611"> * Applies a particular damage brand to the current attack, the setup and</a>
+<a name="ln1612"> * calculation of base damage and other effects varies based on the type</a>
+<a name="ln1613"> * of attack, but the calculation of elemental damage should be consistent.</a>
+<a name="ln1614"> */</a>
+<a name="ln1615">void attack::calc_elemental_brand_damage(beam_type flavour,</a>
+<a name="ln1616">                                         const char *verb,</a>
+<a name="ln1617">                                         const char *what)</a>
+<a name="ln1618">{</a>
+<a name="ln1619">    special_damage = resist_adjust_damage(defender, flavour,</a>
+<a name="ln1620">                                          random2(damage_done) / 2 + 1);</a>
+<a name="ln1621"> </a>
+<a name="ln1622">    if (needs_message &amp;&amp; special_damage &gt; 0 &amp;&amp; verb)</a>
+<a name="ln1623">    {</a>
+<a name="ln1624">        // XXX: assumes &quot;what&quot; is singular</a>
+<a name="ln1625">        special_damage_message = make_stringf(</a>
+<a name="ln1626">            &quot;%s %s %s%s&quot;,</a>
+<a name="ln1627">            what ? what : atk_name(DESC_THE).c_str(),</a>
+<a name="ln1628">            what ? conjugate_verb(verb, false).c_str()</a>
+<a name="ln1629">                 : attacker-&gt;conj_verb(verb).c_str(),</a>
+<a name="ln1630">            // Don't allow reflexive if the subject wasn't the attacker.</a>
+<a name="ln1631">            defender_name(!what).c_str(),</a>
+<a name="ln1632">            attack_strength_punctuation(special_damage).c_str());</a>
+<a name="ln1633">    }</a>
+<a name="ln1634">}</a>
+<a name="ln1635"> </a>
+<a name="ln1636">int attack::player_stab_weapon_bonus(int damage)</a>
+<a name="ln1637">{</a>
+<a name="ln1638">    int stab_skill = you.skill(wpn_skill, 50) + you.skill(SK_STEALTH, 50);</a>
+<a name="ln1639"> </a>
+<a name="ln1640">    if (player_good_stab())</a>
+<a name="ln1641">    {</a>
+<a name="ln1642">        // We might be unarmed if we're using the hood of the Assassin.</a>
+<a name="ln1643">        const bool extra_good = using_weapon() &amp;&amp; weapon-&gt;sub_type == WPN_DAGGER;</a>
+<a name="ln1644">        int bonus = you.dex() * (stab_skill + 100) / (extra_good ? 500 : 1000);</a>
+<a name="ln1645"> </a>
+<a name="ln1646">        bonus   = stepdown_value(bonus, 10, 10, 30, 30);</a>
+<a name="ln1647">        damage += bonus;</a>
+<a name="ln1648">        damage *= 10 + div_rand_round(stab_skill, 100 * stab_bonus);</a>
+<a name="ln1649">        damage /= 10;</a>
+<a name="ln1650">    }</a>
+<a name="ln1651"> </a>
+<a name="ln1652">    damage *= 12 + div_rand_round(stab_skill, 100 * stab_bonus);</a>
+<a name="ln1653">    damage /= 12;</a>
+<a name="ln1654"> </a>
+<a name="ln1655">    return damage;</a>
+<a name="ln1656">}</a>
+<a name="ln1657"> </a>
+<a name="ln1658">int attack::player_stab(int damage)</a>
+<a name="ln1659">{</a>
+<a name="ln1660">    // The stabbing message looks better here:</a>
+<a name="ln1661">    if (stab_attempt)</a>
+<a name="ln1662">    {</a>
+<a name="ln1663">        // Construct reasonable message.</a>
+<a name="ln1664">        stab_message();</a>
+<a name="ln1665">        practise_stabbing();</a>
+<a name="ln1666">    }</a>
+<a name="ln1667">    else</a>
+<a name="ln1668">    {</a>
+<a name="ln1669">        stab_bonus = 0;</a>
+<a name="ln1670">        // Ok.. if you didn't backstab, you wake up the neighborhood.</a>
+<a name="ln1671">        // I can live with that.</a>
+<a name="ln1672">        alert_nearby_monsters();</a>
+<a name="ln1673">    }</a>
+<a name="ln1674"> </a>
+<a name="ln1675">    if (stab_bonus)</a>
+<a name="ln1676">    {</a>
+<a name="ln1677">        // Let's make sure we have some damage to work with...</a>
+<a name="ln1678">        damage = max(1, damage);</a>
+<a name="ln1679"> </a>
+<a name="ln1680">        damage = player_stab_weapon_bonus(damage);</a>
+<a name="ln1681">    }</a>
+<a name="ln1682"> </a>
+<a name="ln1683">    return damage;</a>
+<a name="ln1684">}</a>
+<a name="ln1685"> </a>
+<a name="ln1686">/* Check for stab and prepare combat for stab-values</a>
+<a name="ln1687"> *</a>
+<a name="ln1688"> * Grant an automatic stab if paralysed or sleeping (with highest damage value)</a>
+<a name="ln1689"> * stab_bonus is used as the divisor in damage calculations, so lower values</a>
+<a name="ln1690"> * will yield higher damage. Normal stab chance is (stab_skill + dex + 1 / roll)</a>
+<a name="ln1691"> * This averages out to about 1/3 chance for a non extended-endgame stabber.</a>
+<a name="ln1692"> */</a>
+<a name="ln1693">void attack::player_stab_check()</a>
+<a name="ln1694">{</a>
+<a name="ln1695">    // XXX: move into find_stab_type?</a>
+<a name="ln1696">    if (you.duration[DUR_CLUMSY] || you.confused())</a>
+<a name="ln1697">    {</a>
+<a name="ln1698">        stab_attempt = false;</a>
+<a name="ln1699">        stab_bonus = 0;</a>
+<a name="ln1700">        return;</a>
+<a name="ln1701">    }</a>
+<a name="ln1702"> </a>
+<a name="ln1703">    stab_type st = find_stab_type(&amp;you, *defender);</a>
+<a name="ln1704">    // Find stab type is also used for displaying information about monsters,</a>
+<a name="ln1705">    // so upgrade the stab type for !stab and the Spriggan's Knife here</a>
+<a name="ln1706">    if ((using_weapon()</a>
+<a name="ln1707">        &amp;&amp; is_unrandom_artefact(*weapon, UNRAND_SPRIGGANS_KNIFE)</a>
+<a name="ln1708">        || you.duration[DUR_STABBING] &gt; 0 &amp;&amp; coinflip())</a>
+<a name="ln1709">        &amp;&amp; st != STAB_NO_STAB)</a>
+<a name="ln1710">    {</a>
+<a name="ln1711">        st = STAB_SLEEPING;</a>
+<a name="ln1712">    }</a>
+<a name="ln1713">    stab_attempt = st != STAB_NO_STAB;</a>
+<a name="ln1714">    stab_bonus = stab_bonus_denom(st);</a>
+<a name="ln1715"> </a>
+<a name="ln1716">    // See if we need to roll against dexterity / stabbing.</a>
+<a name="ln1717">    if (stab_attempt &amp;&amp; stab_bonus &gt; 1)</a>
+<a name="ln1718">    {</a>
+<a name="ln1719">        stab_attempt = x_chance_in_y(you.skill_rdiv(wpn_skill, 1, 2)</a>
+<a name="ln1720">                                     + you.skill_rdiv(SK_STEALTH, 1, 2)</a>
+<a name="ln1721">                                     + you.dex() + 1,</a>
+<a name="ln1722">                                     100);</a>
+<a name="ln1723">    }</a>
+<a name="ln1724"> </a>
+<a name="ln1725">    if (stab_attempt)</a>
+<a name="ln1726">        count_action(CACT_STAB, st);</a>
+<a name="ln1727">}</a>
+
+</code></pre>
+<div class="balloon" rel="197"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'weapon' pointer was utilized before it was verified against nullptr. Check lines: 197, 202.</p></div>
+<div class="balloon" rel="692"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'beam.colour' variable was assigned the same value.</p></div>
+<div class="balloon" rel="869"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1457"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="51"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: attk_type, attk_flavour, attk_damage.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,2289 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-gear.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Monsters' starting equipment.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-gear.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;artefact.h&quot;</a>
+<a name="ln13">#include &quot;art-enum.h&quot;</a>
+<a name="ln14">#include &quot;dungeon.h&quot;</a>
+<a name="ln15">#include &quot;item-name.h&quot;</a>
+<a name="ln16">#include &quot;item-prop.h&quot;</a>
+<a name="ln17">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln18">#include &quot;items.h&quot;</a>
+<a name="ln19">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln20">#include &quot;mon-place.h&quot;</a>
+<a name="ln21">#include &quot;randbook.h&quot; // roxanne, roxanne...</a>
+<a name="ln22">#include &quot;religion.h&quot; // upgrade_hepliaklqana_weapon</a>
+<a name="ln23">#include &quot;state.h&quot;</a>
+<a name="ln24">#include &quot;tilepick.h&quot;</a>
+<a name="ln25">#include &quot;unwind.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">static void _strip_item_ego(item_def &amp;item)</a>
+<a name="ln28">{</a>
+<a name="ln29">    item.brand = 0; // SP{WPN,ARM,MSL}_NORMAL</a>
+<a name="ln30"> </a>
+<a name="ln31">    // Remove glow, since that might be because of the ego...</a>
+<a name="ln32">    set_equip_desc(item, ISFLAG_NO_DESC);</a>
+<a name="ln33">    // ...but give it back if it came from curses or plusses.</a>
+<a name="ln34">    item_set_appearance(item);</a>
+<a name="ln35">}</a>
+<a name="ln36"> </a>
+<a name="ln37">void give_specific_item(monster* mon, int thing)</a>
+<a name="ln38">{</a>
+<a name="ln39">    if (thing == NON_ITEM || thing == -1)</a>
+<a name="ln40">        return;</a>
+<a name="ln41"> </a>
+<a name="ln42">    item_def &amp;mthing = mitm[thing];</a>
+<a name="ln43">    ASSERT(mthing.defined());</a>
+<a name="ln44"> </a>
+<a name="ln45">    dprf(DIAG_MONPLACE, &quot;Giving %s to %s...&quot;, mthing.name(DESC_PLAIN).c_str(),</a>
+<a name="ln46">         mon-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln47"> </a>
+<a name="ln48">    mthing.pos.reset();</a>
+<a name="ln49">    mthing.link = NON_ITEM;</a>
+<a name="ln50"> </a>
+<a name="ln51">    if (mon-&gt;undead_or_demonic() || mon-&gt;god == GOD_YREDELEMNUL)</a>
+<a name="ln52">    {</a>
+<a name="ln53">        convert2bad(mthing);</a>
+<a name="ln54">        if (get_weapon_brand(mthing) == SPWPN_HOLY_WRATH)</a>
+<a name="ln55">            _strip_item_ego(mthing);</a>
+<a name="ln56">    }</a>
+<a name="ln57"> </a>
+<a name="ln58">    if (!is_artefact(mthing)</a>
+<a name="ln59">        &amp;&amp; (mthing.base_type == OBJ_WEAPONS</a>
+<a name="ln60">         || mthing.base_type == OBJ_ARMOUR</a>
+<a name="ln61">         || mthing.base_type == OBJ_MISSILES))</a>
+<a name="ln62">    {</a>
+<a name="ln63">        bool enchanted = mthing.plus;</a>
+<a name="ln64">        // The item could either lose or gain brand after being generated,</a>
+<a name="ln65">        // adjust the glowing flag.</a>
+<a name="ln66">        if (!mthing.brand &amp;&amp; !enchanted)</a>
+<a name="ln67">            set_equip_desc(mthing, 0);</a>
+<a name="ln68">        else if (mthing.brand &amp;&amp; !get_equip_desc(mthing))</a>
+<a name="ln69">            set_equip_desc(mthing, ISFLAG_GLOWING);</a>
+<a name="ln70">    }</a>
+<a name="ln71"> </a>
+<a name="ln72">    unwind_var&lt;int&gt; save_speedinc(mon-&gt;speed_increment);</a>
+<a name="ln73">    if (!mon-&gt;pickup_item(mthing, false, true))</a>
+<a name="ln74">    {</a>
+<a name="ln75">        dprf(DIAG_MONPLACE, &quot;Destroying %s because %s doesn't want it!&quot;,</a>
+<a name="ln76">             mthing.name(DESC_PLAIN, false, true).c_str(),</a>
+<a name="ln77">             mon-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln78">        destroy_item(thing, true);</a>
+<a name="ln79">        return;</a>
+<a name="ln80">    }</a>
+<a name="ln81">    if (!mthing.defined()) // missiles merged into an existing stack</a>
+<a name="ln82">        return;</a>
+<a name="ln83">    ASSERT(mthing.holding_monster() == mon);</a>
+<a name="ln84"> </a>
+<a name="ln85">    if (!mthing.appearance_initialized())</a>
+<a name="ln86">        item_colour(mthing);</a>
+<a name="ln87">}</a>
+<a name="ln88"> </a>
+<a name="ln89">void give_specific_item(monster* mon, const item_def&amp; tpl)</a>
+<a name="ln90">{</a>
+<a name="ln91">    int thing = get_mitm_slot();</a>
+<a name="ln92">    if (thing == NON_ITEM)</a>
+<a name="ln93">        return;</a>
+<a name="ln94"> </a>
+<a name="ln95">    mitm[thing] = tpl;</a>
+<a name="ln96">    give_specific_item(mon, thing);</a>
+<a name="ln97">}</a>
+<a name="ln98"> </a>
+<a name="ln99">static bool _should_give_unique_item(monster* mon)</a>
+<a name="ln100">{</a>
+<a name="ln101">    // Don't give Natasha an item for dying.</a>
+<a name="ln102">    return mon-&gt;type != MONS_NATASHA || !mon-&gt;props.exists(&quot;felid_revives&quot;);</a>
+<a name="ln103">}</a>
+<a name="ln104"> </a>
+<a name="ln105">static void _give_book(monster* mon, int level)</a>
+<a name="ln106">{</a>
+<a name="ln107">    if (mon-&gt;type == MONS_ROXANNE)</a>
+<a name="ln108">    {</a>
+<a name="ln109">        const int which_book = (one_chance_in(3) ? BOOK_TRANSFIGURATIONS</a>
+<a name="ln110">                                                 : BOOK_EARTH);</a>
+<a name="ln111"> </a>
+<a name="ln112">        const int thing_created = items(false, OBJ_BOOKS, which_book, level);</a>
+<a name="ln113"> </a>
+<a name="ln114">        if (thing_created == NON_ITEM)</a>
+<a name="ln115">            return;</a>
+<a name="ln116"> </a>
+<a name="ln117">        // Maybe give Roxanne a random book containing Statue Form instead.</a>
+<a name="ln118">        if (coinflip())</a>
+<a name="ln119">            make_book_roxanne_special(&amp;mitm[thing_created]);</a>
+<a name="ln120"> </a>
+<a name="ln121">        give_specific_item(mon, thing_created);</a>
+<a name="ln122">    }</a>
+<a name="ln123">}</a>
+<a name="ln124"> </a>
+<a name="ln125">static void _give_wand(monster* mon, int level)</a>
+<a name="ln126">{</a>
+<a name="ln127">    bool wand_allowed = mons_is_unique(mon-&gt;type)</a>
+<a name="ln128">                        &amp;&amp; !mons_class_flag(mon-&gt;type, M_NO_WAND)</a>
+<a name="ln129">                        &amp;&amp; _should_give_unique_item(mon);</a>
+<a name="ln130"> </a>
+<a name="ln131">    if (!wand_allowed)</a>
+<a name="ln132">        return;</a>
+<a name="ln133"> </a>
+<a name="ln134">    bool give_wand = mons_class_flag(mon-&gt;type, M_ALWAYS_WAND)</a>
+<a name="ln135">                     || one_chance_in(5);</a>
+<a name="ln136"> </a>
+<a name="ln137">    if (!give_wand)</a>
+<a name="ln138">        return;</a>
+<a name="ln139"> </a>
+<a name="ln140">    // Don't give top-tier wands before 5 HD, except to Ijyb and not in sprint.</a>
+<a name="ln141">    const bool no_high_tier =</a>
+<a name="ln142">            (mon-&gt;get_experience_level() &lt; 5</a>
+<a name="ln143">                || mons_class_flag(mon-&gt;type, M_NO_HT_WAND))</a>
+<a name="ln144">            &amp;&amp; (mon-&gt;type != MONS_IJYB || crawl_state.game_is_sprint());</a>
+<a name="ln145"> </a>
+<a name="ln146">    const int idx = items(false, OBJ_WANDS, OBJ_RANDOM, level);</a>
+<a name="ln147"> </a>
+<a name="ln148">    if (idx == NON_ITEM)</a>
+<a name="ln149">        return;</a>
+<a name="ln150"> </a>
+<a name="ln151">    item_def&amp; wand = mitm[idx];</a>
+<a name="ln152"> </a>
+<a name="ln153">    const char* rejection_reason =</a>
+<a name="ln154">        (no_high_tier &amp;&amp; is_high_tier_wand(wand.sub_type)) ? &quot;high tier&quot; :</a>
+<a name="ln155">                                    !mon-&gt;likes_wand(wand) ?      &quot;weak&quot; :</a>
+<a name="ln156">                                                                  nullptr;</a>
+<a name="ln157"> </a>
+<a name="ln158">    if (rejection_reason)</a>
+<a name="ln159">    {</a>
+<a name="ln160">        dprf(DIAG_MONPLACE,</a>
+<a name="ln161">             &quot;Destroying %s because %s doesn't want a %s wand.&quot;,</a>
+<a name="ln162">             wand.name(DESC_A).c_str(),</a>
+<a name="ln163">             mon-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln164">             rejection_reason);</a>
+<a name="ln165">        destroy_item(idx, true);</a>
+<a name="ln166">        return;</a>
+<a name="ln167">    }</a>
+<a name="ln168"> </a>
+<a name="ln169">    wand.flags = 0;</a>
+<a name="ln170">    give_specific_item(mon, idx);</a>
+<a name="ln171">}</a>
+<a name="ln172"> </a>
+<a name="ln173">static void _give_potion(monster* mon, int level)</a>
+<a name="ln174">{</a>
+<a name="ln175">    if (mons_is_unique(mon-&gt;type) &amp;&amp; one_chance_in(4)</a>
+<a name="ln176">                &amp;&amp; _should_give_unique_item(mon))</a>
+<a name="ln177">    {</a>
+<a name="ln178">        const int thing_created = items(false, OBJ_POTIONS, OBJ_RANDOM,</a>
+<a name="ln179">                                        level);</a>
+<a name="ln180"> </a>
+<a name="ln181">        if (thing_created == NON_ITEM)</a>
+<a name="ln182">            return;</a>
+<a name="ln183"> </a>
+<a name="ln184">        mitm[thing_created].flags = 0;</a>
+<a name="ln185">        give_specific_item(mon, thing_created);</a>
+<a name="ln186">    }</a>
+<a name="ln187">}</a>
+<a name="ln188"> </a>
+<a name="ln189">static item_def* make_item_for_monster(</a>
+<a name="ln190">    monster* mons,</a>
+<a name="ln191">    object_class_type base,</a>
+<a name="ln192">    int subtype,</a>
+<a name="ln193">    int level,</a>
+<a name="ln194">    int allow_uniques = 0,</a>
+<a name="ln195">    iflags_t flags = 0);</a>
+<a name="ln196"> </a>
+<a name="ln197">typedef vector&lt;pair&lt;weapon_type, int&gt;&gt; weapon_list;</a>
+<a name="ln198">struct plus_range</a>
+<a name="ln199">{</a>
+<a name="ln200">    int odds; ///&lt;1/x chance of getting +[min,max] to weapon plus</a>
+<a name="ln201">    int min, max;</a>
+<a name="ln202">    int nrolls; ///&lt; min 1</a>
+<a name="ln203">};</a>
+<a name="ln204"> </a>
+<a name="ln205">struct mon_weapon_spec</a>
+<a name="ln206">{</a>
+<a name="ln207">    /// weighted list of weapon types; NUM_WEAPONS -&gt; no weapon</a>
+<a name="ln208">    weapon_list types;</a>
+<a name="ln209">    /// range of possible weapon enchant plusses; if nonzero, sets force_item</a>
+<a name="ln210">    plus_range plusses;</a>
+<a name="ln211">    /// weighted brand list; NUM_BRANDS -&gt; no forced brand</a>
+<a name="ln212">    vector&lt;pair&lt;brand_type, int&gt;&gt; brands;</a>
+<a name="ln213">    /// extra 1/x chance to generate as ISPEC_GOOD_ITEM</a>
+<a name="ln214">    int good_chance;</a>
+<a name="ln215">};</a>
+<a name="ln216"> </a>
+<a name="ln217">/**</a>
+<a name="ln218"> * Try to apply the given weapon spec to the given base item &amp; generation</a>
+<a name="ln219"> * parameters; randomly choose a weapon type and, possibly, change other fields.</a>
+<a name="ln220"> *</a>
+<a name="ln221"> * @param spec              How to choose weapon type, plusses, brands, etc.</a>
+<a name="ln222"> * @param item[out]         An item to be populated with subtype and other</a>
+<a name="ln223"> *                          fields, before or instead of a call to items().</a>
+<a name="ln224"> * @param force_item[out]   Have we set something (plus, brand) that requires</a>
+<a name="ln225"> *                          us to skip items()?</a>
+<a name="ln226"> * @param level[out]        The item's quality level, if we want to override it.</a>
+<a name="ln227"> * @return                  Did we choose a weapon type?</a>
+<a name="ln228"> */</a>
+<a name="ln229">static bool _apply_weapon_spec(const mon_weapon_spec &amp;spec, item_def &amp;item,</a>
+<a name="ln230">                               bool &amp;force_item, int &amp;level)</a>
+<a name="ln231">{</a>
+<a name="ln232"> </a>
+<a name="ln233">    const weapon_type *wpn_type</a>
+<a name="ln234">        = random_choose_weighted(spec.types);</a>
+<a name="ln235">    ASSERT(wpn_type);</a>
+<a name="ln236">    if (*wpn_type == NUM_WEAPONS)</a>
+<a name="ln237">        return false;</a>
+<a name="ln238"> </a>
+<a name="ln239">    item.base_type = OBJ_WEAPONS;</a>
+<a name="ln240">    item.sub_type = *wpn_type;</a>
+<a name="ln241"> </a>
+<a name="ln242">    if (spec.plusses.odds)</a>
+<a name="ln243">    {</a>
+<a name="ln244">        if (one_chance_in(spec.plusses.odds))</a>
+<a name="ln245">        {</a>
+<a name="ln246">            const int rolls = max(1, spec.plusses.nrolls);</a>
+<a name="ln247">            item.plus += random_range(spec.plusses.min, spec.plusses.max,</a>
+<a name="ln248">                                      rolls);</a>
+<a name="ln249">            force_item = true;</a>
+<a name="ln250">        }</a>
+<a name="ln251">    }</a>
+<a name="ln252">    else // normal plusses (ignored if brand isn't set)</a>
+<a name="ln253">        item.plus = determine_nice_weapon_plusses(level);</a>
+<a name="ln254"> </a>
+<a name="ln255">    if (spec.good_chance &amp;&amp; one_chance_in(spec.good_chance))</a>
+<a name="ln256">        level = ISPEC_GOOD_ITEM;</a>
+<a name="ln257"> </a>
+<a name="ln258">    const brand_type *brand = random_choose_weighted(spec.brands);</a>
+<a name="ln259">    if (brand)</a>
+<a name="ln260">    {</a>
+<a name="ln261">        if (*brand != NUM_SPECIAL_WEAPONS)</a>
+<a name="ln262">        {</a>
+<a name="ln263">            set_item_ego_type(item, OBJ_WEAPONS, *brand);</a>
+<a name="ln264">            force_item = true;</a>
+<a name="ln265">        }</a>
+<a name="ln266">    }</a>
+<a name="ln267">    else if (force_item) // normal brand</a>
+<a name="ln268">    {</a>
+<a name="ln269">        set_item_ego_type(item, OBJ_WEAPONS,</a>
+<a name="ln270">                          determine_weapon_brand(item, level));</a>
+<a name="ln271">    }</a>
+<a name="ln272"> </a>
+<a name="ln273">    return true;</a>
+<a name="ln274">}</a>
+<a name="ln275"> </a>
+<a name="ln276">/**</a>
+<a name="ln277"> * Make a weapon for the given monster.</a>
+<a name="ln278"> *</a>
+<a name="ln279"> * @param mtyp          The type of monster; e.g. MONS_ORC_WARRIOR.</a>
+<a name="ln280"> * @param level         The quality of the weapon to make, usually absdepth.</a>
+<a name="ln281"> * @param melee_only    If this monster can be given both melee and ranged</a>
+<a name="ln282"> *                      weapons, whether to restrict this to melee weapons.</a>
+<a name="ln283"> * @return              The index of the newly-created weapon, or NON_ITEM if</a>
+<a name="ln284"> *                      none was made.</a>
+<a name="ln285"> */</a>
+<a name="ln286">int make_mons_weapon(monster_type type, int level, bool melee_only)</a>
+<a name="ln287">{</a>
+<a name="ln288">    rng::subgenerator item_rng;</a>
+<a name="ln289"> </a>
+<a name="ln290">    static const weapon_list GOBLIN_WEAPONS = // total 10</a>
+<a name="ln291">    {   { WPN_DAGGER,           3 },</a>
+<a name="ln292">        { WPN_CLUB,             3 },</a>
+<a name="ln293">        { NUM_WEAPONS,          4 }, };   // 60% chance of weapon</a>
+<a name="ln294">    static const weapon_list GNOLL_WEAPONS = // total 30</a>
+<a name="ln295">    {   { WPN_SPEAR,            8 },</a>
+<a name="ln296">        { WPN_HALBERD,          4 },</a>
+<a name="ln297">        { WPN_CLUB,             4 },</a>
+<a name="ln298">        { WPN_WHIP,             4 },</a>
+<a name="ln299">        { WPN_FLAIL,            4 },</a>
+<a name="ln300">        { NUM_WEAPONS,          6 } };    // 80% chance of weapon</a>
+<a name="ln301">    static const weapon_list ORC_WEAPONS = // total 525 (!)</a>
+<a name="ln302">    {   { WPN_CLUB,             70 },</a>
+<a name="ln303">        { WPN_DAGGER,           60 },</a>
+<a name="ln304">        { WPN_FLAIL,            60 },</a>
+<a name="ln305">        { WPN_HAND_AXE,         60 },</a>
+<a name="ln306">        { WPN_SHORT_SWORD,      40 },</a>
+<a name="ln307">        { WPN_MACE,             40 },</a>
+<a name="ln308">        { WPN_WHIP,             30 },</a>
+<a name="ln309">        { WPN_TRIDENT,          20 },</a>
+<a name="ln310">        { WPN_FALCHION,         20 },</a>
+<a name="ln311">        { WPN_WAR_AXE,          14 },</a>
+<a name="ln312">        { WPN_MORNINGSTAR,      6 },</a>
+<a name="ln313">        { NUM_WEAPONS,          105 } }; // 80% chance of weapon</a>
+<a name="ln314">    static const weapon_list DE_KNIGHT_WEAPONS = // total 83 (?)</a>
+<a name="ln315">    {   { WPN_LONG_SWORD,       22 },</a>
+<a name="ln316">        { WPN_SHORT_SWORD,      22 },</a>
+<a name="ln317">        { WPN_SCIMITAR,         17 },</a>
+<a name="ln318">        { WPN_SHORTBOW,         17 },</a>
+<a name="ln319">        { WPN_LONGBOW,          5 }, };</a>
+<a name="ln320">    static const weapon_list DE_MAGE_WEAPONS =</a>
+<a name="ln321">    {   { WPN_LONG_SWORD,       2 },</a>
+<a name="ln322">        { WPN_SHORT_SWORD,      1 },</a>
+<a name="ln323">        { WPN_RAPIER,           1 },</a>
+<a name="ln324">        { WPN_DAGGER,           1 }, };</a>
+<a name="ln325">    static const weapon_list DRAC_MAGE_WEAPONS = // XXX: merge with DE? ^</a>
+<a name="ln326">    {   { WPN_LONG_SWORD,       2 },</a>
+<a name="ln327">        { WPN_SHORT_SWORD,      1 },</a>
+<a name="ln328">        { WPN_RAPIER,           1 },</a>
+<a name="ln329">        { WPN_DAGGER,           1 },</a>
+<a name="ln330">        { WPN_WHIP,             1 }, };</a>
+<a name="ln331">    static const weapon_list NAGA_WEAPONS = // total 120</a>
+<a name="ln332">    {   { WPN_LONG_SWORD,       10 },</a>
+<a name="ln333">        { WPN_SHORT_SWORD,      10 },</a>
+<a name="ln334">        { WPN_SCIMITAR,         10 },</a>
+<a name="ln335">        { WPN_BATTLEAXE,        10 },</a>
+<a name="ln336">        { WPN_HAND_AXE,         10 },</a>
+<a name="ln337">        { WPN_HALBERD,          10 },</a>
+<a name="ln338">        { WPN_GLAIVE,           10 },</a>
+<a name="ln339">        { WPN_MACE,             10 },</a>
+<a name="ln340">        { WPN_DIRE_FLAIL,       10 },</a>
+<a name="ln341">        { WPN_TRIDENT,          10 },</a>
+<a name="ln342">        { WPN_WAR_AXE,          9 },</a>
+<a name="ln343">        { WPN_FLAIL,            9 },</a>
+<a name="ln344">        { WPN_BROAD_AXE,        1 },</a>
+<a name="ln345">        { WPN_MORNINGSTAR,      1 }, };</a>
+<a name="ln346">    static const weapon_list ORC_KNIGHT_WEAPONS =</a>
+<a name="ln347">    {   { WPN_GREAT_SWORD,      4 },</a>
+<a name="ln348">        { WPN_LONG_SWORD,       4 },</a>
+<a name="ln349">        { WPN_BATTLEAXE,        4 },</a>
+<a name="ln350">        { WPN_WAR_AXE,          4 },</a>
+<a name="ln351">        { WPN_GREAT_MACE,       3 },</a>
+<a name="ln352">        { WPN_DIRE_FLAIL,       2 },</a>
+<a name="ln353">        { WPN_BARDICHE,         1 },</a>
+<a name="ln354">        { WPN_GLAIVE,           1 },</a>
+<a name="ln355">        { WPN_BROAD_AXE,        1 },</a>
+<a name="ln356">        { WPN_HALBERD,          1 }, };</a>
+<a name="ln357">    static const mon_weapon_spec ORC_KNIGHT_WSPEC =</a>
+<a name="ln358">        { ORC_KNIGHT_WEAPONS, {4, 1, 3} };</a>
+<a name="ln359">    static const mon_weapon_spec ORC_WARLORD_WSPEC =</a>
+<a name="ln360">        { ORC_KNIGHT_WEAPONS, {4, 1, 3}, {}, 3 };</a>
+<a name="ln361">    static const weapon_list IRON_WEAPONS =</a>
+<a name="ln362">    {   { WPN_GREAT_MACE,       3 },</a>
+<a name="ln363">        { WPN_DIRE_FLAIL,       2 },</a>
+<a name="ln364">        { WPN_FLAIL,            2 },</a>
+<a name="ln365">        { WPN_MORNINGSTAR,      2 },</a>
+<a name="ln366">        { WPN_MACE,             1 }, };</a>
+<a name="ln367">    static const weapon_list OGRE_WEAPONS =</a>
+<a name="ln368">    {   { WPN_GIANT_CLUB,        2 },</a>
+<a name="ln369">        { WPN_GIANT_SPIKED_CLUB, 1 }, };</a>
+<a name="ln370">    static const weapon_list DOUBLE_OGRE_WEAPONS = // total 100</a>
+<a name="ln371">    {   { WPN_GIANT_CLUB,        60 },</a>
+<a name="ln372">        { WPN_GIANT_SPIKED_CLUB, 30 },</a>
+<a name="ln373">        { WPN_DIRE_FLAIL,        9 },</a>
+<a name="ln374">        { WPN_GREAT_MACE,        1 }, };</a>
+<a name="ln375">    static const weapon_list FAUN_WEAPONS =</a>
+<a name="ln376">    {   { WPN_SPEAR,            2 },</a>
+<a name="ln377">        { WPN_CLUB,             1 },</a>
+<a name="ln378">        { WPN_QUARTERSTAFF,     1 }, };</a>
+<a name="ln379">    static const mon_weapon_spec EFREET_WSPEC =</a>
+<a name="ln380">    { { { WPN_SCIMITAR,         1 } },</a>
+<a name="ln381">      { 1, 0, 4 },</a>
+<a name="ln382">      { { SPWPN_FLAMING, 1 } } };</a>
+<a name="ln383">    static const mon_weapon_spec DAEVA_WSPEC =</a>
+<a name="ln384">    { { { WPN_EUDEMON_BLADE,    1 },</a>
+<a name="ln385">        { WPN_SCIMITAR,         2 },</a>
+<a name="ln386">        { WPN_LONG_SWORD,       1 } },</a>
+<a name="ln387">      { 1, 2, 5 },</a>
+<a name="ln388">      { { SPWPN_HOLY_WRATH,     1 } } };</a>
+<a name="ln389">    static const vector&lt;pair&lt;brand_type, int&gt;&gt; HELL_KNIGHT_BRANDS = // sum 45</a>
+<a name="ln390">    {   { SPWPN_FLAMING,        13 },</a>
+<a name="ln391">        { SPWPN_DRAINING,       4 },</a>
+<a name="ln392">        { SPWPN_VORPAL,         4 },</a>
+<a name="ln393">        { SPWPN_DISTORTION,     2 },</a>
+<a name="ln394">        { SPWPN_PAIN,           2 },</a>
+<a name="ln395">        { NUM_SPECIAL_WEAPONS,  20 }, // 5/9 chance of brand</a>
+<a name="ln396">    };</a>
+<a name="ln397">    static const weapon_list URUG_WEAPONS =</a>
+<a name="ln398">    {   { WPN_HALBERD,          5 },</a>
+<a name="ln399">        { WPN_GLAIVE,           5 },</a>
+<a name="ln400">        { WPN_WAR_AXE,          6 },</a>
+<a name="ln401">        { WPN_GREAT_MACE,       6 },</a>
+<a name="ln402">        { WPN_BATTLEAXE,        7 },</a>
+<a name="ln403">        { WPN_LONG_SWORD,       8 },</a>
+<a name="ln404">        { WPN_SCIMITAR,         8 },</a>
+<a name="ln405">        { WPN_GREAT_SWORD,      8 },</a>
+<a name="ln406">        { WPN_BROAD_AXE,        9 },</a>
+<a name="ln407">        { WPN_DOUBLE_SWORD,     10 },</a>
+<a name="ln408">        { WPN_EVENINGSTAR,      13 },</a>
+<a name="ln409">        { WPN_DEMON_TRIDENT,    14 }, };</a>
+<a name="ln410">    static const weapon_list SP_DEFENDER_WEAPONS =</a>
+<a name="ln411">    {   { WPN_LAJATANG,         1 },</a>
+<a name="ln412">        { WPN_QUICK_BLADE,      1 },</a>
+<a name="ln413">        { WPN_RAPIER,           1 },</a>
+<a name="ln414">        { WPN_DEMON_WHIP,       1 },</a>
+<a name="ln415">        { WPN_FLAIL,            1 } };</a>
+<a name="ln416">    // Demonspawn probably want to use weapons close to the &quot;natural&quot;</a>
+<a name="ln417">    // demon weapons - demon blades, demon whips, and demon tridents.</a>
+<a name="ln418">    // So pick from a selection of good weapons from those classes</a>
+<a name="ln419">    // with a 2/5 chance in each category of having the demon weapon.</a>
+<a name="ln420">    // XXX: this is so ridiculously overengineered</a>
+<a name="ln421">    static const weapon_list DS_WEAPONS =</a>
+<a name="ln422">    {   { WPN_LONG_SWORD,       10 },</a>
+<a name="ln423">        { WPN_SCIMITAR,         10 },</a>
+<a name="ln424">        { WPN_GREAT_SWORD,      10 },</a>
+<a name="ln425">        { WPN_DEMON_BLADE,      20 },</a>
+<a name="ln426">        { WPN_MACE,             10 },</a>
+<a name="ln427">        { WPN_MORNINGSTAR,      8 },</a>
+<a name="ln428">        { WPN_EVENINGSTAR,      2 },</a>
+<a name="ln429">        { WPN_DIRE_FLAIL,       10 },</a>
+<a name="ln430">        { WPN_DEMON_WHIP,       20 },</a>
+<a name="ln431">        { WPN_TRIDENT,          10 },</a>
+<a name="ln432">        { WPN_HALBERD,          10 },</a>
+<a name="ln433">        { WPN_GLAIVE,           10 },</a>
+<a name="ln434">        { WPN_DEMON_TRIDENT,    20 } };</a>
+<a name="ln435">    static const weapon_list GARGOYLE_WEAPONS =</a>
+<a name="ln436">    {   { WPN_MACE,             15 },</a>
+<a name="ln437">        { WPN_FLAIL,            10 },</a>
+<a name="ln438">        { WPN_MORNINGSTAR,      5 },</a>
+<a name="ln439">        { WPN_DIRE_FLAIL,       2 }, };</a>
+<a name="ln440"> </a>
+<a name="ln441">    static const map&lt;monster_type, mon_weapon_spec&gt; primary_weapon_specs = {</a>
+<a name="ln442">        { MONS_HOBGOBLIN,</a>
+<a name="ln443">            { { { WPN_CLUB,             3 },</a>
+<a name="ln444">                { NUM_WEAPONS,          2 },</a>
+<a name="ln445">        } } },</a>
+<a name="ln446">        { MONS_ROBIN,</a>
+<a name="ln447">            { { { WPN_CLUB,             35 },</a>
+<a name="ln448">                { WPN_DAGGER,           30 },</a>
+<a name="ln449">                { WPN_SPEAR,            30 },</a>
+<a name="ln450">                { WPN_SHORT_SWORD,      20 },</a>
+<a name="ln451">                { WPN_MACE,             20 },</a>
+<a name="ln452">                { WPN_WHIP,             15 },</a>
+<a name="ln453">                { WPN_TRIDENT,          10 },</a>
+<a name="ln454">                { WPN_FALCHION,         10 },</a>
+<a name="ln455">        } } },</a>
+<a name="ln456">        { MONS_GOBLIN,                  { GOBLIN_WEAPONS } },</a>
+<a name="ln457">        { MONS_JESSICA,                 { GOBLIN_WEAPONS } },</a>
+<a name="ln458">        { MONS_IJYB,                    { GOBLIN_WEAPONS } },</a>
+<a name="ln459">        { MONS_WIGHT,</a>
+<a name="ln460">            { { { WPN_MORNINGSTAR,      4 },</a>
+<a name="ln461">                { WPN_DIRE_FLAIL,       4 },</a>
+<a name="ln462">                { WPN_WAR_AXE,          4 },</a>
+<a name="ln463">                { WPN_TRIDENT,          4 },</a>
+<a name="ln464">                { WPN_MACE,             7 },</a>
+<a name="ln465">                { WPN_FLAIL,            7 },</a>
+<a name="ln466">                { WPN_FALCHION,         7 },</a>
+<a name="ln467">                { WPN_DAGGER,           7 },</a>
+<a name="ln468">                { WPN_SHORT_SWORD,      7 },</a>
+<a name="ln469">                { WPN_LONG_SWORD,       7 },</a>
+<a name="ln470">                { WPN_SCIMITAR,         7 },</a>
+<a name="ln471">                { WPN_GREAT_SWORD,      7 },</a>
+<a name="ln472">                { WPN_HAND_AXE,         7 },</a>
+<a name="ln473">                { WPN_BATTLEAXE,        7 },</a>
+<a name="ln474">                { WPN_SPEAR,            7 },</a>
+<a name="ln475">                { WPN_HALBERD,          7 },</a>
+<a name="ln476">            } } },</a>
+<a name="ln477">        { MONS_EDMUND,</a>
+<a name="ln478">            { { { WPN_DIRE_FLAIL,       1 },</a>
+<a name="ln479">                { WPN_FLAIL,            2 },</a>
+<a name="ln480">        }, {}, {}, 1 } },</a>
+<a name="ln481">        { MONS_DEATH_KNIGHT,</a>
+<a name="ln482">            { { { WPN_MORNINGSTAR,      5 },</a>
+<a name="ln483">                { WPN_GREAT_MACE,       5 },</a>
+<a name="ln484">                { WPN_HALBERD,          5 },</a>
+<a name="ln485">                { WPN_GREAT_SWORD,      5 },</a>
+<a name="ln486">                { WPN_GLAIVE,           8 },</a>
+<a name="ln487">                { WPN_BROAD_AXE,        10 },</a>
+<a name="ln488">                { WPN_BATTLEAXE,        15 },</a>
+<a name="ln489">        }, {2, 1, 4} } },</a>
+<a name="ln490">        { MONS_GNOLL,                   { GNOLL_WEAPONS } },</a>
+<a name="ln491">        { MONS_OGRE_MAGE,               { GNOLL_WEAPONS } },</a>
+<a name="ln492">        { MONS_NAGA_MAGE,               { GNOLL_WEAPONS } },</a>
+<a name="ln493">        { MONS_NAGARAJA,            { GNOLL_WEAPONS } },</a>
+<a name="ln494">        { MONS_GNOLL_SHAMAN,</a>
+<a name="ln495">            { { { WPN_CLUB,             1 },</a>
+<a name="ln496">                { WPN_WHIP,             1 },</a>
+<a name="ln497">        } } },</a>
+<a name="ln498">        { MONS_GNOLL_SERGEANT,</a>
+<a name="ln499">            { { { WPN_SPEAR,            2 },</a>
+<a name="ln500">                { WPN_TRIDENT,          1 },</a>
+<a name="ln501">        }, {}, {}, 3 } },</a>
+<a name="ln502">        { MONS_PIKEL, { { { WPN_WHIP, 1 } }, { 1, 0, 2 }, {</a>
+<a name="ln503">            { SPWPN_FLAMING, 2 },</a>
+<a name="ln504">            { SPWPN_FREEZING, 2 },</a>
+<a name="ln505">            { SPWPN_ELECTROCUTION, 1 },</a>
+<a name="ln506">        } } },</a>
+<a name="ln507">        { MONS_GRUM,</a>
+<a name="ln508">            { { { WPN_SPEAR,            3 },</a>
+<a name="ln509">                { WPN_HALBERD,          1 },</a>
+<a name="ln510">                { WPN_GLAIVE,           1 },</a>
+<a name="ln511">        }, { 1, -2, 1 } } },</a>
+<a name="ln512">        { MONS_CRAZY_YIUF,</a>
+<a name="ln513">            { { { WPN_QUARTERSTAFF, 1 } },</a>
+<a name="ln514">            { 1, 2, 4 },</a>
+<a name="ln515">            { { SPWPN_CHAOS, 1 } } } },</a>
+<a name="ln516">        { MONS_JOSEPH, { { { WPN_QUARTERSTAFF, 1 } } } },</a>
+<a name="ln517">        { MONS_SPRIGGAN_DRUID, { { { WPN_QUARTERSTAFF, 1 } } } },</a>
+<a name="ln518">        { MONS_BAI_SUZHEN, { { { WPN_QUARTERSTAFF, 1 } } } },</a>
+<a name="ln519">        { MONS_ORC,                     { ORC_WEAPONS } },</a>
+<a name="ln520">        { MONS_ORC_PRIEST,              { ORC_WEAPONS } },</a>
+<a name="ln521">        { MONS_DRACONIAN,               { ORC_WEAPONS } },</a>
+<a name="ln522">        { MONS_TERENCE,</a>
+<a name="ln523">            { { { WPN_FLAIL,            30 },</a>
+<a name="ln524">                { WPN_HAND_AXE,         20 },</a>
+<a name="ln525">                { WPN_SHORT_SWORD,      20 },</a>
+<a name="ln526">                { WPN_MACE,             20 },</a>
+<a name="ln527">                { WPN_TRIDENT,          10 },</a>
+<a name="ln528">                { WPN_FALCHION,         10 },</a>
+<a name="ln529">                { WPN_MORNINGSTAR,      3 },</a>
+<a name="ln530">        } } },</a>
+<a name="ln531">        { MONS_DUVESSA,</a>
+<a name="ln532">            { { { WPN_SHORT_SWORD,      3 },</a>
+<a name="ln533">                { WPN_RAPIER,           1 },</a>
+<a name="ln534">        } } },</a>
+<a name="ln535">        { MONS_ASTERION, {</a>
+<a name="ln536">            { { WPN_DEMON_WHIP,         1 },</a>
+<a name="ln537">              { WPN_DEMON_BLADE,        1 },</a>
+<a name="ln538">              { WPN_DEMON_TRIDENT,      1 },</a>
+<a name="ln539">              { WPN_MORNINGSTAR,        1 },</a>
+<a name="ln540">              { WPN_BROAD_AXE,          1 }, },</a>
+<a name="ln541">            {}, {}, 1,</a>
+<a name="ln542">        } },</a>
+<a name="ln543">        { MONS_MARA,</a>
+<a name="ln544">            { { { WPN_DEMON_WHIP,       1 },</a>
+<a name="ln545">                { WPN_DEMON_TRIDENT,    1 },</a>
+<a name="ln546">                { WPN_DEMON_BLADE,      1 },</a>
+<a name="ln547">        }, {}, {}, 1 } },</a>
+<a name="ln548">        { MONS_RAKSHASA,</a>
+<a name="ln549">            { { { WPN_WHIP,             1 },</a>
+<a name="ln550">                { WPN_TRIDENT,          1 },</a>
+<a name="ln551">                { WPN_LONG_SWORD,       1 },</a>
+<a name="ln552">        } } },</a>
+<a name="ln553">        { MONS_DEEP_ELF_KNIGHT,         { DE_KNIGHT_WEAPONS } },</a>
+<a name="ln554">        { MONS_DEEP_ELF_HIGH_PRIEST,    { DE_KNIGHT_WEAPONS } },</a>
+<a name="ln555">        { MONS_DEEP_ELF_BLADEMASTER,</a>
+<a name="ln556">            { { { WPN_RAPIER,           20 },</a>
+<a name="ln557">                { WPN_SHORT_SWORD,      5 },</a>
+<a name="ln558">                { WPN_QUICK_BLADE,      1 },</a>
+<a name="ln559">        } } },</a>
+<a name="ln560">        { MONS_DEEP_ELF_ARCHER,</a>
+<a name="ln561">            { { { WPN_SHORT_SWORD,      1 },</a>
+<a name="ln562">                { WPN_DAGGER,           1 },</a>
+<a name="ln563">        } } },</a>
+<a name="ln564">        { MONS_DEEP_ELF_MASTER_ARCHER, { { { WPN_LONGBOW, 1 } } } },</a>
+<a name="ln565">        { MONS_DEEP_ELF_MAGE,           { DE_MAGE_WEAPONS } },</a>
+<a name="ln566">        { MONS_DEEP_ELF_ANNIHILATOR,    { DE_MAGE_WEAPONS } },</a>
+<a name="ln567">        { MONS_DEEP_ELF_DEATH_MAGE,     { DE_MAGE_WEAPONS } },</a>
+<a name="ln568">        { MONS_DEEP_ELF_DEMONOLOGIST,   { DE_MAGE_WEAPONS } },</a>
+<a name="ln569">        { MONS_DEEP_ELF_SORCERER,       { DE_MAGE_WEAPONS } },</a>
+<a name="ln570">        { MONS_DEEP_ELF_ELEMENTALIST,   { DE_MAGE_WEAPONS } },</a>
+<a name="ln571">        { MONS_DRACONIAN_SHIFTER,       { DRAC_MAGE_WEAPONS } },</a>
+<a name="ln572">        { MONS_DRACONIAN_SCORCHER,      { DRAC_MAGE_WEAPONS } },</a>
+<a name="ln573">        { MONS_DRACONIAN_ANNIHILATOR,   { DRAC_MAGE_WEAPONS } },</a>
+<a name="ln574">        { MONS_DRACONIAN_STORMCALLER,   { DRAC_MAGE_WEAPONS } },</a>
+<a name="ln575">        { MONS_RAGGED_HIEROPHANT,       { DRAC_MAGE_WEAPONS } },</a>
+<a name="ln576">        { MONS_VASHNIA,                 { NAGA_WEAPONS, {}, {}, 1 } },</a>
+<a name="ln577">        { MONS_NAGA_SHARPSHOOTER,       { NAGA_WEAPONS } },</a>
+<a name="ln578">        { MONS_NAGA,                    { NAGA_WEAPONS } },</a>
+<a name="ln579">        { MONS_NAGA_WARRIOR,            { NAGA_WEAPONS } },</a>
+<a name="ln580">        { MONS_ORC_WARRIOR,             { NAGA_WEAPONS } },</a>
+<a name="ln581">        { MONS_ORC_HIGH_PRIEST,         { NAGA_WEAPONS } },</a>
+<a name="ln582">        { MONS_BLORK_THE_ORC,           { NAGA_WEAPONS } },</a>
+<a name="ln583">        { MONS_DANCING_WEAPON,          { NAGA_WEAPONS, {}, {}, 1 } },</a>
+<a name="ln584">        { MONS_SPECTRAL_WEAPON,         { NAGA_WEAPONS } }, // for mspec placement</a>
+<a name="ln585">        { MONS_FRANCES,                 { NAGA_WEAPONS } },</a>
+<a name="ln586">        { MONS_HAROLD,                  { NAGA_WEAPONS } },</a>
+<a name="ln587">        { MONS_SKELETAL_WARRIOR,        { NAGA_WEAPONS } },</a>
+<a name="ln588">        { MONS_PALE_DRACONIAN,          { NAGA_WEAPONS } },</a>
+<a name="ln589">        { MONS_RED_DRACONIAN,           { NAGA_WEAPONS } },</a>
+<a name="ln590">        { MONS_WHITE_DRACONIAN,         { NAGA_WEAPONS } },</a>
+<a name="ln591">        { MONS_GREEN_DRACONIAN,         { NAGA_WEAPONS } },</a>
+<a name="ln592">        { MONS_BLACK_DRACONIAN,         { NAGA_WEAPONS } },</a>
+<a name="ln593">        { MONS_YELLOW_DRACONIAN,        { NAGA_WEAPONS } },</a>
+<a name="ln594">        { MONS_PURPLE_DRACONIAN,        { NAGA_WEAPONS } },</a>
+<a name="ln595">        { MONS_GREY_DRACONIAN,          { NAGA_WEAPONS } },</a>
+<a name="ln596">        { MONS_TENGU,                   { NAGA_WEAPONS } },</a>
+<a name="ln597">        { MONS_NAGA_RITUALIST,</a>
+<a name="ln598">            { { { WPN_DAGGER,           12 },</a>
+<a name="ln599">                { WPN_SCIMITAR,         5 },</a>
+<a name="ln600">        }, { 2, 1, 4 }, { { SPWPN_VENOM, 1 } } } },</a>
+<a name="ln601">        { MONS_TIAMAT,</a>
+<a name="ln602">            { { { WPN_BARDICHE,         1 },</a>
+<a name="ln603">                { WPN_DEMON_TRIDENT,    1 },</a>
+<a name="ln604">                { WPN_GLAIVE,           1 },</a>
+<a name="ln605">        }, {}, {}, 1 } },</a>
+<a name="ln606">        { MONS_RUPERT,</a>
+<a name="ln607">            // Rupert favours big two-handers with visceral up-close</a>
+<a name="ln608">            // effects, i.e. no polearms.</a>
+<a name="ln609">            { { { WPN_GREAT_MACE,       10 },</a>
+<a name="ln610">                { WPN_GREAT_SWORD,      6 },</a>
+<a name="ln611">                { WPN_TRIPLE_SWORD,     2 },</a>
+<a name="ln612">                { WPN_BATTLEAXE,        8 },</a>
+<a name="ln613">                { WPN_EXECUTIONERS_AXE, 2 },</a>
+<a name="ln614">        }, {}, {}, 1 } },</a>
+<a name="ln615">        { MONS_TENGU_REAVER,            ORC_WARLORD_WSPEC },</a>
+<a name="ln616">        { MONS_VAULT_WARDEN,            ORC_WARLORD_WSPEC },</a>
+<a name="ln617">        { MONS_ORC_WARLORD,             ORC_WARLORD_WSPEC },</a>
+<a name="ln618">        { MONS_SAINT_ROKA,              ORC_WARLORD_WSPEC },</a>
+<a name="ln619">        { MONS_DRACONIAN_KNIGHT,        ORC_WARLORD_WSPEC },</a>
+<a name="ln620">        { MONS_ORC_KNIGHT,              ORC_KNIGHT_WSPEC },</a>
+<a name="ln621">        { MONS_TENGU_WARRIOR,           ORC_KNIGHT_WSPEC },</a>
+<a name="ln622">        { MONS_VAULT_GUARD,             ORC_KNIGHT_WSPEC },</a>
+<a name="ln623">        { MONS_VAMPIRE_KNIGHT,          ORC_KNIGHT_WSPEC },</a>
+<a name="ln624">        { MONS_LOUISE,</a>
+<a name="ln625">            { { { WPN_MORNINGSTAR, 1 },</a>
+<a name="ln626">                { WPN_EVENINGSTAR, 1 },</a>
+<a name="ln627">                { WPN_TRIDENT, 1 },</a>
+<a name="ln628">                { WPN_DEMON_TRIDENT, 1 },</a>
+<a name="ln629">        }, {}, {}, 1 } },</a>
+<a name="ln630">        { MONS_JORY,</a>
+<a name="ln631">            { { { WPN_GREAT_SWORD,      3 },</a>
+<a name="ln632">                { WPN_GLAIVE,           1 },</a>
+<a name="ln633">                { WPN_BATTLEAXE,        1 },</a>
+<a name="ln634">        }, {}, {}, 1 } },</a>
+<a name="ln635">        { MONS_VAULT_SENTINEL,</a>
+<a name="ln636">            { { { WPN_LONG_SWORD,       5 },</a>
+<a name="ln637">                { WPN_FALCHION,         4 },</a>
+<a name="ln638">                { WPN_WAR_AXE,          3 },</a>
+<a name="ln639">                { WPN_MORNINGSTAR,      3 },</a>
+<a name="ln640">        } } },</a>
+<a name="ln641">        { MONS_IRONBRAND_CONVOKER,      { IRON_WEAPONS } },</a>
+<a name="ln642">        { MONS_IRONHEART_PRESERVER,     { IRON_WEAPONS } },</a>
+<a name="ln643">        { MONS_SIGMUND, { { { WPN_SCYTHE, 1 } } } },</a>
+<a name="ln644">        { MONS_REAPER, { { { WPN_SCYTHE, 1 } }, {}, {}, 1 } },</a>
+<a name="ln645">        { MONS_BALRUG, { { { WPN_DEMON_WHIP, 1 } } } },</a>
+<a name="ln646">        { MONS_RED_DEVIL,</a>
+<a name="ln647">            { { { WPN_TRIDENT,          4 },</a>
+<a name="ln648">                { WPN_DEMON_TRIDENT,    1 },</a>
+<a name="ln649">        } } },</a>
+<a name="ln650">        { MONS_TWO_HEADED_OGRE,         { DOUBLE_OGRE_WEAPONS } },</a>
+<a name="ln651">        { MONS_IRON_GIANT,              { DOUBLE_OGRE_WEAPONS } },</a>
+<a name="ln652">        { MONS_ETTIN,</a>
+<a name="ln653">            { { { WPN_DIRE_FLAIL,       9 },</a>
+<a name="ln654">                { WPN_GREAT_MACE,       1 },</a>
+<a name="ln655">        } } },</a>
+<a name="ln656">        { MONS_OGRE,                    { OGRE_WEAPONS } },</a>
+<a name="ln657">        { MONS_EROLCHA,                 { OGRE_WEAPONS } },</a>
+<a name="ln658">        { MONS_ILSUIW, {</a>
+<a name="ln659">            { { WPN_TRIDENT,            1 } },</a>
+<a name="ln660">            { 1, -1, 6, 2 },</a>
+<a name="ln661">            { { SPWPN_FREEZING, 1 } }</a>
+<a name="ln662">        } },</a>
+<a name="ln663">        { MONS_MERFOLK_IMPALER,</a>
+<a name="ln664">            { { { WPN_TRIDENT,          20 },</a>
+<a name="ln665">                { WPN_DEMON_TRIDENT,    3 },</a>
+<a name="ln666">        } } },</a>
+<a name="ln667">        { MONS_MERFOLK_AQUAMANCER, { { { WPN_RAPIER, 1 } }, {}, {}, 2 } },</a>
+<a name="ln668">        { MONS_MERFOLK_JAVELINEER, { { { WPN_SPEAR, 1 } } } },</a>
+<a name="ln669">        { MONS_SPRIGGAN_RIDER, { { { WPN_SPEAR, 1 } } } },</a>
+<a name="ln670">        { MONS_MERFOLK, { { { WPN_TRIDENT, 1 } } } },</a>
+<a name="ln671">        { MONS_MERFOLK_SIREN,</a>
+<a name="ln672">            { { { WPN_TRIDENT,          1 },</a>
+<a name="ln673">                { WPN_SPEAR,            2 },</a>
+<a name="ln674">        } } },</a>
+<a name="ln675">        { MONS_CENTAUR, { { { WPN_SHORTBOW, 1 } } } },</a>
+<a name="ln676">        { MONS_CENTAUR_WARRIOR,</a>
+<a name="ln677">            { { { WPN_SHORTBOW,         2 },</a>
+<a name="ln678">                { WPN_LONGBOW,          1 },</a>
+<a name="ln679">        } } },</a>
+<a name="ln680">        { MONS_FAUN,                    { FAUN_WEAPONS } },</a>
+<a name="ln681">        { MONS_SATYR,                   { FAUN_WEAPONS } },</a>
+<a name="ln682">        { MONS_SERVANT_OF_WHISPERS,     { FAUN_WEAPONS } },</a>
+<a name="ln683">        { MONS_NESSOS, {</a>
+<a name="ln684">            { { WPN_LONGBOW,            1 } },</a>
+<a name="ln685">            { 1, 1, 3 },</a>
+<a name="ln686">            { { SPWPN_FLAMING, 1 } }</a>
+<a name="ln687">        } },</a>
+<a name="ln688">        { MONS_YAKTAUR, { { { WPN_ARBALEST, 1 } } } },</a>
+<a name="ln689">        { MONS_YAKTAUR_CAPTAIN, { { { WPN_ARBALEST, 1 } } } },</a>
+<a name="ln690">        { MONS_EFREET,                  EFREET_WSPEC },</a>
+<a name="ln691">        { MONS_ERICA,                   EFREET_WSPEC },</a>
+<a name="ln692">        { MONS_AZRAEL,                  EFREET_WSPEC },</a>
+<a name="ln693">        { MONS_ANGEL, {</a>
+<a name="ln694">            { { WPN_WHIP,               3 },</a>
+<a name="ln695">              { WPN_SACRED_SCOURGE,     1 }, },</a>
+<a name="ln696">            { 1, 1, 3 },</a>
+<a name="ln697">            { { SPWPN_HOLY_WRATH, 1 } },</a>
+<a name="ln698">        } },</a>
+<a name="ln699">        { MONS_CHERUB,</a>
+<a name="ln700">            { { { WPN_FLAIL,            1 },</a>
+<a name="ln701">                { WPN_LONG_SWORD,       1 },</a>
+<a name="ln702">                { WPN_SCIMITAR,         1 },</a>
+<a name="ln703">                { WPN_FALCHION,         1 }, },</a>
+<a name="ln704">            { 1, 0, 4 },</a>
+<a name="ln705">            { { SPWPN_FLAMING, 1 } },</a>
+<a name="ln706">        } },</a>
+<a name="ln707">        { MONS_SERAPH, {</a>
+<a name="ln708">            { { WPN_GREAT_SWORD,        1 } },</a>
+<a name="ln709">            { 1, 3, 8 }, // highly enchanted, we're top rank</a>
+<a name="ln710">            { { SPWPN_FLAMING, 1 } },</a>
+<a name="ln711">        } },</a>
+<a name="ln712">        { MONS_DAEVA,                   DAEVA_WSPEC },</a>
+<a name="ln713">        { MONS_PROFANE_SERVITOR,</a>
+<a name="ln714">            { { { WPN_DEMON_WHIP,       1 },</a>
+<a name="ln715">                { WPN_WHIP,             3 }, },</a>
+<a name="ln716">            { 1, 1, 3 },</a>
+<a name="ln717">        } },</a>
+<a name="ln718">        { MONS_MENNAS, {</a>
+<a name="ln719">            { { WPN_TRISHULA,       1},</a>
+<a name="ln720">              { WPN_SACRED_SCOURGE, 1},</a>
+<a name="ln721">              { WPN_EUDEMON_BLADE,  1}, },</a>
+<a name="ln722">            { 1, 0, 5},</a>
+<a name="ln723">            { { SPWPN_HOLY_WRATH, 1}}</a>
+<a name="ln724">        } },</a>
+<a name="ln725">        { MONS_DONALD,</a>
+<a name="ln726">            { { { WPN_SCIMITAR,         12 },</a>
+<a name="ln727">                { WPN_LONG_SWORD,       10 },</a>
+<a name="ln728">                { WPN_BROAD_AXE,        9 },</a>
+<a name="ln729">                { WPN_EVENINGSTAR,      7 },</a>
+<a name="ln730">                { WPN_DOUBLE_SWORD,     7 },</a>
+<a name="ln731">                { WPN_DEMON_TRIDENT,    7 },</a>
+<a name="ln732">                { WPN_WAR_AXE,          3 },</a>
+<a name="ln733">        } } },</a>
+<a name="ln734">        { MONS_HELL_KNIGHT,</a>
+<a name="ln735">            { { { WPN_DEMON_WHIP,       1 },</a>
+<a name="ln736">                { WPN_DEMON_BLADE,      1 },</a>
+<a name="ln737">                { WPN_DEMON_TRIDENT,    1 },</a>
+<a name="ln738">                { WPN_HALBERD,          1 },</a>
+<a name="ln739">                { WPN_GLAIVE,           1 },</a>
+<a name="ln740">                { WPN_WAR_AXE,          1 },</a>
+<a name="ln741">                { WPN_GREAT_MACE,       1 },</a>
+<a name="ln742">                { WPN_BATTLEAXE,        1 },</a>
+<a name="ln743">                { WPN_LONG_SWORD,       1 },</a>
+<a name="ln744">                { WPN_SCIMITAR,         1 },</a>
+<a name="ln745">                { WPN_GREAT_SWORD,      1 },</a>
+<a name="ln746">                { WPN_BROAD_AXE,        1 }, },</a>
+<a name="ln747">              { 1, 0, 5 },</a>
+<a name="ln748">              HELL_KNIGHT_BRANDS</a>
+<a name="ln749">        } },</a>
+<a name="ln750">        { MONS_MAGGIE,</a>
+<a name="ln751">            { { { WPN_HALBERD,          1 },</a>
+<a name="ln752">                { WPN_GLAIVE,           1 },</a>
+<a name="ln753">                { WPN_WAR_AXE,          1 },</a>
+<a name="ln754">                { WPN_MORNINGSTAR,       1 },</a>
+<a name="ln755">                { WPN_LONG_SWORD,       1 },</a>
+<a name="ln756">                { WPN_SCIMITAR,         1 },</a>
+<a name="ln757">                { WPN_BROAD_AXE,        1 }, },</a>
+<a name="ln758">              { },</a>
+<a name="ln759">              HELL_KNIGHT_BRANDS</a>
+<a name="ln760">        } },</a>
+<a name="ln761">        { MONS_MARGERY,</a>
+<a name="ln762">            { { { WPN_DEMON_WHIP,       2 },</a>
+<a name="ln763">                { WPN_DEMON_BLADE,      2 },</a>
+<a name="ln764">                { WPN_DEMON_TRIDENT,    2 },</a>
+<a name="ln765">                { WPN_HALBERD,          1 },</a>
+<a name="ln766">                { WPN_GLAIVE,           1 },</a>
+<a name="ln767">                { WPN_WAR_AXE,          1 },</a>
+<a name="ln768">                { WPN_GREAT_MACE,       1 },</a>
+<a name="ln769">                { WPN_BATTLEAXE,        1 },</a>
+<a name="ln770">                { WPN_LONG_SWORD,       1 },</a>
+<a name="ln771">                { WPN_SCIMITAR,         1 },</a>
+<a name="ln772">                { WPN_GREAT_SWORD,      1 },</a>
+<a name="ln773">                { WPN_BROAD_AXE,        1 }, },</a>
+<a name="ln774">              { 1, 0, 5 },</a>
+<a name="ln775">              HELL_KNIGHT_BRANDS</a>
+<a name="ln776">        } },</a>
+<a name="ln777">        { MONS_URUG,                    { URUG_WEAPONS } },</a>
+<a name="ln778">        { MONS_FREDERICK,               { URUG_WEAPONS } },</a>
+<a name="ln779">        { MONS_FIRE_GIANT, {</a>
+<a name="ln780">            { { WPN_GREAT_SWORD,        1 } }, {},</a>
+<a name="ln781">            { { SPWPN_FLAMING, 1 } },</a>
+<a name="ln782">        } },</a>
+<a name="ln783">        { MONS_FROST_GIANT, {</a>
+<a name="ln784">            { { WPN_BATTLEAXE,          1 } }, {},</a>
+<a name="ln785">            { { SPWPN_FREEZING, 1 } },</a>
+<a name="ln786">        } },</a>
+<a name="ln787">        { MONS_ORC_WIZARD,      { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln788">        { MONS_ORC_SORCERER,    { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln789">        { MONS_NERGALLE,        { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln790">        { MONS_DOWAN,           { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln791">        { MONS_KOBOLD_DEMONOLOGIST, { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln792">        { MONS_NECROMANCER,      { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln793">        { MONS_WIZARD,          { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln794">        { MONS_JOSEPHINE,       { { { WPN_DAGGER, 1 } } } },</a>
+<a name="ln795">        { MONS_PSYCHE, {</a>
+<a name="ln796">            { { WPN_DAGGER,             1 }, },</a>
+<a name="ln797">            { 1, 0, 4 },</a>
+<a name="ln798">            { { SPWPN_CHAOS, 3 },</a>
+<a name="ln799">              { SPWPN_DISTORTION, 1 } },</a>
+<a name="ln800">        } },</a>
+<a name="ln801">        { MONS_AGNES,       { { { WPN_LAJATANG, 1 } } } },</a>
+<a name="ln802">        { MONS_SONJA, {</a>
+<a name="ln803">            { { WPN_DAGGER,             1 },</a>
+<a name="ln804">              { WPN_SHORT_SWORD,        1 }, }, {},</a>
+<a name="ln805">            { { SPWPN_DISTORTION,       3 },</a>
+<a name="ln806">              { SPWPN_VENOM,            2 },</a>
+<a name="ln807">              { SPWPN_DRAINING,         1 } },</a>
+<a name="ln808">        } },</a>
+<a name="ln809">        { MONS_MAURICE,</a>
+<a name="ln810">            { { { WPN_DAGGER,           1 },</a>
+<a name="ln811">                { WPN_SHORT_SWORD,      1 },</a>
+<a name="ln812">        } } },</a>
+<a name="ln813">        { MONS_EUSTACHIO,</a>
+<a name="ln814">            { { { WPN_FALCHION,         1 },</a>
+<a name="ln815">                { WPN_RAPIER,           2 },</a>
+<a name="ln816">        } } },</a>
+<a name="ln817">        { MONS_NIKOLA, {</a>
+<a name="ln818">            { { WPN_RAPIER,             1 } },</a>
+<a name="ln819">            { 1, 0, 4 },</a>
+<a name="ln820">            { { SPWPN_ELECTROCUTION, 1 } },</a>
+<a name="ln821">        } },</a>
+<a name="ln822">        { MONS_SALAMANDER_MYSTIC,</a>
+<a name="ln823">            { { { WPN_QUARTERSTAFF,     10 },</a>
+<a name="ln824">                { WPN_DAGGER,           5 },</a>
+<a name="ln825">                { WPN_SCIMITAR,         2 },</a>
+<a name="ln826">        } } },</a>
+<a name="ln827">        { MONS_SPRIGGAN,</a>
+<a name="ln828">            { { { WPN_DAGGER,           1 },</a>
+<a name="ln829">                { WPN_SHORT_SWORD,      1 },</a>
+<a name="ln830">                { WPN_RAPIER,           1 },</a>
+<a name="ln831">        } } },</a>
+<a name="ln832">        { MONS_SPRIGGAN_BERSERKER, {</a>
+<a name="ln833">            { { WPN_QUARTERSTAFF,       10 },</a>
+<a name="ln834">              { WPN_HAND_AXE,           9 },</a>
+<a name="ln835">              { WPN_WAR_AXE,            12 },</a>
+<a name="ln836">              { WPN_BROAD_AXE,          5 },</a>
+<a name="ln837">              { WPN_FLAIL,              5 },</a>
+<a name="ln838">              { WPN_RAPIER,             10 }, }, {},</a>
+<a name="ln839">            { { SPWPN_ANTIMAGIC, 1 },</a>
+<a name="ln840">              { NUM_SPECIAL_WEAPONS, 3 } },</a>
+<a name="ln841">        } },</a>
+<a name="ln842">        { MONS_SPRIGGAN_DEFENDER, { SP_DEFENDER_WEAPONS, {}, {}, 1 } },</a>
+<a name="ln843">        { MONS_THE_ENCHANTRESS, { SP_DEFENDER_WEAPONS, {}, {}, 1 } },</a>
+<a name="ln844">        { MONS_HELLBINDER, { { { WPN_DEMON_BLADE, 1 } } } },</a>
+<a name="ln845">        { MONS_IGNACIO, {</a>
+<a name="ln846">            { { WPN_EXECUTIONERS_AXE, 1 } },</a>
+<a name="ln847">            { 1, 2, 8 },</a>
+<a name="ln848">            { { SPWPN_PAIN, 1 } },</a>
+<a name="ln849">        } },</a>
+<a name="ln850">        { MONS_ANCIENT_CHAMPION, {</a>
+<a name="ln851">            { { WPN_GREAT_MACE,         1 },</a>
+<a name="ln852">              { WPN_BATTLEAXE,          1 },</a>
+<a name="ln853">              { WPN_GREAT_SWORD,        1 }, },</a>
+<a name="ln854">            { 1, 0, 3 },</a>
+<a name="ln855">            { { SPWPN_DRAINING,      13 }, // total 45</a>
+<a name="ln856">              { SPWPN_VORPAL,        7 },</a>
+<a name="ln857">              { SPWPN_FREEZING,      4 },</a>
+<a name="ln858">              { SPWPN_FLAMING,       4 },</a>
+<a name="ln859">              { SPWPN_PAIN,          2 },</a>
+<a name="ln860">              { NUM_SPECIAL_WEAPONS, 15 } }, // 2/3 chance of brand</a>
+<a name="ln861">        } },</a>
+<a name="ln862">        { MONS_SOJOBO, {</a>
+<a name="ln863">            { { WPN_TRIPLE_SWORD,       1 },</a>
+<a name="ln864">              { WPN_GREAT_SWORD,        5 } }, {},</a>
+<a name="ln865">            { { SPWPN_ELECTROCUTION, 2 },</a>
+<a name="ln866">              { NUM_SPECIAL_WEAPONS, 1 } },</a>
+<a name="ln867">            1,</a>
+<a name="ln868">        } },</a>
+<a name="ln869">        { MONS_INFERNAL_DEMONSPAWN,     { DS_WEAPONS } },</a>
+<a name="ln870">        { MONS_GELID_DEMONSPAWN,        { DS_WEAPONS } },</a>
+<a name="ln871">        { MONS_TORTUROUS_DEMONSPAWN,    { DS_WEAPONS } },</a>
+<a name="ln872">        { MONS_CORRUPTER,               { DS_WEAPONS } },</a>
+<a name="ln873">        { MONS_BLACK_SUN,               { DS_WEAPONS } },</a>
+<a name="ln874">        { MONS_BLOOD_SAINT, {</a>
+<a name="ln875">            { { WPN_DAGGER,             4 },</a>
+<a name="ln876">              { WPN_QUARTERSTAFF,       1 } },</a>
+<a name="ln877">        } },</a>
+<a name="ln878">        { MONS_WARMONGER, {</a>
+<a name="ln879">            { { WPN_DEMON_BLADE,        10 },</a>
+<a name="ln880">              { WPN_DEMON_WHIP,         10 },</a>
+<a name="ln881">              { WPN_DEMON_TRIDENT,      10 },</a>
+<a name="ln882">              { WPN_BATTLEAXE,          7 },</a>
+<a name="ln883">              { WPN_GREAT_SWORD,        5 },</a>
+<a name="ln884">              { WPN_DOUBLE_SWORD,       2 },</a>
+<a name="ln885">              { WPN_DIRE_FLAIL,         5 },</a>
+<a name="ln886">              { WPN_GREAT_MACE,         2 },</a>
+<a name="ln887">              { WPN_GLAIVE,             5 },</a>
+<a name="ln888">              { WPN_BARDICHE,           2 },</a>
+<a name="ln889">              { WPN_LAJATANG,           1 }, },</a>
+<a name="ln890">           {}, {}, 1,</a>
+<a name="ln891">        } },</a>
+<a name="ln892">        { MONS_GARGOYLE,                { GARGOYLE_WEAPONS } },</a>
+<a name="ln893">        { MONS_MOLTEN_GARGOYLE,         { GARGOYLE_WEAPONS } },</a>
+<a name="ln894">        { MONS_WAR_GARGOYLE, {</a>
+<a name="ln895">            { { WPN_MORNINGSTAR,        10 },</a>
+<a name="ln896">              { WPN_FLAIL,              10 },</a>
+<a name="ln897">              { WPN_DIRE_FLAIL,         5 },</a>
+<a name="ln898">              { WPN_GREAT_MACE,         5 },</a>
+<a name="ln899">              { WPN_LAJATANG,           1 } },</a>
+<a name="ln900">            {}, {}, 4,</a>
+<a name="ln901">        } },</a>
+<a name="ln902">        { MONS_MELIAI, { // labrys</a>
+<a name="ln903">            { { WPN_HAND_AXE,           12 },</a>
+<a name="ln904">              { WPN_WAR_AXE,            7 },</a>
+<a name="ln905">              { WPN_BROAD_AXE,          1 }, },</a>
+<a name="ln906">        } },</a>
+<a name="ln907">        { MONS_IMPERIAL_MYRMIDON, {</a>
+<a name="ln908">            { { WPN_SCIMITAR,           20 },</a>
+<a name="ln909">              { WPN_DEMON_BLADE,        4 },</a>
+<a name="ln910">              { WPN_DOUBLE_SWORD,       1 }, },</a>
+<a name="ln911">        } },</a>
+<a name="ln912">        { MONS_KILLER_KLOWN, {</a>
+<a name="ln913">            { { WPN_CLUB,             10 }, },</a>
+<a name="ln914">            { 1, 8, 12 },</a>
+<a name="ln915">            { { SPWPN_NORMAL,         20 },</a>
+<a name="ln916">              { SPWPN_FLAMING,        20 },</a>
+<a name="ln917">              { SPWPN_FREEZING,       10 },</a>
+<a name="ln918">              { SPWPN_VORPAL  ,       10 },</a>
+<a name="ln919">              { SPWPN_ELECTROCUTION,  10 },</a>
+<a name="ln920">              { SPWPN_VENOM,          10 },</a>
+<a name="ln921">              { SPWPN_VAMPIRISM,       5 },</a>
+<a name="ln922">              { SPWPN_ANTIMAGIC,       5 },</a>
+<a name="ln923">              { SPWPN_PAIN,            4 },</a>
+<a name="ln924">              { SPWPN_HOLY_WRATH,      3 },</a>
+<a name="ln925">              { SPWPN_DISTORTION,      2 },</a>
+<a name="ln926">              { SPWPN_CHAOS,           1 }, },</a>
+<a name="ln927">        } },</a>
+<a name="ln928">    };</a>
+<a name="ln929"> </a>
+<a name="ln930">    static const weapon_list ORC_KNIGHT_BOWS =</a>
+<a name="ln931">    {   { WPN_ARBALEST,                 1 },</a>
+<a name="ln932">        { NUM_WEAPONS,                  8 }, }; // 1/9 chance of ranged weapon</a>
+<a name="ln933"> </a>
+<a name="ln934">    static const map&lt;monster_type, mon_weapon_spec&gt; secondary_weapon_specs = {</a>
+<a name="ln935">        { MONS_JOSEPH, { { { WPN_HUNTING_SLING, 1 } } } },</a>
+<a name="ln936">        { MONS_DEEP_ELF_ARCHER, // XXX: merge w/centaur warrior primary?</a>
+<a name="ln937">            { { { WPN_SHORTBOW,         2 },</a>
+<a name="ln938">                { WPN_LONGBOW,          1 },</a>
+<a name="ln939">        } } },</a>
+<a name="ln940">        { MONS_VASHNIA,</a>
+<a name="ln941">            { { { WPN_LONGBOW,          1 },</a>
+<a name="ln942">                { WPN_ARBALEST,         1 },</a>
+<a name="ln943">        } } },</a>
+<a name="ln944">        { MONS_NAGA_SHARPSHOOTER,</a>
+<a name="ln945">            { { { WPN_ARBALEST,         3 },</a>
+<a name="ln946">                { WPN_SHORTBOW,         2 },</a>
+<a name="ln947">                { WPN_LONGBOW,          1 }</a>
+<a name="ln948">        } } },</a>
+<a name="ln949">        { MONS_VAULT_WARDEN,            { ORC_KNIGHT_BOWS } },</a>
+<a name="ln950">        { MONS_ORC_WARLORD,             { ORC_KNIGHT_BOWS } },</a>
+<a name="ln951">        { MONS_SAINT_ROKA,              { ORC_KNIGHT_BOWS } },</a>
+<a name="ln952">        { MONS_ORC_KNIGHT,              { ORC_KNIGHT_BOWS } },</a>
+<a name="ln953">        { MONS_TENGU_WARRIOR,</a>
+<a name="ln954">            { { { WPN_LONGBOW,                  1 },</a>
+<a name="ln955">                { WPN_ARBALEST,                 1 },</a>
+<a name="ln956">                { NUM_WEAPONS,                  16 }, // 1/9 chance of weap</a>
+<a name="ln957">        } } },</a>
+<a name="ln958">        { MONS_VAULT_SENTINEL,</a>
+<a name="ln959">            { { { WPN_ARBALEST,                 1 },</a>
+<a name="ln960">                { NUM_WEAPONS,                  2 },</a>
+<a name="ln961">        } } },</a>
+<a name="ln962">        { MONS_FAUN, { { { WPN_HUNTING_SLING, 1 } } } },</a>
+<a name="ln963">        { MONS_SATYR,</a>
+<a name="ln964">            { { { WPN_FUSTIBALUS,               1 },</a>
+<a name="ln965">                { WPN_LONGBOW,                  2 },</a>
+<a name="ln966">        } } },</a>
+<a name="ln967">        { MONS_CHERUB,</a>
+<a name="ln968">            { { { WPN_HUNTING_SLING,            1 },</a>
+<a name="ln969">                { WPN_FUSTIBALUS,               1 },</a>
+<a name="ln970">                { WPN_SHORTBOW,                 1 },</a>
+<a name="ln971">                { WPN_LONGBOW,                  1 },</a>
+<a name="ln972">        } } },</a>
+<a name="ln973">        // salamanders only have secondary weapons; melee or bow, not both</a>
+<a name="ln974">        { MONS_SALAMANDER, {</a>
+<a name="ln975">            { { WPN_HALBERD,                    5 },</a>
+<a name="ln976">              { WPN_TRIDENT,                    5 },</a>
+<a name="ln977">              { WPN_SPEAR,                      3 },</a>
+<a name="ln978">              { WPN_GLAIVE,                     2 },</a>
+<a name="ln979">              { WPN_SHORTBOW,                   5 }, },</a>
+<a name="ln980">            { 4, 0, 4 },</a>
+<a name="ln981">        } },</a>
+<a name="ln982">        { MONS_WARMONGER, {</a>
+<a name="ln983">            { { WPN_LONGBOW,                    10 }, // total 60</a>
+<a name="ln984">              { WPN_ARBALEST,                   9 },</a>
+<a name="ln985">              { WPN_TRIPLE_CROSSBOW,            1 },</a>
+<a name="ln986">              { NUM_WEAPONS,                    40 }, }, // 1/3 odds of weap</a>
+<a name="ln987">            {}, {}, 1,</a>
+<a name="ln988">        } },</a>
+<a name="ln989">    };</a>
+<a name="ln990"> </a>
+<a name="ln991">    bool force_item = false;</a>
+<a name="ln992">    bool force_uncursed = false;</a>
+<a name="ln993"> </a>
+<a name="ln994">    string floor_tile = &quot;&quot;;</a>
+<a name="ln995">    string equip_tile = &quot;&quot;;</a>
+<a name="ln996"> </a>
+<a name="ln997">    item_def item;</a>
+<a name="ln998">    item.base_type = OBJ_UNASSIGNED;</a>
+<a name="ln999">    item.quantity = 1;</a>
+<a name="ln1000"> </a>
+<a name="ln1001">    // do we have a secondary weapon to give the monster? (usually ranged)</a>
+<a name="ln1002">    const mon_weapon_spec *secondary_spec = map_find(secondary_weapon_specs,</a>
+<a name="ln1003">                                                     type);</a>
+<a name="ln1004">    if (!secondary_spec || melee_only ||</a>
+<a name="ln1005">        !_apply_weapon_spec(*secondary_spec, item, force_item, level))</a>
+<a name="ln1006">    {</a>
+<a name="ln1007">        // either we're just giving only giving out primary weapons in this</a>
+<a name="ln1008">        // call, or we didn't find a secondary weapon to give. either way,</a>
+<a name="ln1009">        // try to give the monster a primary weapon. (may be its second!)</a>
+<a name="ln1010">        const mon_weapon_spec *primary_spec = map_find(primary_weapon_specs,</a>
+<a name="ln1011">                                                       type);</a>
+<a name="ln1012">        if (primary_spec)</a>
+<a name="ln1013">            _apply_weapon_spec(*primary_spec, item, force_item, level);</a>
+<a name="ln1014">    }</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    // special cases.</a>
+<a name="ln1017">    switch (type)</a>
+<a name="ln1018">    {</a>
+<a name="ln1019">    case MONS_KOBOLD:</a>
+<a name="ln1020">    case MONS_BIG_KOBOLD:</a>
+<a name="ln1021">        if (x_chance_in_y(3, 5))     // give hand weapon</a>
+<a name="ln1022">        {</a>
+<a name="ln1023">            item.base_type = OBJ_WEAPONS;</a>
+<a name="ln1024">            item.sub_type  = random_choose(WPN_DAGGER,      WPN_DAGGER,</a>
+<a name="ln1025">                                           WPN_SHORT_SWORD, WPN_SHORT_SWORD,</a>
+<a name="ln1026">                                           WPN_CLUB,        WPN_WHIP);</a>
+<a name="ln1027">        }</a>
+<a name="ln1028">        else if (one_chance_in(30) &amp;&amp; level &gt; 2)</a>
+<a name="ln1029">        {</a>
+<a name="ln1030">            item.base_type = OBJ_WEAPONS;</a>
+<a name="ln1031">            item.sub_type  = WPN_HAND_CROSSBOW;</a>
+<a name="ln1032">            break;</a>
+<a name="ln1033">        }</a>
+<a name="ln1034">        break;</a>
+<a name="ln1035"> </a>
+<a name="ln1036">    case MONS_GOBLIN:</a>
+<a name="ln1037">        if (!melee_only &amp;&amp; one_chance_in(12) &amp;&amp; level)</a>
+<a name="ln1038">        {</a>
+<a name="ln1039">            item.base_type = OBJ_WEAPONS;</a>
+<a name="ln1040">            item.sub_type  = WPN_HUNTING_SLING;</a>
+<a name="ln1041">            break;</a>
+<a name="ln1042">        }</a>
+<a name="ln1043">        break;</a>
+<a name="ln1044"> </a>
+<a name="ln1045">    case MONS_WIGHT:</a>
+<a name="ln1046">        if (coinflip())</a>
+<a name="ln1047">        {</a>
+<a name="ln1048">            force_item = true;</a>
+<a name="ln1049">            item.plus += 1 + random2(3);</a>
+<a name="ln1050"> </a>
+<a name="ln1051">            if (one_chance_in(5))</a>
+<a name="ln1052">                set_item_ego_type(item, OBJ_WEAPONS, SPWPN_FREEZING);</a>
+<a name="ln1053">        }</a>
+<a name="ln1054"> </a>
+<a name="ln1055">        if (one_chance_in(3))</a>
+<a name="ln1056">            do_curse_item(item);</a>
+<a name="ln1057">        break;</a>
+<a name="ln1058"> </a>
+<a name="ln1059">    case MONS_DEEP_ELF_ARCHER:</a>
+<a name="ln1060">    case MONS_VASHNIA:</a>
+<a name="ln1061">    case MONS_NAGA_SHARPSHOOTER:</a>
+<a name="ln1062">    case MONS_SATYR:</a>
+<a name="ln1063">    case MONS_SONJA:</a>
+<a name="ln1064">        force_uncursed = true;</a>
+<a name="ln1065">        break;</a>
+<a name="ln1066"> </a>
+<a name="ln1067">    case MONS_JORGRUN:</a>
+<a name="ln1068">        force_item = true;</a>
+<a name="ln1069">        if (one_chance_in(3))</a>
+<a name="ln1070">        {</a>
+<a name="ln1071">            item.base_type = OBJ_STAVES;</a>
+<a name="ln1072">            item.sub_type = STAFF_EARTH;</a>
+<a name="ln1073">        }</a>
+<a name="ln1074">        else</a>
+<a name="ln1075">        {</a>
+<a name="ln1076">            item.base_type = OBJ_WEAPONS;</a>
+<a name="ln1077">            item.sub_type = WPN_QUARTERSTAFF;</a>
+<a name="ln1078">            set_item_ego_type(item, OBJ_WEAPONS, SPWPN_VORPAL);</a>
+<a name="ln1079">        }</a>
+<a name="ln1080">        item.flags |= ISFLAG_KNOW_TYPE;</a>
+<a name="ln1081">        break;</a>
+<a name="ln1082"> </a>
+<a name="ln1083">    case MONS_CYCLOPS:</a>
+<a name="ln1084">    case MONS_STONE_GIANT:</a>
+<a name="ln1085">        item.base_type = OBJ_MISSILES;</a>
+<a name="ln1086">        item.sub_type  = MI_LARGE_ROCK;</a>
+<a name="ln1087">        break;</a>
+<a name="ln1088"> </a>
+<a name="ln1089">    case MONS_MERFOLK_IMPALER:</a>
+<a name="ln1090">    case MONS_MERFOLK_JAVELINEER:</a>
+<a name="ln1091">    case MONS_AGNES:</a>
+<a name="ln1092">        if (!one_chance_in(3))</a>
+<a name="ln1093">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1094">        break;</a>
+<a name="ln1095"> </a>
+<a name="ln1096">    case MONS_MERFOLK:</a>
+<a name="ln1097">        if (active_monster_band == BAND_MERFOLK_IMPALER)</a>
+<a name="ln1098">        {</a>
+<a name="ln1099">            item.base_type = OBJ_WEAPONS;</a>
+<a name="ln1100">            item.sub_type  = random_choose_weighted(10, WPN_SPEAR,</a>
+<a name="ln1101">                                                    10, WPN_TRIDENT,</a>
+<a name="ln1102">                                                    5, WPN_HALBERD,</a>
+<a name="ln1103">                                                    5, WPN_GLAIVE);</a>
+<a name="ln1104">        }</a>
+<a name="ln1105">        break;</a>
+<a name="ln1106"> </a>
+<a name="ln1107">    case MONS_ANGEL:</a>
+<a name="ln1108">    case MONS_DAEVA:</a>
+<a name="ln1109">    case MONS_PROFANE_SERVITOR:</a>
+<a name="ln1110">        set_equip_desc(item, ISFLAG_GLOWING); // will never come up...</a>
+<a name="ln1111">        break;</a>
+<a name="ln1112"> </a>
+<a name="ln1113">    case MONS_DONALD:</a>
+<a name="ln1114">    case MONS_FREDERICK:</a>
+<a name="ln1115">    case MONS_URUG:</a>
+<a name="ln1116">        if (x_chance_in_y(5, 9))</a>
+<a name="ln1117">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1118">        else if (type != MONS_DONALD)</a>
+<a name="ln1119">        {</a>
+<a name="ln1120">            item.plus += random2(6);</a>
+<a name="ln1121">            force_item = true;</a>
+<a name="ln1122">        }</a>
+<a name="ln1123">        break;</a>
+<a name="ln1124"> </a>
+<a name="ln1125">    case MONS_FANNAR:</a>
+<a name="ln1126">        force_item = true;</a>
+<a name="ln1127">        if (one_chance_in(3))</a>
+<a name="ln1128">        {</a>
+<a name="ln1129">            item.base_type = OBJ_STAVES;</a>
+<a name="ln1130">            item.sub_type = STAFF_COLD;</a>
+<a name="ln1131">        }</a>
+<a name="ln1132">        else</a>
+<a name="ln1133">        {</a>
+<a name="ln1134">            item.base_type = OBJ_WEAPONS;</a>
+<a name="ln1135">            item.sub_type = WPN_QUARTERSTAFF;</a>
+<a name="ln1136">            set_item_ego_type(item, OBJ_WEAPONS, SPWPN_FREEZING);</a>
+<a name="ln1137">        }</a>
+<a name="ln1138">        item.flags |= ISFLAG_KNOW_TYPE;</a>
+<a name="ln1139">        break;</a>
+<a name="ln1140"> </a>
+<a name="ln1141">    case MONS_NIKOLA:</a>
+<a name="ln1142">        if (one_chance_in(100) &amp;&amp; !get_unique_item_status(UNRAND_ARC_BLADE))</a>
+<a name="ln1143">            make_item_unrandart(item, UNRAND_ARC_BLADE);</a>
+<a name="ln1144">        break;</a>
+<a name="ln1145"> </a>
+<a name="ln1146">    case MONS_ARACHNE:</a>
+<a name="ln1147">        force_item = true;</a>
+<a name="ln1148">        item.base_type = OBJ_STAVES;</a>
+<a name="ln1149">        item.sub_type = STAFF_POISON;</a>
+<a name="ln1150">        item.flags    |= ISFLAG_KNOW_TYPE;</a>
+<a name="ln1151">        if (one_chance_in(100) &amp;&amp; !get_unique_item_status(UNRAND_OLGREB))</a>
+<a name="ln1152">            make_item_unrandart(item, UNRAND_OLGREB);</a>
+<a name="ln1153">        break;</a>
+<a name="ln1154"> </a>
+<a name="ln1155">    case MONS_CEREBOV:</a>
+<a name="ln1156">        if (you.props.exists(CEREBOV_DISARMED_KEY))</a>
+<a name="ln1157">            break;</a>
+<a name="ln1158">        force_item = true;</a>
+<a name="ln1159">        make_item_unrandart(item, UNRAND_CEREBOV);</a>
+<a name="ln1160">        break;</a>
+<a name="ln1161"> </a>
+<a name="ln1162">    case MONS_DISPATER:</a>
+<a name="ln1163">        force_item = true;</a>
+<a name="ln1164">        make_item_unrandart(item, UNRAND_DISPATER);</a>
+<a name="ln1165">        break;</a>
+<a name="ln1166"> </a>
+<a name="ln1167">    case MONS_ASMODEUS:</a>
+<a name="ln1168">        force_item = true;</a>
+<a name="ln1169">        make_item_unrandart(item, UNRAND_ASMODEUS);</a>
+<a name="ln1170">        break;</a>
+<a name="ln1171"> </a>
+<a name="ln1172">    case MONS_GERYON:</a>
+<a name="ln1173">        // mv: Probably should be moved out of this switch, but it's not</a>
+<a name="ln1174">        // worth it, unless we have more monsters with misc. items.</a>
+<a name="ln1175">        item.base_type = OBJ_MISCELLANY;</a>
+<a name="ln1176">        item.sub_type  = MISC_HORN_OF_GERYON;</a>
+<a name="ln1177">        break;</a>
+<a name="ln1178"> </a>
+<a name="ln1179">    case MONS_SALAMANDER:</a>
+<a name="ln1180">        if (is_range_weapon(item))</a>
+<a name="ln1181">        {</a>
+<a name="ln1182">            set_item_ego_type(item, OBJ_WEAPONS, SPWPN_FLAMING);</a>
+<a name="ln1183">            force_item = true;</a>
+<a name="ln1184">        }</a>
+<a name="ln1185">        break;</a>
+<a name="ln1186"> </a>
+<a name="ln1187">    case MONS_THE_ENCHANTRESS:</a>
+<a name="ln1188">        if (one_chance_in(6))</a>
+<a name="ln1189">        {</a>
+<a name="ln1190">            force_item = true;</a>
+<a name="ln1191">            set_item_ego_type(item, OBJ_WEAPONS, SPWPN_DISTORTION);</a>
+<a name="ln1192">            item.plus  = random2(5);</a>
+<a name="ln1193">        }</a>
+<a name="ln1194">        break;</a>
+<a name="ln1195"> </a>
+<a name="ln1196">    case MONS_MAGGIE:</a>
+<a name="ln1197">        if (one_chance_in(100) &amp;&amp; !get_unique_item_status(UNRAND_WYRMBANE))</a>
+<a name="ln1198">        {</a>
+<a name="ln1199">            make_item_unrandart(item, UNRAND_WYRMBANE);</a>
+<a name="ln1200">            item.plus = 9; // Since she's wearing a dragon armour</a>
+<a name="ln1201">            force_item = true;</a>
+<a name="ln1202">        }</a>
+<a name="ln1203">        break;</a>
+<a name="ln1204"> </a>
+<a name="ln1205">    case MONS_MARGERY:</a>
+<a name="ln1206">        if (one_chance_in(100) &amp;&amp; !get_unique_item_status(UNRAND_WYRMBANE))</a>
+<a name="ln1207">        {</a>
+<a name="ln1208">            make_item_unrandart(item, UNRAND_WYRMBANE);</a>
+<a name="ln1209">            item.plus = 10 + random2(2); // Now she's killed at least 2 dragons</a>
+<a name="ln1210">            force_item = true;</a>
+<a name="ln1211">        }</a>
+<a name="ln1212">        break;</a>
+<a name="ln1213"> </a>
+<a name="ln1214">    case MONS_ANCESTOR_HEXER:</a>
+<a name="ln1215">    case MONS_ANCESTOR_BATTLEMAGE:</a>
+<a name="ln1216">    case MONS_ANCESTOR_KNIGHT:</a>
+<a name="ln1217">        force_item = true;</a>
+<a name="ln1218">        upgrade_hepliaklqana_weapon(type, item);</a>
+<a name="ln1219">        break;</a>
+<a name="ln1220"> </a>
+<a name="ln1221">    default:</a>
+<a name="ln1222">        break;</a>
+<a name="ln1223">    }</a>
+<a name="ln1224"> </a>
+<a name="ln1225">    // Only happens if something in above switch doesn't set it. {dlb}</a>
+<a name="ln1226">    if (item.base_type == OBJ_UNASSIGNED)</a>
+<a name="ln1227">        return NON_ITEM;</a>
+<a name="ln1228"> </a>
+<a name="ln1229">    if (!force_item &amp;&amp; mons_is_unique(type))</a>
+<a name="ln1230">    {</a>
+<a name="ln1231">        if (x_chance_in_y(10 + mons_class_hit_dice(type), 100))</a>
+<a name="ln1232">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1233">        else if (level != ISPEC_GOOD_ITEM)</a>
+<a name="ln1234">            level += 5;</a>
+<a name="ln1235">    }</a>
+<a name="ln1236"> </a>
+<a name="ln1237">    const object_class_type xitc = item.base_type;</a>
+<a name="ln1238">    const int xitt = item.sub_type;</a>
+<a name="ln1239"> </a>
+<a name="ln1240">    // Note this mess, all the work above doesn't mean much unless</a>
+<a name="ln1241">    // force_item is set... otherwise we're just going to take the base</a>
+<a name="ln1242">    // and subtype and create a new item. - bwr</a>
+<a name="ln1243">    const int thing_created =</a>
+<a name="ln1244">        ((force_item) ? get_mitm_slot() : items(false, xitc, xitt, level,</a>
+<a name="ln1245">                                                item.brand));</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    if (thing_created == NON_ITEM)</a>
+<a name="ln1248">        return NON_ITEM;</a>
+<a name="ln1249"> </a>
+<a name="ln1250">    // Copy temporary item into the item array if were forcing it, since</a>
+<a name="ln1251">    // items() won't have done it for us.</a>
+<a name="ln1252">    if (force_item)</a>
+<a name="ln1253">        mitm[thing_created] = item;</a>
+<a name="ln1254">    else</a>
+<a name="ln1255">        mitm[thing_created].flags |= item.flags;</a>
+<a name="ln1256"> </a>
+<a name="ln1257">    item_def &amp;i = mitm[thing_created];</a>
+<a name="ln1258">    if (melee_only &amp;&amp; (i.base_type != OBJ_WEAPONS || is_range_weapon(i)))</a>
+<a name="ln1259">    {</a>
+<a name="ln1260">        destroy_item(thing_created);</a>
+<a name="ln1261">        return NON_ITEM;</a>
+<a name="ln1262">    }</a>
+<a name="ln1263"> </a>
+<a name="ln1264">    if (force_item)</a>
+<a name="ln1265">        item_set_appearance(i);</a>
+<a name="ln1266"> </a>
+<a name="ln1267">    if (force_uncursed)</a>
+<a name="ln1268">    {</a>
+<a name="ln1269">        do_uncurse_item(i);</a>
+<a name="ln1270">        set_ident_flags(i, ISFLAG_KNOW_CURSE); // despoiler</a>
+<a name="ln1271">    }</a>
+<a name="ln1272"> </a>
+<a name="ln1273">    if (!is_artefact(mitm[thing_created]) &amp;&amp; !floor_tile.empty())</a>
+<a name="ln1274">    {</a>
+<a name="ln1275">        ASSERT(!equip_tile.empty());</a>
+<a name="ln1276">        mitm[thing_created].props[&quot;item_tile_name&quot;] = floor_tile;</a>
+<a name="ln1277">        mitm[thing_created].props[&quot;worn_tile_name&quot;] = equip_tile;</a>
+<a name="ln1278">        bind_item_tile(mitm[thing_created]);</a>
+<a name="ln1279">    }</a>
+<a name="ln1280"> </a>
+<a name="ln1281">    return thing_created;</a>
+<a name="ln1282">}</a>
+<a name="ln1283"> </a>
+<a name="ln1284">/**</a>
+<a name="ln1285"> * If you give a monster a weapon, he's going to ask for a glass of milk.</a>
+<a name="ln1286"> *</a>
+<a name="ln1287"> * @param mon               The monster to give a weapon to.</a>
+<a name="ln1288"> * @param level             Item level, which might be absdepth.</a>
+<a name="ln1289"> * @param second_weapon     Whether this is a recursive call to the function</a>
+<a name="ln1290"> *                          to give the monster a melee weapon, after we've</a>
+<a name="ln1291"> *                          already given them something else.</a>
+<a name="ln1292"> */</a>
+<a name="ln1293">static void _give_weapon(monster *mon, int level, bool second_weapon = false)</a>
+<a name="ln1294">{</a>
+<a name="ln1295">    ASSERT(mon); // TODO: change to monster &amp;mon</a>
+<a name="ln1296"> </a>
+<a name="ln1297">    if (mon-&gt;type == MONS_DEEP_ELF_BLADEMASTER &amp;&amp; mon-&gt;weapon())</a>
+<a name="ln1298">    {</a>
+<a name="ln1299">        const item_def &amp;first_sword = *mon-&gt;weapon();</a>
+<a name="ln1300">        ASSERT(first_sword.base_type == OBJ_WEAPONS);</a>
+<a name="ln1301">        item_def twin_sword = first_sword; // copy</a>
+<a name="ln1302">        give_specific_item(mon, twin_sword);</a>
+<a name="ln1303">        return;</a>
+<a name="ln1304">    }</a>
+<a name="ln1305"> </a>
+<a name="ln1306">    const int thing_created = make_mons_weapon(mon-&gt;type, level, second_weapon);</a>
+<a name="ln1307">    if (thing_created == NON_ITEM)</a>
+<a name="ln1308">        return;</a>
+<a name="ln1309"> </a>
+<a name="ln1310">    give_specific_item(mon, thing_created);</a>
+<a name="ln1311">    if (second_weapon)</a>
+<a name="ln1312">        return;</a>
+<a name="ln1313"> </a>
+<a name="ln1314">    const item_def &amp;i = mitm[thing_created];</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    if ((i.base_type != OBJ_WEAPONS</a>
+<a name="ln1317">                &amp;&amp; i.base_type != OBJ_STAVES</a>
+<a name="ln1318">                &amp;&amp; i.base_type != OBJ_MISCELLANY) // don't double-gift geryon horn</a>
+<a name="ln1319">               || is_range_weapon(i))</a>
+<a name="ln1320">    {</a>
+<a name="ln1321">        _give_weapon(mon, level, true);</a>
+<a name="ln1322">    }</a>
+<a name="ln1323"> </a>
+<a name="ln1324">    if (mon-&gt;type == MONS_FANNAR &amp;&amp; i.is_type(OBJ_WEAPONS, WPN_QUARTERSTAFF))</a>
+<a name="ln1325">    {</a>
+<a name="ln1326">        make_item_for_monster(mon, OBJ_JEWELLERY, RING_ICE,</a>
+<a name="ln1327">                              0, 1, ISFLAG_KNOW_TYPE);</a>
+<a name="ln1328">    }</a>
+<a name="ln1329">}</a>
+<a name="ln1330"> </a>
+<a name="ln1331">// Hands out ammunition fitting the monster's launcher (if any), or else any</a>
+<a name="ln1332">// throwable missiles depending on the monster type.</a>
+<a name="ln1333">static void _give_ammo(monster* mon, int level, bool mons_summoned)</a>
+<a name="ln1334">{</a>
+<a name="ln1335">    if (const item_def *launcher = mon-&gt;launcher())</a>
+<a name="ln1336">    {</a>
+<a name="ln1337">        const object_class_type xitc = OBJ_MISSILES;</a>
+<a name="ln1338">        int xitt = fires_ammo_type(*launcher);</a>
+<a name="ln1339"> </a>
+<a name="ln1340">        if (xitt == MI_STONE</a>
+<a name="ln1341">            &amp;&amp; (mon-&gt;type == MONS_JOSEPH</a>
+<a name="ln1342">                || mon-&gt;type == MONS_SATYR</a>
+<a name="ln1343">                || (mon-&gt;type == MONS_FAUN &amp;&amp; one_chance_in(3))</a>
+<a name="ln1344">                || one_chance_in(15)))</a>
+<a name="ln1345">        {</a>
+<a name="ln1346">            xitt = MI_SLING_BULLET;</a>
+<a name="ln1347">        }</a>
+<a name="ln1348"> </a>
+<a name="ln1349">        const int thing_created = items(false, xitc, xitt, level);</a>
+<a name="ln1350"> </a>
+<a name="ln1351">        if (thing_created == NON_ITEM)</a>
+<a name="ln1352">            return;</a>
+<a name="ln1353">        else</a>
+<a name="ln1354">        {</a>
+<a name="ln1355">            // Sanity check to avoid useless brands.</a>
+<a name="ln1356">            const int bow_brand  = get_weapon_brand(*launcher);</a>
+<a name="ln1357">            const int ammo_brand = get_ammo_brand(mitm[thing_created]);</a>
+<a name="ln1358">            if (ammo_brand != SPMSL_NORMAL</a>
+<a name="ln1359">                &amp;&amp; (bow_brand == SPWPN_FLAMING || bow_brand == SPWPN_FREEZING))</a>
+<a name="ln1360">            {</a>
+<a name="ln1361">                mitm[thing_created].brand = SPMSL_NORMAL;</a>
+<a name="ln1362">            }</a>
+<a name="ln1363">        }</a>
+<a name="ln1364"> </a>
+<a name="ln1365">        switch (mon-&gt;type)</a>
+<a name="ln1366">        {</a>
+<a name="ln1367">            case MONS_DEEP_ELF_MASTER_ARCHER:</a>
+<a name="ln1368">                // Master archers get double ammo - archery is their only attack</a>
+<a name="ln1369">                mitm[thing_created].quantity *= 2;</a>
+<a name="ln1370">                break;</a>
+<a name="ln1371"> </a>
+<a name="ln1372">            case MONS_JOSEPH:</a>
+<a name="ln1373">                mitm[thing_created].quantity += 2 + random2(7);</a>
+<a name="ln1374">                break;</a>
+<a name="ln1375"> </a>
+<a name="ln1376">            default:</a>
+<a name="ln1377">                break;</a>
+<a name="ln1378">        }</a>
+<a name="ln1379"> </a>
+<a name="ln1380">        give_specific_item(mon, thing_created);</a>
+<a name="ln1381">    }</a>
+<a name="ln1382">    else</a>
+<a name="ln1383">    {</a>
+<a name="ln1384">        // Give some monsters throwables.</a>
+<a name="ln1385">        int weap_type = -1;</a>
+<a name="ln1386">        int qty = 0;</a>
+<a name="ln1387">        int brand = SPMSL_NORMAL;</a>
+<a name="ln1388"> </a>
+<a name="ln1389">        switch (mon-&gt;type)</a>
+<a name="ln1390">        {</a>
+<a name="ln1391">        case MONS_KOBOLD:</a>
+<a name="ln1392">            if (one_chance_in(10) &amp;&amp; level &gt; 1)</a>
+<a name="ln1393">            {</a>
+<a name="ln1394">                weap_type  = MI_DART;</a>
+<a name="ln1395">                qty = random_range(2, 8);</a>
+<a name="ln1396">                brand = got_curare_roll(level) ? SPMSL_CURARE : SPMSL_POISONED;</a>
+<a name="ln1397">                break;</a>
+<a name="ln1398">            }</a>
+<a name="ln1399">            // intentional fallthrough</a>
+<a name="ln1400">        case MONS_BIG_KOBOLD:</a>
+<a name="ln1401">            if (x_chance_in_y(2, 5))</a>
+<a name="ln1402">            {</a>
+<a name="ln1403">                weap_type  = MI_STONE;</a>
+<a name="ln1404">                qty = 1 + random2(5);</a>
+<a name="ln1405">            }</a>
+<a name="ln1406">            break;</a>
+<a name="ln1407"> </a>
+<a name="ln1408">        case MONS_SONJA:</a>
+<a name="ln1409">            weap_type = MI_DART;</a>
+<a name="ln1410">            brand = SPMSL_CURARE;</a>
+<a name="ln1411">            qty = random_range(4, 10);</a>
+<a name="ln1412">            break;</a>
+<a name="ln1413"> </a>
+<a name="ln1414">        case MONS_SPRIGGAN_RIDER:</a>
+<a name="ln1415">            if (one_chance_in(15))</a>
+<a name="ln1416">            {</a>
+<a name="ln1417">                weap_type = MI_DART;</a>
+<a name="ln1418">                brand = SPMSL_CURARE;</a>
+<a name="ln1419">                qty = random_range(2, 8);</a>
+<a name="ln1420">            }</a>
+<a name="ln1421">            break;</a>
+<a name="ln1422"> </a>
+<a name="ln1423">        case MONS_ORC_WARRIOR:</a>
+<a name="ln1424">            if (one_chance_in(</a>
+<a name="ln1425">                    player_in_branch(BRANCH_ORC)? 9 : 20))</a>
+<a name="ln1426">            {</a>
+<a name="ln1427">                weap_type = MI_BOOMERANG;</a>
+<a name="ln1428">                qty       = random_range(4, 8);</a>
+<a name="ln1429">            }</a>
+<a name="ln1430">            break;</a>
+<a name="ln1431"> </a>
+<a name="ln1432">        case MONS_ORC:</a>
+<a name="ln1433">            if (one_chance_in(20))</a>
+<a name="ln1434">            {</a>
+<a name="ln1435">                weap_type = MI_BOOMERANG;</a>
+<a name="ln1436">                qty       = random_range(2, 5);</a>
+<a name="ln1437">            }</a>
+<a name="ln1438">            break;</a>
+<a name="ln1439"> </a>
+<a name="ln1440">        case MONS_URUG:</a>
+<a name="ln1441">            weap_type  = MI_JAVELIN;</a>
+<a name="ln1442">            qty = random_range(4, 7);</a>
+<a name="ln1443">            break;</a>
+<a name="ln1444"> </a>
+<a name="ln1445">        case MONS_CHUCK:</a>
+<a name="ln1446">            weap_type  = MI_LARGE_ROCK;</a>
+<a name="ln1447">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1448">            brand = SPMSL_RETURNING;</a>
+<a name="ln1449">            qty = 2;</a>
+<a name="ln1450">#else</a>
+<a name="ln1451">            qty = 8;</a>
+<a name="ln1452">#endif</a>
+<a name="ln1453">            break;</a>
+<a name="ln1454"> </a>
+<a name="ln1455">        case MONS_POLYPHEMUS:</a>
+<a name="ln1456">            weap_type  = MI_LARGE_ROCK;</a>
+<a name="ln1457">            qty        = random_range(8, 12);</a>
+<a name="ln1458">            break;</a>
+<a name="ln1459"> </a>
+<a name="ln1460">        case MONS_MERFOLK_JAVELINEER:</a>
+<a name="ln1461">        case MONS_MINOTAUR:</a>
+<a name="ln1462">            weap_type  = MI_JAVELIN;</a>
+<a name="ln1463">            qty        = random_range(9, 23, 2);</a>
+<a name="ln1464">            if (one_chance_in(3))</a>
+<a name="ln1465">                level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1466">            break;</a>
+<a name="ln1467"> </a>
+<a name="ln1468">        case MONS_MERFOLK:</a>
+<a name="ln1469">            if (one_chance_in(3)</a>
+<a name="ln1470">                || active_monster_band == BAND_MERFOLK_JAVELINEER)</a>
+<a name="ln1471">            {</a>
+<a name="ln1472">                weap_type  = MI_BOOMERANG;</a>
+<a name="ln1473">                qty        = random_range(4, 8);</a>
+<a name="ln1474">                if (active_monster_band == BAND_MERFOLK_JAVELINEER)</a>
+<a name="ln1475">                    break;</a>
+<a name="ln1476">            }</a>
+<a name="ln1477">            if (one_chance_in(4) &amp;&amp; !mons_summoned)</a>
+<a name="ln1478">            {</a>
+<a name="ln1479">                weap_type  = MI_THROWING_NET;</a>
+<a name="ln1480">                qty        = 1;</a>
+<a name="ln1481">                if (one_chance_in(4))</a>
+<a name="ln1482">                    qty += random2(3); // up to three nets</a>
+<a name="ln1483">            }</a>
+<a name="ln1484">            break;</a>
+<a name="ln1485"> </a>
+<a name="ln1486">        case MONS_DRACONIAN_KNIGHT:</a>
+<a name="ln1487">        case MONS_GNOLL:</a>
+<a name="ln1488">            if (!level || !one_chance_in(20))</a>
+<a name="ln1489">                break;</a>
+<a name="ln1490">            // deliberate fall-through to harold</a>
+<a name="ln1491"> </a>
+<a name="ln1492">        case MONS_HAROLD: // bounty hunter, up to 5 nets</a>
+<a name="ln1493">            if (mons_summoned)</a>
+<a name="ln1494">                break;</a>
+<a name="ln1495"> </a>
+<a name="ln1496">            weap_type  = MI_THROWING_NET;</a>
+<a name="ln1497">            qty        = 1;</a>
+<a name="ln1498">            if (one_chance_in(3))</a>
+<a name="ln1499">                qty++;</a>
+<a name="ln1500">            if (mon-&gt;type == MONS_HAROLD)</a>
+<a name="ln1501">                qty += random2(4);</a>
+<a name="ln1502"> </a>
+<a name="ln1503">            break;</a>
+<a name="ln1504"> </a>
+<a name="ln1505">        default:</a>
+<a name="ln1506">            break;</a>
+<a name="ln1507">        }</a>
+<a name="ln1508"> </a>
+<a name="ln1509">        if (weap_type == -1)</a>
+<a name="ln1510">            return;</a>
+<a name="ln1511"> </a>
+<a name="ln1512">        const int thing_created = items(false, OBJ_MISSILES, weap_type, level);</a>
+<a name="ln1513"> </a>
+<a name="ln1514">        if (thing_created != NON_ITEM)</a>
+<a name="ln1515">        {</a>
+<a name="ln1516">            item_def&amp; w(mitm[thing_created]);</a>
+<a name="ln1517"> </a>
+<a name="ln1518">            if (brand != SPMSL_NORMAL)</a>
+<a name="ln1519">                set_item_ego_type(w, OBJ_MISSILES, brand);</a>
+<a name="ln1520"> </a>
+<a name="ln1521">            w.quantity = qty;</a>
+<a name="ln1522">            give_specific_item(mon, thing_created);</a>
+<a name="ln1523">        }</a>
+<a name="ln1524">    }</a>
+<a name="ln1525">}</a>
+<a name="ln1526"> </a>
+<a name="ln1527">static item_def* make_item_for_monster(</a>
+<a name="ln1528">    monster* mons,</a>
+<a name="ln1529">    object_class_type base,</a>
+<a name="ln1530">    int subtype,</a>
+<a name="ln1531">    int level,</a>
+<a name="ln1532">    int allow_uniques,</a>
+<a name="ln1533">    iflags_t flags)</a>
+<a name="ln1534">{</a>
+<a name="ln1535">    const int bp = get_mitm_slot();</a>
+<a name="ln1536">    if (bp == NON_ITEM)</a>
+<a name="ln1537">        return 0;</a>
+<a name="ln1538"> </a>
+<a name="ln1539">    const int thing_created = items(allow_uniques, base, subtype, level);</a>
+<a name="ln1540">    if (thing_created == NON_ITEM)</a>
+<a name="ln1541">        return 0;</a>
+<a name="ln1542"> </a>
+<a name="ln1543">    mitm[thing_created].flags |= flags;</a>
+<a name="ln1544"> </a>
+<a name="ln1545">    give_specific_item(mons, thing_created);</a>
+<a name="ln1546">    return &amp;mitm[thing_created];</a>
+<a name="ln1547">}</a>
+<a name="ln1548"> </a>
+<a name="ln1549">static void _give_shield(monster* mon, int level)</a>
+<a name="ln1550">{</a>
+<a name="ln1551">    const item_def *main_weap = mon-&gt;mslot_item(MSLOT_WEAPON);</a>
+<a name="ln1552">    const item_def *alt_weap  = mon-&gt;mslot_item(MSLOT_ALT_WEAPON);</a>
+<a name="ln1553">    item_def *shield;</a>
+<a name="ln1554"> </a>
+<a name="ln1555">    // If the monster is already wielding/carrying a two-handed weapon,</a>
+<a name="ln1556">    // it doesn't get a shield. (Monsters always prefer raw damage to</a>
+<a name="ln1557">    // protection!)</a>
+<a name="ln1558">    if (main_weap &amp;&amp; mon-&gt;hands_reqd(*main_weap) == HANDS_TWO</a>
+<a name="ln1559">        || alt_weap &amp;&amp; mon-&gt;hands_reqd(*alt_weap) == HANDS_TWO)</a>
+<a name="ln1560">    {</a>
+<a name="ln1561">        return;</a>
+<a name="ln1562">    }</a>
+<a name="ln1563"> </a>
+<a name="ln1564">    switch (mon-&gt;type)</a>
+<a name="ln1565">    {</a>
+<a name="ln1566">    case MONS_ASTERION:</a>
+<a name="ln1567">        make_item_for_monster(mon, OBJ_ARMOUR, ARM_KITE_SHIELD,</a>
+<a name="ln1568">                              level * 2 + 1, 1);</a>
+<a name="ln1569">        break;</a>
+<a name="ln1570">    case MONS_DAEVA:</a>
+<a name="ln1571">    case MONS_MENNAS:</a>
+<a name="ln1572">        make_item_for_monster(mon, OBJ_ARMOUR, ARM_TOWER_SHIELD,</a>
+<a name="ln1573">                              level * 2 + 1, 1);</a>
+<a name="ln1574">        break;</a>
+<a name="ln1575"> </a>
+<a name="ln1576">    case MONS_CHERUB:</a>
+<a name="ln1577">        // Big shields interfere with ranged combat, at least theme-wise.</a>
+<a name="ln1578">        make_item_for_monster(mon, OBJ_ARMOUR, ARM_BUCKLER, level, 1);</a>
+<a name="ln1579">        break;</a>
+<a name="ln1580"> </a>
+<a name="ln1581">    case MONS_NAGA_WARRIOR:</a>
+<a name="ln1582">    case MONS_VAULT_GUARD:</a>
+<a name="ln1583">    case MONS_VAULT_WARDEN:</a>
+<a name="ln1584">    case MONS_ORC_WARLORD:</a>
+<a name="ln1585">        if (one_chance_in(3))</a>
+<a name="ln1586">        {</a>
+<a name="ln1587">            make_item_for_monster(mon, OBJ_ARMOUR,</a>
+<a name="ln1588">                                  one_chance_in(3) ? ARM_TOWER_SHIELD</a>
+<a name="ln1589">                                                   : ARM_KITE_SHIELD,</a>
+<a name="ln1590">                                  level);</a>
+<a name="ln1591">        }</a>
+<a name="ln1592">        break;</a>
+<a name="ln1593"> </a>
+<a name="ln1594">    case MONS_DRACONIAN_KNIGHT:</a>
+<a name="ln1595">        if (coinflip())</a>
+<a name="ln1596">        {</a>
+<a name="ln1597">            make_item_for_monster(mon, OBJ_ARMOUR,</a>
+<a name="ln1598">                                  random_choose(ARM_TOWER_SHIELD, ARM_KITE_SHIELD),</a>
+<a name="ln1599">                                  level);</a>
+<a name="ln1600">        }</a>
+<a name="ln1601">        break;</a>
+<a name="ln1602">    case MONS_TENGU_WARRIOR:</a>
+<a name="ln1603">        if (one_chance_in(3))</a>
+<a name="ln1604">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1605">        // deliberate fall-through</a>
+<a name="ln1606">    case MONS_TENGU:</a>
+<a name="ln1607">    case MONS_GNOLL_SERGEANT:</a>
+<a name="ln1608">        if (mon-&gt;type != MONS_TENGU_WARRIOR &amp;&amp; !one_chance_in(3))</a>
+<a name="ln1609">            break;</a>
+<a name="ln1610">        make_item_for_monster(mon, OBJ_ARMOUR,</a>
+<a name="ln1611">                              random_choose(ARM_BUCKLER, ARM_KITE_SHIELD),</a>
+<a name="ln1612">                              level);</a>
+<a name="ln1613">        break;</a>
+<a name="ln1614"> </a>
+<a name="ln1615">    case MONS_TENGU_REAVER:</a>
+<a name="ln1616">        if (one_chance_in(3))</a>
+<a name="ln1617">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1618">        make_item_for_monster(mon, OBJ_ARMOUR, ARM_BUCKLER, level);</a>
+<a name="ln1619">        break;</a>
+<a name="ln1620"> </a>
+<a name="ln1621">    case MONS_TENGU_CONJURER:</a>
+<a name="ln1622">    case MONS_DEEP_ELF_KNIGHT:</a>
+<a name="ln1623">        if (one_chance_in(3))</a>
+<a name="ln1624">            make_item_for_monster(mon, OBJ_ARMOUR, ARM_BUCKLER, level);</a>
+<a name="ln1625">        break;</a>
+<a name="ln1626"> </a>
+<a name="ln1627">    case MONS_SPRIGGAN:</a>
+<a name="ln1628">    case MONS_SPRIGGAN_RIDER:</a>
+<a name="ln1629">        if (!one_chance_in(4))</a>
+<a name="ln1630">            break;</a>
+<a name="ln1631">    // else fall-through</a>
+<a name="ln1632">    case MONS_SPRIGGAN_DEFENDER:</a>
+<a name="ln1633">    case MONS_THE_ENCHANTRESS:</a>
+<a name="ln1634">        shield = make_item_for_monster(mon, OBJ_ARMOUR, ARM_BUCKLER,</a>
+<a name="ln1635">                      mon-&gt;type == MONS_THE_ENCHANTRESS ? ISPEC_GOOD_ITEM :</a>
+<a name="ln1636">                      mon-&gt;type == MONS_SPRIGGAN_DEFENDER ? level * 2 + 1 :</a>
+<a name="ln1637">                      level);</a>
+<a name="ln1638">        if (shield &amp;&amp; !is_artefact(*shield)) // ineligible...</a>
+<a name="ln1639">        {</a>
+<a name="ln1640">            shield-&gt;props[&quot;item_tile_name&quot;] = &quot;buckler_spriggan&quot;;</a>
+<a name="ln1641">            shield-&gt;props[&quot;worn_tile_name&quot;] = &quot;buckler_spriggan&quot;;</a>
+<a name="ln1642">            bind_item_tile(*shield);</a>
+<a name="ln1643">        }</a>
+<a name="ln1644">        break;</a>
+<a name="ln1645"> </a>
+<a name="ln1646">    case MONS_LOUISE:</a>
+<a name="ln1647">        shield = make_item_for_monster(mon, OBJ_ARMOUR, ARM_TOWER_SHIELD,</a>
+<a name="ln1648">                                       level * 2 + 1, 1);</a>
+<a name="ln1649">        if (shield &amp;&amp; !is_artefact(*shield))</a>
+<a name="ln1650">        {</a>
+<a name="ln1651">            shield-&gt;props[&quot;item_tile_name&quot;] = &quot;tower shield_louise&quot;;</a>
+<a name="ln1652">            shield-&gt;props[&quot;worn_tile_name&quot;] = &quot;tower shield_louise&quot;;</a>
+<a name="ln1653">            bind_item_tile(*shield);</a>
+<a name="ln1654">        }</a>
+<a name="ln1655">        break;</a>
+<a name="ln1656"> </a>
+<a name="ln1657">    case MONS_DONALD:</a>
+<a name="ln1658">        shield = make_item_for_monster(mon, OBJ_ARMOUR, ARM_KITE_SHIELD,</a>
+<a name="ln1659">                                       level * 2 + 1, 1);</a>
+<a name="ln1660"> </a>
+<a name="ln1661">        if (shield)</a>
+<a name="ln1662">        {</a>
+<a name="ln1663">            if (coinflip())</a>
+<a name="ln1664">            {</a>
+<a name="ln1665">                set_item_ego_type(*shield, OBJ_ARMOUR, SPARM_REFLECTION);</a>
+<a name="ln1666">                set_equip_desc(*shield, ISFLAG_GLOWING);</a>
+<a name="ln1667">            }</a>
+<a name="ln1668">            if (!is_artefact(*shield))</a>
+<a name="ln1669">            {</a>
+<a name="ln1670">                shield-&gt;props[&quot;item_tile_name&quot;] = &quot;kite_shield_donald&quot;;</a>
+<a name="ln1671">                shield-&gt;props[&quot;worn_tile_name&quot;] = &quot;kite_shield_donald&quot;;</a>
+<a name="ln1672">                bind_item_tile(*shield);</a>
+<a name="ln1673">            }</a>
+<a name="ln1674">        }</a>
+<a name="ln1675"> </a>
+<a name="ln1676">        break;</a>
+<a name="ln1677"> </a>
+<a name="ln1678">    case MONS_NIKOLA:</a>
+<a name="ln1679">        shield = make_item_for_monster(mon, OBJ_ARMOUR, ARM_GLOVES,</a>
+<a name="ln1680">                                       level * 2 + 1, 1);</a>
+<a name="ln1681">        // Gloves.</a>
+<a name="ln1682">        if (shield &amp;&amp; get_armour_ego_type(*shield) == SPARM_ARCHERY)</a>
+<a name="ln1683">            _strip_item_ego(*shield);</a>
+<a name="ln1684">        break;</a>
+<a name="ln1685"> </a>
+<a name="ln1686">    case MONS_ROBIN:</a>
+<a name="ln1687">        // The Nikola Hack</a>
+<a name="ln1688">        make_item_for_monster(mon, OBJ_ARMOUR, ARM_HELMET,</a>
+<a name="ln1689">                              level * 2 + 1, 1);</a>
+<a name="ln1690">        break;</a>
+<a name="ln1691"> </a>
+<a name="ln1692">    case MONS_CORRUPTER:</a>
+<a name="ln1693">    case MONS_BLACK_SUN:</a>
+<a name="ln1694">        if (one_chance_in(3))</a>
+<a name="ln1695">        {</a>
+<a name="ln1696">            armour_type shield_type = random_choose(ARM_BUCKLER, ARM_KITE_SHIELD);</a>
+<a name="ln1697">            make_item_for_monster(mon, OBJ_ARMOUR, shield_type, level);</a>
+<a name="ln1698">        }</a>
+<a name="ln1699">        break;</a>
+<a name="ln1700"> </a>
+<a name="ln1701">    case MONS_WARMONGER:</a>
+<a name="ln1702">        make_item_for_monster(mon, OBJ_ARMOUR,</a>
+<a name="ln1703">                              random_choose(ARM_TOWER_SHIELD, ARM_KITE_SHIELD),</a>
+<a name="ln1704">                              ISPEC_GOOD_ITEM);</a>
+<a name="ln1705">        break;</a>
+<a name="ln1706"> </a>
+<a name="ln1707">    case MONS_ANCESTOR_KNIGHT:</a>
+<a name="ln1708">    {</a>
+<a name="ln1709">        item_def shld;</a>
+<a name="ln1710">        upgrade_hepliaklqana_shield(*mon, shld);</a>
+<a name="ln1711">        if (!shld.defined())</a>
+<a name="ln1712">            break;</a>
+<a name="ln1713"> </a>
+<a name="ln1714">        item_set_appearance(shld);</a>
+<a name="ln1715"> </a>
+<a name="ln1716">        const int thing_created = get_mitm_slot();</a>
+<a name="ln1717">        if (thing_created == NON_ITEM)</a>
+<a name="ln1718">            break;</a>
+<a name="ln1719"> </a>
+<a name="ln1720">        mitm[thing_created] = shld;</a>
+<a name="ln1721">        give_specific_item(mon, thing_created);</a>
+<a name="ln1722">    }</a>
+<a name="ln1723">        break;</a>
+<a name="ln1724"> </a>
+<a name="ln1725">    default:</a>
+<a name="ln1726">        break;</a>
+<a name="ln1727">    }</a>
+<a name="ln1728">}</a>
+<a name="ln1729"> </a>
+<a name="ln1730">int make_mons_armour(monster_type type, int level)</a>
+<a name="ln1731">{</a>
+<a name="ln1732">    item_def               item;</a>
+<a name="ln1733"> </a>
+<a name="ln1734">    item.base_type = OBJ_UNASSIGNED;</a>
+<a name="ln1735">    item.quantity  = 1;</a>
+<a name="ln1736"> </a>
+<a name="ln1737">    bool force_item = false;</a>
+<a name="ln1738"> </a>
+<a name="ln1739">    switch (type)</a>
+<a name="ln1740">    {</a>
+<a name="ln1741">    case MONS_DEEP_ELF_ARCHER:</a>
+<a name="ln1742">    case MONS_DEEP_ELF_BLADEMASTER:</a>
+<a name="ln1743">    case MONS_DEEP_ELF_MASTER_ARCHER:</a>
+<a name="ln1744">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1745">        item.sub_type  = ARM_LEATHER_ARMOUR;</a>
+<a name="ln1746">        break;</a>
+<a name="ln1747"> </a>
+<a name="ln1748">    case MONS_DEEP_ELF_ANNIHILATOR:</a>
+<a name="ln1749">    case MONS_DEEP_ELF_DEATH_MAGE:</a>
+<a name="ln1750">    case MONS_DEEP_ELF_DEMONOLOGIST:</a>
+<a name="ln1751">    case MONS_DEEP_ELF_HIGH_PRIEST:</a>
+<a name="ln1752">    case MONS_DEEP_ELF_KNIGHT:</a>
+<a name="ln1753">    case MONS_DEEP_ELF_MAGE:</a>
+<a name="ln1754">    case MONS_DEEP_ELF_SORCERER:</a>
+<a name="ln1755">    case MONS_DEEP_ELF_ELEMENTALIST:</a>
+<a name="ln1756">    case MONS_ORC:</a>
+<a name="ln1757">    case MONS_ORC_HIGH_PRIEST:</a>
+<a name="ln1758">    case MONS_ORC_PRIEST:</a>
+<a name="ln1759">        if (x_chance_in_y(2, 5))</a>
+<a name="ln1760">        {</a>
+<a name="ln1761">    case MONS_DUVESSA:</a>
+<a name="ln1762">    case MONS_IJYB:</a>
+<a name="ln1763">            item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1764">            item.sub_type  = random_choose_weighted(4, ARM_LEATHER_ARMOUR,</a>
+<a name="ln1765">                                                    2, ARM_RING_MAIL,</a>
+<a name="ln1766">                                                    1, ARM_SCALE_MAIL,</a>
+<a name="ln1767">                                                    1, ARM_CHAIN_MAIL);</a>
+<a name="ln1768">        }</a>
+<a name="ln1769">        else</a>
+<a name="ln1770">            return NON_ITEM; // er...</a>
+<a name="ln1771">        break;</a>
+<a name="ln1772"> </a>
+<a name="ln1773">    case MONS_ERICA:</a>
+<a name="ln1774">    case MONS_JOSEPHINE:</a>
+<a name="ln1775">    case MONS_PSYCHE:</a>
+<a name="ln1776">        if (one_chance_in(5))</a>
+<a name="ln1777">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1778">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1779">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln1780">        break;</a>
+<a name="ln1781"> </a>
+<a name="ln1782">    case MONS_GNOLL_SHAMAN:</a>
+<a name="ln1783">    case MONS_MELIAI:</a>
+<a name="ln1784">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1785">        item.sub_type  = random_choose(ARM_ROBE, ARM_LEATHER_ARMOUR);</a>
+<a name="ln1786">        break;</a>
+<a name="ln1787"> </a>
+<a name="ln1788">    case MONS_SOJOBO:</a>
+<a name="ln1789">        level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1790">        // deliberate fall-through</a>
+<a name="ln1791">    case MONS_GNOLL_SERGEANT:</a>
+<a name="ln1792">    case MONS_TENGU_REAVER:</a>
+<a name="ln1793">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1794">        item.sub_type  = random_choose(ARM_RING_MAIL, ARM_SCALE_MAIL);</a>
+<a name="ln1795">        if (type == MONS_TENGU_REAVER &amp;&amp; one_chance_in(3))</a>
+<a name="ln1796">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1797">        break;</a>
+<a name="ln1798"> </a>
+<a name="ln1799">    case MONS_JOSEPH:</a>
+<a name="ln1800">    case MONS_IMPERIAL_MYRMIDON:</a>
+<a name="ln1801">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1802">        item.sub_type  = random_choose_weighted(3, ARM_LEATHER_ARMOUR,</a>
+<a name="ln1803">                                                2, ARM_RING_MAIL);</a>
+<a name="ln1804">        break;</a>
+<a name="ln1805"> </a>
+<a name="ln1806">    case MONS_TERENCE:</a>
+<a name="ln1807">    case MONS_URUG:</a>
+<a name="ln1808">    case MONS_HAROLD:</a>
+<a name="ln1809">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1810">        item.sub_type  = random_choose_weighted(1, ARM_RING_MAIL,</a>
+<a name="ln1811">                                                3, ARM_SCALE_MAIL,</a>
+<a name="ln1812">                                                2, ARM_CHAIN_MAIL);</a>
+<a name="ln1813">        break;</a>
+<a name="ln1814"> </a>
+<a name="ln1815">    case MONS_GRUM:</a>
+<a name="ln1816">    case MONS_SPRIGGAN_BERSERKER:</a>
+<a name="ln1817">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1818">        item.sub_type  = ARM_ANIMAL_SKIN;</a>
+<a name="ln1819">        break;</a>
+<a name="ln1820"> </a>
+<a name="ln1821">    case MONS_ASTERION:</a>
+<a name="ln1822">    case MONS_EDMUND:</a>
+<a name="ln1823">    case MONS_FRANCES:</a>
+<a name="ln1824">    case MONS_RUPERT:</a>
+<a name="ln1825">    {</a>
+<a name="ln1826">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1827">        item.sub_type  = random_choose(ARM_LEATHER_ARMOUR, ARM_RING_MAIL,</a>
+<a name="ln1828">                                       ARM_SCALE_MAIL,     ARM_CHAIN_MAIL);</a>
+<a name="ln1829">        break;</a>
+<a name="ln1830">    }</a>
+<a name="ln1831"> </a>
+<a name="ln1832">    case MONS_DONALD:</a>
+<a name="ln1833">        if (one_chance_in(3))</a>
+<a name="ln1834">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1835">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1836">        item.sub_type = random_choose_weighted(10, ARM_CHAIN_MAIL,</a>
+<a name="ln1837">                                               9, ARM_PLATE_ARMOUR,</a>
+<a name="ln1838">                                               1, ARM_CRYSTAL_PLATE_ARMOUR);</a>
+<a name="ln1839">        break;</a>
+<a name="ln1840"> </a>
+<a name="ln1841">    case MONS_JORGRUN:</a>
+<a name="ln1842">        if (one_chance_in(3))</a>
+<a name="ln1843">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1844">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1845">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln1846">        break;</a>
+<a name="ln1847"> </a>
+<a name="ln1848">    case MONS_ORC_WARLORD:</a>
+<a name="ln1849">    case MONS_SAINT_ROKA:</a>
+<a name="ln1850">        // Being at the top has its privileges. :)</a>
+<a name="ln1851">        if (one_chance_in(3))</a>
+<a name="ln1852">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1853">        // deliberate fall through</a>
+<a name="ln1854"> </a>
+<a name="ln1855">    case MONS_ORC_KNIGHT:</a>
+<a name="ln1856">    case MONS_ORC_WARRIOR:</a>
+<a name="ln1857">    case MONS_HELL_KNIGHT:</a>
+<a name="ln1858">    case MONS_LOUISE:</a>
+<a name="ln1859">    case MONS_VAMPIRE_KNIGHT:</a>
+<a name="ln1860">    case MONS_JORY:</a>
+<a name="ln1861">    case MONS_FREDERICK:</a>
+<a name="ln1862">    case MONS_VAULT_GUARD:</a>
+<a name="ln1863">    case MONS_VAULT_WARDEN:</a>
+<a name="ln1864">    case MONS_ANCIENT_CHAMPION:</a>
+<a name="ln1865">    case MONS_MINOTAUR:</a>
+<a name="ln1866">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1867">        item.sub_type  = random_choose(ARM_CHAIN_MAIL, ARM_PLATE_ARMOUR);</a>
+<a name="ln1868">        break;</a>
+<a name="ln1869"> </a>
+<a name="ln1870">    case MONS_VAULT_SENTINEL:</a>
+<a name="ln1871">    case MONS_IRONBRAND_CONVOKER:</a>
+<a name="ln1872">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1873">        item.sub_type  = random_choose(ARM_RING_MAIL,   ARM_SCALE_MAIL);</a>
+<a name="ln1874">        break;</a>
+<a name="ln1875"> </a>
+<a name="ln1876">    case MONS_MAGGIE:</a>
+<a name="ln1877">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1878">        item.sub_type = random_choose_weighted(3, ARM_ACID_DRAGON_ARMOUR,</a>
+<a name="ln1879">                                               3, ARM_SWAMP_DRAGON_ARMOUR,</a>
+<a name="ln1880">                                               6, ARM_STEAM_DRAGON_ARMOUR);</a>
+<a name="ln1881">        break;</a>
+<a name="ln1882"> </a>
+<a name="ln1883">    case MONS_MARGERY:</a>
+<a name="ln1884">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1885">        item.sub_type = random_choose_weighted(3, ARM_STORM_DRAGON_ARMOUR,</a>
+<a name="ln1886">                                               3, ARM_SHADOW_DRAGON_ARMOUR,</a>
+<a name="ln1887">                                               6, ARM_FIRE_DRAGON_ARMOUR);</a>
+<a name="ln1888">        break;</a>
+<a name="ln1889"> </a>
+<a name="ln1890">    case MONS_HELLBINDER:</a>
+<a name="ln1891">    case MONS_SALAMANDER_MYSTIC:</a>
+<a name="ln1892">    case MONS_SERVANT_OF_WHISPERS:</a>
+<a name="ln1893">    case MONS_RAGGED_HIEROPHANT:</a>
+<a name="ln1894">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1895">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln1896">        break;</a>
+<a name="ln1897"> </a>
+<a name="ln1898">    case MONS_DEATH_KNIGHT:</a>
+<a name="ln1899">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1900">        item.sub_type  = random_choose_weighted(7, ARM_CHAIN_MAIL,</a>
+<a name="ln1901">                                                1, ARM_PLATE_ARMOUR);</a>
+<a name="ln1902">        break;</a>
+<a name="ln1903"> </a>
+<a name="ln1904">    case MONS_MERFOLK_IMPALER:</a>
+<a name="ln1905">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1906">        item.sub_type = random_choose_weighted(6, ARM_ROBE,</a>
+<a name="ln1907">                                               4, ARM_LEATHER_ARMOUR);</a>
+<a name="ln1908">        if (one_chance_in(16))</a>
+<a name="ln1909">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1910">        break;</a>
+<a name="ln1911"> </a>
+<a name="ln1912">    case MONS_MERFOLK_JAVELINEER:</a>
+<a name="ln1913">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1914">        item.sub_type  = ARM_LEATHER_ARMOUR;</a>
+<a name="ln1915">        break;</a>
+<a name="ln1916"> </a>
+<a name="ln1917">    case MONS_ANGEL:</a>
+<a name="ln1918">    case MONS_CHERUB:</a>
+<a name="ln1919">    case MONS_SIGMUND:</a>
+<a name="ln1920">    case MONS_WIGHT:</a>
+<a name="ln1921">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1922">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln1923">        break;</a>
+<a name="ln1924"> </a>
+<a name="ln1925">    case MONS_SERAPH:</a>
+<a name="ln1926">        level          = ISPEC_GOOD_ITEM;</a>
+<a name="ln1927">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1928">        // obscenely good, don't ever place them randomly</a>
+<a name="ln1929">        item.sub_type  = coinflip() ? ARM_PEARL_DRAGON_ARMOUR</a>
+<a name="ln1930">                                    : ARM_FIRE_DRAGON_ARMOUR;</a>
+<a name="ln1931">        break;</a>
+<a name="ln1932"> </a>
+<a name="ln1933">    // Centaurs sometimes wear barding.</a>
+<a name="ln1934">    case MONS_CENTAUR:</a>
+<a name="ln1935">    case MONS_CENTAUR_WARRIOR:</a>
+<a name="ln1936">    case MONS_YAKTAUR:</a>
+<a name="ln1937">    case MONS_YAKTAUR_CAPTAIN:</a>
+<a name="ln1938">        if (one_chance_in(type == MONS_CENTAUR              ? 1000 :</a>
+<a name="ln1939">                          type == MONS_CENTAUR_WARRIOR      ?  500 :</a>
+<a name="ln1940">                          type == MONS_YAKTAUR              ?  300</a>
+<a name="ln1941">                       /* type == MONS_YAKTAUR_CAPTAIN ? */ :  200))</a>
+<a name="ln1942">        {</a>
+<a name="ln1943">            item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1944">            item.sub_type  = ARM_CENTAUR_BARDING;</a>
+<a name="ln1945">        }</a>
+<a name="ln1946">        else</a>
+<a name="ln1947">            return NON_ITEM; // ???</a>
+<a name="ln1948">        break;</a>
+<a name="ln1949"> </a>
+<a name="ln1950">    case MONS_NAGA:</a>
+<a name="ln1951">    case MONS_NAGA_MAGE:</a>
+<a name="ln1952">    case MONS_NAGA_RITUALIST:</a>
+<a name="ln1953">    case MONS_NAGA_SHARPSHOOTER:</a>
+<a name="ln1954">    case MONS_NAGA_WARRIOR:</a>
+<a name="ln1955">    case MONS_NAGARAJA:</a>
+<a name="ln1956">        if (one_chance_in(type == MONS_NAGA         ?  800 :</a>
+<a name="ln1957">                          type == MONS_NAGA_WARRIOR ?  300 :</a>
+<a name="ln1958">                          type == MONS_NAGARAJA ?  100</a>
+<a name="ln1959">                                                    :  200))</a>
+<a name="ln1960">        {</a>
+<a name="ln1961">            item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1962">            item.sub_type  = ARM_NAGA_BARDING;</a>
+<a name="ln1963">        }</a>
+<a name="ln1964">        else if (type == MONS_NAGARAJA</a>
+<a name="ln1965">                 || type == MONS_NAGA_RITUALIST</a>
+<a name="ln1966">                 || one_chance_in(3))</a>
+<a name="ln1967">        {</a>
+<a name="ln1968">            item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1969">            item.sub_type  = ARM_ROBE;</a>
+<a name="ln1970">        }</a>
+<a name="ln1971">        else</a>
+<a name="ln1972">            return NON_ITEM; // ???</a>
+<a name="ln1973">        break;</a>
+<a name="ln1974"> </a>
+<a name="ln1975">    case MONS_VASHNIA:</a>
+<a name="ln1976">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1977">        item.sub_type  = ARM_NAGA_BARDING;</a>
+<a name="ln1978">        level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1979">        break;</a>
+<a name="ln1980"> </a>
+<a name="ln1981">    case MONS_TENGU_WARRIOR:</a>
+<a name="ln1982">    case MONS_IRONHEART_PRESERVER:</a>
+<a name="ln1983">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1984">        item.sub_type  = random_choose(ARM_LEATHER_ARMOUR, ARM_RING_MAIL);</a>
+<a name="ln1985">        break;</a>
+<a name="ln1986"> </a>
+<a name="ln1987">    case MONS_GASTRONOK:</a>
+<a name="ln1988">        if (one_chance_in(10) &amp;&amp; !get_unique_item_status(UNRAND_PONDERING))</a>
+<a name="ln1989">        {</a>
+<a name="ln1990">            force_item = true;</a>
+<a name="ln1991">            make_item_unrandart(item, UNRAND_PONDERING);</a>
+<a name="ln1992">        }</a>
+<a name="ln1993">        else</a>
+<a name="ln1994">        {</a>
+<a name="ln1995">            item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1996">            item.sub_type  = ARM_HAT;</a>
+<a name="ln1997"> </a>
+<a name="ln1998">            // Not as good as it sounds. Still just +0 a lot of the time.</a>
+<a name="ln1999">            level          = ISPEC_GOOD_ITEM;</a>
+<a name="ln2000">        }</a>
+<a name="ln2001">        break;</a>
+<a name="ln2002"> </a>
+<a name="ln2003">    case MONS_MAURICE:</a>
+<a name="ln2004">    case MONS_CRAZY_YIUF:</a>
+<a name="ln2005">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2006">        item.sub_type  = ARM_CLOAK;</a>
+<a name="ln2007">        break;</a>
+<a name="ln2008"> </a>
+<a name="ln2009">    case MONS_FANNAR:</a>
+<a name="ln2010">    {</a>
+<a name="ln2011">        force_item = true;</a>
+<a name="ln2012">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2013">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln2014">        item.plus = 1 + coinflip();</a>
+<a name="ln2015">        set_item_ego_type(item, OBJ_ARMOUR, SPARM_COLD_RESISTANCE);</a>
+<a name="ln2016">        item.flags |= ISFLAG_KNOW_TYPE;</a>
+<a name="ln2017">        break;</a>
+<a name="ln2018">    }</a>
+<a name="ln2019"> </a>
+<a name="ln2020">    case MONS_DOWAN:</a>
+<a name="ln2021">    case MONS_JESSICA:</a>
+<a name="ln2022">    case MONS_KOBOLD_DEMONOLOGIST:</a>
+<a name="ln2023">    case MONS_OGRE_MAGE:</a>
+<a name="ln2024">    case MONS_EROLCHA:</a>
+<a name="ln2025">    case MONS_WIZARD:</a>
+<a name="ln2026">    case MONS_ILSUIW:</a>
+<a name="ln2027">    case MONS_MARA:</a>
+<a name="ln2028">    case MONS_RAKSHASA:</a>
+<a name="ln2029">    case MONS_MERFOLK_AQUAMANCER:</a>
+<a name="ln2030">    case MONS_SPRIGGAN:</a>
+<a name="ln2031">    case MONS_SPRIGGAN_AIR_MAGE:</a>
+<a name="ln2032">    case MONS_SPRIGGAN_DEFENDER:</a>
+<a name="ln2033">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2034">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln2035">        break;</a>
+<a name="ln2036"> </a>
+<a name="ln2037">    case MONS_ROBIN:</a>
+<a name="ln2038">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2039">        item.sub_type  = ARM_ANIMAL_SKIN;</a>
+<a name="ln2040">        break;</a>
+<a name="ln2041"> </a>
+<a name="ln2042">    case MONS_DRACONIAN_SHIFTER:</a>
+<a name="ln2043">    case MONS_DRACONIAN_SCORCHER:</a>
+<a name="ln2044">    case MONS_DRACONIAN_ANNIHILATOR:</a>
+<a name="ln2045">    case MONS_DRACONIAN_STORMCALLER:</a>
+<a name="ln2046">    case MONS_DRACONIAN_MONK:</a>
+<a name="ln2047">    case MONS_DRACONIAN_KNIGHT:</a>
+<a name="ln2048">    case MONS_BAI_SUZHEN:</a>
+<a name="ln2049">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2050">        item.sub_type  = ARM_CLOAK;</a>
+<a name="ln2051">        break;</a>
+<a name="ln2052"> </a>
+<a name="ln2053">    case MONS_SPRIGGAN_DRUID:</a>
+<a name="ln2054">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2055">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln2056">        break;</a>
+<a name="ln2057"> </a>
+<a name="ln2058">    case MONS_THE_ENCHANTRESS:</a>
+<a name="ln2059">        force_item = true;</a>
+<a name="ln2060">        make_item_unrandart(item, UNRAND_FAERIE);</a>
+<a name="ln2061">        break;</a>
+<a name="ln2062"> </a>
+<a name="ln2063">    case MONS_TIAMAT:</a>
+<a name="ln2064">        force_item = true;</a>
+<a name="ln2065">        make_item_unrandart(item, UNRAND_DRAGONSKIN);</a>
+<a name="ln2066">        break;</a>
+<a name="ln2067"> </a>
+<a name="ln2068">    case MONS_ORC_SORCERER:</a>
+<a name="ln2069">        if (one_chance_in(3))</a>
+<a name="ln2070">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln2071">    case MONS_ORC_WIZARD:</a>
+<a name="ln2072">    case MONS_BLORK_THE_ORC:</a>
+<a name="ln2073">    case MONS_NERGALLE:</a>
+<a name="ln2074">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2075">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln2076">        break;</a>
+<a name="ln2077"> </a>
+<a name="ln2078">    case MONS_BORIS:</a>
+<a name="ln2079">        level = ISPEC_GOOD_ITEM;</a>
+<a name="ln2080">        // fall-through</a>
+<a name="ln2081">    case MONS_AGNES:</a>
+<a name="ln2082">    case MONS_NECROMANCER:</a>
+<a name="ln2083">    case MONS_VAMPIRE_MAGE:</a>
+<a name="ln2084">    case MONS_PIKEL:</a>
+<a name="ln2085">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2086">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln2087">        break;</a>
+<a name="ln2088"> </a>
+<a name="ln2089">    case MONS_EUSTACHIO:</a>
+<a name="ln2090">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2091">        item.sub_type  = ARM_LEATHER_ARMOUR;</a>
+<a name="ln2092">        break;</a>
+<a name="ln2093"> </a>
+<a name="ln2094">    case MONS_NESSOS:</a>
+<a name="ln2095">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2096">        item.sub_type  = ARM_CENTAUR_BARDING;</a>
+<a name="ln2097">        break;</a>
+<a name="ln2098"> </a>
+<a name="ln2099">    case MONS_NIKOLA:</a>
+<a name="ln2100">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2101">        item.sub_type  = ARM_CLOAK;</a>
+<a name="ln2102">        break;</a>
+<a name="ln2103"> </a>
+<a name="ln2104">    case MONS_MONSTROUS_DEMONSPAWN:</a>
+<a name="ln2105">    case MONS_GELID_DEMONSPAWN:</a>
+<a name="ln2106">    case MONS_INFERNAL_DEMONSPAWN:</a>
+<a name="ln2107">    case MONS_TORTUROUS_DEMONSPAWN:</a>
+<a name="ln2108">    case MONS_CORRUPTER:</a>
+<a name="ln2109">    case MONS_BLACK_SUN:</a>
+<a name="ln2110">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2111">        item.sub_type  = random_choose_weighted(2, ARM_LEATHER_ARMOUR,</a>
+<a name="ln2112">                                                3, ARM_RING_MAIL,</a>
+<a name="ln2113">                                                5, ARM_SCALE_MAIL,</a>
+<a name="ln2114">                                                3, ARM_CHAIN_MAIL,</a>
+<a name="ln2115">                                                2, ARM_PLATE_ARMOUR);</a>
+<a name="ln2116">        break;</a>
+<a name="ln2117"> </a>
+<a name="ln2118">    case MONS_BLOOD_SAINT:</a>
+<a name="ln2119">        if (one_chance_in(3))</a>
+<a name="ln2120">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln2121">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2122">        item.sub_type  = ARM_ROBE;</a>
+<a name="ln2123">        break;</a>
+<a name="ln2124"> </a>
+<a name="ln2125">    case MONS_WARMONGER:</a>
+<a name="ln2126">        if (coinflip())</a>
+<a name="ln2127">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln2128">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2129">        item.sub_type  = random_choose_weighted( 50, ARM_CHAIN_MAIL,</a>
+<a name="ln2130">                                                100, ARM_PLATE_ARMOUR,</a>
+<a name="ln2131">                                                  5, ARM_FIRE_DRAGON_ARMOUR,</a>
+<a name="ln2132">                                                  5, ARM_ICE_DRAGON_ARMOUR,</a>
+<a name="ln2133">                                                  5, ARM_ACID_DRAGON_ARMOUR);</a>
+<a name="ln2134">        break;</a>
+<a name="ln2135"> </a>
+<a name="ln2136">    case MONS_HALAZID_WARLOCK:</a>
+<a name="ln2137">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2138">        item.sub_type  = random_choose(ARM_LEATHER_ARMOUR, ARM_ROBE);</a>
+<a name="ln2139">        break;</a>
+<a name="ln2140"> </a>
+<a name="ln2141">    default:</a>
+<a name="ln2142">        return NON_ITEM;</a>
+<a name="ln2143">    }</a>
+<a name="ln2144"> </a>
+<a name="ln2145">    // Only happens if something in above switch doesn't set it. {dlb}</a>
+<a name="ln2146">    if (item.base_type == OBJ_UNASSIGNED)</a>
+<a name="ln2147">        return NON_ITEM;</a>
+<a name="ln2148"> </a>
+<a name="ln2149">    const object_class_type xitc = item.base_type;</a>
+<a name="ln2150">    const int xitt = item.sub_type;</a>
+<a name="ln2151"> </a>
+<a name="ln2152">    if (!force_item &amp;&amp; mons_is_unique(type) &amp;&amp; level != ISPEC_GOOD_ITEM)</a>
+<a name="ln2153">    {</a>
+<a name="ln2154">        if (x_chance_in_y(9 + mons_class_hit_dice(type), 100))</a>
+<a name="ln2155">            level = ISPEC_GOOD_ITEM;</a>
+<a name="ln2156">        else</a>
+<a name="ln2157">            level = level * 2 + 5;</a>
+<a name="ln2158">    }</a>
+<a name="ln2159"> </a>
+<a name="ln2160">    // Note this mess, all the work above doesn't mean much unless</a>
+<a name="ln2161">    // force_item is set... otherwise we're just going to take the base</a>
+<a name="ln2162">    // and subtype and create a new item. - bwr</a>
+<a name="ln2163">    const int thing_created =</a>
+<a name="ln2164">        ((force_item) ? get_mitm_slot() : items(false, xitc, xitt, level));</a>
+<a name="ln2165"> </a>
+<a name="ln2166">    if (thing_created == NON_ITEM)</a>
+<a name="ln2167">        return NON_ITEM;</a>
+<a name="ln2168"> </a>
+<a name="ln2169">    // Copy temporary item into the item array if were forcing it, since</a>
+<a name="ln2170">    // items() won't have done it for us.</a>
+<a name="ln2171">    if (force_item)</a>
+<a name="ln2172">        mitm[thing_created] = item;</a>
+<a name="ln2173"> </a>
+<a name="ln2174">    item_def &amp;i = mitm[thing_created];</a>
+<a name="ln2175"> </a>
+<a name="ln2176">    if (force_item)</a>
+<a name="ln2177">        item_set_appearance(i);</a>
+<a name="ln2178"> </a>
+<a name="ln2179">    return thing_created;</a>
+<a name="ln2180">}</a>
+<a name="ln2181"> </a>
+<a name="ln2182">static void _give_armour(monster* mon, int level)</a>
+<a name="ln2183">{</a>
+<a name="ln2184">    ASSERT(mon); // TODO: make monster &amp;mon</a>
+<a name="ln2185">    give_specific_item(mon, make_mons_armour(mon-&gt;type, level));</a>
+<a name="ln2186">}</a>
+<a name="ln2187"> </a>
+<a name="ln2188">static void _give_gold(monster* mon, int level)</a>
+<a name="ln2189">{</a>
+<a name="ln2190">    const int it = items(false, OBJ_GOLD, 0, level);</a>
+<a name="ln2191">    give_specific_item(mon, it);</a>
+<a name="ln2192">}</a>
+<a name="ln2193"> </a>
+<a name="ln2194">void give_weapon(monster *mons, int level_number)</a>
+<a name="ln2195">{</a>
+<a name="ln2196">    _give_weapon(mons, level_number);</a>
+<a name="ln2197">}</a>
+<a name="ln2198"> </a>
+<a name="ln2199">void give_armour(monster *mons, int level_number)</a>
+<a name="ln2200">{</a>
+<a name="ln2201">    _give_armour(mons, 1 + level_number/2);</a>
+<a name="ln2202">}</a>
+<a name="ln2203"> </a>
+<a name="ln2204">void give_shield(monster *mons)</a>
+<a name="ln2205">{</a>
+<a name="ln2206">    _give_shield(mons, -1);</a>
+<a name="ln2207">}</a>
+<a name="ln2208"> </a>
+<a name="ln2209">void give_item(monster *mons, int level_number, bool mons_summoned)</a>
+<a name="ln2210">{</a>
+<a name="ln2211">    ASSERT(level_number &gt; -1); // debugging absdepth0 changes</a>
+<a name="ln2212"> </a>
+<a name="ln2213">    if (mons-&gt;type == MONS_MAURICE)</a>
+<a name="ln2214">        _give_gold(mons, level_number);</a>
+<a name="ln2215"> </a>
+<a name="ln2216">    _give_book(mons, level_number);</a>
+<a name="ln2217">    _give_wand(mons, level_number);</a>
+<a name="ln2218">    _give_potion(mons, level_number);</a>
+<a name="ln2219">    _give_weapon(mons, level_number);</a>
+<a name="ln2220">    _give_ammo(mons, level_number, mons_summoned);</a>
+<a name="ln2221">    _give_armour(mons, 1 + level_number / 2);</a>
+<a name="ln2222">    _give_shield(mons, 1 + level_number / 2);</a>
+<a name="ln2223">}</a>
+<a name="ln2224"> </a>
+<a name="ln2225">void view_monster_equipment(monster* mon)</a>
+<a name="ln2226">{</a>
+<a name="ln2227">    for (unsigned int i = 0; i &lt;= MSLOT_LAST_VISIBLE_SLOT; ++i)</a>
+<a name="ln2228">    {</a>
+<a name="ln2229">        if (mon-&gt;inv[i] == NON_ITEM)</a>
+<a name="ln2230">            continue;</a>
+<a name="ln2231"> </a>
+<a name="ln2232">        item_def &amp;item = mitm[mon-&gt;inv[i]];</a>
+<a name="ln2233">        item.flags |= ISFLAG_SEEN;</a>
+<a name="ln2234">        set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln2235">        if (item.base_type == OBJ_WANDS)</a>
+<a name="ln2236">            set_ident_type(item, true);</a>
+<a name="ln2237">    }</a>
+<a name="ln2238">}</a>
+
+</code></pre>
+<div class="balloon" rel="1273"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always false: !floor_tile.empty().</p></div>
+<div class="balloon" rel="2070"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v796/" target="_blank">V796</a> It is possible that 'break' statement is missing in switch statement.</p></div>
+<div class="balloon" rel="1842"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1842, 2119</p></div>
+<div class="balloon" rel="2005"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 2005, 2049, 2100</p></div>
+<div class="balloon" rel="1744"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1744, 1913, 2090</p></div>
+<div class="balloon" rel="1817"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1817, 2038</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

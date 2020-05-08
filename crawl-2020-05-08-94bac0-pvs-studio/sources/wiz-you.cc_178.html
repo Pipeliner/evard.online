@@ -1,0 +1,1068 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>wiz-you.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Player related debugging functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;wiz-you.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;functional&gt;</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;abyss.h&quot;</a>
+<a name="ln14">#include &quot;dbg-util.h&quot;</a>
+<a name="ln15">#include &quot;food.h&quot;</a>
+<a name="ln16">#include &quot;god-abil.h&quot;</a>
+<a name="ln17">#include &quot;god-wrath.h&quot;</a>
+<a name="ln18">#include &quot;item-use.h&quot;</a>
+<a name="ln19">#include &quot;jobs.h&quot;</a>
+<a name="ln20">#include &quot;libutil.h&quot;</a>
+<a name="ln21">#include &quot;macro.h&quot;</a>
+<a name="ln22">#include &quot;message.h&quot;</a>
+<a name="ln23">#include &quot;misc.h&quot; // frombool</a>
+<a name="ln24">#include &quot;mutation.h&quot;</a>
+<a name="ln25">#include &quot;output.h&quot;</a>
+<a name="ln26">#include &quot;playable.h&quot;</a>
+<a name="ln27">#include &quot;player-stats.h&quot;</a>
+<a name="ln28">#include &quot;prompt.h&quot;</a>
+<a name="ln29">#include &quot;religion.h&quot;</a>
+<a name="ln30">#include &quot;skills.h&quot;</a>
+<a name="ln31">#include &quot;species.h&quot;</a>
+<a name="ln32">#include &quot;spl-book.h&quot;</a>
+<a name="ln33">#include &quot;spl-util.h&quot;</a>
+<a name="ln34">#include &quot;state.h&quot;</a>
+<a name="ln35">#include &quot;status.h&quot;</a>
+<a name="ln36">#include &quot;stringutil.h&quot;</a>
+<a name="ln37">#include &quot;transform.h&quot;</a>
+<a name="ln38">#include &quot;unicode.h&quot;</a>
+<a name="ln39">#include &quot;view.h&quot;</a>
+<a name="ln40">#include &quot;xom.h&quot;</a>
+<a name="ln41"> </a>
+<a name="ln42">#ifdef WIZARD</a>
+<a name="ln43"> </a>
+<a name="ln44">job_type find_job_from_string(const string &amp;str)</a>
+<a name="ln45">{</a>
+<a name="ln46">    const string spec = lowercase_string(str);</a>
+<a name="ln47"> </a>
+<a name="ln48">    job_type partial_match = JOB_UNKNOWN;</a>
+<a name="ln49"> </a>
+<a name="ln50">    for (const auto job : playable_jobs())</a>
+<a name="ln51">    {</a>
+<a name="ln52">        const auto name = lowercase_string(get_job_name(job));</a>
+<a name="ln53">        const auto pos = name.find(spec);</a>
+<a name="ln54"> </a>
+<a name="ln55">        if (pos == 0)</a>
+<a name="ln56">            return job;  // We prefer prefixes over partial matches.</a>
+<a name="ln57">        else if (pos != string::npos)</a>
+<a name="ln58">            partial_match = job;</a>
+<a name="ln59">    }</a>
+<a name="ln60"> </a>
+<a name="ln61">    return partial_match;</a>
+<a name="ln62">}</a>
+<a name="ln63"> </a>
+<a name="ln64">static xom_event_type _find_xom_event_from_string(const string &amp;event_name)</a>
+<a name="ln65">{</a>
+<a name="ln66">    string spec = lowercase_string(event_name);</a>
+<a name="ln67"> </a>
+<a name="ln68">    xom_event_type x = XOM_DID_NOTHING;</a>
+<a name="ln69"> </a>
+<a name="ln70">    for (int i = 0; i &lt;= XOM_LAST_REAL_ACT; ++i)</a>
+<a name="ln71">    {</a>
+<a name="ln72">        const xom_event_type xi = static_cast&lt;xom_event_type&gt;(i);</a>
+<a name="ln73">        const string x_name = lowercase_string(xom_effect_to_name(xi));</a>
+<a name="ln74"> </a>
+<a name="ln75">        string::size_type pos = x_name.find(spec);</a>
+<a name="ln76">        if (pos != string::npos)</a>
+<a name="ln77">        {</a>
+<a name="ln78">            if (pos == 0)</a>
+<a name="ln79">            {</a>
+<a name="ln80">                // We prefer prefixes over partial matches.</a>
+<a name="ln81">                x = xi;</a>
+<a name="ln82">                break;</a>
+<a name="ln83">            }</a>
+<a name="ln84">            else</a>
+<a name="ln85">                x = xi;</a>
+<a name="ln86">        }</a>
+<a name="ln87">    }</a>
+<a name="ln88"> </a>
+<a name="ln89">    return x;</a>
+<a name="ln90">}</a>
+<a name="ln91"> </a>
+<a name="ln92">void wizard_suppress()</a>
+<a name="ln93">{</a>
+<a name="ln94">    you.wizard = false;</a>
+<a name="ln95">    you.suppress_wizard = true;</a>
+<a name="ln96">    redraw_screen();</a>
+<a name="ln97">}</a>
+<a name="ln98"> </a>
+<a name="ln99">void wizard_change_job_to(job_type job)</a>
+<a name="ln100">{</a>
+<a name="ln101">    you.char_class = job;</a>
+<a name="ln102">    you.chr_class_name = get_job_name(job);</a>
+<a name="ln103">}</a>
+<a name="ln104"> </a>
+<a name="ln105">void wizard_change_species()</a>
+<a name="ln106">{</a>
+<a name="ln107">    char specs[80];</a>
+<a name="ln108"> </a>
+<a name="ln109">    msgwin_get_line(&quot;What species would you like to be now? &quot; ,</a>
+<a name="ln110">                    specs, sizeof(specs));</a>
+<a name="ln111"> </a>
+<a name="ln112">    if (specs[0] == '\0')</a>
+<a name="ln113">    {</a>
+<a name="ln114">        canned_msg(MSG_OK);</a>
+<a name="ln115">        return;</a>
+<a name="ln116">    }</a>
+<a name="ln117"> </a>
+<a name="ln118">    const species_type sp = find_species_from_string(specs);</a>
+<a name="ln119"> </a>
+<a name="ln120">    // Means find_species_from_string couldn't interpret `specs`.</a>
+<a name="ln121">    if (sp == SP_UNKNOWN)</a>
+<a name="ln122">    {</a>
+<a name="ln123">        mpr(&quot;That species isn't available.&quot;);</a>
+<a name="ln124">        return;</a>
+<a name="ln125">    }</a>
+<a name="ln126"> </a>
+<a name="ln127">    change_species_to(sp);</a>
+<a name="ln128">}</a>
+<a name="ln129"> </a>
+<a name="ln130">// Casts a specific spell by number or name.</a>
+<a name="ln131">void wizard_cast_spec_spell()</a>
+<a name="ln132">{</a>
+<a name="ln133">    char specs[80], *end;</a>
+<a name="ln134">    int spell;</a>
+<a name="ln135"> </a>
+<a name="ln136">    mprf(MSGCH_PROMPT, &quot;Cast which spell? &quot;);</a>
+<a name="ln137">    if (cancellable_get_line_autohist(specs, sizeof(specs))</a>
+<a name="ln138">        || specs[0] == '\0')</a>
+<a name="ln139">    {</a>
+<a name="ln140">        canned_msg(MSG_OK);</a>
+<a name="ln141">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln142">        return;</a>
+<a name="ln143">    }</a>
+<a name="ln144"> </a>
+<a name="ln145">    spell = strtol(specs, &amp;end, 10);</a>
+<a name="ln146"> </a>
+<a name="ln147">    if (spell &lt; 0 || end == specs)</a>
+<a name="ln148">    {</a>
+<a name="ln149">        if ((spell = spell_by_name(specs, true)) == SPELL_NO_SPELL)</a>
+<a name="ln150">        {</a>
+<a name="ln151">            mpr(&quot;Cannot find that spell.&quot;);</a>
+<a name="ln152">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln153">            return;</a>
+<a name="ln154">        }</a>
+<a name="ln155">    }</a>
+<a name="ln156"> </a>
+<a name="ln157">    if (your_spells(static_cast&lt;spell_type&gt;(spell), 0, false) == spret::abort)</a>
+<a name="ln158">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln159">}</a>
+<a name="ln160"> </a>
+<a name="ln161">void wizard_memorise_spec_spell()</a>
+<a name="ln162">{</a>
+<a name="ln163">    char specs[80], *end;</a>
+<a name="ln164">    int spell;</a>
+<a name="ln165"> </a>
+<a name="ln166">    mprf(MSGCH_PROMPT, &quot;Memorise which spell? &quot;);</a>
+<a name="ln167">    if (cancellable_get_line_autohist(specs, sizeof(specs))</a>
+<a name="ln168">        || specs[0] == '\0')</a>
+<a name="ln169">    {</a>
+<a name="ln170">        canned_msg(MSG_OK);</a>
+<a name="ln171">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln172">        return;</a>
+<a name="ln173">    }</a>
+<a name="ln174"> </a>
+<a name="ln175">    spell = strtol(specs, &amp;end, 10);</a>
+<a name="ln176"> </a>
+<a name="ln177">    if (spell &lt; 0 || end == specs)</a>
+<a name="ln178">    {</a>
+<a name="ln179">        if ((spell = spell_by_name(specs, true)) == SPELL_NO_SPELL)</a>
+<a name="ln180">        {</a>
+<a name="ln181">            mpr(&quot;Cannot find that spell.&quot;);</a>
+<a name="ln182">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln183">            return;</a>
+<a name="ln184">        }</a>
+<a name="ln185">    }</a>
+<a name="ln186"> </a>
+<a name="ln187">    if (get_spell_flags(static_cast&lt;spell_type&gt;(spell)) &amp; spflag::monster)</a>
+<a name="ln188">        mpr(&quot;Spell is monster-only - unpredictable behaviour may result.&quot;);</a>
+<a name="ln189">    if (!learn_spell(static_cast&lt;spell_type&gt;(spell), true))</a>
+<a name="ln190">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">void wizard_heal(bool super_heal)</a>
+<a name="ln194">{</a>
+<a name="ln195">    if (super_heal)</a>
+<a name="ln196">    {</a>
+<a name="ln197">        mpr(&quot;Super healing.&quot;);</a>
+<a name="ln198">        // Clear more stuff.</a>
+<a name="ln199">        unrot_hp(9999);</a>
+<a name="ln200">        you.magic_contamination = 0;</a>
+<a name="ln201">        you.duration[DUR_LIQUID_FLAMES] = 0;</a>
+<a name="ln202">        you.clear_beholders();</a>
+<a name="ln203">        you.attribute[ATTR_XP_DRAIN] = 0;</a>
+<a name="ln204">        you.duration[DUR_PETRIFIED] = 0;</a>
+<a name="ln205">        you.duration[DUR_PETRIFYING] = 0;</a>
+<a name="ln206">        you.duration[DUR_CORROSION] = 0;</a>
+<a name="ln207">        you.duration[DUR_DOOM_HOWL] = 0;</a>
+<a name="ln208">        you.duration[DUR_WEAK] = 0;</a>
+<a name="ln209">        you.duration[DUR_NO_HOP] = 0;</a>
+<a name="ln210">        you.props[&quot;corrosion_amount&quot;] = 0;</a>
+<a name="ln211">        you.duration[DUR_BREATH_WEAPON] = 0;</a>
+<a name="ln212">        delete_all_temp_mutations(&quot;Super heal&quot;);</a>
+<a name="ln213">        you.stat_loss.init(0);</a>
+<a name="ln214">        you.attribute[ATTR_STAT_LOSS_XP] = 0;</a>
+<a name="ln215">        you.redraw_stats = true;</a>
+<a name="ln216">    }</a>
+<a name="ln217">    else</a>
+<a name="ln218">        mpr(&quot;Healing.&quot;);</a>
+<a name="ln219"> </a>
+<a name="ln220">    // Clear most status ailments.</a>
+<a name="ln221">    you.disease = 0;</a>
+<a name="ln222">    you.duration[DUR_CONF]      = 0;</a>
+<a name="ln223">    you.duration[DUR_POISONING] = 0;</a>
+<a name="ln224">    you.duration[DUR_EXHAUSTED] = 0;</a>
+<a name="ln225">    set_hp(you.hp_max);</a>
+<a name="ln226">    set_mp(you.max_magic_points);</a>
+<a name="ln227">    set_hunger(HUNGER_VERY_FULL + 100, true);</a>
+<a name="ln228">    you.redraw_hit_points = true;</a>
+<a name="ln229">    you.redraw_armour_class = true;</a>
+<a name="ln230">    you.redraw_evasion = true;</a>
+<a name="ln231"> </a>
+<a name="ln232">    for (int stat = 0; stat &lt; NUM_STATS; stat++)</a>
+<a name="ln233">        you.duration[stat_zero_duration(static_cast&lt;stat_type&gt; (stat))] = 0;</a>
+<a name="ln234">}</a>
+<a name="ln235"> </a>
+<a name="ln236">void wizard_set_hunger_state()</a>
+<a name="ln237">{</a>
+<a name="ln238">    string hunger_prompt = &quot;Set hunger state to &quot;;</a>
+<a name="ln239">    if (you.species != SP_VAMPIRE &amp;&amp; you.species != SP_GHOUL)</a>
+<a name="ln240">        hunger_prompt += &quot;f(A)inting, &quot;;</a>
+<a name="ln241">    hunger_prompt += &quot;s(T)arving, (N)ear starving, (H)ungry&quot;;</a>
+<a name="ln242">    if (you.species == SP_GHOUL)</a>
+<a name="ln243">        hunger_prompt += &quot; or (S)atiated&quot;;</a>
+<a name="ln244">    else</a>
+<a name="ln245">        hunger_prompt += &quot;, (S)atiated, (F)ull or (E)ngorged&quot;;</a>
+<a name="ln246">    hunger_prompt += &quot;? &quot;;</a>
+<a name="ln247"> </a>
+<a name="ln248">    mprf(MSGCH_PROMPT, &quot;%s&quot;, hunger_prompt.c_str());</a>
+<a name="ln249"> </a>
+<a name="ln250">    const int c = toalower(getch_ck());</a>
+<a name="ln251"> </a>
+<a name="ln252">    // Values taken from food.cc.</a>
+<a name="ln253">    switch (c)</a>
+<a name="ln254">    {</a>
+<a name="ln255">    case 'a': you.hunger = HUNGER_FAINTING / 2; break;</a>
+<a name="ln256">    case 't': you.hunger = (HUNGER_STARVING + HUNGER_FAINTING) / 2; break;</a>
+<a name="ln257">    case 'n': you.hunger = 1100;  break;</a>
+<a name="ln258">    case 'h': you.hunger = 2300;  break;</a>
+<a name="ln259">    case 's': you.hunger = 4900;  break;</a>
+<a name="ln260">    case 'f': you.hunger = 7900;  break;</a>
+<a name="ln261">    case 'e': you.hunger = HUNGER_MAXIMUM; break;</a>
+<a name="ln262">    default:  canned_msg(MSG_OK); break;</a>
+<a name="ln263">    }</a>
+<a name="ln264"> </a>
+<a name="ln265">    food_change();</a>
+<a name="ln266"> </a>
+<a name="ln267">    if (you.species == SP_GHOUL &amp;&amp; you.hunger_state &gt;= HS_SATIATED)</a>
+<a name="ln268">        mpr(&quot;Ghouls can never be full or above!&quot;);</a>
+<a name="ln269">}</a>
+<a name="ln270"> </a>
+<a name="ln271">void wizard_set_piety_to(int newpiety, bool force)</a>
+<a name="ln272">{</a>
+<a name="ln273">    if (newpiety &lt; 0 || newpiety &gt; MAX_PIETY)</a>
+<a name="ln274">    {</a>
+<a name="ln275">        mprf(&quot;Piety needs to be between 0 and %d.&quot;, MAX_PIETY);</a>
+<a name="ln276">        return;</a>
+<a name="ln277">    }</a>
+<a name="ln278">    if (newpiety &gt; piety_breakpoint(5) &amp;&amp; you_worship(GOD_RU))</a>
+<a name="ln279">    {</a>
+<a name="ln280">        mprf(&quot;Ru piety can't be greater than %d.&quot;, piety_breakpoint(5));</a>
+<a name="ln281">        return;</a>
+<a name="ln282">    }</a>
+<a name="ln283"> </a>
+<a name="ln284">    if (you_worship(GOD_XOM))</a>
+<a name="ln285">    {</a>
+<a name="ln286">        you.piety = newpiety;</a>
+<a name="ln287">        you.redraw_title = true; // redraw piety display</a>
+<a name="ln288"> </a>
+<a name="ln289">        int newinterest;</a>
+<a name="ln290">        if (!force)</a>
+<a name="ln291">        {</a>
+<a name="ln292">            char buf[30];</a>
+<a name="ln293"> </a>
+<a name="ln294">            // For Xom, also allow setting interest.</a>
+<a name="ln295">            mprf(MSGCH_PROMPT,</a>
+<a name="ln296">                 &quot;Enter new interest (current = %d, Enter for 0): &quot;,</a>
+<a name="ln297">                 you.gift_timeout);</a>
+<a name="ln298"> </a>
+<a name="ln299">            if (cancellable_get_line_autohist(buf, sizeof buf))</a>
+<a name="ln300">            {</a>
+<a name="ln301">                canned_msg(MSG_OK);</a>
+<a name="ln302">                return;</a>
+<a name="ln303">            }</a>
+<a name="ln304"> </a>
+<a name="ln305">            newinterest = atoi(buf);</a>
+<a name="ln306">        }</a>
+<a name="ln307">        else</a>
+<a name="ln308">            newinterest = newpiety;</a>
+<a name="ln309"> </a>
+<a name="ln310">        if (newinterest &gt;= 0 &amp;&amp; newinterest &lt; 256)</a>
+<a name="ln311">            you.gift_timeout = newinterest;</a>
+<a name="ln312">        else</a>
+<a name="ln313">            mpr(&quot;Interest must be between 0 and 255.&quot;);</a>
+<a name="ln314"> </a>
+<a name="ln315">        mprf(&quot;Set piety to %d, interest to %d.&quot;, you.piety, newinterest);</a>
+<a name="ln316"> </a>
+<a name="ln317">        const string new_xom_favour = describe_xom_favour();</a>
+<a name="ln318">        const string msg = &quot;You are now &quot; + new_xom_favour;</a>
+<a name="ln319">        god_speaks(you.religion, msg.c_str());</a>
+<a name="ln320">        return;</a>
+<a name="ln321">    }</a>
+<a name="ln322"> </a>
+<a name="ln323">    if (newpiety &lt; 1 &amp;&amp; !force)</a>
+<a name="ln324">    {</a>
+<a name="ln325">        if (yesno(&quot;Are you sure you want to be excommunicated?&quot;, false, 'n'))</a>
+<a name="ln326">        {</a>
+<a name="ln327">            you.piety = 0;</a>
+<a name="ln328">            excommunication();</a>
+<a name="ln329">        }</a>
+<a name="ln330">        else</a>
+<a name="ln331">            canned_msg(MSG_OK);</a>
+<a name="ln332">        return;</a>
+<a name="ln333">    }</a>
+<a name="ln334">    mprf(&quot;Setting piety to %d.&quot;, newpiety);</a>
+<a name="ln335">    set_piety(newpiety);</a>
+<a name="ln336"> </a>
+<a name="ln337">    // Automatically reduce penance to 0.</a>
+<a name="ln338">    if (player_under_penance())</a>
+<a name="ln339">        dec_penance(you.penance[you.religion]);</a>
+<a name="ln340">}</a>
+<a name="ln341"> </a>
+<a name="ln342">void wizard_set_gold()</a>
+<a name="ln343">{</a>
+<a name="ln344">    const int default_gold = you.gold + 1000;</a>
+<a name="ln345">    mprf(MSGCH_PROMPT, &quot;Enter new gold value (current = %d, Enter for %d): &quot;,</a>
+<a name="ln346">         you.gold, default_gold);</a>
+<a name="ln347"> </a>
+<a name="ln348">    char buf[30];</a>
+<a name="ln349">    if (cancellable_get_line_autohist(buf, sizeof buf))</a>
+<a name="ln350">    {</a>
+<a name="ln351">        canned_msg(MSG_OK);</a>
+<a name="ln352">        return;</a>
+<a name="ln353">    }</a>
+<a name="ln354"> </a>
+<a name="ln355">    if (buf[0] == '\0')</a>
+<a name="ln356">        you.set_gold(default_gold);</a>
+<a name="ln357">    else</a>
+<a name="ln358">        you.set_gold(max(atoi(buf), 0));</a>
+<a name="ln359"> </a>
+<a name="ln360">    mprf(&quot;You now have %d gold piece%s.&quot;, you.gold, you.gold != 1 ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln361">}</a>
+<a name="ln362"> </a>
+<a name="ln363">void wizard_set_piety()</a>
+<a name="ln364">{</a>
+<a name="ln365">    if (you_worship(GOD_NO_GOD))</a>
+<a name="ln366">    {</a>
+<a name="ln367">        mpr(&quot;You are not religious!&quot;);</a>
+<a name="ln368">        return;</a>
+<a name="ln369">    }</a>
+<a name="ln370"> </a>
+<a name="ln371">    if (you_worship(GOD_RU))</a>
+<a name="ln372">    {</a>
+<a name="ln373">        mprf(&quot;Current progress to next sacrifice: %d  Progress needed: %d&quot;,</a>
+<a name="ln374">            you.props[RU_SACRIFICE_PROGRESS_KEY].get_int(),</a>
+<a name="ln375">            you.props[RU_SACRIFICE_DELAY_KEY].get_int());</a>
+<a name="ln376">    }</a>
+<a name="ln377"> </a>
+<a name="ln378">    mprf(MSGCH_PROMPT, &quot;Enter new piety value (current = %d, Enter for 0): &quot;,</a>
+<a name="ln379">         you.piety);</a>
+<a name="ln380">    char buf[30];</a>
+<a name="ln381">    if (cancellable_get_line_autohist(buf, sizeof buf))</a>
+<a name="ln382">    {</a>
+<a name="ln383">        canned_msg(MSG_OK);</a>
+<a name="ln384">        return;</a>
+<a name="ln385">    }</a>
+<a name="ln386"> </a>
+<a name="ln387">    wizard_set_piety_to(atoi(buf));</a>
+<a name="ln388">}</a>
+<a name="ln389"> </a>
+<a name="ln390">void wizard_exercise_skill()</a>
+<a name="ln391">{</a>
+<a name="ln392">    skill_type skill = debug_prompt_for_skill(&quot;Which skill (by name)? &quot;);</a>
+<a name="ln393"> </a>
+<a name="ln394">    if (skill == SK_NONE)</a>
+<a name="ln395">        mpr(&quot;That skill doesn't seem to exist.&quot;);</a>
+<a name="ln396">    else</a>
+<a name="ln397">    {</a>
+<a name="ln398">        mpr(&quot;Exercising...&quot;);</a>
+<a name="ln399">        exercise(skill, 10);</a>
+<a name="ln400">    }</a>
+<a name="ln401">}</a>
+<a name="ln402"> </a>
+<a name="ln403">void wizard_set_skill_level(skill_type skill)</a>
+<a name="ln404">{</a>
+<a name="ln405">    if (skill == SK_NONE)</a>
+<a name="ln406">        skill = debug_prompt_for_skill(&quot;Which skill (by name)? &quot;);</a>
+<a name="ln407"> </a>
+<a name="ln408">    if (skill == SK_NONE)</a>
+<a name="ln409">    {</a>
+<a name="ln410">        mpr(&quot;That skill doesn't seem to exist.&quot;);</a>
+<a name="ln411">        return;</a>
+<a name="ln412">    }</a>
+<a name="ln413"> </a>
+<a name="ln414">    mpr(skill_name(skill));</a>
+<a name="ln415">    double amount = prompt_for_float(&quot;To what level? &quot;);</a>
+<a name="ln416"> </a>
+<a name="ln417">    if (amount &lt; 0 || amount &gt; 27)</a>
+<a name="ln418">    {</a>
+<a name="ln419">        canned_msg(MSG_OK);</a>
+<a name="ln420">        return;</a>
+<a name="ln421">    }</a>
+<a name="ln422"> </a>
+<a name="ln423">    const int old_amount = you.skills[skill];</a>
+<a name="ln424"> </a>
+<a name="ln425">    set_skill_level(skill, amount);</a>
+<a name="ln426"> </a>
+<a name="ln427">    if (amount == 27)</a>
+<a name="ln428">    {</a>
+<a name="ln429">        you.train[skill] = TRAINING_DISABLED;</a>
+<a name="ln430">        you.train_alt[skill] = TRAINING_DISABLED;</a>
+<a name="ln431">        reset_training();</a>
+<a name="ln432">        check_selected_skills();</a>
+<a name="ln433">    }</a>
+<a name="ln434"> </a>
+<a name="ln435">    redraw_skill(skill);</a>
+<a name="ln436"> </a>
+<a name="ln437">    mprf(&quot;%s %s to skill level %.1f.&quot;, (old_amount &lt; amount ? &quot;Increased&quot; :</a>
+<a name="ln438">                                      old_amount &gt; amount ? &quot;Lowered&quot;</a>
+<a name="ln439">                                                          : &quot;Reset&quot;),</a>
+<a name="ln440">         skill_name(skill), amount);</a>
+<a name="ln441">}</a>
+<a name="ln442"> </a>
+<a name="ln443">void wizard_set_all_skills()</a>
+<a name="ln444">{</a>
+<a name="ln445">    double amount = prompt_for_float(&quot;Set all skills to what level? &quot;);</a>
+<a name="ln446"> </a>
+<a name="ln447">    if (amount &lt; 0)             // cancel returns -1 -- bwr</a>
+<a name="ln448">        canned_msg(MSG_OK);</a>
+<a name="ln449">    else</a>
+<a name="ln450">    {</a>
+<a name="ln451">        if (amount &gt; 27)</a>
+<a name="ln452">            amount = 27;</a>
+<a name="ln453"> </a>
+<a name="ln454">        for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln455">        {</a>
+<a name="ln456">            if (is_invalid_skill(sk) || is_useless_skill(sk))</a>
+<a name="ln457">                continue;</a>
+<a name="ln458"> </a>
+<a name="ln459">            set_skill_level(sk, amount);</a>
+<a name="ln460"> </a>
+<a name="ln461">            if (amount == 27)</a>
+<a name="ln462">            {</a>
+<a name="ln463">                you.train[sk] = TRAINING_DISABLED;</a>
+<a name="ln464">                you.training[sk] = 0;</a>
+<a name="ln465">            }</a>
+<a name="ln466">        }</a>
+<a name="ln467"> </a>
+<a name="ln468">        you.redraw_title = true;</a>
+<a name="ln469"> </a>
+<a name="ln470">        // We're not updating skill cost here since XP hasn't changed.</a>
+<a name="ln471"> </a>
+<a name="ln472">        calc_hp(true, false);</a>
+<a name="ln473">        calc_mp();</a>
+<a name="ln474"> </a>
+<a name="ln475">        you.redraw_armour_class = true;</a>
+<a name="ln476">        you.redraw_evasion = true;</a>
+<a name="ln477">    }</a>
+<a name="ln478">}</a>
+<a name="ln479"> </a>
+<a name="ln480">bool wizard_add_mutation()</a>
+<a name="ln481">{</a>
+<a name="ln482">    bool success = false;</a>
+<a name="ln483">    char specs[80];</a>
+<a name="ln484"> </a>
+<a name="ln485">    if (you.has_mutation(MUT_MUTATION_RESISTANCE))</a>
+<a name="ln486">        mpr(&quot;Ignoring mut resistance to apply mutation.&quot;);</a>
+<a name="ln487"> </a>
+<a name="ln488">    msgwin_get_line(&quot;Which mutation (name, 'good', 'bad', 'any', &quot;</a>
+<a name="ln489">                    &quot;'xom', 'slime', 'qazlal')? &quot;,</a>
+<a name="ln490">                    specs, sizeof(specs));</a>
+<a name="ln491"> </a>
+<a name="ln492">    if (specs[0] == '\0')</a>
+<a name="ln493">    {</a>
+<a name="ln494">        canned_msg(MSG_OK);</a>
+<a name="ln495">        return true;</a>
+<a name="ln496">    }</a>
+<a name="ln497"> </a>
+<a name="ln498">    vector&lt;mutation_type&gt; partial_matches;</a>
+<a name="ln499">    mutation_type mutat = mutation_from_name(specs, true, &amp;partial_matches);</a>
+<a name="ln500"> </a>
+<a name="ln501">    if (mutat &gt;= CATEGORY_MUTATIONS)</a>
+<a name="ln502">         return mutate(mutat, &quot;wizard power&quot;, true, true);</a>
+<a name="ln503"> </a>
+<a name="ln504">    if (mutat == NUM_MUTATIONS)</a>
+<a name="ln505">    {</a>
+<a name="ln506">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln507"> </a>
+<a name="ln508">        if (partial_matches.empty())</a>
+<a name="ln509">            mpr(&quot;No matching mutation names.&quot;);</a>
+<a name="ln510">        else</a>
+<a name="ln511">        {</a>
+<a name="ln512">            vector&lt;string&gt; matches;</a>
+<a name="ln513"> </a>
+<a name="ln514">            for (mutation_type mut : partial_matches)</a>
+<a name="ln515">            {</a>
+<a name="ln516">                const char *mutname = mutation_name(mut, true);</a>
+<a name="ln517">                ASSERT(mutname); // `mutation_name` returns nullptr if something went wrong getting the desc for `mut`.</a>
+<a name="ln518">                matches.emplace_back(mutname);</a>
+<a name="ln519">            }</a>
+<a name="ln520"> </a>
+<a name="ln521">            string prefix = make_stringf(&quot;No exact match for mutation '%s', possible matches are: &quot;, specs);</a>
+<a name="ln522"> </a>
+<a name="ln523">            // Use mpr_comma_separated_list() because the list</a>
+<a name="ln524">            // might be *LONG*.</a>
+<a name="ln525">            mpr_comma_separated_list(prefix, matches, &quot; and &quot;, &quot;, &quot;,</a>
+<a name="ln526">                                     MSGCH_DIAGNOSTICS);</a>
+<a name="ln527">        }</a>
+<a name="ln528"> </a>
+<a name="ln529">        return false;</a>
+<a name="ln530">    }</a>
+<a name="ln531">    else</a>
+<a name="ln532">    {</a>
+<a name="ln533">        mprf(&quot;Found #%d: %s (\&quot;%s\&quot;)&quot;, (int) mutat,</a>
+<a name="ln534">             mutation_name(mutat),</a>
+<a name="ln535">             mutation_desc(mutat, 1, false).c_str());</a>
+<a name="ln536"> </a>
+<a name="ln537">        const int levels =</a>
+<a name="ln538">            prompt_for_int(&quot;How many levels to increase or decrease? &quot;,</a>
+<a name="ln539">                                  false);</a>
+<a name="ln540"> </a>
+<a name="ln541">        if (levels == 0)</a>
+<a name="ln542">        {</a>
+<a name="ln543">            canned_msg(MSG_OK);</a>
+<a name="ln544">            success = false;</a>
+<a name="ln545">        }</a>
+<a name="ln546">        else if (levels &gt; 0)</a>
+<a name="ln547">        {</a>
+<a name="ln548">            for (int i = 0; i &lt; levels; ++i)</a>
+<a name="ln549">                if (mutate(mutat, &quot;wizard power&quot;, true, true))</a>
+<a name="ln550">                    success = true;</a>
+<a name="ln551">        }</a>
+<a name="ln552">        else</a>
+<a name="ln553">        {</a>
+<a name="ln554">            for (int i = 0; i &lt; -levels; ++i)</a>
+<a name="ln555">                if (delete_mutation(mutat, &quot;wizard power&quot;, true, true))</a>
+<a name="ln556">                    success = true;</a>
+<a name="ln557">        }</a>
+<a name="ln558">    }</a>
+<a name="ln559"> </a>
+<a name="ln560">    return success;</a>
+<a name="ln561">}</a>
+<a name="ln562"> </a>
+<a name="ln563">void wizard_set_abyss()</a>
+<a name="ln564">{</a>
+<a name="ln565">    char buf[80];</a>
+<a name="ln566">    mprf(MSGCH_PROMPT, &quot;Enter values for X, Y, Z (space separated) or return: &quot;);</a>
+<a name="ln567">    if (!cancellable_get_line_autohist(buf, sizeof buf))</a>
+<a name="ln568">        abyss_teleport();</a>
+<a name="ln569"> </a>
+<a name="ln570">    int x = 0, y = 0, z = 0;</a>
+<a name="ln571">    sscanf(buf, &quot;%d %d %d&quot;, &amp;x, &amp;y, &amp;z);</a>
+<a name="ln572">    set_abyss_state(coord_def(x,y), z);</a>
+<a name="ln573">}</a>
+<a name="ln574"> </a>
+<a name="ln575">void wizard_set_stats()</a>
+<a name="ln576">{</a>
+<a name="ln577">    char buf[80];</a>
+<a name="ln578">    mprf(MSGCH_PROMPT, &quot;Enter values for Str, Int, Dex (space separated): &quot;);</a>
+<a name="ln579">    if (cancellable_get_line_autohist(buf, sizeof buf) || buf[0] == '\0')</a>
+<a name="ln580">    {</a>
+<a name="ln581">        canned_msg(MSG_OK);</a>
+<a name="ln582">        return;</a>
+<a name="ln583">    }</a>
+<a name="ln584"> </a>
+<a name="ln585">    int sstr = you.strength(false),</a>
+<a name="ln586">        sdex = you.dex(false),</a>
+<a name="ln587">        sint = you.intel(false);</a>
+<a name="ln588"> </a>
+<a name="ln589">    sscanf(buf, &quot;%d %d %d&quot;, &amp;sstr, &amp;sint, &amp;sdex);</a>
+<a name="ln590"> </a>
+<a name="ln591">    mprf(&quot;Setting attributes (Str, Int, Dex) to: %i, %i, %i&quot;, sstr, sint, sdex);</a>
+<a name="ln592">    you.base_stats[STAT_STR] = debug_cap_stat(sstr);</a>
+<a name="ln593">    you.base_stats[STAT_INT] = debug_cap_stat(sint);</a>
+<a name="ln594">    you.base_stats[STAT_DEX] = debug_cap_stat(sdex);</a>
+<a name="ln595">    you.stat_loss.init(0);</a>
+<a name="ln596">    you.attribute[ATTR_STAT_LOSS_XP] = 0;</a>
+<a name="ln597">    you.redraw_stats.init(true);</a>
+<a name="ln598">    you.redraw_evasion = true;</a>
+<a name="ln599">}</a>
+<a name="ln600"> </a>
+<a name="ln601">void wizard_edit_durations()</a>
+<a name="ln602">{</a>
+<a name="ln603">    vector&lt;duration_type&gt; durs;</a>
+<a name="ln604">    size_t max_len = 0;</a>
+<a name="ln605"> </a>
+<a name="ln606">    for (int i = 0; i &lt; NUM_DURATIONS; ++i)</a>
+<a name="ln607">    {</a>
+<a name="ln608">        const duration_type dur = static_cast&lt;duration_type&gt;(i);</a>
+<a name="ln609"> </a>
+<a name="ln610">        if (!you.duration[i])</a>
+<a name="ln611">            continue;</a>
+<a name="ln612"> </a>
+<a name="ln613">        max_len = max(strlen(duration_name(dur)), max_len);</a>
+<a name="ln614">        durs.push_back(dur);</a>
+<a name="ln615">    }</a>
+<a name="ln616"> </a>
+<a name="ln617">    if (!durs.empty())</a>
+<a name="ln618">    {</a>
+<a name="ln619">        for (size_t i = 0; i &lt; durs.size(); ++i)</a>
+<a name="ln620">        {</a>
+<a name="ln621">            const duration_type dur = durs[i];</a>
+<a name="ln622">            const char ch = i &gt;= 26 ? ' ' : 'a' + i;</a>
+<a name="ln623">            mprf_nocap(MSGCH_PROMPT, &quot;%c%c %-*s : %d&quot;,</a>
+<a name="ln624">                 ch, ch == ' ' ? ' ' : ')',</a>
+<a name="ln625">                 (int)max_len, duration_name(dur), you.duration[dur]);</a>
+<a name="ln626">        }</a>
+<a name="ln627">        mprf(MSGCH_PROMPT, &quot;\nEdit which duration (letter or name)? &quot;);</a>
+<a name="ln628">    }</a>
+<a name="ln629">    else</a>
+<a name="ln630">        mprf(MSGCH_PROMPT, &quot;Edit which duration (name)? &quot;);</a>
+<a name="ln631"> </a>
+<a name="ln632">    char buf[80];</a>
+<a name="ln633"> </a>
+<a name="ln634">    if (cancellable_get_line_autohist(buf, sizeof buf) || !*buf)</a>
+<a name="ln635">    {</a>
+<a name="ln636">        canned_msg(MSG_OK);</a>
+<a name="ln637">        return;</a>
+<a name="ln638">    }</a>
+<a name="ln639"> </a>
+<a name="ln640">    if (!strlcpy(buf, lowercase_string(trimmed_string(buf)).c_str(), sizeof(buf)))</a>
+<a name="ln641">    {</a>
+<a name="ln642">        canned_msg(MSG_OK);</a>
+<a name="ln643">        return;</a>
+<a name="ln644">    }</a>
+<a name="ln645"> </a>
+<a name="ln646">    duration_type choice = NUM_DURATIONS;</a>
+<a name="ln647"> </a>
+<a name="ln648">    if (strlen(buf) == 1 &amp;&amp; isalower(buf[0]))</a>
+<a name="ln649">    {</a>
+<a name="ln650">        if (durs.empty())</a>
+<a name="ln651">        {</a>
+<a name="ln652">            mprf(MSGCH_PROMPT, &quot;No existing durations to choose from.&quot;);</a>
+<a name="ln653">            return;</a>
+<a name="ln654">        }</a>
+<a name="ln655">        const int dchoice = buf[0] - 'a';</a>
+<a name="ln656"> </a>
+<a name="ln657">        if (dchoice &lt; 0 || dchoice &gt;= (int) durs.size())</a>
+<a name="ln658">        {</a>
+<a name="ln659">            mprf(MSGCH_PROMPT, &quot;Invalid choice.&quot;);</a>
+<a name="ln660">            return;</a>
+<a name="ln661">        }</a>
+<a name="ln662">        choice = durs[dchoice];</a>
+<a name="ln663">    }</a>
+<a name="ln664">    else</a>
+<a name="ln665">    {</a>
+<a name="ln666">        vector&lt;duration_type&gt; matches;</a>
+<a name="ln667">        vector&lt;string&gt; match_names;</a>
+<a name="ln668"> </a>
+<a name="ln669">        for (int i = 0; i &lt; NUM_DURATIONS; ++i)</a>
+<a name="ln670">        {</a>
+<a name="ln671">            const duration_type dur = static_cast&lt;duration_type&gt;(i);</a>
+<a name="ln672">            if (strcmp(duration_name(dur), buf) == 0)</a>
+<a name="ln673">            {</a>
+<a name="ln674">                choice = dur;</a>
+<a name="ln675">                break;</a>
+<a name="ln676">            }</a>
+<a name="ln677">            if (strstr(duration_name(dur), buf) != nullptr)</a>
+<a name="ln678">            {</a>
+<a name="ln679">                matches.push_back(dur);</a>
+<a name="ln680">                match_names.emplace_back(duration_name(dur));</a>
+<a name="ln681">            }</a>
+<a name="ln682">        }</a>
+<a name="ln683">        if (choice != NUM_DURATIONS)</a>
+<a name="ln684">            ;</a>
+<a name="ln685">        else if (matches.size() == 1)</a>
+<a name="ln686">            choice = matches[0];</a>
+<a name="ln687">        else if (matches.empty())</a>
+<a name="ln688">        {</a>
+<a name="ln689">            mprf(MSGCH_PROMPT, &quot;No durations matching '%s'.&quot;, buf);</a>
+<a name="ln690">            return;</a>
+<a name="ln691">        }</a>
+<a name="ln692">        else</a>
+<a name="ln693">        {</a>
+<a name="ln694">            string prefix = &quot;No exact match for duration '&quot;;</a>
+<a name="ln695">            prefix += buf;</a>
+<a name="ln696">            prefix += &quot;', possible matches are: &quot;;</a>
+<a name="ln697"> </a>
+<a name="ln698">            mpr_comma_separated_list(prefix, match_names, &quot; and &quot;, &quot;, &quot;,</a>
+<a name="ln699">                                     MSGCH_DIAGNOSTICS);</a>
+<a name="ln700">            return;</a>
+<a name="ln701">        }</a>
+<a name="ln702">    }</a>
+<a name="ln703"> </a>
+<a name="ln704">    snprintf(buf, sizeof(buf), &quot;Set '%s' to: &quot;, duration_name(choice));</a>
+<a name="ln705">    int num = prompt_for_int(buf, false);</a>
+<a name="ln706"> </a>
+<a name="ln707">    if (num == 0)</a>
+<a name="ln708">    {</a>
+<a name="ln709">        mprf(MSGCH_PROMPT, &quot;Can't set duration directly to 0, setting it to 1 instead.&quot;);</a>
+<a name="ln710">        num = 1;</a>
+<a name="ln711">    }</a>
+<a name="ln712">    you.duration[choice] = num;</a>
+<a name="ln713">}</a>
+<a name="ln714"> </a>
+<a name="ln715">void wizard_list_props()</a>
+<a name="ln716">{</a>
+<a name="ln717">    mprf(MSGCH_DIAGNOSTICS, &quot;props: %s&quot;,</a>
+<a name="ln718">         you.describe_props().c_str());</a>
+<a name="ln719">}</a>
+<a name="ln720"> </a>
+<a name="ln721">/*</a>
+<a name="ln722"> * Hard reset Ds mutations for `xl` based on the trait schedule.</a>
+<a name="ln723"> */</a>
+<a name="ln724">static void reset_ds_muts_from_schedule(int xl)</a>
+<a name="ln725">{</a>
+<a name="ln726">    if (you.species != SP_DEMONSPAWN)</a>
+<a name="ln727">        return;</a>
+<a name="ln728"> </a>
+<a name="ln729">    for (int i = 0; i &lt; NUM_MUTATIONS; i++)</a>
+<a name="ln730">    {</a>
+<a name="ln731">        mutation_type mut = static_cast&lt;mutation_type&gt;(i);</a>
+<a name="ln732">        int innate_levels = 0;</a>
+<a name="ln733">        bool is_trait = false;</a>
+<a name="ln734">        for (player::demon_trait trait : you.demonic_traits)</a>
+<a name="ln735">        {</a>
+<a name="ln736">            if (trait.mutation == mut)</a>
+<a name="ln737">            {</a>
+<a name="ln738">                is_trait = true;</a>
+<a name="ln739">                if (xl &gt;= trait.level_gained)</a>
+<a name="ln740">                    innate_levels += 1;</a>
+<a name="ln741">            }</a>
+<a name="ln742">        }</a>
+<a name="ln743">        if (is_trait)</a>
+<a name="ln744">        {</a>
+<a name="ln745">            while (you.innate_mutation[mut] &gt; innate_levels)</a>
+<a name="ln746">            {</a>
+<a name="ln747">                // First set it as non-innate, then delete the mutation from</a>
+<a name="ln748">                // there. delete_mutation won't delete mutations otherwise.</a>
+<a name="ln749">                // This step doesn't affect temporary mutations.</a>
+<a name="ln750">                you.innate_mutation[mut]--;</a>
+<a name="ln751">                delete_mutation(mut, &quot;level change&quot;, false, true, false, false);</a>
+<a name="ln752">            }</a>
+<a name="ln753">            if (you.innate_mutation[mut] &lt; innate_levels)</a>
+<a name="ln754">                perma_mutate(mut, innate_levels - you.innate_mutation[mut], &quot;level change&quot;);</a>
+<a name="ln755">        }</a>
+<a name="ln756">    }</a>
+<a name="ln757">}</a>
+<a name="ln758"> </a>
+<a name="ln759"> </a>
+<a name="ln760">static void debug_uptick_xl(int newxl, bool train)</a>
+<a name="ln761">{</a>
+<a name="ln762">    if (train)</a>
+<a name="ln763">    {</a>
+<a name="ln764">        you.exp_available += 10 * (exp_needed(newxl) - you.experience);</a>
+<a name="ln765">        train_skills();</a>
+<a name="ln766">    }</a>
+<a name="ln767">    you.experience = exp_needed(newxl);</a>
+<a name="ln768">    if (you.experience_level &lt; you.max_level)</a>
+<a name="ln769">    {</a>
+<a name="ln770">        // Fixing up Ds muts needs to happen before the level change, so that the mutations validate correctly</a>
+<a name="ln771">        if (newxl &lt; you.max_level)</a>
+<a name="ln772">            reset_ds_muts_from_schedule(newxl);</a>
+<a name="ln773">        else</a>
+<a name="ln774">            reset_ds_muts_from_schedule(you.max_level); // let level change handle the rest</a>
+<a name="ln775">    }</a>
+<a name="ln776">    level_change(true);</a>
+<a name="ln777">#ifdef DEBUG</a>
+<a name="ln778">    validate_mutations();</a>
+<a name="ln779">#endif</a>
+<a name="ln780">}</a>
+<a name="ln781"> </a>
+<a name="ln782">/**</a>
+<a name="ln783"> * Set the player's XL to a new value.</a>
+<a name="ln784"> * @param newxl  The new experience level.</a>
+<a name="ln785"> */</a>
+<a name="ln786">static void debug_downtick_xl(int newxl)</a>
+<a name="ln787">{</a>
+<a name="ln788">    set_hp(you.hp_max);</a>
+<a name="ln789">    // boost maxhp so we don't die if heavily rotted</a>
+<a name="ln790">    you.hp_max_adj_perm += 1000;</a>
+<a name="ln791">    you.experience = exp_needed(newxl);</a>
+<a name="ln792">    level_change();</a>
+<a name="ln793">    reset_ds_muts_from_schedule(newxl); // needs to happen after the level change</a>
+<a name="ln794">    you.skill_cost_level = 0;</a>
+<a name="ln795">    check_skill_cost_change();</a>
+<a name="ln796">    // restore maxhp loss</a>
+<a name="ln797">    you.hp_max_adj_perm -= 1000;</a>
+<a name="ln798">    calc_hp();</a>
+<a name="ln799">    if (you.hp_max &lt;= 0)</a>
+<a name="ln800">    {</a>
+<a name="ln801">        // ... but remove it completely if unviable</a>
+<a name="ln802">        you.hp_max_adj_temp = max(you.hp_max_adj_temp, 0);</a>
+<a name="ln803">        you.hp_max_adj_perm = max(you.hp_max_adj_perm, 0);</a>
+<a name="ln804">        calc_hp();</a>
+<a name="ln805">    }</a>
+<a name="ln806"> </a>
+<a name="ln807">    set_hp(max(1, you.hp));</a>
+<a name="ln808">#ifdef DEBUG</a>
+<a name="ln809">    validate_mutations();</a>
+<a name="ln810">#endif</a>
+<a name="ln811">}</a>
+<a name="ln812"> </a>
+<a name="ln813">void wizard_set_xl(bool change_skills)</a>
+<a name="ln814">{</a>
+<a name="ln815">    mprf(MSGCH_PROMPT, &quot;Enter new experience level: &quot;);</a>
+<a name="ln816">    char buf[30];</a>
+<a name="ln817">    if (cancellable_get_line_autohist(buf, sizeof buf))</a>
+<a name="ln818">    {</a>
+<a name="ln819">        canned_msg(MSG_OK);</a>
+<a name="ln820">        return;</a>
+<a name="ln821">    }</a>
+<a name="ln822"> </a>
+<a name="ln823">    const int newxl = atoi(buf);</a>
+<a name="ln824">    if (newxl &lt; 1 || newxl &gt; you.get_max_xl() || newxl == you.experience_level)</a>
+<a name="ln825">    {</a>
+<a name="ln826">        canned_msg(MSG_OK);</a>
+<a name="ln827">        return;</a>
+<a name="ln828">    }</a>
+<a name="ln829"> </a>
+<a name="ln830">    set_xl(newxl, change_skills);</a>
+<a name="ln831">    mprf(&quot;Experience level set to %d.&quot;, newxl);</a>
+<a name="ln832">}</a>
+<a name="ln833"> </a>
+<a name="ln834">void set_xl(const int newxl, const bool train, const bool silent)</a>
+<a name="ln835">{</a>
+<a name="ln836">    no_messages mx(silent);</a>
+<a name="ln837"> </a>
+<a name="ln838">    if (newxl &lt; you.experience_level)</a>
+<a name="ln839">        debug_downtick_xl(newxl);</a>
+<a name="ln840">    else</a>
+<a name="ln841">        debug_uptick_xl(newxl, train);</a>
+<a name="ln842">}</a>
+<a name="ln843"> </a>
+<a name="ln844">void wizard_get_god_gift()</a>
+<a name="ln845">{</a>
+<a name="ln846">    if (you_worship(GOD_NO_GOD))</a>
+<a name="ln847">    {</a>
+<a name="ln848">        mpr(&quot;You are not religious!&quot;);</a>
+<a name="ln849">        return;</a>
+<a name="ln850">    }</a>
+<a name="ln851"> </a>
+<a name="ln852">    if (you_worship(GOD_RU))</a>
+<a name="ln853">    {</a>
+<a name="ln854">        ru_offer_new_sacrifices();</a>
+<a name="ln855">        return;</a>
+<a name="ln856">    }</a>
+<a name="ln857"> </a>
+<a name="ln858">    if (!do_god_gift(true))</a>
+<a name="ln859">        mpr(&quot;Nothing happens.&quot;);</a>
+<a name="ln860">}</a>
+<a name="ln861"> </a>
+<a name="ln862">void wizard_toggle_xray_vision()</a>
+<a name="ln863">{</a>
+<a name="ln864">    you.xray_vision = !you.xray_vision;</a>
+<a name="ln865">    mprf(&quot;X-ray vision %s.&quot;, you.xray_vision ? &quot;enabled&quot; : &quot;disabled&quot;);</a>
+<a name="ln866">    viewwindow(true);</a>
+<a name="ln867">}</a>
+<a name="ln868"> </a>
+<a name="ln869">void wizard_freeze_time()</a>
+<a name="ln870">{</a>
+<a name="ln871">    auto&amp; props = you.props;</a>
+<a name="ln872">    // this property is never false: either true or unset</a>
+<a name="ln873">    if (props.exists(FREEZE_TIME_KEY))</a>
+<a name="ln874">    {</a>
+<a name="ln875">        props.erase(FREEZE_TIME_KEY);</a>
+<a name="ln876">        mpr(&quot;You allow the flow of time to resume.&quot;);</a>
+<a name="ln877">    }</a>
+<a name="ln878">    else</a>
+<a name="ln879">    {</a>
+<a name="ln880">        props[FREEZE_TIME_KEY] = true;</a>
+<a name="ln881">        mpr(&quot;You bring the flow of time to a stop.&quot;);</a>
+<a name="ln882">    }</a>
+<a name="ln883">}</a>
+<a name="ln884"> </a>
+<a name="ln885">void wizard_god_wrath()</a>
+<a name="ln886">{</a>
+<a name="ln887">    const god_type god = choose_god(you.religion);</a>
+<a name="ln888">    if (god == NUM_GODS)</a>
+<a name="ln889">        mpr(&quot;That god doesn't seem to exist!&quot;);</a>
+<a name="ln890">    else if (god == GOD_NO_GOD)</a>
+<a name="ln891">        mpr(&quot;You suffer the terrible wrath of No God.&quot;);</a>
+<a name="ln892">    else if (!divine_retribution(god, true, true))</a>
+<a name="ln893">    {</a>
+<a name="ln894">        // Dead Jiyva, or Ru/Gozag/Ashenzari.</a>
+<a name="ln895">        mprf(&quot;%s is not feeling wrathful today.&quot;, god_name(god).c_str());</a>
+<a name="ln896">    }</a>
+<a name="ln897">}</a>
+<a name="ln898"> </a>
+<a name="ln899">void wizard_god_mollify()</a>
+<a name="ln900">{</a>
+<a name="ln901">    bool mollified = false;</a>
+<a name="ln902">    for (god_iterator it; it; ++it)</a>
+<a name="ln903">    {</a>
+<a name="ln904">        if (player_under_penance(*it))</a>
+<a name="ln905">        {</a>
+<a name="ln906">            dec_penance(*it, you.penance[*it]);</a>
+<a name="ln907">            mollified = true;</a>
+<a name="ln908">        }</a>
+<a name="ln909">    }</a>
+<a name="ln910">    if (!mollified)</a>
+<a name="ln911">        mpr(&quot;You are not under penance.&quot;);</a>
+<a name="ln912">}</a>
+<a name="ln913"> </a>
+<a name="ln914">void wizard_transform()</a>
+<a name="ln915">{</a>
+<a name="ln916">    transformation form;</a>
+<a name="ln917"> </a>
+<a name="ln918">    while (true)</a>
+<a name="ln919">    {</a>
+<a name="ln920">        string line;</a>
+<a name="ln921">        for (int i = 0; i &lt; NUM_TRANSFORMS; i++)</a>
+<a name="ln922">        {</a>
+<a name="ln923">            const auto tr = static_cast&lt;transformation&gt;(i);</a>
+<a name="ln924">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln925">            if (tr == transformation::jelly || tr == transformation::porcupine)</a>
+<a name="ln926">                continue;</a>
+<a name="ln927">#endif</a>
+<a name="ln928">            line += make_stringf(&quot;[%c] %-10s &quot;, i + 'a', transform_name(tr));</a>
+<a name="ln929">            if (i % 5 == 4 || i == NUM_TRANSFORMS - 1)</a>
+<a name="ln930">            {</a>
+<a name="ln931">                mprf(MSGCH_PROMPT, &quot;%s&quot;, line.c_str());</a>
+<a name="ln932">                line.clear();</a>
+<a name="ln933">            }</a>
+<a name="ln934">        }</a>
+<a name="ln935">        mprf(MSGCH_PROMPT, &quot;Which form (ESC to exit)? &quot;);</a>
+<a name="ln936"> </a>
+<a name="ln937">        int keyin = toalower(get_ch());</a>
+<a name="ln938"> </a>
+<a name="ln939">        if (key_is_escape(keyin) || keyin == ' '</a>
+<a name="ln940">            || keyin == '\r' || keyin == '\n')</a>
+<a name="ln941">        {</a>
+<a name="ln942">            canned_msg(MSG_OK);</a>
+<a name="ln943">            return;</a>
+<a name="ln944">        }</a>
+<a name="ln945"> </a>
+<a name="ln946">        if (keyin &lt; 'a' || keyin &gt; 'a' + NUM_TRANSFORMS - 1)</a>
+<a name="ln947">            continue;</a>
+<a name="ln948"> </a>
+<a name="ln949">        const auto k_tr = static_cast&lt;transformation&gt;(keyin - 'a');</a>
+<a name="ln950">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln951">        if (k_tr == transformation::jelly || k_tr == transformation::porcupine)</a>
+<a name="ln952">            continue;</a>
+<a name="ln953">#endif</a>
+<a name="ln954">        form = k_tr;</a>
+<a name="ln955">        break;</a>
+<a name="ln956">    }</a>
+<a name="ln957"> </a>
+<a name="ln958">    you.transform_uncancellable = false;</a>
+<a name="ln959">    if (!transform(200, form) &amp;&amp; you.form != form)</a>
+<a name="ln960">        mpr(&quot;Transformation failed.&quot;);</a>
+<a name="ln961">}</a>
+<a name="ln962"> </a>
+<a name="ln963">void wizard_join_religion()</a>
+<a name="ln964">{</a>
+<a name="ln965">    if (you.species == SP_DEMIGOD)</a>
+<a name="ln966">    {</a>
+<a name="ln967">        mpr(&quot;Not even in wizmode may Demigods worship a god!&quot;);</a>
+<a name="ln968">        return;</a>
+<a name="ln969">    }</a>
+<a name="ln970">    god_type god = choose_god();</a>
+<a name="ln971">    if (god == NUM_GODS)</a>
+<a name="ln972">        mpr(&quot;That god doesn't seem to exist!&quot;);</a>
+<a name="ln973">    else if (god == GOD_NO_GOD)</a>
+<a name="ln974">    {</a>
+<a name="ln975">        if (you_worship(GOD_NO_GOD))</a>
+<a name="ln976">            mpr(&quot;You already have no god!&quot;);</a>
+<a name="ln977">        else</a>
+<a name="ln978">            excommunication();</a>
+<a name="ln979">    }</a>
+<a name="ln980">    else if (you_worship(god))</a>
+<a name="ln981">        mpr(&quot;You already worship that god!&quot;);</a>
+<a name="ln982">    else</a>
+<a name="ln983">    {</a>
+<a name="ln984">        if (god == GOD_GOZAG)</a>
+<a name="ln985">            you.gold = max(you.gold, gozag_service_fee());</a>
+<a name="ln986">        join_religion(god);</a>
+<a name="ln987">    }</a>
+<a name="ln988">}</a>
+<a name="ln989"> </a>
+<a name="ln990">void wizard_xom_acts()</a>
+<a name="ln991">{</a>
+<a name="ln992">    char specs[80];</a>
+<a name="ln993"> </a>
+<a name="ln994">    msgwin_get_line(&quot;What action should Xom take? (Blank = any) &quot; ,</a>
+<a name="ln995">                    specs, sizeof(specs));</a>
+<a name="ln996"> </a>
+<a name="ln997">    const int severity = you_worship(GOD_XOM) ? abs(you.piety - HALF_MAX_PIETY)</a>
+<a name="ln998">                                              : random_range(0, HALF_MAX_PIETY);</a>
+<a name="ln999"> </a>
+<a name="ln1000">    if (specs[0] == '\0')</a>
+<a name="ln1001">    {</a>
+<a name="ln1002">        const maybe_bool nice = you_worship(GOD_XOM) ? MB_MAYBE :</a>
+<a name="ln1003">                                frombool(coinflip());</a>
+<a name="ln1004">        const xom_event_type result = xom_acts(severity, nice);</a>
+<a name="ln1005">        dprf(&quot;Xom did '%s'.&quot;, xom_effect_to_name(result).c_str());</a>
+<a name="ln1006">#ifndef DEBUG_DIAGNOSTICS</a>
+<a name="ln1007">        UNUSED(result);</a>
+<a name="ln1008">#endif</a>
+<a name="ln1009">        return;</a>
+<a name="ln1010">    }</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    xom_event_type event = _find_xom_event_from_string(specs);</a>
+<a name="ln1013">    if (event == XOM_DID_NOTHING)</a>
+<a name="ln1014">    {</a>
+<a name="ln1015">        dprf(&quot;That action doesn't seem to exist!&quot;);</a>
+<a name="ln1016">        return;</a>
+<a name="ln1017">    }</a>
+<a name="ln1018"> </a>
+<a name="ln1019">    dprf(&quot;Okay, Xom is doing '%s'.&quot;, xom_effect_to_name(event).c_str());</a>
+<a name="ln1020">    xom_take_action(event, severity);</a>
+<a name="ln1021">}</a>
+<a name="ln1022">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="768"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'you.experience' should be checked here.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

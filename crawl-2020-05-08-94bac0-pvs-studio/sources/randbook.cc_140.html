@@ -1,0 +1,1275 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>randbook.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions for generating random spellbooks.</a>
+<a name="ln4"> **/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;randbook.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;functional&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;artefact.h&quot;</a>
+<a name="ln13">#include &quot;database.h&quot;</a>
+<a name="ln14">#include &quot;english.h&quot;</a>
+<a name="ln15">#include &quot;item-name.h&quot;</a>
+<a name="ln16">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln17">#include &quot;items.h&quot;</a>
+<a name="ln18">#include &quot;religion.h&quot;</a>
+<a name="ln19">#include &quot;spl-book.h&quot;</a>
+<a name="ln20">#include &quot;stringutil.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">static string _gen_randbook_name(string subject, string owner,</a>
+<a name="ln23">                                 spschool disc1, spschool disc2);</a>
+<a name="ln24">static string _gen_randbook_owner(god_type god, spschool disc1,</a>
+<a name="ln25">                                  spschool disc2,</a>
+<a name="ln26">                                  const vector&lt;spell_type&gt; &amp;spells);</a>
+<a name="ln27"> </a>
+<a name="ln28">/// How many spells should be in a random theme book?</a>
+<a name="ln29">int theme_book_size() { return random2avg(7, 3) + 2; }</a>
+<a name="ln30"> </a>
+<a name="ln31">/// A discipline chooser that only ever returns the given discipline.</a>
+<a name="ln32">function&lt;spschool()&gt; forced_book_theme(spschool theme)</a>
+<a name="ln33">{</a>
+<a name="ln34">    return [theme]() { return theme; };</a>
+<a name="ln35">}</a>
+<a name="ln36"> </a>
+<a name="ln37">/// Choose a random valid discipline for a themed randbook.</a>
+<a name="ln38">spschool random_book_theme()</a>
+<a name="ln39">{</a>
+<a name="ln40">    vector&lt;spschool&gt; disciplines;</a>
+<a name="ln41">    for (auto discipline : spschools_type::range())</a>
+<a name="ln42">        disciplines.push_back(discipline);</a>
+<a name="ln43">    return disciplines[random2(disciplines.size())];</a>
+<a name="ln44">}</a>
+<a name="ln45"> </a>
+<a name="ln46">/**</a>
+<a name="ln47"> * Attempt to choose a valid discipline for a themed randbook which contains</a>
+<a name="ln48"> * at least the given spells.</a>
+<a name="ln49"> *</a>
+<a name="ln50"> * XXX: really we should be trying to create a pair that covers the set,</a>
+<a name="ln51"> * rather than trying to do it all with one...</a>
+<a name="ln52"> *</a>
+<a name="ln53"> * @param forced_spells     A set of spells guaranteed to be in the book.</a>
+<a name="ln54"> * @return                  A discipline which will match as many of those</a>
+<a name="ln55"> *                          spells as possible.</a>
+<a name="ln56"> */</a>
+<a name="ln57">spschool matching_book_theme(const vector&lt;spell_type&gt; &amp;forced_spells)</a>
+<a name="ln58">{</a>
+<a name="ln59">    map&lt;spschool, int&gt; seen_disciplines;</a>
+<a name="ln60">    for (auto spell : forced_spells)</a>
+<a name="ln61">    {</a>
+<a name="ln62">        const spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln63">        for (auto discipline : spschools_type::range())</a>
+<a name="ln64">            if (disciplines &amp; discipline)</a>
+<a name="ln65">                ++seen_disciplines[discipline];</a>
+<a name="ln66">    }</a>
+<a name="ln67"> </a>
+<a name="ln68">    bool matched = false;</a>
+<a name="ln69">    for (auto seen : seen_disciplines)</a>
+<a name="ln70">    {</a>
+<a name="ln71">        if (seen.second == (int)forced_spells.size())</a>
+<a name="ln72">        {</a>
+<a name="ln73">            matched = true;</a>
+<a name="ln74">            break;</a>
+<a name="ln75">        }</a>
+<a name="ln76">    }</a>
+<a name="ln77"> </a>
+<a name="ln78">    if (!matched)</a>
+<a name="ln79">    {</a>
+<a name="ln80">        const spschool *discipline</a>
+<a name="ln81">            = random_choose_weighted(seen_disciplines);</a>
+<a name="ln82">        if (discipline)</a>
+<a name="ln83">            return *discipline;</a>
+<a name="ln84">        return random_book_theme();</a>
+<a name="ln85">    }</a>
+<a name="ln86"> </a>
+<a name="ln87">    for (auto seen : seen_disciplines)</a>
+<a name="ln88">        seen.second = seen.second == (int)forced_spells.size() ? 1 : 0;</a>
+<a name="ln89">    const spschool *discipline</a>
+<a name="ln90">        = random_choose_weighted(seen_disciplines);</a>
+<a name="ln91">    ASSERT(discipline);</a>
+<a name="ln92">    return *discipline;</a>
+<a name="ln93">}</a>
+<a name="ln94"> </a>
+<a name="ln95">/// Is the given spell found in rarebooks?</a>
+<a name="ln96">static bool _is_rare_spell(spell_type spell)</a>
+<a name="ln97">{</a>
+<a name="ln98">    for (int i = 0; i &lt; NUM_FIXED_BOOKS; ++i)</a>
+<a name="ln99">    {</a>
+<a name="ln100">        const book_type book = static_cast&lt;book_type&gt;(i);</a>
+<a name="ln101">        if (is_rare_book(book))</a>
+<a name="ln102">            for (spell_type rare_spell : spellbook_template(book))</a>
+<a name="ln103">                if (rare_spell == spell)</a>
+<a name="ln104">                    return true;</a>
+<a name="ln105">    }</a>
+<a name="ln106"> </a>
+<a name="ln107">    return false;</a>
+<a name="ln108">}</a>
+<a name="ln109"> </a>
+<a name="ln110"> </a>
+<a name="ln111">/**</a>
+<a name="ln112"> * Can we include the given spell in our spellbook?</a>
+<a name="ln113"> *</a>
+<a name="ln114"> * @param agent             The entity creating the book; possibly a god.</a>
+<a name="ln115"> * @param spell             The spell to be filtered.</a>
+<a name="ln116"> * @return                  Whether the spell can be included.</a>
+<a name="ln117"> */</a>
+<a name="ln118">static bool _agent_spell_filter(int agent, spell_type spell)</a>
+<a name="ln119">{</a>
+<a name="ln120">    // Only use spells available in books you might find lying about</a>
+<a name="ln121">    // the dungeon; rarebook spells are restricted to Sif-made books.</a>
+<a name="ln122">    if (spell_rarity(spell) == -1</a>
+<a name="ln123">        &amp;&amp; (agent != GOD_SIF_MUNA || !_is_rare_spell(spell)))</a>
+<a name="ln124">    {</a>
+<a name="ln125">        return false;</a>
+<a name="ln126">    }</a>
+<a name="ln127"> </a>
+<a name="ln128">    // Don't include spells a god dislikes, if this is an acquirement</a>
+<a name="ln129">    // or a god gift.</a>
+<a name="ln130">    const god_type god = agent &gt;= AQ_SCROLL ? you.religion : (god_type)agent;</a>
+<a name="ln131">    if (god_hates_spell(spell, god))</a>
+<a name="ln132">        return false;</a>
+<a name="ln133"> </a>
+<a name="ln134">    return true;</a>
+<a name="ln135">}</a>
+<a name="ln136"> </a>
+<a name="ln137">/**</a>
+<a name="ln138"> * Can we include the given spell in our themed spellbook?</a>
+<a name="ln139"> *</a>
+<a name="ln140"> * @param discipline_1      The first spellschool of the book.</a>
+<a name="ln141"> * @param discipline_2      The second spellschool of the book.</a>
+<a name="ln142"> * @param agent             The entity creating the book; possibly a god.</a>
+<a name="ln143"> * @param prev              A list of spells already chosen for the book.</a>
+<a name="ln144"> * @param spell             The spell to be filtered.</a>
+<a name="ln145"> * @return                  Whether the spell can be included.</a>
+<a name="ln146"> */</a>
+<a name="ln147">bool basic_themed_spell_filter(spschool discipline_1,</a>
+<a name="ln148">                               spschool discipline_2,</a>
+<a name="ln149">                               int agent,</a>
+<a name="ln150">                               const vector&lt;spell_type&gt; &amp;prev,</a>
+<a name="ln151">                               spell_type spell)</a>
+<a name="ln152">{</a>
+<a name="ln153">    if (!is_valid_spell(spell))</a>
+<a name="ln154">        return false;</a>
+<a name="ln155"> </a>
+<a name="ln156">    // Only include spells matching at least one of the book's disciplines.</a>
+<a name="ln157">    const spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln158">    if (!(disciplines &amp; discipline_1) &amp;&amp; !(disciplines &amp; discipline_2))</a>
+<a name="ln159">        return false;</a>
+<a name="ln160"> </a>
+<a name="ln161">    // Only include spells we haven't already.</a>
+<a name="ln162">    if (count(prev.begin(), prev.end(), spell))</a>
+<a name="ln163">        return false;</a>
+<a name="ln164"> </a>
+<a name="ln165">    if (!_agent_spell_filter(agent, spell))</a>
+<a name="ln166">        return false;</a>
+<a name="ln167"> </a>
+<a name="ln168">    return true;</a>
+<a name="ln169">}</a>
+<a name="ln170"> </a>
+<a name="ln171">/**</a>
+<a name="ln172"> * Build and return a spell filter that excludes spells that would push us over</a>
+<a name="ln173"> * the maximum total spell levels allowed in the book.</a>
+<a name="ln174"> *</a>
+<a name="ln175"> * @param max_levels    The max total spell levels allowed.</a>
+<a name="ln176"> * @param subfilter     A filter to check further.</a>
+<a name="ln177"> */</a>
+<a name="ln178">themed_spell_filter capped_spell_filter(int max_levels,</a>
+<a name="ln179">                                        themed_spell_filter subfilter)</a>
+<a name="ln180">{</a>
+<a name="ln181">    if (max_levels &lt; 1)</a>
+<a name="ln182">        return subfilter; // don't even bother.</a>
+<a name="ln183"> </a>
+<a name="ln184">    return [max_levels, subfilter](spschool discipline_1,</a>
+<a name="ln185">                                   spschool discipline_2,</a>
+<a name="ln186">                                   int agent,</a>
+<a name="ln187">                                   const vector&lt;spell_type&gt; &amp;prev,</a>
+<a name="ln188">                                   spell_type spell)</a>
+<a name="ln189">    {</a>
+<a name="ln190">        if (!subfilter(discipline_1, discipline_2, agent, prev, spell))</a>
+<a name="ln191">            return false;</a>
+<a name="ln192"> </a>
+<a name="ln193">        int prev_levels = 0;</a>
+<a name="ln194">        for (auto prev_spell : prev)</a>
+<a name="ln195">            prev_levels += spell_difficulty(prev_spell);</a>
+<a name="ln196">        if (spell_difficulty(spell) + prev_levels &gt; max_levels)</a>
+<a name="ln197">            return false;</a>
+<a name="ln198"> </a>
+<a name="ln199">        return true;</a>
+<a name="ln200">    };</a>
+<a name="ln201">}</a>
+<a name="ln202"> </a>
+<a name="ln203">/**</a>
+<a name="ln204"> * Build and return a spell filter that forces the first several spells to</a>
+<a name="ln205"> * be from the given list, disregarding other constraints</a>
+<a name="ln206"> *</a>
+<a name="ln207"> * @param forced_spells     Spells to force.</a>
+<a name="ln208"> * @param subfilter         A filter to check after all forced spells are in.</a>
+<a name="ln209"> */</a>
+<a name="ln210">themed_spell_filter forced_spell_filter(const vector&lt;spell_type&gt; &amp;forced_spells,</a>
+<a name="ln211">                                        themed_spell_filter subfilter)</a>
+<a name="ln212">{</a>
+<a name="ln213">    return [&amp;forced_spells, subfilter](spschool discipline_1,</a>
+<a name="ln214">                                       spschool discipline_2,</a>
+<a name="ln215">                                       int agent,</a>
+<a name="ln216">                                       const vector&lt;spell_type&gt; &amp;prev,</a>
+<a name="ln217">                                       spell_type spell)</a>
+<a name="ln218">    {</a>
+<a name="ln219">        if (prev.size() &lt; forced_spells.size())</a>
+<a name="ln220">            return spell == forced_spells[prev.size()];</a>
+<a name="ln221">        return subfilter(discipline_1, discipline_2, agent, prev, spell);</a>
+<a name="ln222">    };</a>
+<a name="ln223">}</a>
+<a name="ln224"> </a>
+<a name="ln225">/**</a>
+<a name="ln226"> * Generate a list of spells for a themebook.</a>
+<a name="ln227"> *</a>
+<a name="ln228"> * @param discipline_1      The first spellschool of the book.</a>
+<a name="ln229"> * @param discipline_2      The second spellschool of the book.</a>
+<a name="ln230"> * @param filter            A filter specifying which spells can be included.</a>
+<a name="ln231"> * @param agent             The entity creating the book; possibly a god.</a>
+<a name="ln232"> * @param num_spells        How many spells should be included.</a>
+<a name="ln233"> * @param spells[out]       The list to be populated.</a>
+<a name="ln234"> */</a>
+<a name="ln235">void theme_book_spells(spschool discipline_1,</a>
+<a name="ln236">                       spschool discipline_2,</a>
+<a name="ln237">                       themed_spell_filter filter,</a>
+<a name="ln238">                       int agent,</a>
+<a name="ln239">                       int num_spells,</a>
+<a name="ln240">                       vector&lt;spell_type&gt; &amp;spells)</a>
+<a name="ln241">{</a>
+<a name="ln242">    ASSERT(num_spells &gt;= 1);</a>
+<a name="ln243">    for (int i = 0; i &lt; num_spells; ++i)</a>
+<a name="ln244">    {</a>
+<a name="ln245">        vector&lt;spell_type&gt; possible_spells;</a>
+<a name="ln246">        for (int s = 0; s &lt; NUM_SPELLS; ++s)</a>
+<a name="ln247">        {</a>
+<a name="ln248">            const spell_type spell = static_cast&lt;spell_type&gt;(s);</a>
+<a name="ln249">            if (filter(discipline_1, discipline_2, agent, spells, spell))</a>
+<a name="ln250">                possible_spells.push_back(spell);</a>
+<a name="ln251">        }</a>
+<a name="ln252"> </a>
+<a name="ln253">        if (!possible_spells.size())</a>
+<a name="ln254">        {</a>
+<a name="ln255">            dprf(&quot;Couldn't find any valid spell for slot %d!&quot;, i);</a>
+<a name="ln256">            return;</a>
+<a name="ln257">        }</a>
+<a name="ln258"> </a>
+<a name="ln259">        spells.push_back(possible_spells[random2(possible_spells.size())]);</a>
+<a name="ln260">    }</a>
+<a name="ln261"> </a>
+<a name="ln262">    ASSERT(spells.size());</a>
+<a name="ln263">}</a>
+<a name="ln264"> </a>
+<a name="ln265">/**</a>
+<a name="ln266"> * Try to remove any discipline that's not actually being used by a given</a>
+<a name="ln267"> * randbook, setting it to the other (used) discipline.</a>
+<a name="ln268"> *</a>
+<a name="ln269"> * E.g., if a cj/ne randbook is generated with only cj spells, set discipline_2</a>
+<a name="ln270"> * to cj as well.</a>
+<a name="ln271"> *</a>
+<a name="ln272"> * @param discipline_1[in,out]      The first book discipline.</a>
+<a name="ln273"> * @param discipline_1[in,out]      The second book discipline.</a>
+<a name="ln274"> * @param spells[in]                The list of spells the book should contain.</a>
+<a name="ln275"> */</a>
+<a name="ln276">void fixup_randbook_disciplines(spschool &amp;discipline_1,</a>
+<a name="ln277">                                spschool &amp;discipline_2,</a>
+<a name="ln278">                                const vector&lt;spell_type&gt; &amp;spells)</a>
+<a name="ln279">{</a>
+<a name="ln280">    bool has_d1 = false, has_d2 = false;</a>
+<a name="ln281">    for (auto spell : spells)</a>
+<a name="ln282">    {</a>
+<a name="ln283">        const spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln284">        if (disciplines &amp; discipline_1)</a>
+<a name="ln285">            has_d1 = true;</a>
+<a name="ln286">        if (disciplines &amp; discipline_2)</a>
+<a name="ln287">            has_d2 = true;</a>
+<a name="ln288">    }</a>
+<a name="ln289"> </a>
+<a name="ln290">    if (has_d1 == has_d2)</a>
+<a name="ln291">        return; // both schools or neither used; can't do anything regardless</a>
+<a name="ln292"> </a>
+<a name="ln293">    if (has_d1)</a>
+<a name="ln294">        discipline_2 = discipline_1;</a>
+<a name="ln295">    else</a>
+<a name="ln296">        discipline_1 = discipline_2;</a>
+<a name="ln297">}</a>
+<a name="ln298"> </a>
+<a name="ln299">/**</a>
+<a name="ln300"> * Turn a given book into a themed spellbook.</a>
+<a name="ln301"> *</a>
+<a name="ln302"> * @param book[in,out]      The book in question.</a>
+<a name="ln303"> * @param filter            A filter specifying which spells can be included.</a>
+<a name="ln304"> * @param get_discipline    A function to choose themes for the book.</a>
+<a name="ln305"> * @param num_spells        The number of spells the book should include.</a>
+<a name="ln306"> *                          Not guaranteed, but should be fairly reliable.</a>
+<a name="ln307"> * @param owner             The name of the book's owner, if any. Cosmetic.</a>
+<a name="ln308"> * @param subject           The subject of the book, if any. Cosmetic.</a>
+<a name="ln309"> */</a>
+<a name="ln310">void build_themed_book(item_def &amp;book, themed_spell_filter filter,</a>
+<a name="ln311">                       function&lt;spschool()&gt; get_discipline,</a>
+<a name="ln312">                       int num_spells, string owner, string subject)</a>
+<a name="ln313">{</a>
+<a name="ln314">    if (num_spells &lt; 1)</a>
+<a name="ln315">        num_spells = theme_book_size();</a>
+<a name="ln316"> </a>
+<a name="ln317">    spschool discipline_1 = get_discipline();</a>
+<a name="ln318">    spschool discipline_2 = get_discipline();</a>
+<a name="ln319"> </a>
+<a name="ln320">    item_source_type agent;</a>
+<a name="ln321">    if (!origin_is_acquirement(book, &amp;agent))</a>
+<a name="ln322">        agent = (item_source_type)origin_as_god_gift(book);</a>
+<a name="ln323"> </a>
+<a name="ln324">    vector&lt;spell_type&gt; spells;</a>
+<a name="ln325">    theme_book_spells(discipline_1, discipline_2, filter, agent, num_spells,</a>
+<a name="ln326">                      spells);</a>
+<a name="ln327">    fixup_randbook_disciplines(discipline_1, discipline_2, spells);</a>
+<a name="ln328">    init_book_theme_randart(book, spells);</a>
+<a name="ln329">    name_book_theme_randart(book, discipline_1, discipline_2, owner, subject);</a>
+<a name="ln330">}</a>
+<a name="ln331"> </a>
+<a name="ln332">static bool _compare_spells(spell_type a, spell_type b)</a>
+<a name="ln333">{</a>
+<a name="ln334">    if (a == SPELL_NO_SPELL &amp;&amp; b == SPELL_NO_SPELL)</a>
+<a name="ln335">        return false;</a>
+<a name="ln336">    else if (a != SPELL_NO_SPELL &amp;&amp; b == SPELL_NO_SPELL)</a>
+<a name="ln337">        return true;</a>
+<a name="ln338">    else if (a == SPELL_NO_SPELL &amp;&amp; b != SPELL_NO_SPELL)</a>
+<a name="ln339">        return false;</a>
+<a name="ln340"> </a>
+<a name="ln341">    int level_a = spell_difficulty(a);</a>
+<a name="ln342">    int level_b = spell_difficulty(b);</a>
+<a name="ln343"> </a>
+<a name="ln344">    if (level_a != level_b)</a>
+<a name="ln345">        return level_a &lt; level_b;</a>
+<a name="ln346"> </a>
+<a name="ln347">    spschools_type schools_a = get_spell_disciplines(a);</a>
+<a name="ln348">    spschools_type schools_b = get_spell_disciplines(b);</a>
+<a name="ln349"> </a>
+<a name="ln350">    if (schools_a != schools_b &amp;&amp; schools_a != spschool::none</a>
+<a name="ln351">        &amp;&amp; schools_b != spschool::none)</a>
+<a name="ln352">    {</a>
+<a name="ln353">        const char* a_type = nullptr;</a>
+<a name="ln354">        const char* b_type = nullptr;</a>
+<a name="ln355"> </a>
+<a name="ln356">        // Find lowest/earliest school for each spell.</a>
+<a name="ln357">        for (const auto mask : spschools_type::range())</a>
+<a name="ln358">        {</a>
+<a name="ln359">            if (a_type == nullptr &amp;&amp; (schools_a &amp; mask))</a>
+<a name="ln360">                a_type = spelltype_long_name(mask);</a>
+<a name="ln361">            if (b_type == nullptr &amp;&amp; (schools_b &amp; mask))</a>
+<a name="ln362">                b_type = spelltype_long_name(mask);</a>
+<a name="ln363">        }</a>
+<a name="ln364">        ASSERT(a_type != nullptr);</a>
+<a name="ln365">        ASSERT(b_type != nullptr);</a>
+<a name="ln366">        return strcmp(a_type, b_type) &lt; 0;</a>
+<a name="ln367">    }</a>
+<a name="ln368"> </a>
+<a name="ln369">    return strcmp(spell_title(a), spell_title(b)) &lt; 0;</a>
+<a name="ln370">}</a>
+<a name="ln371"> </a>
+<a name="ln372">static void _get_spell_list(vector&lt;spell_type&gt; &amp;spells, int level,</a>
+<a name="ln373">                            god_type god, bool avoid_uncastable,</a>
+<a name="ln374">                            int &amp;god_discard, int &amp;uncastable_discard,</a>
+<a name="ln375">                            bool avoid_known = false)</a>
+<a name="ln376">{</a>
+<a name="ln377">    // For randarts handed out by Sif Muna, spells contained in the</a>
+<a name="ln378">    // special books are fair game.</a>
+<a name="ln379">    // We store them in an extra vector that (once sorted) can later</a>
+<a name="ln380">    // be checked for each spell with a rarity -1 (i.e. not normally</a>
+<a name="ln381">    // appearing randomly).</a>
+<a name="ln382">    vector&lt;spell_type&gt; special_spells;</a>
+<a name="ln383">    if (god == GOD_SIF_MUNA)</a>
+<a name="ln384">    {</a>
+<a name="ln385">        for (int i = 0; i &lt; NUM_FIXED_BOOKS; ++i)</a>
+<a name="ln386">        {</a>
+<a name="ln387">            const book_type book = static_cast&lt;book_type&gt;(i);</a>
+<a name="ln388">            if (is_rare_book(book))</a>
+<a name="ln389">            {</a>
+<a name="ln390">                for (spell_type spell : spellbook_template(book))</a>
+<a name="ln391">                {</a>
+<a name="ln392">                    if (spell_rarity(spell) != -1)</a>
+<a name="ln393">                        continue;</a>
+<a name="ln394"> </a>
+<a name="ln395">                    special_spells.push_back(spell);</a>
+<a name="ln396">                }</a>
+<a name="ln397">            }</a>
+<a name="ln398">        }</a>
+<a name="ln399"> </a>
+<a name="ln400">        sort(special_spells.begin(), special_spells.end());</a>
+<a name="ln401">    }</a>
+<a name="ln402"> </a>
+<a name="ln403">    int specnum = 0;</a>
+<a name="ln404">    for (int i = 0; i &lt; NUM_SPELLS; ++i)</a>
+<a name="ln405">    {</a>
+<a name="ln406">        const spell_type spell = (spell_type) i;</a>
+<a name="ln407"> </a>
+<a name="ln408">        if (!is_valid_spell(spell))</a>
+<a name="ln409">            continue;</a>
+<a name="ln410"> </a>
+<a name="ln411">        // Only use spells available in books you might find lying about</a>
+<a name="ln412">        // the dungeon.</a>
+<a name="ln413">        if (spell_rarity(spell) == -1)</a>
+<a name="ln414">        {</a>
+<a name="ln415">            bool skip_spell = true;</a>
+<a name="ln416">            while ((unsigned int) specnum &lt; special_spells.size()</a>
+<a name="ln417">                   &amp;&amp; spell == special_spells[specnum])</a>
+<a name="ln418">            {</a>
+<a name="ln419">                specnum++;</a>
+<a name="ln420">                skip_spell = false;</a>
+<a name="ln421">            }</a>
+<a name="ln422"> </a>
+<a name="ln423">            if (skip_spell)</a>
+<a name="ln424">                continue;</a>
+<a name="ln425">        }</a>
+<a name="ln426"> </a>
+<a name="ln427">        if (avoid_known &amp;&amp; you.spell_library[spell])</a>
+<a name="ln428">            continue;</a>
+<a name="ln429"> </a>
+<a name="ln430">        // fixed level randart: only include spells of the given level</a>
+<a name="ln431">        if (level != -1 &amp;&amp; spell_difficulty(spell) != level)</a>
+<a name="ln432">            continue;</a>
+<a name="ln433"> </a>
+<a name="ln434">        if (avoid_uncastable &amp;&amp; !you_can_memorise(spell))</a>
+<a name="ln435">        {</a>
+<a name="ln436">            uncastable_discard++;</a>
+<a name="ln437">            continue;</a>
+<a name="ln438">        }</a>
+<a name="ln439"> </a>
+<a name="ln440">        if (god_hates_spell(spell, god))</a>
+<a name="ln441">        {</a>
+<a name="ln442">            god_discard++;</a>
+<a name="ln443">            continue;</a>
+<a name="ln444">        }</a>
+<a name="ln445"> </a>
+<a name="ln446">        // Passed all tests.</a>
+<a name="ln447">        spells.push_back(spell);</a>
+<a name="ln448">    }</a>
+<a name="ln449">}</a>
+<a name="ln450"> </a>
+<a name="ln451">static void _make_book_randart(item_def &amp;book)</a>
+<a name="ln452">{</a>
+<a name="ln453">    if (!is_artefact(book))</a>
+<a name="ln454">    {</a>
+<a name="ln455">        book.flags |= ISFLAG_RANDART;</a>
+<a name="ln456">        if (!book.props.exists(ARTEFACT_APPEAR_KEY))</a>
+<a name="ln457">        {</a>
+<a name="ln458">            book.props[ARTEFACT_APPEAR_KEY].get_string() =</a>
+<a name="ln459">            make_artefact_name(book, true);</a>
+<a name="ln460">        }</a>
+<a name="ln461">    }</a>
+<a name="ln462">}</a>
+<a name="ln463"> </a>
+<a name="ln464">/**</a>
+<a name="ln465"> * Choose an owner for a randomly-generated single-level spellbook.</a>
+<a name="ln466"> *</a>
+<a name="ln467"> * @param god       The god responsible for the book, if any.</a>
+<a name="ln468"> *                  If set, will be the book's owner.</a>
+<a name="ln469"> * @return          An owner for the book; may be the empty string.</a>
+<a name="ln470"> */</a>
+<a name="ln471">static string _gen_randlevel_owner(god_type god)</a>
+<a name="ln472">{</a>
+<a name="ln473">    if (god != GOD_NO_GOD)</a>
+<a name="ln474">        return god_name(god, false);</a>
+<a name="ln475">    if (one_chance_in(30))</a>
+<a name="ln476">        return god_name(GOD_SIF_MUNA, false);</a>
+<a name="ln477">    if (one_chance_in(3))</a>
+<a name="ln478">        return make_name();</a>
+<a name="ln479">    return &quot;&quot;;</a>
+<a name="ln480">}</a>
+<a name="ln481"> </a>
+<a name="ln482">/// What's the DB lookup string for a given randbook spell level?</a>
+<a name="ln483">static string _randlevel_difficulty_name(int level)</a>
+<a name="ln484">{</a>
+<a name="ln485">    if (level == 1)</a>
+<a name="ln486">        return &quot;starting&quot;;</a>
+<a name="ln487">    if (level &lt;= 3 || level == 4 &amp;&amp; coinflip())</a>
+<a name="ln488">        return &quot;easy&quot;;</a>
+<a name="ln489">    if (level &lt;= 6)</a>
+<a name="ln490">        return &quot;moderate&quot;;</a>
+<a name="ln491">    return &quot;difficult&quot;;</a>
+<a name="ln492">}</a>
+<a name="ln493"> </a>
+<a name="ln494">/**</a>
+<a name="ln495"> * Generate a name for a randomly-generated single-level spellbook.</a>
+<a name="ln496"> *</a>
+<a name="ln497"> * @param level     The level of the spells in the book.</a>
+<a name="ln498"> * @param god       The god responsible for the book, if any.</a>
+<a name="ln499"> * @return          A spellbook name. May contain placeholders (@foo@).</a>
+<a name="ln500"> */</a>
+<a name="ln501">static string _gen_randlevel_name(int level, god_type god)</a>
+<a name="ln502">{</a>
+<a name="ln503">    const string owner_name = _gen_randlevel_owner(god);</a>
+<a name="ln504">    const bool has_owner = !owner_name.empty();</a>
+<a name="ln505">    const string apostrophised_owner = owner_name.empty() ? &quot;&quot; :</a>
+<a name="ln506">    apostrophise(owner_name) + &quot; &quot;;</a>
+<a name="ln507"> </a>
+<a name="ln508">    if (god == GOD_XOM &amp;&amp; coinflip())</a>
+<a name="ln509">    {</a>
+<a name="ln510">        const string xomname = getRandNameString(&quot;book_noun&quot;) + &quot; of &quot;</a>
+<a name="ln511">        + getRandNameString(&quot;Xom_book_title&quot;);</a>
+<a name="ln512">        return apostrophised_owner + xomname;</a>
+<a name="ln513">    }</a>
+<a name="ln514"> </a>
+<a name="ln515">    const string lookup = _randlevel_difficulty_name(level) + &quot; level book&quot;;</a>
+<a name="ln516"> </a>
+<a name="ln517">    // First try for names respecting the book's previous owner/author</a>
+<a name="ln518">    // (if one exists), then check for general difficulty.</a>
+<a name="ln519">    string bookname;</a>
+<a name="ln520">    if (has_owner)</a>
+<a name="ln521">        bookname = getRandNameString(lookup + &quot; owner&quot;);</a>
+<a name="ln522"> </a>
+<a name="ln523">    if (bookname.empty())</a>
+<a name="ln524">        bookname = getRandNameString(lookup);</a>
+<a name="ln525"> </a>
+<a name="ln526">    bookname = uppercase_first(bookname);</a>
+<a name="ln527">    if (has_owner)</a>
+<a name="ln528">    {</a>
+<a name="ln529">        if (bookname.substr(0, 4) == &quot;The &quot;)</a>
+<a name="ln530">            bookname = bookname.substr(4);</a>
+<a name="ln531">        else if (bookname.substr(0, 2) == &quot;A &quot;)</a>
+<a name="ln532">            bookname = bookname.substr(2);</a>
+<a name="ln533">        else if (bookname.substr(0, 3) == &quot;An &quot;)</a>
+<a name="ln534">            bookname = bookname.substr(3);</a>
+<a name="ln535">    }</a>
+<a name="ln536"> </a>
+<a name="ln537">    if (bookname.find(&quot;@level@&quot;, 0) != string::npos)</a>
+<a name="ln538">    {</a>
+<a name="ln539">        const string level_name = uppercase_first(number_in_words(level));</a>
+<a name="ln540">        bookname = replace_all(bookname, &quot;@level@&quot;, level_name);</a>
+<a name="ln541">    }</a>
+<a name="ln542"> </a>
+<a name="ln543">    if (bookname.empty())</a>
+<a name="ln544">        bookname = getRandNameString(&quot;book&quot;);</a>
+<a name="ln545"> </a>
+<a name="ln546">    return apostrophised_owner + bookname;</a>
+<a name="ln547">}</a>
+<a name="ln548"> </a>
+<a name="ln549">/**</a>
+<a name="ln550"> * Turn the given book into a randomly-generated spellbook (&quot;randbook&quot;),</a>
+<a name="ln551"> * containing only spells of a given level.</a>
+<a name="ln552"> *</a>
+<a name="ln553"> * @param book[out]    The book in question.</a>
+<a name="ln554"> * @param level        The level of the spells. If -1, choose a level randomly.</a>
+<a name="ln555"> * @return             Whether the book was successfully transformed.</a>
+<a name="ln556"> */</a>
+<a name="ln557">bool make_book_level_randart(item_def &amp;book, int level)</a>
+<a name="ln558">{</a>
+<a name="ln559">    ASSERT(book.base_type == OBJ_BOOKS);</a>
+<a name="ln560"> </a>
+<a name="ln561">    const god_type god = origin_as_god_gift(book);</a>
+<a name="ln562"> </a>
+<a name="ln563">    const bool completely_random =</a>
+<a name="ln564">        god == GOD_XOM || (god == GOD_NO_GOD &amp;&amp; !origin_is_acquirement(book));</a>
+<a name="ln565"> </a>
+<a name="ln566">    if (level == -1)</a>
+<a name="ln567">    {</a>
+<a name="ln568">        int max_level =</a>
+<a name="ln569">            (completely_random ? 9</a>
+<a name="ln570">             : min(9, you.get_experience_level()));</a>
+<a name="ln571"> </a>
+<a name="ln572">        level = random_range(1, max_level);</a>
+<a name="ln573">    }</a>
+<a name="ln574">    ASSERT_RANGE(level, 0 + 1, 9 + 1);</a>
+<a name="ln575"> </a>
+<a name="ln576">    // Book level:       1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9</a>
+<a name="ln577">    // Number of spells: 5 | 5 | 5 | 6 | 6 | 6 | 4 | 2 | 1</a>
+<a name="ln578">    int num_spells = max(1, min(5 + (level - 1)/3,</a>
+<a name="ln579">                                18 - 2*level));</a>
+<a name="ln580">    ASSERT_RANGE(num_spells, 0 + 1, RANDBOOK_SIZE + 1);</a>
+<a name="ln581"> </a>
+<a name="ln582">    book.sub_type = BOOK_RANDART_LEVEL;</a>
+<a name="ln583">    _make_book_randart(book);</a>
+<a name="ln584"> </a>
+<a name="ln585">    int god_discard        = 0;</a>
+<a name="ln586">    int uncastable_discard = 0;</a>
+<a name="ln587"> </a>
+<a name="ln588">    vector&lt;spell_type&gt; spells;</a>
+<a name="ln589">    // Which spells are valid choices?</a>
+<a name="ln590">    _get_spell_list(spells, level, god, !completely_random,</a>
+<a name="ln591">                    god_discard, uncastable_discard);</a>
+<a name="ln592"> </a>
+<a name="ln593">    if (spells.empty())</a>
+<a name="ln594">    {</a>
+<a name="ln595">        if (level &gt; 1)</a>
+<a name="ln596">            return make_book_level_randart(book, level - 1);</a>
+<a name="ln597">        char buf[80];</a>
+<a name="ln598"> </a>
+<a name="ln599">        if (god_discard &gt; 0 &amp;&amp; uncastable_discard == 0)</a>
+<a name="ln600">        {</a>
+<a name="ln601">            snprintf(buf, sizeof(buf), &quot;%s disliked all level %d spells&quot;,</a>
+<a name="ln602">                     god_name(god).c_str(), level);</a>
+<a name="ln603">        }</a>
+<a name="ln604">        else if (god_discard == 0 &amp;&amp; uncastable_discard &gt; 0)</a>
+<a name="ln605">            sprintf(buf, &quot;No level %d spells can be cast by you&quot;, level);</a>
+<a name="ln606">        else if (god_discard &gt; 0 &amp;&amp; uncastable_discard &gt; 0)</a>
+<a name="ln607">        {</a>
+<a name="ln608">            snprintf(buf, sizeof(buf),</a>
+<a name="ln609">                     &quot;All level %d spells are either disliked by %s &quot;</a>
+<a name="ln610">                     &quot;or cannot be cast by you.&quot;,</a>
+<a name="ln611">                     level, god_name(god).c_str());</a>
+<a name="ln612">        }</a>
+<a name="ln613">        else</a>
+<a name="ln614">            sprintf(buf, &quot;No level %d spells?!?!?!&quot;, level);</a>
+<a name="ln615"> </a>
+<a name="ln616">        mprf(MSGCH_ERROR, &quot;Could not create fixed level randart spellbook: %s&quot;,</a>
+<a name="ln617">             buf);</a>
+<a name="ln618"> </a>
+<a name="ln619">        return false;</a>
+<a name="ln620">    }</a>
+<a name="ln621">    shuffle_array(spells);</a>
+<a name="ln622"> </a>
+<a name="ln623">    if (num_spells &gt; (int) spells.size())</a>
+<a name="ln624">    {</a>
+<a name="ln625">        num_spells = spells.size();</a>
+<a name="ln626">#if defined(DEBUG) || defined(DEBUG_DIAGNOSTICS)</a>
+<a name="ln627">        mprf(MSGCH_WARN, &quot;More spells requested for fixed level (%d) &quot;</a>
+<a name="ln628">             &quot;randart spellbook than there are valid spells.&quot;,</a>
+<a name="ln629">             level);</a>
+<a name="ln630">        mprf(MSGCH_WARN, &quot;Discarded %d spells due to being uncastable and &quot;</a>
+<a name="ln631">             &quot;%d spells due to being disliked by %s.&quot;,</a>
+<a name="ln632">             uncastable_discard, god_discard, god_name(god).c_str());</a>
+<a name="ln633">#endif</a>
+<a name="ln634">    }</a>
+<a name="ln635"> </a>
+<a name="ln636">    vector&lt;bool&gt; spell_used(spells.size(), false);</a>
+<a name="ln637">    vector&lt;bool&gt; avoid_memorised(spells.size(), !completely_random);</a>
+<a name="ln638">    vector&lt;bool&gt; avoid_seen(spells.size(), !completely_random);</a>
+<a name="ln639"> </a>
+<a name="ln640">    spell_type chosen_spells[RANDBOOK_SIZE];</a>
+<a name="ln641">    for (int i = 0; i &lt; RANDBOOK_SIZE; i++)</a>
+<a name="ln642">        chosen_spells[i] = SPELL_NO_SPELL;</a>
+<a name="ln643"> </a>
+<a name="ln644">    int book_pos = 0;</a>
+<a name="ln645">    while (book_pos &lt; num_spells)</a>
+<a name="ln646">    {</a>
+<a name="ln647">        int spell_pos = random2(spells.size());</a>
+<a name="ln648"> </a>
+<a name="ln649">        if (spell_used[spell_pos])</a>
+<a name="ln650">            continue;</a>
+<a name="ln651"> </a>
+<a name="ln652">        spell_type spell = spells[spell_pos];</a>
+<a name="ln653">        ASSERT(spell != SPELL_NO_SPELL);</a>
+<a name="ln654"> </a>
+<a name="ln655">        if (avoid_memorised[spell_pos] &amp;&amp; you.has_spell(spell))</a>
+<a name="ln656">        {</a>
+<a name="ln657">            // Only once.</a>
+<a name="ln658">            avoid_memorised[spell_pos] = false;</a>
+<a name="ln659">            continue;</a>
+<a name="ln660">        }</a>
+<a name="ln661"> </a>
+<a name="ln662">        if (avoid_seen[spell_pos] &amp;&amp; you.spell_library[spell] &amp;&amp; coinflip())</a>
+<a name="ln663">        {</a>
+<a name="ln664">            // Only once.</a>
+<a name="ln665">            avoid_seen[spell_pos] = false;</a>
+<a name="ln666">            continue;</a>
+<a name="ln667">        }</a>
+<a name="ln668"> </a>
+<a name="ln669">        spell_used[spell_pos]     = true;</a>
+<a name="ln670">        chosen_spells[book_pos++] = spell;</a>
+<a name="ln671">    }</a>
+<a name="ln672">    sort(chosen_spells, chosen_spells + RANDBOOK_SIZE, _compare_spells);</a>
+<a name="ln673">    ASSERT(chosen_spells[0] != SPELL_NO_SPELL);</a>
+<a name="ln674"> </a>
+<a name="ln675">    CrawlHashTable &amp;props = book.props;</a>
+<a name="ln676">    props.erase(SPELL_LIST_KEY);</a>
+<a name="ln677">    props[SPELL_LIST_KEY].new_vector(SV_INT).resize(RANDBOOK_SIZE);</a>
+<a name="ln678"> </a>
+<a name="ln679">    CrawlVector &amp;spell_vec = props[SPELL_LIST_KEY].get_vector();</a>
+<a name="ln680">    spell_vec.set_max_size(RANDBOOK_SIZE);</a>
+<a name="ln681"> </a>
+<a name="ln682">    for (int i = 0; i &lt; RANDBOOK_SIZE; i++)</a>
+<a name="ln683">        spell_vec[i].get_int() = chosen_spells[i];</a>
+<a name="ln684"> </a>
+<a name="ln685">    const string name = _gen_randlevel_name(level, god);</a>
+<a name="ln686">    set_artefact_name(book, replace_name_parts(name, book));</a>
+<a name="ln687">    // None of these books need a definite article prepended.</a>
+<a name="ln688">    book.props[BOOK_TITLED_KEY].get_bool() = true;</a>
+<a name="ln689"> </a>
+<a name="ln690">    return true;</a>
+<a name="ln691">}</a>
+<a name="ln692"> </a>
+<a name="ln693">/**</a>
+<a name="ln694"> * Initialize a themed randbook, &amp; fill it with the given spells.</a>
+<a name="ln695"> *</a>
+<a name="ln696"> * @param book[in,out]      The book to be initialized.</a>
+<a name="ln697"> * @param spells            The spells to fill the book with.</a>
+<a name="ln698"> *                          Not passed by reference since we want to sort it.</a>
+<a name="ln699"> */</a>
+<a name="ln700">void init_book_theme_randart(item_def &amp;book, vector&lt;spell_type&gt; spells)</a>
+<a name="ln701">{</a>
+<a name="ln702">    book.sub_type = BOOK_RANDART_THEME;</a>
+<a name="ln703">    _make_book_randart(book);</a>
+<a name="ln704"> </a>
+<a name="ln705">    spells.resize(RANDBOOK_SIZE, SPELL_NO_SPELL);</a>
+<a name="ln706">    sort(spells.begin(), spells.end(), _compare_spells);</a>
+<a name="ln707">    ASSERT(spells[0] != SPELL_NO_SPELL);</a>
+<a name="ln708"> </a>
+<a name="ln709">    CrawlHashTable &amp;props = book.props;</a>
+<a name="ln710">    props.erase(SPELL_LIST_KEY);</a>
+<a name="ln711">    props[SPELL_LIST_KEY].new_vector(SV_INT).resize(RANDBOOK_SIZE);</a>
+<a name="ln712"> </a>
+<a name="ln713">    CrawlVector &amp;spell_vec = props[SPELL_LIST_KEY].get_vector();</a>
+<a name="ln714">    spell_vec.set_max_size(RANDBOOK_SIZE);</a>
+<a name="ln715">    for (int i = 0; i &lt; RANDBOOK_SIZE; i++)</a>
+<a name="ln716">        spell_vec[i].get_int() = spells[i];</a>
+<a name="ln717">}</a>
+<a name="ln718"> </a>
+<a name="ln719">/**</a>
+<a name="ln720"> * Generate and apply a name for a themed randbook.</a>
+<a name="ln721"> *</a>
+<a name="ln722"> * @param book[in,out]      The book to be named.</a>
+<a name="ln723"> * @param discipline_1      The first spellschool.</a>
+<a name="ln724"> * @param discipline_2      The second spellschool.</a>
+<a name="ln725"> * @param owner             The book's owner; e.g. &quot;Xom&quot;. May be empty.</a>
+<a name="ln726"> * @param subject           The subject of the book. May be empty.</a>
+<a name="ln727"> */</a>
+<a name="ln728">void name_book_theme_randart(item_def &amp;book, spschool discipline_1,</a>
+<a name="ln729">                             spschool discipline_2,</a>
+<a name="ln730">                             string owner, string subject)</a>
+<a name="ln731">{</a>
+<a name="ln732">    if (owner.empty())</a>
+<a name="ln733">    {</a>
+<a name="ln734">        const vector&lt;spell_type&gt; spells = spells_in_book(book);</a>
+<a name="ln735">        owner = _gen_randbook_owner(origin_as_god_gift(book), discipline_1,</a>
+<a name="ln736">                                    discipline_2, spells);</a>
+<a name="ln737">    }</a>
+<a name="ln738"> </a>
+<a name="ln739">    book.props[BOOK_TITLED_KEY].get_bool() = !owner.empty();</a>
+<a name="ln740">    const string name = _gen_randbook_name(subject, owner,</a>
+<a name="ln741">                                           discipline_1, discipline_2);</a>
+<a name="ln742">    set_artefact_name(book, replace_name_parts(name, book));</a>
+<a name="ln743">}</a>
+<a name="ln744"> </a>
+<a name="ln745">/**</a>
+<a name="ln746"> * Possibly generate a 'subject' for a book based on its owner.</a>
+<a name="ln747"> *</a>
+<a name="ln748"> * @param owner     The book's owner; e.g. &quot;Xom&quot;.</a>
+<a name="ln749"> * @return          A random book subject, or the empty string.</a>
+<a name="ln750"> *                  May contain placeholders (@foo@).</a>
+<a name="ln751"> */</a>
+<a name="ln752">static string _maybe_gen_book_subject(string owner)</a>
+<a name="ln753">{</a>
+<a name="ln754">    // Sometimes use a completely random title.</a>
+<a name="ln755">    if (owner == &quot;Xom&quot; &amp;&amp; !one_chance_in(20))</a>
+<a name="ln756">        return getRandNameString(&quot;Xom_book_title&quot;);</a>
+<a name="ln757">    if (one_chance_in(20) &amp;&amp; (owner.empty() || one_chance_in(3)))</a>
+<a name="ln758">        return getRandNameString(&quot;random_book_title&quot;);</a>
+<a name="ln759">    return &quot;&quot;;</a>
+<a name="ln760">}</a>
+<a name="ln761"> </a>
+<a name="ln762">/**</a>
+<a name="ln763"> * Generates a random, vaguely appropriate name for a randbook.</a>
+<a name="ln764"> *</a>
+<a name="ln765"> * @param   subject     The subject of the book. If non-empty, the book will</a>
+<a name="ln766"> *                      have a name of the form &quot;[Foo] of &lt;subject&gt;&quot;.</a>
+<a name="ln767"> * @param   owner       The name of the book's 'owner', if any.</a>
+<a name="ln768"> *                      (E.g., Xom, Cerebov, Boris...)</a>
+<a name="ln769"> *                      Prepended to the book's name (Foo's...); &quot;Xom&quot; has</a>
+<a name="ln770"> *                      further effects.</a>
+<a name="ln771"> * @param   disc1       A spellschool (discipline) associated with the book.</a>
+<a name="ln772"> * @param   disc2       A spellschool (discipline) associated with the book.</a>
+<a name="ln773"> * @return              A book name. May contain placeholders (@foo@).</a>
+<a name="ln774"> */</a>
+<a name="ln775">static string _gen_randbook_name(string subject, string owner,</a>
+<a name="ln776">                                 spschool disc1,</a>
+<a name="ln777">                                 spschool disc2)</a>
+<a name="ln778">{</a>
+<a name="ln779">    const string apostrophised_owner = owner.empty() ?</a>
+<a name="ln780">        &quot;&quot; :</a>
+<a name="ln781">        apostrophise(owner) + &quot; &quot;;</a>
+<a name="ln782"> </a>
+<a name="ln783">    const string real_subject = subject.empty() ?</a>
+<a name="ln784">        _maybe_gen_book_subject(owner) :</a>
+<a name="ln785">        subject;</a>
+<a name="ln786"> </a>
+<a name="ln787">    if (!real_subject.empty())</a>
+<a name="ln788">    {</a>
+<a name="ln789">        return make_stringf(&quot;%s%s of %s&quot;,</a>
+<a name="ln790">                            apostrophised_owner.c_str(),</a>
+<a name="ln791">                            getRandNameString(&quot;book_noun&quot;).c_str(),</a>
+<a name="ln792">                            real_subject.c_str());</a>
+<a name="ln793">    }</a>
+<a name="ln794"> </a>
+<a name="ln795">    string name = apostrophised_owner;</a>
+<a name="ln796"> </a>
+<a name="ln797">    // Give a name that reflects the primary and secondary</a>
+<a name="ln798">    // spell disciplines of the spells contained in the book.</a>
+<a name="ln799">    name += getRandNameString(&quot;book_name&quot;) + &quot; &quot;;</a>
+<a name="ln800"> </a>
+<a name="ln801">    // For the actual name there's a 66% chance of getting something like</a>
+<a name="ln802">    //  &lt;book&gt; of the Fiery Traveller (Translocation/Fire), else</a>
+<a name="ln803">    //  &lt;book&gt; of Displacement and Flames.</a>
+<a name="ln804">    string type_name;</a>
+<a name="ln805">    if (disc1 != disc2 &amp;&amp; !one_chance_in(3))</a>
+<a name="ln806">    {</a>
+<a name="ln807">        string lookup = spelltype_long_name(disc2);</a>
+<a name="ln808">        type_name = getRandNameString(lookup + &quot; adj&quot;);</a>
+<a name="ln809">    }</a>
+<a name="ln810"> </a>
+<a name="ln811">    if (type_name.empty())</a>
+<a name="ln812">    {</a>
+<a name="ln813">        // No adjective found, use the normal method of combining two nouns.</a>
+<a name="ln814">        type_name = getRandNameString(spelltype_long_name(disc1));</a>
+<a name="ln815">        if (type_name.empty())</a>
+<a name="ln816">            name += spelltype_long_name(disc1);</a>
+<a name="ln817">        else</a>
+<a name="ln818">            name += type_name;</a>
+<a name="ln819"> </a>
+<a name="ln820">        if (disc1 != disc2)</a>
+<a name="ln821">        {</a>
+<a name="ln822">            name += &quot; and &quot;;</a>
+<a name="ln823">            type_name = getRandNameString(spelltype_long_name(disc2));</a>
+<a name="ln824"> </a>
+<a name="ln825">            if (type_name.empty())</a>
+<a name="ln826">                name += spelltype_long_name(disc2);</a>
+<a name="ln827">            else</a>
+<a name="ln828">                name += type_name;</a>
+<a name="ln829">        }</a>
+<a name="ln830">    }</a>
+<a name="ln831">    else</a>
+<a name="ln832">    {</a>
+<a name="ln833">        string bookname = type_name + &quot; &quot;;</a>
+<a name="ln834"> </a>
+<a name="ln835">        // Add the noun for the first discipline.</a>
+<a name="ln836">        type_name = getRandNameString(spelltype_long_name(disc1));</a>
+<a name="ln837">        if (type_name.empty())</a>
+<a name="ln838">            bookname += spelltype_long_name(disc1);</a>
+<a name="ln839">        else</a>
+<a name="ln840">        {</a>
+<a name="ln841">            if (type_name.find(&quot;the &quot;, 0) != string::npos)</a>
+<a name="ln842">            {</a>
+<a name="ln843">                type_name = replace_all(type_name, &quot;the &quot;, &quot;&quot;);</a>
+<a name="ln844">                bookname = &quot;the &quot; + bookname;</a>
+<a name="ln845">            }</a>
+<a name="ln846">            bookname += type_name;</a>
+<a name="ln847">        }</a>
+<a name="ln848">        name += bookname;</a>
+<a name="ln849">    }</a>
+<a name="ln850"> </a>
+<a name="ln851">    return name;</a>
+<a name="ln852">}</a>
+<a name="ln853"> </a>
+<a name="ln854">/**</a>
+<a name="ln855"> * Possibly choose a random 'owner' for a themed random spellbook.</a>
+<a name="ln856"> *</a>
+<a name="ln857"> * @param god           The god responsible for gifting the book, if any.</a>
+<a name="ln858"> * @param disc1         A spellschool (discipline) associated with the book.</a>
+<a name="ln859"> * @param disc2         A spellschool (discipline) associated with the book.</a>
+<a name="ln860"> * @param spells        The spells in the book.</a>
+<a name="ln861"> * @return              The name of the book's 'owner', or the empty string.</a>
+<a name="ln862"> */</a>
+<a name="ln863">static string _gen_randbook_owner(god_type god, spschool disc1,</a>
+<a name="ln864">                                  spschool disc2,</a>
+<a name="ln865">                                  const vector&lt;spell_type&gt; &amp;spells)</a>
+<a name="ln866">{</a>
+<a name="ln867">    // If the owner hasn't been set already use</a>
+<a name="ln868">    // a) the god's name for god gifts (only applies to Sif Muna and Xom),</a>
+<a name="ln869">    // b) a name depending on the spell disciplines, for pure books</a>
+<a name="ln870">    // c) a random name (all god gifts not named earlier)</a>
+<a name="ln871">    // d) an applicable god's name</a>
+<a name="ln872">    // ... else leave it unnamed (around 57% chance for non-god gifts)</a>
+<a name="ln873"> </a>
+<a name="ln874">    int highest_level = 0;</a>
+<a name="ln875">    int lowest_level = 27;</a>
+<a name="ln876">    bool all_spells_disc1 = true;</a>
+<a name="ln877">    for (auto spell : spells)</a>
+<a name="ln878">    {</a>
+<a name="ln879">        const int level = spell_difficulty(spell);</a>
+<a name="ln880">        highest_level = max(level, highest_level);</a>
+<a name="ln881">        lowest_level = min(level, lowest_level);</a>
+<a name="ln882"> </a>
+<a name="ln883">        if (!(get_spell_disciplines(spell) &amp; disc1))</a>
+<a name="ln884">            all_spells_disc1 = false;</a>
+<a name="ln885">    }</a>
+<a name="ln886"> </a>
+<a name="ln887">    // this logic is very odd...</a>
+<a name="ln888">    const bool highlevel = highest_level &gt;= 7 + random2(3)</a>
+<a name="ln889">                           &amp;&amp; (lowest_level &gt; 1 || coinflip());</a>
+<a name="ln890"> </a>
+<a name="ln891"> </a>
+<a name="ln892">    // name of gifting god?</a>
+<a name="ln893">    const bool god_gift = god != GOD_NO_GOD;</a>
+<a name="ln894">    if (god_gift &amp;&amp; !one_chance_in(4))</a>
+<a name="ln895">        return god_name(god, false);</a>
+<a name="ln896"> </a>
+<a name="ln897">    // thematically appropriate name?</a>
+<a name="ln898">    if (god_gift &amp;&amp; one_chance_in(3) || one_chance_in(5))</a>
+<a name="ln899">    {</a>
+<a name="ln900">        vector&lt;string&gt; lookups;</a>
+<a name="ln901">        const string d1_name = spelltype_long_name(disc1);</a>
+<a name="ln902"> </a>
+<a name="ln903">        if (disc1 != disc2)</a>
+<a name="ln904">        {</a>
+<a name="ln905">            const string lookup = d1_name + &quot; &quot; + spelltype_long_name(disc2);</a>
+<a name="ln906">            if (highlevel)</a>
+<a name="ln907">                lookups.push_back(&quot;highlevel &quot; + lookup + &quot; owner&quot;);</a>
+<a name="ln908">            lookups.push_back(lookup + &quot; owner&quot;);</a>
+<a name="ln909">        }</a>
+<a name="ln910"> </a>
+<a name="ln911">        if (all_spells_disc1)</a>
+<a name="ln912">        {</a>
+<a name="ln913">            if (highlevel)</a>
+<a name="ln914">                lookups.push_back(&quot;highlevel &quot; + d1_name + &quot; owner&quot;);</a>
+<a name="ln915">            lookups.push_back(d1_name + &quot;owner&quot;);</a>
+<a name="ln916">        }</a>
+<a name="ln917"> </a>
+<a name="ln918">        for (string &amp;lookup : lookups)</a>
+<a name="ln919">        {</a>
+<a name="ln920">            const string owner = getRandNameString(lookup);</a>
+<a name="ln921">            if (!owner.empty() &amp;&amp; owner != &quot;__NONE&quot;)</a>
+<a name="ln922">                return owner;</a>
+<a name="ln923">        }</a>
+<a name="ln924">    }</a>
+<a name="ln925"> </a>
+<a name="ln926">    // random name?</a>
+<a name="ln927">    if (god_gift || one_chance_in(5))</a>
+<a name="ln928">        return make_name();</a>
+<a name="ln929"> </a>
+<a name="ln930">    // applicable god's name?</a>
+<a name="ln931">    if (!god_gift &amp;&amp; one_chance_in(9))</a>
+<a name="ln932">    {</a>
+<a name="ln933">        switch (disc1)</a>
+<a name="ln934">        {</a>
+<a name="ln935">            case spschool::necromancy:</a>
+<a name="ln936">                if (all_spells_disc1 &amp;&amp; !one_chance_in(6))</a>
+<a name="ln937">                    return god_name(GOD_KIKUBAAQUDGHA, false);</a>
+<a name="ln938">                break;</a>
+<a name="ln939">            case spschool::conjuration:</a>
+<a name="ln940">                if (all_spells_disc1 &amp;&amp; !one_chance_in(4))</a>
+<a name="ln941">                    return god_name(GOD_VEHUMET, false);</a>
+<a name="ln942">                break;</a>
+<a name="ln943">            default:</a>
+<a name="ln944">                break;</a>
+<a name="ln945">        }</a>
+<a name="ln946">        return god_name(GOD_SIF_MUNA, false);</a>
+<a name="ln947">    }</a>
+<a name="ln948"> </a>
+<a name="ln949">    return &quot;&quot;;</a>
+<a name="ln950">}</a>
+<a name="ln951"> </a>
+<a name="ln952">// Give Roxanne a randart spellbook of the disciplines Transmutations/Earth</a>
+<a name="ln953">// that includes Statue Form and is named after her.</a>
+<a name="ln954">void make_book_roxanne_special(item_def *book)</a>
+<a name="ln955">{</a>
+<a name="ln956">    spschool disc = random_choose(spschool::transmutation, spschool::earth);</a>
+<a name="ln957">    vector&lt;spell_type&gt; forced_spell = {SPELL_STATUE_FORM};</a>
+<a name="ln958">    build_themed_book(*book,</a>
+<a name="ln959">                      forced_spell_filter(forced_spell,</a>
+<a name="ln960">                                           capped_spell_filter(19)),</a>
+<a name="ln961">                      forced_book_theme(disc), 5, &quot;Roxanne&quot;);</a>
+<a name="ln962">}</a>
+<a name="ln963"> </a>
+<a name="ln964">void make_book_kiku_gift(item_def &amp;book, bool first)</a>
+<a name="ln965">{</a>
+<a name="ln966">    book.sub_type = BOOK_RANDART_THEME;</a>
+<a name="ln967">    _make_book_randart(book);</a>
+<a name="ln968"> </a>
+<a name="ln969">    spell_type chosen_spells[RANDBOOK_SIZE];</a>
+<a name="ln970">    for (int i = 0; i &lt; RANDBOOK_SIZE; i++)</a>
+<a name="ln971">        chosen_spells[i] = SPELL_NO_SPELL;</a>
+<a name="ln972"> </a>
+<a name="ln973">    // Each book should guarantee the player at least one corpse-using</a>
+<a name="ln974">    // spell, to complement Receive Corpses.</a>
+<a name="ln975">    if (first)</a>
+<a name="ln976">    {</a>
+<a name="ln977">        bool can_bleed = you.species != SP_GARGOYLE</a>
+<a name="ln978">                         &amp;&amp; you.species != SP_GHOUL</a>
+<a name="ln979">                         &amp;&amp; you.species != SP_MUMMY;</a>
+<a name="ln980"> </a>
+<a name="ln981">        chosen_spells[0] = SPELL_PAIN;</a>
+<a name="ln982">        chosen_spells[1] = SPELL_CORPSE_ROT;</a>
+<a name="ln983">        chosen_spells[2] = SPELL_ANIMATE_SKELETON;</a>
+<a name="ln984">        if (can_bleed) // Replace one of the corpse-using spells</a>
+<a name="ln985">            chosen_spells[random_range(1, 2)] = SPELL_SUBLIMATION_OF_BLOOD;</a>
+<a name="ln986"> </a>
+<a name="ln987">        chosen_spells[3] = SPELL_VAMPIRIC_DRAINING;</a>
+<a name="ln988">    }</a>
+<a name="ln989">    else</a>
+<a name="ln990">    {</a>
+<a name="ln991">        chosen_spells[0] = coinflip() ? SPELL_ANIMATE_DEAD : SPELL_SIMULACRUM;</a>
+<a name="ln992">        chosen_spells[1] = (you.species == SP_FELID || coinflip())</a>
+<a name="ln993">            ? SPELL_BORGNJORS_VILE_CLUTCH : SPELL_EXCRUCIATING_WOUNDS;</a>
+<a name="ln994">        chosen_spells[2] = random_choose(SPELL_AGONY,</a>
+<a name="ln995">                                         SPELL_DEATH_CHANNEL);</a>
+<a name="ln996"> </a>
+<a name="ln997">        spell_type extra_spell;</a>
+<a name="ln998">        do</a>
+<a name="ln999">        {</a>
+<a name="ln1000">            extra_spell = random_choose(SPELL_ANIMATE_DEAD,</a>
+<a name="ln1001">                                        SPELL_AGONY,</a>
+<a name="ln1002">                                        SPELL_BORGNJORS_VILE_CLUTCH,</a>
+<a name="ln1003">                                        SPELL_EXCRUCIATING_WOUNDS,</a>
+<a name="ln1004">                                        SPELL_SIMULACRUM,</a>
+<a name="ln1005">                                        SPELL_DEATH_CHANNEL);</a>
+<a name="ln1006">            if (you.species == SP_FELID</a>
+<a name="ln1007">                &amp;&amp; extra_spell == SPELL_EXCRUCIATING_WOUNDS)</a>
+<a name="ln1008">            {</a>
+<a name="ln1009">                extra_spell = SPELL_NO_SPELL;</a>
+<a name="ln1010">            }</a>
+<a name="ln1011"> </a>
+<a name="ln1012">            for (int i = 0; i &lt; 3; i++)</a>
+<a name="ln1013">                if (extra_spell == chosen_spells[i])</a>
+<a name="ln1014">                    extra_spell = SPELL_NO_SPELL;</a>
+<a name="ln1015">        }</a>
+<a name="ln1016">        while (extra_spell == SPELL_NO_SPELL);</a>
+<a name="ln1017"> </a>
+<a name="ln1018">        chosen_spells[3] = extra_spell;</a>
+<a name="ln1019">        chosen_spells[4] = SPELL_DISPEL_UNDEAD;</a>
+<a name="ln1020">    }</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    sort(chosen_spells, chosen_spells + RANDBOOK_SIZE, _compare_spells);</a>
+<a name="ln1023"> </a>
+<a name="ln1024">    CrawlHashTable &amp;props = book.props;</a>
+<a name="ln1025">    props.erase(SPELL_LIST_KEY);</a>
+<a name="ln1026">    props[SPELL_LIST_KEY].new_vector(SV_INT).resize(RANDBOOK_SIZE);</a>
+<a name="ln1027"> </a>
+<a name="ln1028">    CrawlVector &amp;spell_vec = props[SPELL_LIST_KEY].get_vector();</a>
+<a name="ln1029">    spell_vec.set_max_size(RANDBOOK_SIZE);</a>
+<a name="ln1030"> </a>
+<a name="ln1031">    for (int i = 0; i &lt; RANDBOOK_SIZE; i++)</a>
+<a name="ln1032">        spell_vec[i].get_int() = chosen_spells[i];</a>
+<a name="ln1033"> </a>
+<a name="ln1034">    string name = &quot;Kikubaaqudgha's &quot;;</a>
+<a name="ln1035">    book.props[BOOK_TITLED_KEY].get_bool() = true;</a>
+<a name="ln1036">    name += getRandNameString(&quot;book_name&quot;) + &quot; &quot;;</a>
+<a name="ln1037">    string type_name = getRandNameString(&quot;Necromancy&quot;);</a>
+<a name="ln1038">    if (type_name.empty())</a>
+<a name="ln1039">        name += &quot;Necromancy&quot;;</a>
+<a name="ln1040">    else</a>
+<a name="ln1041">        name += type_name;</a>
+<a name="ln1042">    set_artefact_name(book, name);</a>
+<a name="ln1043">}</a>
+<a name="ln1044"> </a>
+<a name="ln1045">/// Does the given acq source generate books totally randomly?</a>
+<a name="ln1046">static bool _completely_random_books(int agent)</a>
+<a name="ln1047">{</a>
+<a name="ln1048">    // only acq &amp; god gifts from sane gods weight spells/disciplines</a>
+<a name="ln1049">    // for player utility.</a>
+<a name="ln1050">    return agent == GOD_XOM || agent == GOD_NO_GOD;</a>
+<a name="ln1051">}</a>
+<a name="ln1052"> </a>
+<a name="ln1053">/// How desireable is the given spell for inclusion in an acquired randbook?</a>
+<a name="ln1054">static int _randbook_spell_weight(spell_type spell, int agent)</a>
+<a name="ln1055">{</a>
+<a name="ln1056">    if (_completely_random_books(agent))</a>
+<a name="ln1057">        return 1;</a>
+<a name="ln1058"> </a>
+<a name="ln1059">    // prefer unseen spells</a>
+<a name="ln1060">    const int seen_weight = you.spell_library[spell] ? 1 : 4;</a>
+<a name="ln1061"> </a>
+<a name="ln1062">    // prefer spells roughly approximating the player's overall spellcasting</a>
+<a name="ln1063">    // ability (?????)</a>
+<a name="ln1064">    const int Spc = div_rand_round(you.skill(SK_SPELLCASTING, 256, true), 256);</a>
+<a name="ln1065">    const int difficult_weight = 5 - abs(3 * spell_difficulty(spell) - Spc) / 7;</a>
+<a name="ln1066"> </a>
+<a name="ln1067">    // prefer spells in disciplines the player is skilled with</a>
+<a name="ln1068">    const spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln1069">    int total_skill = 0;</a>
+<a name="ln1070">    int num_skills  = 0;</a>
+<a name="ln1071">    for (const auto disc : spschools_type::range())</a>
+<a name="ln1072">    {</a>
+<a name="ln1073">        if (disciplines &amp; disc)</a>
+<a name="ln1074">        {</a>
+<a name="ln1075">            const skill_type sk = spell_type2skill(disc);</a>
+<a name="ln1076">            total_skill += div_rand_round(you.skill(sk, 256, true), 256);</a>
+<a name="ln1077">            num_skills++;</a>
+<a name="ln1078">        }</a>
+<a name="ln1079">    }</a>
+<a name="ln1080">    int skill_weight = 1;</a>
+<a name="ln1081">    if (num_skills &gt; 0)</a>
+<a name="ln1082">        skill_weight = (2 + (total_skill / num_skills)) / 3;</a>
+<a name="ln1083">    skill_weight = max(1, skill_weight);</a>
+<a name="ln1084"> </a>
+<a name="ln1085">    const int weight = seen_weight * skill_weight * difficult_weight;</a>
+<a name="ln1086">    ASSERT(weight &gt; 0);</a>
+<a name="ln1087">    return weight;</a>
+<a name="ln1088">    /// XXX: I'm not sure how much impact all this actually has.</a>
+<a name="ln1089">}</a>
+<a name="ln1090"> </a>
+<a name="ln1091">typedef map&lt;spell_type, int&gt; weighted_spells;</a>
+<a name="ln1092"> </a>
+<a name="ln1093">/**</a>
+<a name="ln1094"> * Populate a list of possible spells to be included in acquired books,</a>
+<a name="ln1095"> * weighted by desireability.</a>
+<a name="ln1096"> *</a>
+<a name="ln1097"> * @param possible_spells[out]  The list to be populated.</a>
+<a name="ln1098"> * @param agent         The entity creating the item; possibly a god.</a>
+<a name="ln1099"> */</a>
+<a name="ln1100">static void _get_weighted_randbook_spells(weighted_spells &amp;possible_spells,</a>
+<a name="ln1101">                                          int agent)</a>
+<a name="ln1102">{</a>
+<a name="ln1103">    for (int i = 0; i &lt; NUM_SPELLS; ++i)</a>
+<a name="ln1104">    {</a>
+<a name="ln1105">        const spell_type spell = (spell_type) i;</a>
+<a name="ln1106"> </a>
+<a name="ln1107">        if (!is_valid_spell(spell)</a>
+<a name="ln1108">            || !_agent_spell_filter(agent, spell)</a>
+<a name="ln1109">            || !you_can_memorise(spell))</a>
+<a name="ln1110">        {</a>
+<a name="ln1111">            continue;</a>
+<a name="ln1112">        }</a>
+<a name="ln1113"> </a>
+<a name="ln1114">        // Passed all tests.</a>
+<a name="ln1115">        const int weight = _randbook_spell_weight(spell, agent);</a>
+<a name="ln1116">        possible_spells[spell] = weight;</a>
+<a name="ln1117">    }</a>
+<a name="ln1118">}</a>
+<a name="ln1119"> </a>
+<a name="ln1120">/**</a>
+<a name="ln1121"> * Choose a spell discipline for a randbook, weighted by the the value of all</a>
+<a name="ln1122"> * possible spells in that discipline.</a>
+<a name="ln1123"> *</a>
+<a name="ln1124"> * @param possibles     A weighted list of all possible spells to include in</a>
+<a name="ln1125"> *                      the book.</a>
+<a name="ln1126"> * @param agent         The entity creating the item; possibly a god.</a>
+<a name="ln1127"> * @return              An appropriate spell school; e.g. spschool::fire.</a>
+<a name="ln1128"> */</a>
+<a name="ln1129">static spschool _choose_randbook_discipline(weighted_spells</a>
+<a name="ln1130">                                                      &amp;possible_spells,</a>
+<a name="ln1131">                                                      int agent)</a>
+<a name="ln1132">{</a>
+<a name="ln1133">    map&lt;spschool, int&gt; discipline_weights;</a>
+<a name="ln1134">    for (auto weighted_spell : possible_spells)</a>
+<a name="ln1135">    {</a>
+<a name="ln1136">        const spell_type spell = weighted_spell.first;</a>
+<a name="ln1137">        const int weight = weighted_spell.second;</a>
+<a name="ln1138">        const spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln1139">        for (const auto disc : spschools_type::range())</a>
+<a name="ln1140">        {</a>
+<a name="ln1141">            if (disciplines &amp; disc)</a>
+<a name="ln1142">            {</a>
+<a name="ln1143">                if (_completely_random_books(agent))</a>
+<a name="ln1144">                    discipline_weights[disc] = 1;</a>
+<a name="ln1145">                else</a>
+<a name="ln1146">                    discipline_weights[disc] += weight;</a>
+<a name="ln1147">            }</a>
+<a name="ln1148">        }</a>
+<a name="ln1149">    }</a>
+<a name="ln1150"> </a>
+<a name="ln1151">    const spschool *discipline</a>
+<a name="ln1152">        = random_choose_weighted(discipline_weights);</a>
+<a name="ln1153">    ASSERT(discipline);</a>
+<a name="ln1154">    return *discipline;</a>
+<a name="ln1155">}</a>
+<a name="ln1156"> </a>
+<a name="ln1157">/**</a>
+<a name="ln1158"> * From a given weighted list of possible spells, choose a set to include in</a>
+<a name="ln1159"> * a randbook, filtered by discipline.</a>
+<a name="ln1160"> *</a>
+<a name="ln1161"> * @param[in,out] possible_spells   All possible spells, weighted by value.</a>
+<a name="ln1162"> Modified in-place for efficiency.</a>
+<a name="ln1163"> * @param discipline_1              The first spellschool.</a>
+<a name="ln1164"> * @param discipline_2              The second spellschool.</a>
+<a name="ln1165"> * @param size                      The number of spells to include.</a>
+<a name="ln1166"> * @param[out] spells               The chosen spells.</a>
+<a name="ln1167"> */</a>
+<a name="ln1168">static void _choose_themed_randbook_spells(weighted_spells &amp;possible_spells,</a>
+<a name="ln1169">                                           spschool discipline_1,</a>
+<a name="ln1170">                                           spschool discipline_2,</a>
+<a name="ln1171">                                           int size, vector&lt;spell_type&gt; &amp;spells)</a>
+<a name="ln1172">{</a>
+<a name="ln1173">    for (auto &amp;weighted_spell : possible_spells)</a>
+<a name="ln1174">    {</a>
+<a name="ln1175">        const spell_type spell = weighted_spell.first;</a>
+<a name="ln1176">        const spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln1177">        if (!(disciplines &amp; discipline_1) &amp;&amp; !(disciplines &amp; discipline_2))</a>
+<a name="ln1178">            weighted_spell.second = 0; // filter it out</a>
+<a name="ln1179">    }</a>
+<a name="ln1180"> </a>
+<a name="ln1181">    for (int i = 0; i &lt; size; ++i)</a>
+<a name="ln1182">    {</a>
+<a name="ln1183">        const spell_type *spell = random_choose_weighted(possible_spells);</a>
+<a name="ln1184">        if (!spell)</a>
+<a name="ln1185">            break;</a>
+<a name="ln1186">        spells.push_back(*spell);</a>
+<a name="ln1187">        possible_spells[*spell] = 0; // don't choose the same one twice!</a>
+<a name="ln1188">    }</a>
+<a name="ln1189">    // `size` is guaranteed to be &gt;0 by an ASSERT in the calling function</a>
+<a name="ln1190">    ASSERT(spells.size() &gt; 0);</a>
+<a name="ln1191">}</a>
+<a name="ln1192"> </a>
+<a name="ln1193">/**</a>
+<a name="ln1194"> * Turn a given book into an acquirement-quality themed spellbook.</a>
+<a name="ln1195"> *</a>
+<a name="ln1196"> * @param book[out]     The book to be turned into a randbook.</a>
+<a name="ln1197"> * @param agent         The entity creating the item; possibly a god.</a>
+<a name="ln1198"> */</a>
+<a name="ln1199">void acquire_themed_randbook(item_def &amp;book, int agent)</a>
+<a name="ln1200">{</a>
+<a name="ln1201">    weighted_spells possible_spells;</a>
+<a name="ln1202">    _get_weighted_randbook_spells(possible_spells, agent);</a>
+<a name="ln1203"> </a>
+<a name="ln1204">    // include 2-8 spells in the book, leaning heavily toward 5</a>
+<a name="ln1205">    const int size = min(2 + random2avg(7, 3),</a>
+<a name="ln1206">                         (int)possible_spells.size());</a>
+<a name="ln1207">    ASSERT(size);</a>
+<a name="ln1208"> </a>
+<a name="ln1209">    // XXX: we could cache this...</a>
+<a name="ln1210">    spschool discipline_1</a>
+<a name="ln1211">        = _choose_randbook_discipline(possible_spells, agent);</a>
+<a name="ln1212">    spschool discipline_2</a>
+<a name="ln1213">        = _choose_randbook_discipline(possible_spells, agent);</a>
+<a name="ln1214"> </a>
+<a name="ln1215">    vector&lt;spell_type&gt; spells;</a>
+<a name="ln1216">    _choose_themed_randbook_spells(possible_spells, discipline_1, discipline_2,</a>
+<a name="ln1217">                                   size, spells);</a>
+<a name="ln1218"> </a>
+<a name="ln1219">    fixup_randbook_disciplines(discipline_1, discipline_2, spells);</a>
+<a name="ln1220"> </a>
+<a name="ln1221">    // Acquired randart books have a chance of being named after the player.</a>
+<a name="ln1222">    const string owner = agent == AQ_SCROLL &amp;&amp; one_chance_in(12) ?</a>
+<a name="ln1223">        you.your_name :</a>
+<a name="ln1224">        &quot;&quot;;</a>
+<a name="ln1225"> </a>
+<a name="ln1226">    init_book_theme_randart(book, spells);</a>
+<a name="ln1227">    name_book_theme_randart(book, discipline_1, discipline_2, owner);</a>
+<a name="ln1228">}</a>
+
+</code></pre>
+<div class="balloon" rel="487"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation. Consider inspecting the 'level <= 3 || level == 4 && coinflip()' expression.</p></div>
+<div class="balloon" rel="931"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: !god_gift.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

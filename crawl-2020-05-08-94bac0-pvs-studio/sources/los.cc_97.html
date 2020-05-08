@@ -1,0 +1,987 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>los.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Line-of-sight algorithm.</a>
+<a name="ln4"> *</a>
+<a name="ln5"> *</a>
+<a name="ln6"> *</a>
+<a name="ln7"> * == Definition of visibility ==</a>
+<a name="ln8"> *</a>
+<a name="ln9"> * Two cells are in view of each other if there is any straight</a>
+<a name="ln10"> * line that meets both cells and that doesn't meet any opaque</a>
+<a name="ln11"> * cell in between, and if the cells are in LOS range of each</a>
+<a name="ln12"> * other.</a>
+<a name="ln13"> *</a>
+<a name="ln14"> * Here, to &quot;meet&quot; a cell means to intersect the interior. In</a>
+<a name="ln15"> * particular, rays can pass between to diagonally adjacent</a>
+<a name="ln16"> * walls (as can the player).</a>
+<a name="ln17"> *</a>
+<a name="ln18"> * == Terminology ==</a>
+<a name="ln19"> *</a>
+<a name="ln20"> * A _ray_ is a line, specified by starting point (accx, accy)</a>
+<a name="ln21"> * and slope. A ray determines its _footprint_: the sequence of</a>
+<a name="ln22"> * cells whose interiour it meets.</a>
+<a name="ln23"> *</a>
+<a name="ln24"> * Any prefix of the footprint of a ray is called a _cellray_.</a>
+<a name="ln25"> *</a>
+<a name="ln26"> * For the purposes of LOS calculation, only the footprints</a>
+<a name="ln27"> * are relevant, but rays are also used for shooting beams,</a>
+<a name="ln28"> * which may travel beyond LOS and which can be reflected.</a>
+<a name="ln29"> * See ray.cc.</a>
+<a name="ln30"> *</a>
+<a name="ln31"> * == Overview ==</a>
+<a name="ln32"> *</a>
+<a name="ln33"> * At first use, the LOS code makes some precomputations,</a>
+<a name="ln34"> * filling a list of all relevant rays in one quadrant,</a>
+<a name="ln35"> * and filling data structures that allow calculating LOS</a>
+<a name="ln36"> * in a quadrant without checking each ray.</a>
+<a name="ln37"> *</a>
+<a name="ln38"> * The code provides functions for filling LOS information</a>
+<a name="ln39"> * around a given center efficiently, and for querying rays</a>
+<a name="ln40"> * between two given cells.</a>
+<a name="ln41">**/</a>
+<a name="ln42"> </a>
+<a name="ln43">#include &quot;AppHdr.h&quot;</a>
+<a name="ln44"> </a>
+<a name="ln45">#include &quot;los.h&quot;</a>
+<a name="ln46"> </a>
+<a name="ln47">#include &lt;algorithm&gt;</a>
+<a name="ln48">#include &lt;cmath&gt;</a>
+<a name="ln49"> </a>
+<a name="ln50">#include &quot;areas.h&quot;</a>
+<a name="ln51">#include &quot;coord.h&quot;</a>
+<a name="ln52">#include &quot;coordit.h&quot;</a>
+<a name="ln53">#include &quot;env.h&quot;</a>
+<a name="ln54">#include &quot;losglobal.h&quot;</a>
+<a name="ln55">#include &quot;mon-act.h&quot;</a>
+<a name="ln56"> </a>
+<a name="ln57">// These determine what rays are cast in the precomputation,</a>
+<a name="ln58">// and affect start-up time significantly.</a>
+<a name="ln59">// XXX: Argue that these values are sufficient.</a>
+<a name="ln60">#define LOS_MAX_ANGLE (2*LOS_MAX_RANGE-2)</a>
+<a name="ln61">#define LOS_INTERCEPT_MULT (2)</a>
+<a name="ln62"> </a>
+<a name="ln63">// These store all unique (in terms of footprint) full rays.</a>
+<a name="ln64">// The footprint of ray=fullray[i] consists of ray.length cells,</a>
+<a name="ln65">// stored in ray_coords[ray.start..ray.length-1].</a>
+<a name="ln66">// These are filled during precomputation (_register_ray).</a>
+<a name="ln67">// XXX: fullrays is not needed anymore after precomputation.</a>
+<a name="ln68">struct los_ray;</a>
+<a name="ln69">static vector&lt;los_ray&gt; fullrays;</a>
+<a name="ln70">static vector&lt;coord_def&gt; ray_coords;</a>
+<a name="ln71"> </a>
+<a name="ln72">// These store all unique minimal cellrays. For each i,</a>
+<a name="ln73">// cellray i ends in cellray_ends[i] and passes through</a>
+<a name="ln74">// thoses cells p that have blockrays(p)[i] set. In other</a>
+<a name="ln75">// words, blockrays(p)[i] is set iff an opaque cell p blocks</a>
+<a name="ln76">// the cellray with index i.</a>
+<a name="ln77">static vector&lt;coord_def&gt; cellray_ends;</a>
+<a name="ln78">typedef FixedArray&lt;bit_vector*, LOS_MAX_RANGE+1, LOS_MAX_RANGE+1&gt; blockrays_t;</a>
+<a name="ln79">static blockrays_t blockrays;</a>
+<a name="ln80"> </a>
+<a name="ln81">// We also store the minimal cellrays by target position</a>
+<a name="ln82">// for efficient retrieval by find_ray.</a>
+<a name="ln83">// XXX: Consider condensing this representation.</a>
+<a name="ln84">struct cellray;</a>
+<a name="ln85">static FixedArray&lt;vector&lt;cellray&gt;, LOS_MAX_RANGE+1, LOS_MAX_RANGE+1&gt; min_cellrays;</a>
+<a name="ln86"> </a>
+<a name="ln87">// Temporary arrays used in losight() to track which rays</a>
+<a name="ln88">// are blocked or have seen a smoke cloud.</a>
+<a name="ln89">// Allocated when doing the precomputations.</a>
+<a name="ln90">static bit_vector *dead_rays     = nullptr;</a>
+<a name="ln91">static bit_vector *smoke_rays    = nullptr;</a>
+<a name="ln92"> </a>
+<a name="ln93">class quadrant_iterator : public rectangle_iterator</a>
+<a name="ln94">{</a>
+<a name="ln95">public:</a>
+<a name="ln96">    quadrant_iterator()</a>
+<a name="ln97">        : rectangle_iterator(coord_def(0,0),</a>
+<a name="ln98">                             coord_def(LOS_MAX_RANGE, LOS_MAX_RANGE))</a>
+<a name="ln99">    {</a>
+<a name="ln100">    }</a>
+<a name="ln101">};</a>
+<a name="ln102"> </a>
+<a name="ln103">void clear_rays_on_exit()</a>
+<a name="ln104">{</a>
+<a name="ln105">    delete dead_rays;</a>
+<a name="ln106">    delete smoke_rays;</a>
+<a name="ln107">    for (quadrant_iterator qi; qi; ++qi)</a>
+<a name="ln108">        delete blockrays(*qi);</a>
+<a name="ln109">}</a>
+<a name="ln110"> </a>
+<a name="ln111">// LOS radius.</a>
+<a name="ln112">int los_radius = LOS_DEFAULT_RANGE;</a>
+<a name="ln113"> </a>
+<a name="ln114">static void _handle_los_change();</a>
+<a name="ln115"> </a>
+<a name="ln116">void set_los_radius(int r)</a>
+<a name="ln117">{</a>
+<a name="ln118">    ASSERT(r &lt;= LOS_RADIUS);</a>
+<a name="ln119">    los_radius = r;</a>
+<a name="ln120">    invalidate_los();</a>
+<a name="ln121">    _handle_los_change();</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">int get_los_radius()</a>
+<a name="ln125">{</a>
+<a name="ln126">    return los_radius;</a>
+<a name="ln127">}</a>
+<a name="ln128"> </a>
+<a name="ln129">bool double_is_zero(const double x)</a>
+<a name="ln130">{</a>
+<a name="ln131">    return x &gt; -EPSILON_VALUE &amp;&amp; x &lt; EPSILON_VALUE;</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">struct los_ray : public ray_def</a>
+<a name="ln135">{</a>
+<a name="ln136">    // The footprint of this ray is stored in</a>
+<a name="ln137">    // ray_coords[start..start+length-1].</a>
+<a name="ln138">    unsigned int start;</a>
+<a name="ln139">    unsigned int length;</a>
+<a name="ln140"> </a>
+<a name="ln141">    los_ray(geom::ray _r)</a>
+<a name="ln142">        : ray_def(_r), start(0), length(0)</a>
+<a name="ln143">    {</a>
+<a name="ln144">    }</a>
+<a name="ln145"> </a>
+<a name="ln146">    // Shoot a ray from the given start point (accx, accy) with the given</a>
+<a name="ln147">    // slope, bounded by the pre-calc bounds shape.</a>
+<a name="ln148">    // Returns the cells it travels through, excluding the origin.</a>
+<a name="ln149">    // Returns an empty vector if this was a bad ray.</a>
+<a name="ln150">    vector&lt;coord_def&gt; footprint()</a>
+<a name="ln151">    {</a>
+<a name="ln152">        vector&lt;coord_def&gt; cs;</a>
+<a name="ln153">        los_ray copy = *this;</a>
+<a name="ln154">        coord_def c;</a>
+<a name="ln155">        coord_def old;</a>
+<a name="ln156">        int cellnum;</a>
+<a name="ln157">        for (cellnum = 0; true; ++cellnum)</a>
+<a name="ln158">        {</a>
+<a name="ln159">            old = c;</a>
+<a name="ln160">            if (!copy.advance())</a>
+<a name="ln161">            {</a>
+<a name="ln162">//                dprf(&quot;discarding corner ray (%f,%f) + t*(%f,%f)&quot;,</a>
+<a name="ln163">//                     r.start.x, r.start.y, r.dir.x, r.dir.y);</a>
+<a name="ln164">                cs.clear();</a>
+<a name="ln165">                break;</a>
+<a name="ln166">            }</a>
+<a name="ln167">            c = copy.pos();</a>
+<a name="ln168">            if (c.rdist() &gt; LOS_RADIUS)</a>
+<a name="ln169">                break;</a>
+<a name="ln170">            cs.push_back(c);</a>
+<a name="ln171">            ASSERT((c - old).rdist() == 1);</a>
+<a name="ln172">        }</a>
+<a name="ln173">        return cs;</a>
+<a name="ln174">    }</a>
+<a name="ln175"> </a>
+<a name="ln176">    coord_def operator[](unsigned int i)</a>
+<a name="ln177">    {</a>
+<a name="ln178">        ASSERT(i &lt; length);</a>
+<a name="ln179">        return ray_coords[start+i];</a>
+<a name="ln180">    }</a>
+<a name="ln181">};</a>
+<a name="ln182"> </a>
+<a name="ln183">// Check if the passed rays have identical footprint.</a>
+<a name="ln184">static bool _is_same_ray(los_ray ray, vector&lt;coord_def&gt; newray)</a>
+<a name="ln185">{</a>
+<a name="ln186">    if (ray.length != newray.size())</a>
+<a name="ln187">        return false;</a>
+<a name="ln188">    for (unsigned int i = 0; i &lt; ray.length; i++)</a>
+<a name="ln189">        if (ray[i] != newray[i])</a>
+<a name="ln190">            return false;</a>
+<a name="ln191">    return true;</a>
+<a name="ln192">}</a>
+<a name="ln193"> </a>
+<a name="ln194">// Check if the passed ray has already been created.</a>
+<a name="ln195">static bool _is_duplicate_ray(vector&lt;coord_def&gt; newray)</a>
+<a name="ln196">{</a>
+<a name="ln197">    for (los_ray lray : fullrays)</a>
+<a name="ln198">        if (_is_same_ray(lray, newray))</a>
+<a name="ln199">            return true;</a>
+<a name="ln200">    return false;</a>
+<a name="ln201">}</a>
+<a name="ln202"> </a>
+<a name="ln203">// A cellray given by fullray and index of end-point.</a>
+<a name="ln204">struct cellray</a>
+<a name="ln205">{</a>
+<a name="ln206">    // A cellray passes through cells ray_coords[ray.start..ray.start+end].</a>
+<a name="ln207">    los_ray ray;</a>
+<a name="ln208">    unsigned int end; // Relative index (inside ray) of end cell.</a>
+<a name="ln209"> </a>
+<a name="ln210">    cellray(const los_ray&amp; r, unsigned int e)</a>
+<a name="ln211">        : ray(r), end(e), imbalance(-1), first_diag(false)</a>
+<a name="ln212">    {</a>
+<a name="ln213">    }</a>
+<a name="ln214"> </a>
+<a name="ln215">    // The end-point's index inside ray_coord.</a>
+<a name="ln216">    int index() const { return ray.start + end; }</a>
+<a name="ln217"> </a>
+<a name="ln218">    // The end-point.</a>
+<a name="ln219">    coord_def target() const { return ray_coords[index()]; }</a>
+<a name="ln220"> </a>
+<a name="ln221">    // XXX: Currently ray/cellray[0] is the first point outside the origin.</a>
+<a name="ln222">    coord_def operator[](unsigned int i)</a>
+<a name="ln223">    {</a>
+<a name="ln224">        ASSERT(i &lt;= end);</a>
+<a name="ln225">        return ray_coords[ray.start+i];</a>
+<a name="ln226">    }</a>
+<a name="ln227"> </a>
+<a name="ln228">    // Parameters used in find_ray. These need to be calculated</a>
+<a name="ln229">    // only for the minimal cellrays.</a>
+<a name="ln230">    int imbalance;</a>
+<a name="ln231">    bool first_diag;</a>
+<a name="ln232"> </a>
+<a name="ln233">    void calc_params();</a>
+<a name="ln234">};</a>
+<a name="ln235"> </a>
+<a name="ln236">// Compare two cellrays to the same target.</a>
+<a name="ln237">// This determines which ray is considered better by find_ray,</a>
+<a name="ln238">// used with list::sort.</a>
+<a name="ln239">// Returns true if a is strictly better than b, false else.</a>
+<a name="ln240">static bool _is_better(const cellray&amp; a, const cellray&amp; b)</a>
+<a name="ln241">{</a>
+<a name="ln242">    // Only compare cellrays with equal target.</a>
+<a name="ln243">    ASSERT(a.target() == b.target());</a>
+<a name="ln244">    // calc_params() has been called.</a>
+<a name="ln245">    ASSERT(a.imbalance &gt;= 0);</a>
+<a name="ln246">    ASSERT(b.imbalance &gt;= 0);</a>
+<a name="ln247">    if (a.imbalance &lt; b.imbalance)</a>
+<a name="ln248">        return true;</a>
+<a name="ln249">    else if (a.imbalance &gt; b.imbalance)</a>
+<a name="ln250">        return false;</a>
+<a name="ln251">    else</a>
+<a name="ln252">        return a.first_diag &amp;&amp; !b.first_diag;</a>
+<a name="ln253">}</a>
+<a name="ln254"> </a>
+<a name="ln255">enum class compare_type</a>
+<a name="ln256">{</a>
+<a name="ln257">    neither,</a>
+<a name="ln258">    subray,</a>
+<a name="ln259">    superray,</a>
+<a name="ln260">};</a>
+<a name="ln261"> </a>
+<a name="ln262">// Check whether one of the passed cellrays is a subray of the</a>
+<a name="ln263">// other in terms of footprint.</a>
+<a name="ln264">static compare_type _compare_cellrays(const cellray&amp; a, const cellray&amp; b)</a>
+<a name="ln265">{</a>
+<a name="ln266">    if (a.target() != b.target())</a>
+<a name="ln267">        return compare_type::neither;</a>
+<a name="ln268"> </a>
+<a name="ln269">    int cura = a.ray.start;</a>
+<a name="ln270">    int curb = b.ray.start;</a>
+<a name="ln271">    int enda = cura + a.end;</a>
+<a name="ln272">    int endb = curb + b.end;</a>
+<a name="ln273">    bool maybe_sub = true;</a>
+<a name="ln274">    bool maybe_super = true;</a>
+<a name="ln275"> </a>
+<a name="ln276">    while (cura &lt; enda &amp;&amp; curb &lt; endb &amp;&amp; (maybe_sub || maybe_super))</a>
+<a name="ln277">    {</a>
+<a name="ln278">        coord_def pa = ray_coords[cura];</a>
+<a name="ln279">        coord_def pb = ray_coords[curb];</a>
+<a name="ln280">        if (pa.x &gt; pb.x || pa.y &gt; pb.y)</a>
+<a name="ln281">        {</a>
+<a name="ln282">            maybe_super = false;</a>
+<a name="ln283">            curb++;</a>
+<a name="ln284">        }</a>
+<a name="ln285">        if (pa.x &lt; pb.x || pa.y &lt; pb.y)</a>
+<a name="ln286">        {</a>
+<a name="ln287">            maybe_sub = false;</a>
+<a name="ln288">            cura++;</a>
+<a name="ln289">        }</a>
+<a name="ln290">        if (pa == pb)</a>
+<a name="ln291">        {</a>
+<a name="ln292">            cura++;</a>
+<a name="ln293">            curb++;</a>
+<a name="ln294">        }</a>
+<a name="ln295">    }</a>
+<a name="ln296">    maybe_sub = maybe_sub &amp;&amp; cura == enda;</a>
+<a name="ln297">    maybe_super = maybe_super &amp;&amp; curb == endb;</a>
+<a name="ln298"> </a>
+<a name="ln299">    if (maybe_sub)</a>
+<a name="ln300">        return compare_type::subray;    // includes equality</a>
+<a name="ln301">    else if (maybe_super)</a>
+<a name="ln302">        return compare_type::superray;</a>
+<a name="ln303">    else</a>
+<a name="ln304">        return compare_type::neither;</a>
+<a name="ln305">}</a>
+<a name="ln306"> </a>
+<a name="ln307">// Determine all minimal cellrays.</a>
+<a name="ln308">// They're stored globally by target in min_cellrays,</a>
+<a name="ln309">// and returned as a list of indices into ray_coords.</a>
+<a name="ln310">static vector&lt;int&gt; _find_minimal_cellrays()</a>
+<a name="ln311">{</a>
+<a name="ln312">    FixedArray&lt;list&lt;cellray&gt;, LOS_MAX_RANGE+1, LOS_MAX_RANGE+1&gt; minima;</a>
+<a name="ln313">    list&lt;cellray&gt;::iterator min_it;</a>
+<a name="ln314"> </a>
+<a name="ln315">    for (los_ray ray : fullrays)</a>
+<a name="ln316">    {</a>
+<a name="ln317">        for (unsigned int i = 0; i &lt; ray.length; ++i)</a>
+<a name="ln318">        {</a>
+<a name="ln319">            // Is the cellray ray[0..i] duplicated so far?</a>
+<a name="ln320">            bool dup = false;</a>
+<a name="ln321">            cellray c(ray, i);</a>
+<a name="ln322">            list&lt;cellray&gt;&amp; min = minima(c.target());</a>
+<a name="ln323"> </a>
+<a name="ln324">            bool erased = false;</a>
+<a name="ln325">            for (min_it = min.begin();</a>
+<a name="ln326">                 min_it != min.end() &amp;&amp; !dup;)</a>
+<a name="ln327">            {</a>
+<a name="ln328">                switch (_compare_cellrays(*min_it, c))</a>
+<a name="ln329">                {</a>
+<a name="ln330">                case compare_type::subray:</a>
+<a name="ln331">                    dup = true;</a>
+<a name="ln332">                    break;</a>
+<a name="ln333">                case compare_type::superray:</a>
+<a name="ln334">                    min_it = min.erase(min_it);</a>
+<a name="ln335">                    erased = true;</a>
+<a name="ln336">                    // clear this should be added, but might have</a>
+<a name="ln337">                    // to erase more</a>
+<a name="ln338">                    break;</a>
+<a name="ln339">                case compare_type::neither:</a>
+<a name="ln340">                default:</a>
+<a name="ln341">                    break;</a>
+<a name="ln342">                }</a>
+<a name="ln343">                if (!erased)</a>
+<a name="ln344">                    ++min_it;</a>
+<a name="ln345">                else</a>
+<a name="ln346">                    erased = false;</a>
+<a name="ln347">            }</a>
+<a name="ln348">            if (!dup)</a>
+<a name="ln349">                min.push_back(c);</a>
+<a name="ln350">        }</a>
+<a name="ln351">    }</a>
+<a name="ln352"> </a>
+<a name="ln353">    vector&lt;int&gt; result;</a>
+<a name="ln354">    for (quadrant_iterator qi; qi; ++qi)</a>
+<a name="ln355">    {</a>
+<a name="ln356">        list&lt;cellray&gt;&amp; min = minima(*qi);</a>
+<a name="ln357">        for (min_it = min.begin(); min_it != min.end(); ++min_it)</a>
+<a name="ln358">        {</a>
+<a name="ln359">            // Calculate imbalance and slope difference for sorting.</a>
+<a name="ln360">            min_it-&gt;calc_params();</a>
+<a name="ln361">            result.push_back(min_it-&gt;index());</a>
+<a name="ln362">        }</a>
+<a name="ln363">        min.sort(_is_better);</a>
+<a name="ln364">        min_cellrays(*qi) = vector&lt;cellray&gt;(min.begin(), min.end());</a>
+<a name="ln365">    }</a>
+<a name="ln366">    return result;</a>
+<a name="ln367">}</a>
+<a name="ln368"> </a>
+<a name="ln369">// Create and register the ray defined by the arguments.</a>
+<a name="ln370">static void _register_ray(geom::ray r)</a>
+<a name="ln371">{</a>
+<a name="ln372">    los_ray ray = los_ray(r);</a>
+<a name="ln373">    vector&lt;coord_def&gt; coords = ray.footprint();</a>
+<a name="ln374"> </a>
+<a name="ln375">    if (coords.empty() || _is_duplicate_ray(coords))</a>
+<a name="ln376">        return;</a>
+<a name="ln377"> </a>
+<a name="ln378">    ray.start = ray_coords.size();</a>
+<a name="ln379">    ray.length = coords.size();</a>
+<a name="ln380">    for (coord_def c : coords)</a>
+<a name="ln381">        ray_coords.push_back(c);</a>
+<a name="ln382">    fullrays.push_back(ray);</a>
+<a name="ln383">}</a>
+<a name="ln384"> </a>
+<a name="ln385">static void _create_blockrays()</a>
+<a name="ln386">{</a>
+<a name="ln387">    // First, we calculate blocking information for all cell rays.</a>
+<a name="ln388">    // Cellrays are numbered according to the index of their end</a>
+<a name="ln389">    // cell in ray_coords.</a>
+<a name="ln390">    const int n_cellrays = ray_coords.size();</a>
+<a name="ln391">    blockrays_t all_blockrays;</a>
+<a name="ln392">    for (quadrant_iterator qi; qi; ++qi)</a>
+<a name="ln393">        all_blockrays(*qi) = new bit_vector(n_cellrays);</a>
+<a name="ln394"> </a>
+<a name="ln395">    for (los_ray ray : fullrays)</a>
+<a name="ln396">    {</a>
+<a name="ln397">        for (unsigned int i = 0; i &lt; ray.length; ++i)</a>
+<a name="ln398">        {</a>
+<a name="ln399">            // Every cell is contained in (thus blocks)</a>
+<a name="ln400">            // all following cellrays.</a>
+<a name="ln401">            for (unsigned int j = i + 1; j &lt; ray.length; ++j)</a>
+<a name="ln402">                all_blockrays(ray[i])-&gt;set(ray.start + j);</a>
+<a name="ln403">        }</a>
+<a name="ln404">    }</a>
+<a name="ln405"> </a>
+<a name="ln406">    // We've built the basic blockray array; now compress it, keeping</a>
+<a name="ln407">    // only the nonduplicated cellrays.</a>
+<a name="ln408"> </a>
+<a name="ln409">    // Determine minimal cellrays and store their indices in ray_coords.</a>
+<a name="ln410">    vector&lt;int&gt; min_indices = _find_minimal_cellrays();</a>
+<a name="ln411">    const int n_min_rays    = min_indices.size();</a>
+<a name="ln412">    cellray_ends.resize(n_min_rays);</a>
+<a name="ln413">    for (int i = 0; i &lt; n_min_rays; ++i)</a>
+<a name="ln414">        cellray_ends[i] = ray_coords[min_indices[i]];</a>
+<a name="ln415"> </a>
+<a name="ln416">    // Compress blockrays accordingly.</a>
+<a name="ln417">    for (quadrant_iterator qi; qi; ++qi)</a>
+<a name="ln418">    {</a>
+<a name="ln419">        blockrays(*qi) = new bit_vector(n_min_rays);</a>
+<a name="ln420">        for (int i = 0; i &lt; n_min_rays; ++i)</a>
+<a name="ln421">        {</a>
+<a name="ln422">            blockrays(*qi)-&gt;set(i, all_blockrays(*qi)</a>
+<a name="ln423">                                   -&gt;get(min_indices[i]));</a>
+<a name="ln424">        }</a>
+<a name="ln425">    }</a>
+<a name="ln426"> </a>
+<a name="ln427">    // We can throw away all_blockrays now.</a>
+<a name="ln428">    for (quadrant_iterator qi; qi; ++qi)</a>
+<a name="ln429">        delete all_blockrays(*qi);</a>
+<a name="ln430"> </a>
+<a name="ln431">    dead_rays  = new bit_vector(n_min_rays);</a>
+<a name="ln432">    smoke_rays = new bit_vector(n_min_rays);</a>
+<a name="ln433"> </a>
+<a name="ln434">    dprf(&quot;Cellrays: %d Fullrays: %u Minimal cellrays: %u&quot;,</a>
+<a name="ln435">          n_cellrays, (unsigned int)fullrays.size(), n_min_rays);</a>
+<a name="ln436">}</a>
+<a name="ln437"> </a>
+<a name="ln438">static int _gcd(int x, int y)</a>
+<a name="ln439">{</a>
+<a name="ln440">    int tmp;</a>
+<a name="ln441">    while (y != 0)</a>
+<a name="ln442">    {</a>
+<a name="ln443">        x %= y;</a>
+<a name="ln444">        tmp = x;</a>
+<a name="ln445">        x = y;</a>
+<a name="ln446">        y = tmp;</a>
+<a name="ln447">    }</a>
+<a name="ln448">    return x;</a>
+<a name="ln449">}</a>
+<a name="ln450"> </a>
+<a name="ln451">static bool _complexity_lt(const pair&lt;int,int&gt;&amp; lhs, const pair&lt;int,int&gt;&amp; rhs)</a>
+<a name="ln452">{</a>
+<a name="ln453">    return lhs.first * lhs.second &lt; rhs.first * rhs.second;</a>
+<a name="ln454">}</a>
+<a name="ln455"> </a>
+<a name="ln456">// Cast all rays</a>
+<a name="ln457">static void raycast()</a>
+<a name="ln458">{</a>
+<a name="ln459">    static bool done_raycast = false;</a>
+<a name="ln460">    if (done_raycast)</a>
+<a name="ln461">        return;</a>
+<a name="ln462"> </a>
+<a name="ln463">    // Creating all rays for first quadrant</a>
+<a name="ln464">    // We have a considerable amount of overkill.</a>
+<a name="ln465">    done_raycast = true;</a>
+<a name="ln466"> </a>
+<a name="ln467">    // register perpendiculars FIRST, to make them top choice</a>
+<a name="ln468">    // when selecting beams</a>
+<a name="ln469">    _register_ray(geom::ray(0.5, 0.5, 0.0, 1.0));</a>
+<a name="ln470">    _register_ray(geom::ray(0.5, 0.5, 1.0, 0.0));</a>
+<a name="ln471"> </a>
+<a name="ln472">    // For a slope of M = y/x, every x we move on the X axis means</a>
+<a name="ln473">    // that we move y on the y axis. We want to look at the resolution</a>
+<a name="ln474">    // of x/y: in that case, every step on the X axis means an increase</a>
+<a name="ln475">    // of 1 in the Y axis at the intercept point. We can assume gcd(x,y)=1,</a>
+<a name="ln476">    // so we look at steps of 1/y.</a>
+<a name="ln477"> </a>
+<a name="ln478">    // Changing the order a bit. We want to order by the complexity</a>
+<a name="ln479">    // of the beam, which is log(x) + log(y) ~ xy.</a>
+<a name="ln480">    vector&lt;pair&lt;int,int&gt; &gt; xyangles;</a>
+<a name="ln481">    for (int xangle = 1; xangle &lt;= LOS_MAX_ANGLE; ++xangle)</a>
+<a name="ln482">        for (int yangle = 1; yangle &lt;= LOS_MAX_ANGLE; ++yangle)</a>
+<a name="ln483">        {</a>
+<a name="ln484">            if (_gcd(xangle, yangle) == 1)</a>
+<a name="ln485">                xyangles.emplace_back(xangle, yangle);</a>
+<a name="ln486">        }</a>
+<a name="ln487"> </a>
+<a name="ln488">    sort(xyangles.begin(), xyangles.end(), _complexity_lt);</a>
+<a name="ln489">    for (auto xyangle : xyangles)</a>
+<a name="ln490">    {</a>
+<a name="ln491">        const int xangle = xyangle.first;</a>
+<a name="ln492">        const int yangle = xyangle.second;</a>
+<a name="ln493"> </a>
+<a name="ln494">        for (int intercept = 1; intercept &lt; LOS_INTERCEPT_MULT*yangle; ++intercept)</a>
+<a name="ln495">        {</a>
+<a name="ln496">            double xstart = ((double)intercept) / (LOS_INTERCEPT_MULT*yangle);</a>
+<a name="ln497">            double ystart = 0.5;</a>
+<a name="ln498"> </a>
+<a name="ln499">            _register_ray(geom::ray(xstart, ystart, xangle, yangle));</a>
+<a name="ln500">            // also draw the identical ray in octant 2</a>
+<a name="ln501">            _register_ray(geom::ray(ystart, xstart, yangle, xangle));</a>
+<a name="ln502">        }</a>
+<a name="ln503">    }</a>
+<a name="ln504"> </a>
+<a name="ln505">    // Now create the appropriate blockrays array</a>
+<a name="ln506">    _create_blockrays();</a>
+<a name="ln507">}</a>
+<a name="ln508"> </a>
+<a name="ln509">static int _imbalance(ray_def ray, const coord_def&amp; target)</a>
+<a name="ln510">{</a>
+<a name="ln511">    int imb = 0;</a>
+<a name="ln512">    int diags = 0, straights = 0;</a>
+<a name="ln513">    while (ray.pos() != target)</a>
+<a name="ln514">    {</a>
+<a name="ln515">        coord_def old = ray.pos();</a>
+<a name="ln516">        if (!ray.advance())</a>
+<a name="ln517">            die(&quot;can't advance ray&quot;);</a>
+<a name="ln518">        switch ((ray.pos() - old).abs())</a>
+<a name="ln519">        {</a>
+<a name="ln520">        case 1:</a>
+<a name="ln521">            diags = 0;</a>
+<a name="ln522">            if (++straights &gt; imb)</a>
+<a name="ln523">                imb = straights;</a>
+<a name="ln524">            break;</a>
+<a name="ln525">        case 2:</a>
+<a name="ln526">            straights = 0;</a>
+<a name="ln527">            if (++diags &gt; imb)</a>
+<a name="ln528">                imb = diags;</a>
+<a name="ln529">            break;</a>
+<a name="ln530">        default:</a>
+<a name="ln531">            die(&quot;ray imbalance out of range&quot;);</a>
+<a name="ln532">        }</a>
+<a name="ln533">    }</a>
+<a name="ln534">    return imb;</a>
+<a name="ln535">}</a>
+<a name="ln536"> </a>
+<a name="ln537">void cellray::calc_params()</a>
+<a name="ln538">{</a>
+<a name="ln539">    coord_def trg = target();</a>
+<a name="ln540">    imbalance = _imbalance(ray, trg);</a>
+<a name="ln541">    first_diag = ((*this)[0].abs() == 2);</a>
+<a name="ln542">}</a>
+<a name="ln543"> </a>
+<a name="ln544">// Find ray in positive quadrant.</a>
+<a name="ln545">// opc has been translated for this quadrant.</a>
+<a name="ln546">// XXX: Allow finding ray of minimum opacity.</a>
+<a name="ln547">static bool _find_ray_se(const coord_def&amp; target, ray_def&amp; ray,</a>
+<a name="ln548">                  const opacity_func&amp; opc, int range, bool cycle)</a>
+<a name="ln549">{</a>
+<a name="ln550">    ASSERT(target.x &gt;= 0);</a>
+<a name="ln551">    ASSERT(target.y &gt;= 0);</a>
+<a name="ln552">    ASSERT(!target.origin());</a>
+<a name="ln553">    if (target.rdist() &gt; range)</a>
+<a name="ln554">        return false;</a>
+<a name="ln555"> </a>
+<a name="ln556">    ASSERT(target.rdist() &lt;= LOS_RADIUS);</a>
+<a name="ln557"> </a>
+<a name="ln558">    // Ensure the precalculations have been done.</a>
+<a name="ln559">    raycast();</a>
+<a name="ln560"> </a>
+<a name="ln561">    const vector&lt;cellray&gt; &amp;min = min_cellrays(target);</a>
+<a name="ln562">    ASSERT(!min.empty());</a>
+<a name="ln563">    cellray c = min[0]; // XXX: const cellray &amp;c ?</a>
+<a name="ln564">    unsigned int index = 0;</a>
+<a name="ln565"> </a>
+<a name="ln566">    if (cycle)</a>
+<a name="ln567">        dprf(&quot;cycling from %d (total %u)&quot;, ray.cycle_idx, (unsigned int)min.size());</a>
+<a name="ln568"> </a>
+<a name="ln569">    unsigned int start = cycle ? ray.cycle_idx + 1 : 0;</a>
+<a name="ln570">    ASSERT(start &lt;= min.size());</a>
+<a name="ln571"> </a>
+<a name="ln572">    int blocked = OPC_OPAQUE;</a>
+<a name="ln573">    for (unsigned int i = start;</a>
+<a name="ln574">         (blocked &gt;= OPC_OPAQUE) &amp;&amp; (i &lt; start + min.size()); i++)</a>
+<a name="ln575">    {</a>
+<a name="ln576">        index = i % min.size();</a>
+<a name="ln577">        c = min[index];</a>
+<a name="ln578">        blocked = OPC_CLEAR;</a>
+<a name="ln579">        // Check all inner points.</a>
+<a name="ln580">        for (unsigned int j = 0; j &lt; c.end &amp;&amp; blocked &lt; OPC_OPAQUE; j++)</a>
+<a name="ln581">            blocked += opc(c[j]);</a>
+<a name="ln582">    }</a>
+<a name="ln583">    if (blocked &gt;= OPC_OPAQUE)</a>
+<a name="ln584">        return false;</a>
+<a name="ln585"> </a>
+<a name="ln586">    ray = c.ray;</a>
+<a name="ln587">    ray.cycle_idx = index;</a>
+<a name="ln588"> </a>
+<a name="ln589">    return true;</a>
+<a name="ln590">}</a>
+<a name="ln591"> </a>
+<a name="ln592">// Coordinate transformation so we can find_ray quadrant-by-quadrant.</a>
+<a name="ln593">struct opacity_trans : public opacity_func</a>
+<a name="ln594">{</a>
+<a name="ln595">    const coord_def&amp; source;</a>
+<a name="ln596">    int signx, signy;</a>
+<a name="ln597">    const opacity_func&amp; orig;</a>
+<a name="ln598"> </a>
+<a name="ln599">    opacity_trans(const opacity_func&amp; opc, const coord_def&amp; s, int sx, int sy)</a>
+<a name="ln600">        : source(s), signx(sx), signy(sy), orig(opc)</a>
+<a name="ln601">    {</a>
+<a name="ln602">    }</a>
+<a name="ln603"> </a>
+<a name="ln604">    CLONE(opacity_trans)</a>
+<a name="ln605"> </a>
+<a name="ln606">    opacity_type operator()(const coord_def &amp;l) const override</a>
+<a name="ln607">    {</a>
+<a name="ln608">        return orig(transform(l));</a>
+<a name="ln609">    }</a>
+<a name="ln610"> </a>
+<a name="ln611">    coord_def transform(const coord_def &amp;l) const</a>
+<a name="ln612">    {</a>
+<a name="ln613">        return coord_def(source.x + signx*l.x, source.y + signy*l.y);</a>
+<a name="ln614">    }</a>
+<a name="ln615">};</a>
+<a name="ln616"> </a>
+<a name="ln617">// Find a nonblocked ray from source to target. Return false if no</a>
+<a name="ln618">// such ray could be found, otherwise return true and fill ray</a>
+<a name="ln619">// appropriately.</a>
+<a name="ln620">// if range is too great or all rays are blocked.</a>
+<a name="ln621">// If cycle is false, find the first fitting ray. If it is true,</a>
+<a name="ln622">// assume that ray is appropriately filled in, and look for the next</a>
+<a name="ln623">// ray. We only ever use ray.cycle_idx.</a>
+<a name="ln624">bool find_ray(const coord_def&amp; source, const coord_def&amp; target,</a>
+<a name="ln625">              ray_def&amp; ray, const opacity_func&amp; opc, int range,</a>
+<a name="ln626">              bool cycle)</a>
+<a name="ln627">{</a>
+<a name="ln628">    if (target == source || !map_bounds(source) || !map_bounds(target))</a>
+<a name="ln629">        return false;</a>
+<a name="ln630"> </a>
+<a name="ln631">    const int signx = ((target.x - source.x &gt;= 0) ? 1 : -1);</a>
+<a name="ln632">    const int signy = ((target.y - source.y &gt;= 0) ? 1 : -1);</a>
+<a name="ln633">    const int absx  = signx * (target.x - source.x);</a>
+<a name="ln634">    const int absy  = signy * (target.y - source.y);</a>
+<a name="ln635">    const coord_def abs = coord_def(absx, absy);</a>
+<a name="ln636">    opacity_trans opc_trans = opacity_trans(opc, source, signx, signy);</a>
+<a name="ln637"> </a>
+<a name="ln638">    if (!_find_ray_se(abs, ray, opc_trans, range, cycle))</a>
+<a name="ln639">        return false;</a>
+<a name="ln640"> </a>
+<a name="ln641">    if (signx &lt; 0)</a>
+<a name="ln642">        ray.r.start.x = 1.0 - ray.r.start.x;</a>
+<a name="ln643">    if (signy &lt; 0)</a>
+<a name="ln644">        ray.r.start.y = 1.0 - ray.r.start.y;</a>
+<a name="ln645">    ray.r.dir.x *= signx;</a>
+<a name="ln646">    ray.r.dir.y *= signy;</a>
+<a name="ln647"> </a>
+<a name="ln648">    ray.r.start.x += source.x;</a>
+<a name="ln649">    ray.r.start.y += source.y;</a>
+<a name="ln650"> </a>
+<a name="ln651">    return true;</a>
+<a name="ln652">}</a>
+<a name="ln653"> </a>
+<a name="ln654">bool exists_ray(const coord_def&amp; source, const coord_def&amp; target,</a>
+<a name="ln655">                const opacity_func&amp; opc, int range)</a>
+<a name="ln656">{</a>
+<a name="ln657">    ray_def ray;</a>
+<a name="ln658">    return find_ray(source, target, ray, opc, range);</a>
+<a name="ln659">}</a>
+<a name="ln660"> </a>
+<a name="ln661">// Assuming that target is in view of source, but line of</a>
+<a name="ln662">// fire is blocked, what is it blocked by?</a>
+<a name="ln663">dungeon_feature_type ray_blocker(const coord_def&amp; source,</a>
+<a name="ln664">                                 const coord_def&amp; target)</a>
+<a name="ln665">{</a>
+<a name="ln666">    ray_def ray;</a>
+<a name="ln667">    if (!find_ray(source, target, ray, opc_default))</a>
+<a name="ln668">    {</a>
+<a name="ln669">        ASSERT(you.xray_vision);</a>
+<a name="ln670">        return NUM_FEATURES;</a>
+<a name="ln671">    }</a>
+<a name="ln672"> </a>
+<a name="ln673">    ray.advance();</a>
+<a name="ln674">    int blocked = 0;</a>
+<a name="ln675">    while (ray.pos() != target)</a>
+<a name="ln676">    {</a>
+<a name="ln677">        blocked += opc_solid_see(ray.pos());</a>
+<a name="ln678">        if (blocked &gt;= OPC_OPAQUE)</a>
+<a name="ln679">            return env.grid(ray.pos());</a>
+<a name="ln680">        ray.advance();</a>
+<a name="ln681">    }</a>
+<a name="ln682">    ASSERT(false);</a>
+<a name="ln683">    return NUM_FEATURES;</a>
+<a name="ln684">}</a>
+<a name="ln685"> </a>
+<a name="ln686">// Returns a straight ray from source to target.</a>
+<a name="ln687">void fallback_ray(const coord_def&amp; source, const coord_def&amp; target,</a>
+<a name="ln688">                  ray_def&amp; ray)</a>
+<a name="ln689">{</a>
+<a name="ln690">    ray.r.start.x = source.x + 0.5;</a>
+<a name="ln691">    ray.r.start.y = source.y + 0.5;</a>
+<a name="ln692">    coord_def diff = target - source;</a>
+<a name="ln693">    ray.r.dir.x = diff.x;</a>
+<a name="ln694">    ray.r.dir.y = diff.y;</a>
+<a name="ln695">    ray.on_corner = false;</a>
+<a name="ln696">}</a>
+<a name="ln697"> </a>
+<a name="ln698">// Count the number of matching features between two points along</a>
+<a name="ln699">// a beam-like path; the path will pass through solid features.</a>
+<a name="ln700">// By default, it excludes end points from the count.</a>
+<a name="ln701">// If just_check is true, the function will return early once one</a>
+<a name="ln702">// such feature is encountered.</a>
+<a name="ln703">int num_feats_between(const coord_def&amp; source, const coord_def&amp; target,</a>
+<a name="ln704">                      dungeon_feature_type min_feat,</a>
+<a name="ln705">                      dungeon_feature_type max_feat,</a>
+<a name="ln706">                      bool exclude_endpoints, bool just_check)</a>
+<a name="ln707">{</a>
+<a name="ln708">    ray_def ray;</a>
+<a name="ln709">    int     count    = 0;</a>
+<a name="ln710">    int     max_dist = grid_distance(source, target);</a>
+<a name="ln711"> </a>
+<a name="ln712">    ASSERT(map_bounds(source));</a>
+<a name="ln713">    ASSERT(map_bounds(target));</a>
+<a name="ln714"> </a>
+<a name="ln715">    if (source == target)</a>
+<a name="ln716">        return 0; // XXX: might want to count the cell.</a>
+<a name="ln717"> </a>
+<a name="ln718">    // We don't need to find the shortest beam, any beam will suffice.</a>
+<a name="ln719">    fallback_ray(source, target, ray);</a>
+<a name="ln720"> </a>
+<a name="ln721">    if (exclude_endpoints &amp;&amp; ray.pos() == source)</a>
+<a name="ln722">    {</a>
+<a name="ln723">        ray.advance();</a>
+<a name="ln724">        max_dist--;</a>
+<a name="ln725">    }</a>
+<a name="ln726"> </a>
+<a name="ln727">    int dist = 0;</a>
+<a name="ln728">    bool reached_target = false;</a>
+<a name="ln729">    while (dist++ &lt;= max_dist)</a>
+<a name="ln730">    {</a>
+<a name="ln731">        const dungeon_feature_type feat = grd(ray.pos());</a>
+<a name="ln732"> </a>
+<a name="ln733">        if (ray.pos() == target)</a>
+<a name="ln734">            reached_target = true;</a>
+<a name="ln735"> </a>
+<a name="ln736">        if (feat &gt;= min_feat &amp;&amp; feat &lt;= max_feat</a>
+<a name="ln737">            &amp;&amp; (!exclude_endpoints || !reached_target))</a>
+<a name="ln738">        {</a>
+<a name="ln739">            count++;</a>
+<a name="ln740"> </a>
+<a name="ln741">            if (just_check) // Only needs to be &gt; 0.</a>
+<a name="ln742">                return count;</a>
+<a name="ln743">        }</a>
+<a name="ln744"> </a>
+<a name="ln745">        if (reached_target)</a>
+<a name="ln746">            break;</a>
+<a name="ln747"> </a>
+<a name="ln748">        ray.advance();</a>
+<a name="ln749">    }</a>
+<a name="ln750"> </a>
+<a name="ln751">    return count;</a>
+<a name="ln752">}</a>
+<a name="ln753"> </a>
+<a name="ln754">// Is p2 visible from p1, disregarding half-opaque objects?</a>
+<a name="ln755">bool cell_see_cell_nocache(const coord_def&amp; p1, const coord_def&amp; p2)</a>
+<a name="ln756">{</a>
+<a name="ln757">    return exists_ray(p1, p2, opc_fullyopaque);</a>
+<a name="ln758">}</a>
+<a name="ln759"> </a>
+<a name="ln760">// We use raycasting. The algorithm:</a>
+<a name="ln761">// PRECOMPUTATION:</a>
+<a name="ln762">// Create a large bundle of rays and cast them.</a>
+<a name="ln763">// Mark, for each one, which cells kill it (and where.)</a>
+<a name="ln764">// Also, for each one, note which cells it passes.</a>
+<a name="ln765">// ACTUAL LOS:</a>
+<a name="ln766">// Unite the ray-killers for the given map; this tells you which rays</a>
+<a name="ln767">// are dead.</a>
+<a name="ln768">// Look up which cells the surviving rays have, and that's your LOS!</a>
+<a name="ln769">// OPTIMIZATIONS:</a>
+<a name="ln770">// WLOG, we can assume that we're in a specific quadrant - say the</a>
+<a name="ln771">// first quadrant - and just mirror everything after that. We can</a>
+<a name="ln772">// likely get away with a single octant, but we don't do that. (To</a>
+<a name="ln773">// do...)</a>
+<a name="ln774">// Rays are actually split by each cell they pass. So each &quot;ray&quot; only</a>
+<a name="ln775">// identifies a single cell, and we can do logical ORs. Once a cell</a>
+<a name="ln776">// kills a cellray, it will kill all remaining cellrays of that ray.</a>
+<a name="ln777">// Also, rays are checked to see if they are duplicates of each</a>
+<a name="ln778">// other. If they are, they're eliminated.</a>
+<a name="ln779">// Some cellrays can also be eliminated. In general, a cellray is</a>
+<a name="ln780">// unnecessary if there is another cellray with the same coordinates,</a>
+<a name="ln781">// and whose path (up to those coordinates) is a subset, not necessarily</a>
+<a name="ln782">// proper, of the original path. We still store the original cellrays</a>
+<a name="ln783">// fully for beam detection and such.</a>
+<a name="ln784">// PERFORMANCE:</a>
+<a name="ln785">// With reasonable values we have around 6000 cellrays, meaning</a>
+<a name="ln786">// around 600Kb (75 KB) of data. This gets cut down to 700 cellrays</a>
+<a name="ln787">// after removing duplicates. That means that we need to do</a>
+<a name="ln788">// around 22*100*4 ~ 9,000 memory reads + writes per LOS call on a</a>
+<a name="ln789">// 32-bit system. Not too bad.</a>
+<a name="ln790">// IMPROVEMENTS:</a>
+<a name="ln791">// Smoke will now only block LOS after two cells of smoke. This is</a>
+<a name="ln792">// done by updating with a second array.</a>
+<a name="ln793"> </a>
+<a name="ln794">static void _losight_quadrant(los_grid&amp; sh, const los_param&amp; dat, int sx, int sy)</a>
+<a name="ln795">{</a>
+<a name="ln796">    const unsigned int num_cellrays = cellray_ends.size();</a>
+<a name="ln797"> </a>
+<a name="ln798">    dead_rays-&gt;reset();</a>
+<a name="ln799">    smoke_rays-&gt;reset();</a>
+<a name="ln800"> </a>
+<a name="ln801">    for (quadrant_iterator qi; qi; ++qi)</a>
+<a name="ln802">    {</a>
+<a name="ln803">        coord_def p = coord_def(sx*(qi-&gt;x), sy*(qi-&gt;y));</a>
+<a name="ln804">        if (!dat.los_bounds(p))</a>
+<a name="ln805">            continue;</a>
+<a name="ln806"> </a>
+<a name="ln807">        switch (dat.opacity(p))</a>
+<a name="ln808">        {</a>
+<a name="ln809">        case OPC_OPAQUE:</a>
+<a name="ln810">            // Block the appropriate rays.</a>
+<a name="ln811">            *dead_rays |= *blockrays(*qi);</a>
+<a name="ln812">            break;</a>
+<a name="ln813">        case OPC_HALF:</a>
+<a name="ln814">            // Block rays which have already seen a cloud.</a>
+<a name="ln815">            *dead_rays  |= (*smoke_rays &amp; *blockrays(*qi));</a>
+<a name="ln816">            *smoke_rays |= *blockrays(*qi);</a>
+<a name="ln817">            break;</a>
+<a name="ln818">        default:</a>
+<a name="ln819">            break;</a>
+<a name="ln820">        }</a>
+<a name="ln821">    }</a>
+<a name="ln822"> </a>
+<a name="ln823">    // Ray calculation done. Now work out which cells in this</a>
+<a name="ln824">    // quadrant are visible.</a>
+<a name="ln825">    for (unsigned int rayidx = 0; rayidx &lt; num_cellrays; ++rayidx)</a>
+<a name="ln826">    {</a>
+<a name="ln827">        // make the cells seen by this ray at this point visible</a>
+<a name="ln828">        if (!dead_rays-&gt;get(rayidx))</a>
+<a name="ln829">        {</a>
+<a name="ln830">            // This ray is alive, thus the end cell is visible.</a>
+<a name="ln831">            const coord_def p = coord_def(sx * cellray_ends[rayidx].x,</a>
+<a name="ln832">                                          sy * cellray_ends[rayidx].y);</a>
+<a name="ln833">            if (dat.los_bounds(p))</a>
+<a name="ln834">                sh(p) = true;</a>
+<a name="ln835">        }</a>
+<a name="ln836">    }</a>
+<a name="ln837">}</a>
+<a name="ln838"> </a>
+<a name="ln839">struct los_param_funcs : public los_param</a>
+<a name="ln840">{</a>
+<a name="ln841">    coord_def center;</a>
+<a name="ln842">    const opacity_func&amp; opc;</a>
+<a name="ln843">    const circle_def&amp; bounds;</a>
+<a name="ln844"> </a>
+<a name="ln845">    los_param_funcs(const coord_def&amp; c,</a>
+<a name="ln846">                    const opacity_func&amp; o, const circle_def&amp; b)</a>
+<a name="ln847">        : center(c), opc(o), bounds(b)</a>
+<a name="ln848">    {</a>
+<a name="ln849">    }</a>
+<a name="ln850"> </a>
+<a name="ln851">    bool los_bounds(const coord_def&amp; p) const override</a>
+<a name="ln852">    {</a>
+<a name="ln853">        return map_bounds(p + center) &amp;&amp; bounds.contains(p);</a>
+<a name="ln854">    }</a>
+<a name="ln855"> </a>
+<a name="ln856">    opacity_type opacity(const coord_def&amp; p) const override</a>
+<a name="ln857">    {</a>
+<a name="ln858">        return opc(p + center);</a>
+<a name="ln859">    }</a>
+<a name="ln860">};</a>
+<a name="ln861"> </a>
+<a name="ln862">void losight(los_grid&amp; sh, const coord_def&amp; center,</a>
+<a name="ln863">             const opacity_func&amp; opc, const circle_def&amp; bounds)</a>
+<a name="ln864">{</a>
+<a name="ln865">    const los_param&amp; dat = los_param_funcs(center, opc, bounds);</a>
+<a name="ln866"> </a>
+<a name="ln867">    sh.init(false);</a>
+<a name="ln868"> </a>
+<a name="ln869">    // Do precomputations if necessary.</a>
+<a name="ln870">    raycast();</a>
+<a name="ln871"> </a>
+<a name="ln872">    const int quadrant_x[4] = {  1, -1, -1,  1 };</a>
+<a name="ln873">    const int quadrant_y[4] = {  1,  1, -1, -1 };</a>
+<a name="ln874">    for (int q = 0; q &lt; 4; ++q)</a>
+<a name="ln875">        _losight_quadrant(sh, dat, quadrant_x[q], quadrant_y[q]);</a>
+<a name="ln876"> </a>
+<a name="ln877">    // Center is always visible.</a>
+<a name="ln878">    const coord_def o = coord_def(0,0);</a>
+<a name="ln879">    sh(o) = true;</a>
+<a name="ln880">}</a>
+<a name="ln881"> </a>
+<a name="ln882">opacity_type mons_opacity(const monster* mon, los_type how)</a>
+<a name="ln883">{</a>
+<a name="ln884">    // no regard for LOS_ARENA</a>
+<a name="ln885">    if (mons_species(mon-&gt;type) == MONS_BUSH</a>
+<a name="ln886">        &amp;&amp; how != LOS_SOLID)</a>
+<a name="ln887">    {</a>
+<a name="ln888">        return OPC_HALF;</a>
+<a name="ln889">    }</a>
+<a name="ln890"> </a>
+<a name="ln891">    return OPC_CLEAR;</a>
+<a name="ln892">}</a>
+<a name="ln893"> </a>
+<a name="ln894">/////////////////////////////////////</a>
+<a name="ln895">// A start at tracking LOS changes.</a>
+<a name="ln896"> </a>
+<a name="ln897">// Something that affects LOS (with default parameters)</a>
+<a name="ln898">// has changed somewhere.</a>
+<a name="ln899">static void _handle_los_change()</a>
+<a name="ln900">{</a>
+<a name="ln901">    invalidate_agrid();</a>
+<a name="ln902">}</a>
+<a name="ln903"> </a>
+<a name="ln904">static bool _mons_block_sight(const monster* mons)</a>
+<a name="ln905">{</a>
+<a name="ln906">    // must be the least permissive one</a>
+<a name="ln907">    return mons_opacity(mons, LOS_SOLID_SEE) != OPC_CLEAR;</a>
+<a name="ln908">}</a>
+<a name="ln909"> </a>
+<a name="ln910">void los_actor_moved(const actor* act, const coord_def&amp; oldpos)</a>
+<a name="ln911">{</a>
+<a name="ln912">    if (act-&gt;is_monster() &amp;&amp; _mons_block_sight(act-&gt;as_monster()))</a>
+<a name="ln913">    {</a>
+<a name="ln914">        invalidate_los_around(oldpos);</a>
+<a name="ln915">        invalidate_los_around(act-&gt;pos());</a>
+<a name="ln916">        _handle_los_change();</a>
+<a name="ln917">    }</a>
+<a name="ln918">}</a>
+<a name="ln919"> </a>
+<a name="ln920">void los_monster_died(const monster* mon)</a>
+<a name="ln921">{</a>
+<a name="ln922">    if (_mons_block_sight(mon))</a>
+<a name="ln923">    {</a>
+<a name="ln924">        invalidate_los_around(mon-&gt;pos());</a>
+<a name="ln925">        _handle_los_change();</a>
+<a name="ln926">    }</a>
+<a name="ln927">}</a>
+<a name="ln928"> </a>
+<a name="ln929">// Might want to pass new/old terrain.</a>
+<a name="ln930">void los_terrain_changed(const coord_def&amp; p)</a>
+<a name="ln931">{</a>
+<a name="ln932">    invalidate_los_around(p);</a>
+<a name="ln933">    _handle_los_change();</a>
+<a name="ln934">}</a>
+<a name="ln935"> </a>
+<a name="ln936">void los_changed()</a>
+<a name="ln937">{</a>
+<a name="ln938">    mons_reset_just_seen();</a>
+<a name="ln939">    invalidate_los();</a>
+<a name="ln940">    _handle_los_change();</a>
+<a name="ln941">}</a>
+
+</code></pre>
+<div class="balloon" rel="393"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v799/" target="_blank">V799</a> The 'qi' variable is not used after memory has been allocated for it. Consider checking the use of this variable.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

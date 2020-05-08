@@ -1,0 +1,1248 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>spl-transloc.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Translocation spells.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;spl-transloc.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cmath&gt;</a>
+<a name="ln12">#include &lt;vector&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;abyss.h&quot;</a>
+<a name="ln15">#include &quot;act-iter.h&quot;</a>
+<a name="ln16">#include &quot;areas.h&quot;</a>
+<a name="ln17">#include &quot;cloud.h&quot;</a>
+<a name="ln18">#include &quot;coordit.h&quot;</a>
+<a name="ln19">#include &quot;delay.h&quot;</a>
+<a name="ln20">#include &quot;directn.h&quot;</a>
+<a name="ln21">#include &quot;dungeon.h&quot;</a>
+<a name="ln22">#include &quot;item-prop.h&quot;</a>
+<a name="ln23">#include &quot;items.h&quot;</a>
+<a name="ln24">#include &quot;level-state-type.h&quot;</a>
+<a name="ln25">#include &quot;libutil.h&quot;</a>
+<a name="ln26">#include &quot;los.h&quot;</a>
+<a name="ln27">#include &quot;losglobal.h&quot;</a>
+<a name="ln28">#include &quot;losparam.h&quot;</a>
+<a name="ln29">#include &quot;message.h&quot;</a>
+<a name="ln30">#include &quot;mon-behv.h&quot;</a>
+<a name="ln31">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln32">#include &quot;mon-util.h&quot;</a>
+<a name="ln33">#include &quot;nearby-danger.h&quot;</a>
+<a name="ln34">#include &quot;orb.h&quot;</a>
+<a name="ln35">#include &quot;output.h&quot;</a>
+<a name="ln36">#include &quot;prompt.h&quot;</a>
+<a name="ln37">#include &quot;religion.h&quot;</a>
+<a name="ln38">#include &quot;shout.h&quot;</a>
+<a name="ln39">#include &quot;spl-util.h&quot;</a>
+<a name="ln40">#include &quot;stash.h&quot;</a>
+<a name="ln41">#include &quot;state.h&quot;</a>
+<a name="ln42">#include &quot;stringutil.h&quot;</a>
+<a name="ln43">#include &quot;target.h&quot;</a>
+<a name="ln44">#include &quot;teleport.h&quot;</a>
+<a name="ln45">#include &quot;terrain.h&quot;</a>
+<a name="ln46">#include &quot;tiledoll.h&quot;</a>
+<a name="ln47">#include &quot;traps.h&quot;</a>
+<a name="ln48">#include &quot;view.h&quot;</a>
+<a name="ln49">#include &quot;viewmap.h&quot;</a>
+<a name="ln50">#include &quot;xom.h&quot;</a>
+<a name="ln51"> </a>
+<a name="ln52">/**</a>
+<a name="ln53"> * Place a cloud of translocational energy at a player's previous location,</a>
+<a name="ln54"> * to make it easier for players to tell what just happened.</a>
+<a name="ln55"> *</a>
+<a name="ln56"> * @param origin    The player's previous location.</a>
+<a name="ln57"> */</a>
+<a name="ln58">static void _place_tloc_cloud(const coord_def &amp;origin)</a>
+<a name="ln59">{</a>
+<a name="ln60">    if (!cell_is_solid(origin))</a>
+<a name="ln61">        place_cloud(CLOUD_TLOC_ENERGY, origin, 1 + random2(3), &amp;you);</a>
+<a name="ln62">}</a>
+<a name="ln63"> </a>
+<a name="ln64">spret cast_disjunction(int pow, bool fail)</a>
+<a name="ln65">{</a>
+<a name="ln66">    fail_check();</a>
+<a name="ln67">    int rand = random_range(35, 45) + random2(pow / 12);</a>
+<a name="ln68">    you.duration[DUR_DISJUNCTION] = min(90 + pow / 12,</a>
+<a name="ln69">        max(you.duration[DUR_DISJUNCTION] + rand,</a>
+<a name="ln70">        30 + rand));</a>
+<a name="ln71">    contaminate_player(750 + random2(500), true);</a>
+<a name="ln72">    disjunction_spell();</a>
+<a name="ln73">    return spret::success;</a>
+<a name="ln74">}</a>
+<a name="ln75"> </a>
+<a name="ln76">void disjunction_spell()</a>
+<a name="ln77">{</a>
+<a name="ln78">    int steps = you.time_taken;</a>
+<a name="ln79">    invalidate_agrid(true);</a>
+<a name="ln80">    for (int step = 0; step &lt; steps; ++step)</a>
+<a name="ln81">    {</a>
+<a name="ln82">        vector&lt;monster*&gt; mvec;</a>
+<a name="ln83">        for (radius_iterator ri(you.pos(), LOS_RADIUS, C_SQUARE); ri; ++ri)</a>
+<a name="ln84">        {</a>
+<a name="ln85">            monster* mons = monster_at(*ri);</a>
+<a name="ln86">            if (!mons || !you.see_cell(*ri))</a>
+<a name="ln87">                continue;</a>
+<a name="ln88">            mvec.push_back(mons);</a>
+<a name="ln89">        }</a>
+<a name="ln90">        if (mvec.empty())</a>
+<a name="ln91">            return;</a>
+<a name="ln92">        // blink should be isotropic</a>
+<a name="ln93">        shuffle_array(mvec);</a>
+<a name="ln94">        for (auto mons : mvec)</a>
+<a name="ln95">        {</a>
+<a name="ln96">            if (!mons-&gt;alive() || mons-&gt;no_tele())</a>
+<a name="ln97">                continue;</a>
+<a name="ln98">            coord_def p = mons-&gt;pos();</a>
+<a name="ln99">            if (!disjunction_haloed(p))</a>
+<a name="ln100">                continue;</a>
+<a name="ln101"> </a>
+<a name="ln102">            int dist = grid_distance(you.pos(), p);</a>
+<a name="ln103">            int decay = max(1, (dist - 1) * (dist + 1));</a>
+<a name="ln104">            int chance = pow(0.8, 1.0 / decay) * 1000;</a>
+<a name="ln105">            if (!x_chance_in_y(chance, 1000))</a>
+<a name="ln106">                blink_away(mons, &amp;you, false);</a>
+<a name="ln107">        }</a>
+<a name="ln108">    }</a>
+<a name="ln109">}</a>
+<a name="ln110"> </a>
+<a name="ln111">/**</a>
+<a name="ln112"> * Attempt to blink the player to a random nearby tile.</a>
+<a name="ln113"> *</a>
+<a name="ln114"> * @param override_stasis       Whether to blink even if the player is under</a>
+<a name="ln115"> *                              stasis (&amp; thus normally unable to).</a>
+<a name="ln116"> */</a>
+<a name="ln117">void uncontrolled_blink(bool override_stasis)</a>
+<a name="ln118">{</a>
+<a name="ln119">    if (you.no_tele(true, true, true) &amp;&amp; !override_stasis)</a>
+<a name="ln120">    {</a>
+<a name="ln121">        canned_msg(MSG_STRANGE_STASIS);</a>
+<a name="ln122">        return;</a>
+<a name="ln123">    }</a>
+<a name="ln124"> </a>
+<a name="ln125">    coord_def target;</a>
+<a name="ln126">    // First try to find a random square not adjacent to the player,</a>
+<a name="ln127">    // then one adjacent if that fails.</a>
+<a name="ln128">    if (!random_near_space(&amp;you, you.pos(), target)</a>
+<a name="ln129">             &amp;&amp; !random_near_space(&amp;you, you.pos(), target, true))</a>
+<a name="ln130">    {</a>
+<a name="ln131">        mpr(&quot;You feel jittery for a moment.&quot;);</a>
+<a name="ln132">        return;</a>
+<a name="ln133">    }</a>
+<a name="ln134"> </a>
+<a name="ln135">    if (!you.attempt_escape(2)) // prints its own messages</a>
+<a name="ln136">        return;</a>
+<a name="ln137"> </a>
+<a name="ln138">    canned_msg(MSG_YOU_BLINK);</a>
+<a name="ln139">    const coord_def origin = you.pos();</a>
+<a name="ln140">    move_player_to_grid(target, false);</a>
+<a name="ln141">    _place_tloc_cloud(origin);</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">/**</a>
+<a name="ln145"> * Let the player choose a destination for their controlled blink or similar</a>
+<a name="ln146"> * effect.</a>
+<a name="ln147"> *</a>
+<a name="ln148"> * @param target[out]   The target found, if any.</a>
+<a name="ln149"> * @param safe_cancel   Whether it's OK to let the player cancel the control</a>
+<a name="ln150"> *                      of the blink (or whether there should be a prompt -</a>
+<a name="ln151"> *                      for e.g. ?blink with blurryvis)</a>
+<a name="ln152"> * @param verb          What kind of movement is this, exactly?</a>
+<a name="ln153"> *                      (E.g. 'blink', 'hop'.)</a>
+<a name="ln154"> * @param hitfunc       A hitfunc passed to the direction_chooser.</a>
+<a name="ln155"> * @return              True if a target was found; false if the player aborted.</a>
+<a name="ln156"> */</a>
+<a name="ln157">static bool _find_cblink_target(coord_def &amp;target, bool safe_cancel,</a>
+<a name="ln158">                                string verb, targeter *hitfunc = nullptr)</a>
+<a name="ln159">{</a>
+<a name="ln160">    while (true)</a>
+<a name="ln161">    {</a>
+<a name="ln162">        // query for location {dlb}:</a>
+<a name="ln163">        direction_chooser_args args;</a>
+<a name="ln164">        args.restricts = DIR_TARGET;</a>
+<a name="ln165">        args.needs_path = false;</a>
+<a name="ln166">        args.top_prompt = uppercase_first(verb) + &quot; to where?&quot;;</a>
+<a name="ln167">        args.hitfunc = hitfunc;</a>
+<a name="ln168">        dist beam;</a>
+<a name="ln169">        direction(beam, args);</a>
+<a name="ln170"> </a>
+<a name="ln171">        if (crawl_state.seen_hups)</a>
+<a name="ln172">        {</a>
+<a name="ln173">            mprf(&quot;Cancelling %s due to HUP.&quot;, verb.c_str());</a>
+<a name="ln174">            return false;</a>
+<a name="ln175">        }</a>
+<a name="ln176"> </a>
+<a name="ln177">        if (!beam.isValid || beam.target == you.pos())</a>
+<a name="ln178">        {</a>
+<a name="ln179">            const string prompt =</a>
+<a name="ln180">                &quot;Are you sure you want to cancel this &quot; + verb + &quot;?&quot;;</a>
+<a name="ln181">            if (!safe_cancel &amp;&amp; !yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln182">            {</a>
+<a name="ln183">                clear_messages();</a>
+<a name="ln184">                continue;</a>
+<a name="ln185">            }</a>
+<a name="ln186"> </a>
+<a name="ln187">            canned_msg(MSG_OK);</a>
+<a name="ln188">            return false;</a>
+<a name="ln189">        }</a>
+<a name="ln190"> </a>
+<a name="ln191">        const monster* beholder = you.get_beholder(beam.target);</a>
+<a name="ln192">        if (beholder)</a>
+<a name="ln193">        {</a>
+<a name="ln194">            mprf(&quot;You cannot %s away from %s!&quot;,</a>
+<a name="ln195">                 verb.c_str(),</a>
+<a name="ln196">                 beholder-&gt;name(DESC_THE, true).c_str());</a>
+<a name="ln197">            continue;</a>
+<a name="ln198">        }</a>
+<a name="ln199"> </a>
+<a name="ln200">        const monster* fearmonger = you.get_fearmonger(beam.target);</a>
+<a name="ln201">        if (fearmonger)</a>
+<a name="ln202">        {</a>
+<a name="ln203">            mprf(&quot;You cannot %s closer to %s!&quot;,</a>
+<a name="ln204">                 verb.c_str(),</a>
+<a name="ln205">                 fearmonger-&gt;name(DESC_THE, true).c_str());</a>
+<a name="ln206">            continue;</a>
+<a name="ln207">        }</a>
+<a name="ln208"> </a>
+<a name="ln209">        if (cell_is_solid(beam.target))</a>
+<a name="ln210">        {</a>
+<a name="ln211">            clear_messages();</a>
+<a name="ln212">            mprf(&quot;You can't %s into that!&quot;, verb.c_str());</a>
+<a name="ln213">            continue;</a>
+<a name="ln214">        }</a>
+<a name="ln215"> </a>
+<a name="ln216">        monster* target_mons = monster_at(beam.target);</a>
+<a name="ln217">        if (target_mons &amp;&amp; you.can_see(*target_mons))</a>
+<a name="ln218">        {</a>
+<a name="ln219">            mprf(&quot;You can't %s onto %s!&quot;, verb.c_str(),</a>
+<a name="ln220">                 target_mons-&gt;name(DESC_THE).c_str());</a>
+<a name="ln221">            continue;</a>
+<a name="ln222">        }</a>
+<a name="ln223"> </a>
+<a name="ln224">        if (!check_moveto(beam.target, verb))</a>
+<a name="ln225">        {</a>
+<a name="ln226">            continue;</a>
+<a name="ln227">            // try again (messages handled by check_moveto)</a>
+<a name="ln228">        }</a>
+<a name="ln229"> </a>
+<a name="ln230">        if (!you.see_cell_no_trans(beam.target))</a>
+<a name="ln231">        {</a>
+<a name="ln232">            clear_messages();</a>
+<a name="ln233">            if (you.trans_wall_blocking(beam.target))</a>
+<a name="ln234">                canned_msg(MSG_SOMETHING_IN_WAY);</a>
+<a name="ln235">            else</a>
+<a name="ln236">                canned_msg(MSG_CANNOT_SEE);</a>
+<a name="ln237">            continue;</a>
+<a name="ln238">        }</a>
+<a name="ln239"> </a>
+<a name="ln240">        target = beam.target; // Grid in los, no problem.</a>
+<a name="ln241">        return true;</a>
+<a name="ln242">    }</a>
+<a name="ln243">}</a>
+<a name="ln244"> </a>
+<a name="ln245">void wizard_blink()</a>
+<a name="ln246">{</a>
+<a name="ln247">    // query for location {dlb}:</a>
+<a name="ln248">    direction_chooser_args args;</a>
+<a name="ln249">    args.restricts = DIR_TARGET;</a>
+<a name="ln250">    args.needs_path = false;</a>
+<a name="ln251">    targeter_smite tgt(&amp;you, LOS_RADIUS);</a>
+<a name="ln252">    tgt.obeys_mesmerise = false;</a>
+<a name="ln253">    args.hitfunc = &amp;tgt;</a>
+<a name="ln254"> </a>
+<a name="ln255">    args.top_prompt = &quot;Blink to where?&quot;;</a>
+<a name="ln256">    dist beam;</a>
+<a name="ln257">    direction(beam, args);</a>
+<a name="ln258"> </a>
+<a name="ln259">    if (!beam.isValid || beam.target == you.pos())</a>
+<a name="ln260">    {</a>
+<a name="ln261">        canned_msg(MSG_OK);</a>
+<a name="ln262">        return;</a>
+<a name="ln263">    }</a>
+<a name="ln264"> </a>
+<a name="ln265">    if (!in_bounds(beam.target))</a>
+<a name="ln266">    {</a>
+<a name="ln267">        clear_messages();</a>
+<a name="ln268">        mpr(&quot;Please don't blink into the map border.&quot;);</a>
+<a name="ln269">        return wizard_blink();</a>
+<a name="ln270">    }</a>
+<a name="ln271"> </a>
+<a name="ln272">    if (monster_at(beam.target))</a>
+<a name="ln273">    {</a>
+<a name="ln274">        clear_messages();</a>
+<a name="ln275">        mpr(&quot;Please don't try to blink into monsters.&quot;);</a>
+<a name="ln276">        return wizard_blink();</a>
+<a name="ln277">    }</a>
+<a name="ln278"> </a>
+<a name="ln279">    if (!check_moveto(beam.target, &quot;blink&quot;))</a>
+<a name="ln280">    {</a>
+<a name="ln281">        return wizard_blink();</a>
+<a name="ln282">        // try again (messages handled by check_moveto)</a>
+<a name="ln283">    }</a>
+<a name="ln284"> </a>
+<a name="ln285">    // Allow wizard blink to send player into walls, in case the</a>
+<a name="ln286">    // user wants to alter that grid to something else.</a>
+<a name="ln287">    if (cell_is_solid(beam.target))</a>
+<a name="ln288">        grd(beam.target) = DNGN_FLOOR;</a>
+<a name="ln289"> </a>
+<a name="ln290">    move_player_to_grid(beam.target, false);</a>
+<a name="ln291">}</a>
+<a name="ln292"> </a>
+<a name="ln293">static const int HOP_FUZZ_RADIUS = 2;</a>
+<a name="ln294"> </a>
+<a name="ln295">/**</a>
+<a name="ln296"> * Randomly choose one of the spaces near the given target for the player's hop</a>
+<a name="ln297"> * to land on.</a>
+<a name="ln298"> *</a>
+<a name="ln299"> * @param target    The tile the player wants to land on.</a>
+<a name="ln300"> * @return          A nearby, unoccupied, inhabitable tile.</a>
+<a name="ln301"> */</a>
+<a name="ln302">static coord_def _fuzz_hop_destination(coord_def target)</a>
+<a name="ln303">{</a>
+<a name="ln304">    coord_def chosen;</a>
+<a name="ln305">    int seen = 0;</a>
+<a name="ln306">    for (radius_iterator ri(target, HOP_FUZZ_RADIUS, C_SQUARE, LOS_NO_TRANS);</a>
+<a name="ln307">         ri; ++ri)</a>
+<a name="ln308">    {</a>
+<a name="ln309">        if (valid_blink_destination(&amp;you, *ri) &amp;&amp; one_chance_in(++seen))</a>
+<a name="ln310">            chosen = *ri;</a>
+<a name="ln311">    }</a>
+<a name="ln312">    return chosen;</a>
+<a name="ln313">}</a>
+<a name="ln314"> </a>
+<a name="ln315">/**</a>
+<a name="ln316"> * Attempt to hop the player to a space near a tile of their choosing.</a>
+<a name="ln317"> *</a>
+<a name="ln318"> * @param fail          Whether this came from a mis-invoked ability (&amp; should</a>
+<a name="ln319"> *                      therefore fail after selecting a target)</a>
+<a name="ln320"> * @return              Whether the hop succeeded, aborted, or was miscast.</a>
+<a name="ln321"> */</a>
+<a name="ln322">spret frog_hop(bool fail)</a>
+<a name="ln323">{</a>
+<a name="ln324">    const int hop_range = 2 + you.get_mutation_level(MUT_HOP) * 2; // 4-6</a>
+<a name="ln325">    coord_def target;</a>
+<a name="ln326">    targeter_smite tgt(&amp;you, hop_range, 0, HOP_FUZZ_RADIUS);</a>
+<a name="ln327">    tgt.obeys_mesmerise = true;</a>
+<a name="ln328">    while (true)</a>
+<a name="ln329">    {</a>
+<a name="ln330">        if (!_find_cblink_target(target, true, &quot;hop&quot;, &amp;tgt))</a>
+<a name="ln331">            return spret::abort;</a>
+<a name="ln332">        if (grid_distance(you.pos(), target) &gt; hop_range)</a>
+<a name="ln333">        {</a>
+<a name="ln334">            mpr(&quot;That's out of range!&quot;); // ! targeting</a>
+<a name="ln335">            continue;</a>
+<a name="ln336">        }</a>
+<a name="ln337">        break;</a>
+<a name="ln338">    }</a>
+<a name="ln339">    target = _fuzz_hop_destination(target);</a>
+<a name="ln340"> </a>
+<a name="ln341">    fail_check();</a>
+<a name="ln342"> </a>
+<a name="ln343">    if (!you.attempt_escape(2)) // XXX: 1?</a>
+<a name="ln344">        return spret::success; // of a sort</a>
+<a name="ln345"> </a>
+<a name="ln346">    // invisible monster that the targeter didn't know to avoid, or similar</a>
+<a name="ln347">    if (target.origin())</a>
+<a name="ln348">    {</a>
+<a name="ln349">        mpr(&quot;You tried to hop, but there was no room to land!&quot;);</a>
+<a name="ln350">        // TODO: what to do here?</a>
+<a name="ln351">        return spret::success; // of a sort</a>
+<a name="ln352">    }</a>
+<a name="ln353"> </a>
+<a name="ln354">    if (!cell_is_solid(you.pos())) // should be safe.....</a>
+<a name="ln355">        place_cloud(CLOUD_DUST, you.pos(), 2 + random2(3), &amp;you);</a>
+<a name="ln356">    move_player_to_grid(target, false);</a>
+<a name="ln357">    crawl_state.cancel_cmd_again();</a>
+<a name="ln358">    crawl_state.cancel_cmd_repeat();</a>
+<a name="ln359">    mpr(&quot;Boing!&quot;);</a>
+<a name="ln360">    you.increase_duration(DUR_NO_HOP, 12 + random2(13));</a>
+<a name="ln361"> </a>
+<a name="ln362">    return spret::success; // TODO</a>
+<a name="ln363">}</a>
+<a name="ln364"> </a>
+<a name="ln365">/**</a>
+<a name="ln366"> * Attempt to blink the player to a nearby tile of their choosing.</a>
+<a name="ln367"> *</a>
+<a name="ln368"> * @param fail          Whether this came from a miscast spell (&amp; should</a>
+<a name="ln369"> *                      therefore fail after selecting a target)</a>
+<a name="ln370"> * @param safe_cancel   Whether it's OK to let the player cancel the control</a>
+<a name="ln371"> *                      of the blink (or whether there should be a prompt -</a>
+<a name="ln372"> *                      for e.g. ?blink with blurryvis)</a>
+<a name="ln373"> * @return              Whether the blink succeeded, aborted, or was miscast.</a>
+<a name="ln374"> */</a>
+<a name="ln375">spret controlled_blink(bool fail, bool safe_cancel)</a>
+<a name="ln376">{</a>
+<a name="ln377">    coord_def target;</a>
+<a name="ln378">    targeter_smite tgt(&amp;you, LOS_RADIUS);</a>
+<a name="ln379">    tgt.obeys_mesmerise = true;</a>
+<a name="ln380">    if (!_find_cblink_target(target, safe_cancel, &quot;blink&quot;, &amp;tgt))</a>
+<a name="ln381">        return spret::abort;</a>
+<a name="ln382"> </a>
+<a name="ln383">    fail_check();</a>
+<a name="ln384"> </a>
+<a name="ln385">    if (you.no_tele(true, true, true))</a>
+<a name="ln386">    {</a>
+<a name="ln387">        canned_msg(MSG_STRANGE_STASIS);</a>
+<a name="ln388">        return spret::success; // of a sort</a>
+<a name="ln389">    }</a>
+<a name="ln390"> </a>
+<a name="ln391">    if (!you.attempt_escape(2))</a>
+<a name="ln392">        return spret::success; // of a sort</a>
+<a name="ln393"> </a>
+<a name="ln394">    // invisible monster that the targeter didn't know to avoid</a>
+<a name="ln395">    if (monster_at(target))</a>
+<a name="ln396">    {</a>
+<a name="ln397">        mpr(&quot;Oops! There was something there already!&quot;);</a>
+<a name="ln398">        uncontrolled_blink();</a>
+<a name="ln399">        return spret::success; // of a sort</a>
+<a name="ln400">    }</a>
+<a name="ln401"> </a>
+<a name="ln402">    _place_tloc_cloud(you.pos());</a>
+<a name="ln403">    move_player_to_grid(target, false);</a>
+<a name="ln404">    // Controlling teleport contaminates the player. -- bwr</a>
+<a name="ln405">    contaminate_player(750 + random2(500), true);</a>
+<a name="ln406"> </a>
+<a name="ln407">    crawl_state.cancel_cmd_again();</a>
+<a name="ln408">    crawl_state.cancel_cmd_repeat();</a>
+<a name="ln409"> </a>
+<a name="ln410">    return spret::success;</a>
+<a name="ln411">}</a>
+<a name="ln412"> </a>
+<a name="ln413">/**</a>
+<a name="ln414"> * Cast the player spell Blink.</a>
+<a name="ln415"> *</a>
+<a name="ln416"> * @param fail              Whether the player miscast the spell.</a>
+<a name="ln417"> * @return                  Whether the spell was successfully cast, aborted,</a>
+<a name="ln418"> *                          or miscast.</a>
+<a name="ln419"> */</a>
+<a name="ln420">spret cast_blink(bool fail)</a>
+<a name="ln421">{</a>
+<a name="ln422">    // effects that cast the spell through the player, I guess (e.g. xom)</a>
+<a name="ln423">    if (you.no_tele(false, false, true))</a>
+<a name="ln424">        return fail ? spret::fail : spret::success; // probably always SUCCESS</a>
+<a name="ln425"> </a>
+<a name="ln426">    fail_check();</a>
+<a name="ln427">    uncontrolled_blink();</a>
+<a name="ln428">    return spret::success;</a>
+<a name="ln429">}</a>
+<a name="ln430"> </a>
+<a name="ln431">/**</a>
+<a name="ln432"> * Cast the player spell Controlled Blink.</a>
+<a name="ln433"> *</a>
+<a name="ln434"> * @param fail    Whether the player miscast the spell.</a>
+<a name="ln435"> * @param safe    Whether it's safe to abort (not e.g. unknown ?blink)</a>
+<a name="ln436"> * @return        Whether the spell was successfully cast, aborted, or miscast.</a>
+<a name="ln437"> */</a>
+<a name="ln438">spret cast_controlled_blink(bool fail, bool safe)</a>
+<a name="ln439">{</a>
+<a name="ln440">    // don't prompt if it's useless</a>
+<a name="ln441">    if (you.no_tele(true, true, true))</a>
+<a name="ln442">    {</a>
+<a name="ln443">        canned_msg(MSG_STRANGE_STASIS);</a>
+<a name="ln444">        return spret::abort;</a>
+<a name="ln445">    }</a>
+<a name="ln446"> </a>
+<a name="ln447">    if (crawl_state.is_repeating_cmd())</a>
+<a name="ln448">    {</a>
+<a name="ln449">        crawl_state.cant_cmd_repeat(&quot;You can't repeat controlled blinks.&quot;);</a>
+<a name="ln450">        crawl_state.cancel_cmd_again();</a>
+<a name="ln451">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln452">        return spret::abort;</a>
+<a name="ln453">    }</a>
+<a name="ln454"> </a>
+<a name="ln455">    if (orb_limits_translocation())</a>
+<a name="ln456">    {</a>
+<a name="ln457">        if (!yesno(&quot;Your blink will be uncontrolled - continue anyway?&quot;,</a>
+<a name="ln458">                   false, 'n'))</a>
+<a name="ln459">        {</a>
+<a name="ln460">            return spret::abort;</a>
+<a name="ln461">        }</a>
+<a name="ln462"> </a>
+<a name="ln463">        mprf(MSGCH_ORB, &quot;The Orb prevents control of your translocation!&quot;);</a>
+<a name="ln464">        return cast_blink(fail);</a>
+<a name="ln465">    }</a>
+<a name="ln466"> </a>
+<a name="ln467">    return controlled_blink(fail, safe);</a>
+<a name="ln468">}</a>
+<a name="ln469"> </a>
+<a name="ln470">void you_teleport()</a>
+<a name="ln471">{</a>
+<a name="ln472">    // [Cha] here we block teleportation, which will save the player from</a>
+<a name="ln473">    // death from read-id'ing scrolls (in sprint)</a>
+<a name="ln474">    if (you.no_tele(true, true))</a>
+<a name="ln475">        canned_msg(MSG_STRANGE_STASIS);</a>
+<a name="ln476">    else if (you.duration[DUR_TELEPORT])</a>
+<a name="ln477">    {</a>
+<a name="ln478">        mpr(&quot;You feel strangely stable.&quot;);</a>
+<a name="ln479">        you.duration[DUR_TELEPORT] = 0;</a>
+<a name="ln480">    }</a>
+<a name="ln481">    else</a>
+<a name="ln482">    {</a>
+<a name="ln483">        mpr(&quot;You feel strangely unstable.&quot;);</a>
+<a name="ln484"> </a>
+<a name="ln485">        int teleport_delay = 3 + random2(3);</a>
+<a name="ln486"> </a>
+<a name="ln487">        if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln488">        {</a>
+<a name="ln489">            mpr(&quot;You feel the power of the Abyss delaying your translocation!&quot;);</a>
+<a name="ln490">            teleport_delay += 5 + random2(10);</a>
+<a name="ln491">        }</a>
+<a name="ln492">        else if (orb_limits_translocation())</a>
+<a name="ln493">        {</a>
+<a name="ln494">            mprf(MSGCH_ORB, &quot;You feel the Orb delaying your translocation!&quot;);</a>
+<a name="ln495">            teleport_delay += 5 + random2(5);</a>
+<a name="ln496">        }</a>
+<a name="ln497"> </a>
+<a name="ln498">        you.set_duration(DUR_TELEPORT, teleport_delay);</a>
+<a name="ln499">    }</a>
+<a name="ln500">}</a>
+<a name="ln501"> </a>
+<a name="ln502">// Should return true if we don't want anyone to teleport here.</a>
+<a name="ln503">static bool _cell_vetoes_teleport(const coord_def cell, bool check_monsters = true,</a>
+<a name="ln504">                                  bool wizard_tele = false)</a>
+<a name="ln505">{</a>
+<a name="ln506">    // Monsters always veto teleport.</a>
+<a name="ln507">    if (monster_at(cell) &amp;&amp; check_monsters)</a>
+<a name="ln508">        return true;</a>
+<a name="ln509"> </a>
+<a name="ln510">    // As do all clouds; this may change.</a>
+<a name="ln511">    if (cloud_at(cell) &amp;&amp; !wizard_tele)</a>
+<a name="ln512">        return true;</a>
+<a name="ln513"> </a>
+<a name="ln514">    if (cell_is_solid(cell))</a>
+<a name="ln515">        return true;</a>
+<a name="ln516"> </a>
+<a name="ln517">    return is_feat_dangerous(grd(cell), true) &amp;&amp; !wizard_tele;</a>
+<a name="ln518">}</a>
+<a name="ln519"> </a>
+<a name="ln520">static void _handle_teleport_update(bool large_change, const coord_def old_pos)</a>
+<a name="ln521">{</a>
+<a name="ln522">    if (large_change)</a>
+<a name="ln523">    {</a>
+<a name="ln524">        viewwindow();</a>
+<a name="ln525">        for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln526">        {</a>
+<a name="ln527">            const bool see_cell = you.see_cell(mi-&gt;pos());</a>
+<a name="ln528"> </a>
+<a name="ln529">            if (mi-&gt;foe == MHITYOU &amp;&amp; !see_cell &amp;&amp; !you.penance[GOD_ASHENZARI])</a>
+<a name="ln530">            {</a>
+<a name="ln531">                mi-&gt;foe_memory = 0;</a>
+<a name="ln532">                behaviour_event(*mi, ME_EVAL);</a>
+<a name="ln533">            }</a>
+<a name="ln534">            else if (see_cell)</a>
+<a name="ln535">                behaviour_event(*mi, ME_EVAL);</a>
+<a name="ln536">        }</a>
+<a name="ln537">    }</a>
+<a name="ln538"> </a>
+<a name="ln539">#ifdef USE_TILE</a>
+<a name="ln540">    if (you.species == SP_MERFOLK)</a>
+<a name="ln541">    {</a>
+<a name="ln542">        const dungeon_feature_type new_grid = grd(you.pos());</a>
+<a name="ln543">        const dungeon_feature_type old_grid = grd(old_pos);</a>
+<a name="ln544">        if (feat_is_water(old_grid) &amp;&amp; !feat_is_water(new_grid)</a>
+<a name="ln545">            || !feat_is_water(old_grid) &amp;&amp; feat_is_water(new_grid))</a>
+<a name="ln546">        {</a>
+<a name="ln547">            init_player_doll();</a>
+<a name="ln548">        }</a>
+<a name="ln549">    }</a>
+<a name="ln550">#else</a>
+<a name="ln551">    UNUSED(old_pos);</a>
+<a name="ln552">#endif</a>
+<a name="ln553">}</a>
+<a name="ln554"> </a>
+<a name="ln555">static bool _teleport_player(bool wizard_tele, bool teleportitis,</a>
+<a name="ln556">                             string reason=&quot;&quot;)</a>
+<a name="ln557">{</a>
+<a name="ln558">    if (!wizard_tele &amp;&amp; !teleportitis</a>
+<a name="ln559">        &amp;&amp; (crawl_state.game_is_sprint() || you.no_tele())</a>
+<a name="ln560">            &amp;&amp; !player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln561">    {</a>
+<a name="ln562">        if (!reason.empty())</a>
+<a name="ln563">            mpr(reason);</a>
+<a name="ln564">        canned_msg(MSG_STRANGE_STASIS);</a>
+<a name="ln565">        return false;</a>
+<a name="ln566">    }</a>
+<a name="ln567"> </a>
+<a name="ln568">    // After this point, we're guaranteed to teleport. Kill the appropriate</a>
+<a name="ln569">    // delays. Teleportitis needs to check the target square first, though.</a>
+<a name="ln570">    if (!teleportitis)</a>
+<a name="ln571">        interrupt_activity(activity_interrupt::teleport);</a>
+<a name="ln572"> </a>
+<a name="ln573">    // Update what we can see at the current location as well as its stash,</a>
+<a name="ln574">    // in case something happened in the exact turn that we teleported</a>
+<a name="ln575">    // (like picking up/dropping an item).</a>
+<a name="ln576">    viewwindow();</a>
+<a name="ln577">    StashTrack.update_stash(you.pos());</a>
+<a name="ln578"> </a>
+<a name="ln579">    if (player_in_branch(BRANCH_ABYSS) &amp;&amp; !wizard_tele)</a>
+<a name="ln580">    {</a>
+<a name="ln581">        if (teleportitis)</a>
+<a name="ln582">            return false;</a>
+<a name="ln583"> </a>
+<a name="ln584">        if (!reason.empty())</a>
+<a name="ln585">            mpr(reason);</a>
+<a name="ln586">        abyss_teleport();</a>
+<a name="ln587">        if (you.pet_target != MHITYOU)</a>
+<a name="ln588">            you.pet_target = MHITNOT;</a>
+<a name="ln589"> </a>
+<a name="ln590">        return true;</a>
+<a name="ln591">    }</a>
+<a name="ln592"> </a>
+<a name="ln593">    coord_def pos(1, 0);</a>
+<a name="ln594">    const coord_def old_pos = you.pos();</a>
+<a name="ln595">    bool      large_change  = false;</a>
+<a name="ln596"> </a>
+<a name="ln597">    if (wizard_tele)</a>
+<a name="ln598">    {</a>
+<a name="ln599">        while (true)</a>
+<a name="ln600">        {</a>
+<a name="ln601">            level_pos lpos;</a>
+<a name="ln602">            bool chose = show_map(lpos, false, false);</a>
+<a name="ln603">            pos = lpos.pos;</a>
+<a name="ln604">            redraw_screen();</a>
+<a name="ln605"> </a>
+<a name="ln606">            // If we've received a HUP signal then the user can't choose a</a>
+<a name="ln607">            // location, so cancel the teleport.</a>
+<a name="ln608">            if (crawl_state.seen_hups)</a>
+<a name="ln609">            {</a>
+<a name="ln610">                mprf(MSGCH_ERROR, &quot;Controlled teleport interrupted by HUP signal, &quot;</a>
+<a name="ln611">                                  &quot;cancelling teleport.&quot;);</a>
+<a name="ln612">                return false;</a>
+<a name="ln613">            }</a>
+<a name="ln614"> </a>
+<a name="ln615">            dprf(&quot;Target square (%d,%d)&quot;, pos.x, pos.y);</a>
+<a name="ln616"> </a>
+<a name="ln617">            if (!chose || pos == you.pos())</a>
+<a name="ln618">                return false;</a>
+<a name="ln619"> </a>
+<a name="ln620">            break;</a>
+<a name="ln621">        }</a>
+<a name="ln622"> </a>
+<a name="ln623">        if (!you.see_cell(pos))</a>
+<a name="ln624">            large_change = true;</a>
+<a name="ln625"> </a>
+<a name="ln626">        if (_cell_vetoes_teleport(pos, true, wizard_tele))</a>
+<a name="ln627">        {</a>
+<a name="ln628">            mprf(MSGCH_WARN, &quot;Even you can't go there right now. Sorry!&quot;);</a>
+<a name="ln629">            return false;</a>
+<a name="ln630">        }</a>
+<a name="ln631">        else</a>
+<a name="ln632">            move_player_to_grid(pos, false);</a>
+<a name="ln633">    }</a>
+<a name="ln634">    else</a>
+<a name="ln635">    {</a>
+<a name="ln636">        coord_def newpos;</a>
+<a name="ln637">        int tries = 500;</a>
+<a name="ln638">        do</a>
+<a name="ln639">        {</a>
+<a name="ln640">            newpos = random_in_bounds();</a>
+<a name="ln641">        }</a>
+<a name="ln642">        while (--tries &gt; 0</a>
+<a name="ln643">               &amp;&amp; (_cell_vetoes_teleport(newpos)</a>
+<a name="ln644">                   || testbits(env.pgrid(newpos), FPROP_NO_TELE_INTO)));</a>
+<a name="ln645"> </a>
+<a name="ln646">        // Running out of tries shouldn't happen; no message. Return false so</a>
+<a name="ln647">        // it doesn't count as a random teleport for Xom purposes.</a>
+<a name="ln648">        if (tries == 0)</a>
+<a name="ln649">            return false;</a>
+<a name="ln650">        // Teleportitis requires a monster in LOS of the new location, else</a>
+<a name="ln651">        // it silently fails.</a>
+<a name="ln652">        else if (teleportitis)</a>
+<a name="ln653">        {</a>
+<a name="ln654">            int mons_near_target = 0;</a>
+<a name="ln655">            for (monster_near_iterator mi(newpos, LOS_NO_TRANS); mi; ++mi)</a>
+<a name="ln656">                if (mons_is_threatening(**mi) &amp;&amp; mons_attitude(**mi) == ATT_HOSTILE)</a>
+<a name="ln657">                    mons_near_target++;</a>
+<a name="ln658">            if (!mons_near_target)</a>
+<a name="ln659">            {</a>
+<a name="ln660">                dprf(&quot;teleportitis: no monster near target&quot;);</a>
+<a name="ln661">                return false;</a>
+<a name="ln662">            }</a>
+<a name="ln663">            else if (you.no_tele())</a>
+<a name="ln664">            {</a>
+<a name="ln665">                if (!reason.empty())</a>
+<a name="ln666">                    mpr(reason);</a>
+<a name="ln667">                canned_msg(MSG_STRANGE_STASIS);</a>
+<a name="ln668">                return false;</a>
+<a name="ln669">            }</a>
+<a name="ln670">            else</a>
+<a name="ln671">            {</a>
+<a name="ln672">                interrupt_activity(activity_interrupt::teleport);</a>
+<a name="ln673">                if (!reason.empty())</a>
+<a name="ln674">                    mpr(reason);</a>
+<a name="ln675">                mprf(&quot;You are suddenly yanked towards %s nearby monster%s!&quot;,</a>
+<a name="ln676">                     mons_near_target &gt; 1 ? &quot;some&quot; : &quot;a&quot;,</a>
+<a name="ln677">                     mons_near_target &gt; 1 ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln678">            }</a>
+<a name="ln679">        }</a>
+<a name="ln680"> </a>
+<a name="ln681">        if (newpos == old_pos)</a>
+<a name="ln682">            mpr(&quot;Your surroundings flicker for a moment.&quot;);</a>
+<a name="ln683">        else if (you.see_cell(newpos))</a>
+<a name="ln684">            mpr(&quot;Your surroundings seem slightly different.&quot;);</a>
+<a name="ln685">        else</a>
+<a name="ln686">        {</a>
+<a name="ln687">            mpr(&quot;Your surroundings suddenly seem different.&quot;);</a>
+<a name="ln688">            large_change = true;</a>
+<a name="ln689">        }</a>
+<a name="ln690"> </a>
+<a name="ln691">        // Leave a purple cloud.</a>
+<a name="ln692">        _place_tloc_cloud(old_pos);</a>
+<a name="ln693"> </a>
+<a name="ln694">        move_player_to_grid(newpos, false);</a>
+<a name="ln695">        stop_delay(true);</a>
+<a name="ln696">    }</a>
+<a name="ln697"> </a>
+<a name="ln698">    _handle_teleport_update(large_change, old_pos);</a>
+<a name="ln699">    return !wizard_tele;</a>
+<a name="ln700">}</a>
+<a name="ln701"> </a>
+<a name="ln702">bool you_teleport_to(const coord_def where_to, bool move_monsters)</a>
+<a name="ln703">{</a>
+<a name="ln704">    // Attempts to teleport the player from their current location to 'where'.</a>
+<a name="ln705">    // Follows this line of reasoning:</a>
+<a name="ln706">    //   1. Check the location (against _cell_vetoes_teleport), if valid,</a>
+<a name="ln707">    //      teleport the player there.</a>
+<a name="ln708">    //   2. If not because of a monster, and move_monster, teleport that</a>
+<a name="ln709">    //      monster out of the way, then teleport the player there.</a>
+<a name="ln710">    //   3. Otherwise, iterate over adjacent squares. If a sutiable position is</a>
+<a name="ln711">    //      found (or a monster can be moved out of the way, with move_monster)</a>
+<a name="ln712">    //      then teleport the player there.</a>
+<a name="ln713">    //   4. If not, give up and return false.</a>
+<a name="ln714"> </a>
+<a name="ln715">    const coord_def old_pos = you.pos();</a>
+<a name="ln716">    coord_def where = where_to;</a>
+<a name="ln717">    coord_def old_where = where_to;</a>
+<a name="ln718"> </a>
+<a name="ln719">    // Don't bother to calculate a possible new position if it's out of bounds.</a>
+<a name="ln720">    if (!in_bounds(where))</a>
+<a name="ln721">        return false;</a>
+<a name="ln722"> </a>
+<a name="ln723">    if (_cell_vetoes_teleport(where))</a>
+<a name="ln724">    {</a>
+<a name="ln725">        if (monster_at(where) &amp;&amp; move_monsters &amp;&amp; !_cell_vetoes_teleport(where, false))</a>
+<a name="ln726">        {</a>
+<a name="ln727">            // dlua only, don't heed no_tele</a>
+<a name="ln728">            monster* mons = monster_at(where);</a>
+<a name="ln729">            mons-&gt;teleport(true);</a>
+<a name="ln730">        }</a>
+<a name="ln731">        else</a>
+<a name="ln732">        {</a>
+<a name="ln733">            for (adjacent_iterator ai(where); ai; ++ai)</a>
+<a name="ln734">            {</a>
+<a name="ln735">                if (!_cell_vetoes_teleport(*ai))</a>
+<a name="ln736">                {</a>
+<a name="ln737">                    where = *ai;</a>
+<a name="ln738">                    break;</a>
+<a name="ln739">                }</a>
+<a name="ln740">                else</a>
+<a name="ln741">                {</a>
+<a name="ln742">                    if (monster_at(*ai) &amp;&amp; move_monsters</a>
+<a name="ln743">                            &amp;&amp; !_cell_vetoes_teleport(*ai, false))</a>
+<a name="ln744">                    {</a>
+<a name="ln745">                        monster* mons = monster_at(*ai);</a>
+<a name="ln746">                        mons-&gt;teleport(true);</a>
+<a name="ln747">                        where = *ai;</a>
+<a name="ln748">                        break;</a>
+<a name="ln749">                    }</a>
+<a name="ln750">                }</a>
+<a name="ln751">            }</a>
+<a name="ln752">            // Give up, we can't find a suitable spot.</a>
+<a name="ln753">            if (where == old_where)</a>
+<a name="ln754">                return false;</a>
+<a name="ln755">        }</a>
+<a name="ln756">    }</a>
+<a name="ln757"> </a>
+<a name="ln758">    // If we got this far, we're teleporting the player.</a>
+<a name="ln759">    _place_tloc_cloud(old_pos);</a>
+<a name="ln760"> </a>
+<a name="ln761">    bool large_change = you.see_cell(where);</a>
+<a name="ln762"> </a>
+<a name="ln763">    move_player_to_grid(where, false);</a>
+<a name="ln764"> </a>
+<a name="ln765">    _handle_teleport_update(large_change, old_pos);</a>
+<a name="ln766">    return true;</a>
+<a name="ln767">}</a>
+<a name="ln768"> </a>
+<a name="ln769">void you_teleport_now(bool wizard_tele, bool teleportitis, string reason)</a>
+<a name="ln770">{</a>
+<a name="ln771">    const bool randtele = _teleport_player(wizard_tele, teleportitis, reason);</a>
+<a name="ln772"> </a>
+<a name="ln773">    // Xom is amused by teleports that land you in a dangerous place, unless</a>
+<a name="ln774">    // the player is in the Abyss and teleported to escape from all the</a>
+<a name="ln775">    // monsters chasing him/her, since in that case the new dangerous area is</a>
+<a name="ln776">    // almost certainly *less* dangerous than the old dangerous area.</a>
+<a name="ln777">    if (randtele &amp;&amp; !player_in_branch(BRANCH_ABYSS)</a>
+<a name="ln778">        &amp;&amp; player_in_a_dangerous_place())</a>
+<a name="ln779">    {</a>
+<a name="ln780">        xom_is_stimulated(200);</a>
+<a name="ln781">    }</a>
+<a name="ln782">}</a>
+<a name="ln783"> </a>
+<a name="ln784">spret cast_portal_projectile(int pow, bool fail)</a>
+<a name="ln785">{</a>
+<a name="ln786">    fail_check();</a>
+<a name="ln787">    if (!you.duration[DUR_PORTAL_PROJECTILE])</a>
+<a name="ln788">        mpr(&quot;You begin teleporting projectiles to their destination.&quot;);</a>
+<a name="ln789">    else</a>
+<a name="ln790">        mpr(&quot;You renew your portal.&quot;);</a>
+<a name="ln791">    // Calculate the accuracy bonus based on current spellpower.</a>
+<a name="ln792">    you.attribute[ATTR_PORTAL_PROJECTILE] = pow;</a>
+<a name="ln793">    you.increase_duration(DUR_PORTAL_PROJECTILE, 3 + random2(pow / 2) + random2(pow / 5), 50);</a>
+<a name="ln794">    return spret::success;</a>
+<a name="ln795">}</a>
+<a name="ln796"> </a>
+<a name="ln797">spret cast_apportation(int pow, bolt&amp; beam, bool fail)</a>
+<a name="ln798">{</a>
+<a name="ln799">    const coord_def where = beam.target;</a>
+<a name="ln800"> </a>
+<a name="ln801">    if (!cell_see_cell(you.pos(), where, LOS_SOLID))</a>
+<a name="ln802">    {</a>
+<a name="ln803">        canned_msg(MSG_SOMETHING_IN_WAY);</a>
+<a name="ln804">        return spret::abort;</a>
+<a name="ln805">    }</a>
+<a name="ln806"> </a>
+<a name="ln807">    // Let's look at the top item in that square...</a>
+<a name="ln808">    // And don't allow apporting from shop inventories.</a>
+<a name="ln809">    // Using visible_igrd takes care of deep water/lava where appropriate.</a>
+<a name="ln810">    const int item_idx = you.visible_igrd(where);</a>
+<a name="ln811">    if (item_idx == NON_ITEM || !in_bounds(where))</a>
+<a name="ln812">    {</a>
+<a name="ln813">        mpr(&quot;You don't see anything to apport there.&quot;);</a>
+<a name="ln814">        return spret::abort;</a>
+<a name="ln815">    }</a>
+<a name="ln816"> </a>
+<a name="ln817">    item_def&amp; item = mitm[item_idx];</a>
+<a name="ln818"> </a>
+<a name="ln819">    // Nets can be apported when they have a victim trapped.</a>
+<a name="ln820">    if (item_is_stationary(item) &amp;&amp; !item_is_stationary_net(item))</a>
+<a name="ln821">    {</a>
+<a name="ln822">        mpr(&quot;You cannot apport that!&quot;);</a>
+<a name="ln823">        return spret::abort;</a>
+<a name="ln824">    }</a>
+<a name="ln825"> </a>
+<a name="ln826">    fail_check();</a>
+<a name="ln827"> </a>
+<a name="ln828">    // We need to modify the item *before* we move it, because</a>
+<a name="ln829">    // move_top_item() might change the location, or merge</a>
+<a name="ln830">    // with something at our position.</a>
+<a name="ln831">    if (item_is_orb(item))</a>
+<a name="ln832">    {</a>
+<a name="ln833">        fake_noisy(30, where);</a>
+<a name="ln834"> </a>
+<a name="ln835">        // There's also a 1-in-3 flat chance of apport failing.</a>
+<a name="ln836">        if (one_chance_in(3))</a>
+<a name="ln837">        {</a>
+<a name="ln838">            orb_pickup_noise(where, 30,</a>
+<a name="ln839">                &quot;The Orb shrieks and becomes a dead weight against your magic!&quot;,</a>
+<a name="ln840">                &quot;The Orb lets out a furious burst of light and becomes &quot;</a>
+<a name="ln841">                    &quot;a dead weight against your magic!&quot;);</a>
+<a name="ln842">            return spret::success;</a>
+<a name="ln843">        }</a>
+<a name="ln844">        else // Otherwise it's just a noisy little shiny thing</a>
+<a name="ln845">        {</a>
+<a name="ln846">            orb_pickup_noise(where, 30,</a>
+<a name="ln847">                &quot;The Orb shrieks as your magic touches it!&quot;,</a>
+<a name="ln848">                &quot;The Orb lets out a furious burst of light as your magic touches it!&quot;);</a>
+<a name="ln849">            start_orb_run(CHAPTER_ANGERED_PANDEMONIUM, &quot;Now pick up the Orb and get out of here!&quot;);</a>
+<a name="ln850">        }</a>
+<a name="ln851">    }</a>
+<a name="ln852"> </a>
+<a name="ln853">    // If we apport a net, free the monster under it.</a>
+<a name="ln854">    if (item_is_stationary_net(item))</a>
+<a name="ln855">    {</a>
+<a name="ln856">        free_stationary_net(item_idx);</a>
+<a name="ln857">        if (monster* mons = monster_at(where))</a>
+<a name="ln858">            mons-&gt;del_ench(ENCH_HELD, true);</a>
+<a name="ln859">    }</a>
+<a name="ln860"> </a>
+<a name="ln861">    beam.is_tracer = true;</a>
+<a name="ln862">    beam.aimed_at_spot = true;</a>
+<a name="ln863">    beam.affects_nothing = true;</a>
+<a name="ln864">    beam.fire();</a>
+<a name="ln865"> </a>
+<a name="ln866">    // Pop the item's location off the end</a>
+<a name="ln867">    beam.path_taken.pop_back();</a>
+<a name="ln868"> </a>
+<a name="ln869">    // The actual number of squares it needs to traverse to get to you.</a>
+<a name="ln870">    int dist = beam.path_taken.size();</a>
+<a name="ln871"> </a>
+<a name="ln872">    // The maximum number of squares the item will actually move, always</a>
+<a name="ln873">    // at least one square. Always has a chance to move the entirety of default</a>
+<a name="ln874">    // LOS (7), but only becomes certain at max power (50).</a>
+<a name="ln875">    int max_dist = max(1, min(LOS_RADIUS, random2(8) + div_rand_round(pow, 7)));</a>
+<a name="ln876"> </a>
+<a name="ln877">    dprf(&quot;Apport dist=%d, max_dist=%d&quot;, dist, max_dist);</a>
+<a name="ln878"> </a>
+<a name="ln879">    int location_on_path = max(-1, dist - max_dist);</a>
+<a name="ln880">    coord_def new_spot;</a>
+<a name="ln881">    if (location_on_path == -1)</a>
+<a name="ln882">        new_spot = you.pos();</a>
+<a name="ln883">    else</a>
+<a name="ln884">        new_spot = beam.path_taken[location_on_path];</a>
+<a name="ln885">    // Try to find safe terrain for the item.</a>
+<a name="ln886">    while (location_on_path &lt; dist)</a>
+<a name="ln887">    {</a>
+<a name="ln888">        if (!feat_eliminates_items(grd(new_spot)))</a>
+<a name="ln889">            break;</a>
+<a name="ln890">        location_on_path++;</a>
+<a name="ln891">        new_spot = beam.path_taken[location_on_path];</a>
+<a name="ln892">    }</a>
+<a name="ln893">    if (location_on_path == dist)</a>
+<a name="ln894">    {</a>
+<a name="ln895">        mpr(&quot;Not with that terrain in the way!&quot;);</a>
+<a name="ln896">        return spret::success;</a>
+<a name="ln897">    }</a>
+<a name="ln898">    dprf(&quot;Apport: new spot is %d/%d&quot;, new_spot.x, new_spot.y);</a>
+<a name="ln899"> </a>
+<a name="ln900">    // Actually move the item.</a>
+<a name="ln901">    mprf(&quot;Yoink! You pull the item%s towards yourself.&quot;,</a>
+<a name="ln902">         (item.quantity &gt; 1) ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln903"> </a>
+<a name="ln904">    move_top_item(where, new_spot);</a>
+<a name="ln905"> </a>
+<a name="ln906">    // Mark the item as found now.</a>
+<a name="ln907">    origin_set(new_spot);</a>
+<a name="ln908"> </a>
+<a name="ln909">    return spret::success;</a>
+<a name="ln910">}</a>
+<a name="ln911"> </a>
+<a name="ln912">spret cast_golubrias_passage(const coord_def&amp; where, bool fail)</a>
+<a name="ln913">{</a>
+<a name="ln914">    if (orb_limits_translocation())</a>
+<a name="ln915">    {</a>
+<a name="ln916">        mprf(MSGCH_ORB, &quot;The Orb prevents you from opening a passage!&quot;);</a>
+<a name="ln917">        return spret::abort;</a>
+<a name="ln918">    }</a>
+<a name="ln919"> </a>
+<a name="ln920">    if (player_in_branch(BRANCH_GAUNTLET))</a>
+<a name="ln921">    {</a>
+<a name="ln922">        mprf(MSGCH_ORB, &quot;A magic seal in the Gauntlet prevents you from &quot;</a>
+<a name="ln923">                &quot;opening a passage!&quot;);</a>
+<a name="ln924">        return spret::abort;</a>
+<a name="ln925">    }</a>
+<a name="ln926"> </a>
+<a name="ln927">    // randomize position a bit to make it not as useful to use on monsters</a>
+<a name="ln928">    // chasing you, as well as to not give away hidden trap positions</a>
+<a name="ln929">    int tries = 0;</a>
+<a name="ln930">    int tries2 = 0;</a>
+<a name="ln931">    coord_def randomized_where = where;</a>
+<a name="ln932">    coord_def randomized_here = you.pos();</a>
+<a name="ln933">    do</a>
+<a name="ln934">    {</a>
+<a name="ln935">        tries++;</a>
+<a name="ln936">        randomized_where = where;</a>
+<a name="ln937">        randomized_where.x += random_range(-2, 2);</a>
+<a name="ln938">        randomized_where.y += random_range(-2, 2);</a>
+<a name="ln939">    }</a>
+<a name="ln940">    while ((!in_bounds(randomized_where)</a>
+<a name="ln941">            || grd(randomized_where) != DNGN_FLOOR</a>
+<a name="ln942">            || monster_at(randomized_where)</a>
+<a name="ln943">            || !you.see_cell(randomized_where)</a>
+<a name="ln944">            || you.trans_wall_blocking(randomized_where)</a>
+<a name="ln945">            || randomized_where == you.pos())</a>
+<a name="ln946">           &amp;&amp; tries &lt; 100);</a>
+<a name="ln947"> </a>
+<a name="ln948">    do</a>
+<a name="ln949">    {</a>
+<a name="ln950">        tries2++;</a>
+<a name="ln951">        randomized_here = you.pos();</a>
+<a name="ln952">        randomized_here.x += random_range(-2, 2);</a>
+<a name="ln953">        randomized_here.y += random_range(-2, 2);</a>
+<a name="ln954">    }</a>
+<a name="ln955">    while ((!in_bounds(randomized_here)</a>
+<a name="ln956">            || grd(randomized_here) != DNGN_FLOOR</a>
+<a name="ln957">            || monster_at(randomized_here)</a>
+<a name="ln958">            || !you.see_cell(randomized_here)</a>
+<a name="ln959">            || you.trans_wall_blocking(randomized_here)</a>
+<a name="ln960">            || randomized_here == randomized_where)</a>
+<a name="ln961">           &amp;&amp; tries2 &lt; 100);</a>
+<a name="ln962"> </a>
+<a name="ln963">    if (tries &gt;= 100 || tries2 &gt;= 100)</a>
+<a name="ln964">    {</a>
+<a name="ln965">        if (you.trans_wall_blocking(randomized_where))</a>
+<a name="ln966">            mpr(&quot;You cannot create a passage on the other side of the transparent wall.&quot;);</a>
+<a name="ln967">        else</a>
+<a name="ln968">            // XXX: bleh, dumb message</a>
+<a name="ln969">            mpr(&quot;Creating a passage of Golubria requires sufficient empty space.&quot;);</a>
+<a name="ln970">        return spret::abort;</a>
+<a name="ln971">    }</a>
+<a name="ln972"> </a>
+<a name="ln973">    fail_check();</a>
+<a name="ln974">    place_specific_trap(randomized_where, TRAP_GOLUBRIA);</a>
+<a name="ln975">    place_specific_trap(randomized_here, TRAP_GOLUBRIA);</a>
+<a name="ln976">    env.level_state |= LSTATE_GOLUBRIA;</a>
+<a name="ln977"> </a>
+<a name="ln978">    trap_def *trap = trap_at(randomized_where);</a>
+<a name="ln979">    trap_def *trap2 = trap_at(randomized_here);</a>
+<a name="ln980">    if (!trap || !trap2)</a>
+<a name="ln981">    {</a>
+<a name="ln982">        mpr(&quot;Something buggy happened.&quot;);</a>
+<a name="ln983">        return spret::abort;</a>
+<a name="ln984">    }</a>
+<a name="ln985"> </a>
+<a name="ln986">    trap-&gt;reveal();</a>
+<a name="ln987">    trap2-&gt;reveal();</a>
+<a name="ln988"> </a>
+<a name="ln989">    return spret::success;</a>
+<a name="ln990">}</a>
+<a name="ln991"> </a>
+<a name="ln992">static int _disperse_monster(monster&amp; mon, int pow)</a>
+<a name="ln993">{</a>
+<a name="ln994">    if (mon.no_tele())</a>
+<a name="ln995">        return false;</a>
+<a name="ln996"> </a>
+<a name="ln997">    if (mon.check_res_magic(pow) &gt; 0)</a>
+<a name="ln998">        monster_blink(&amp;mon);</a>
+<a name="ln999">    else</a>
+<a name="ln1000">        monster_teleport(&amp;mon, true);</a>
+<a name="ln1001"> </a>
+<a name="ln1002">    // Moving the monster may have killed it in apply_location_effects.</a>
+<a name="ln1003">    if (mon.alive() &amp;&amp; mon.check_res_magic(pow) &lt;= 0)</a>
+<a name="ln1004">        mon.confuse(&amp;you, 1 + random2avg(pow / 10, 2));</a>
+<a name="ln1005"> </a>
+<a name="ln1006">    return true;</a>
+<a name="ln1007">}</a>
+<a name="ln1008"> </a>
+<a name="ln1009">spret cast_dispersal(int pow, bool fail)</a>
+<a name="ln1010">{</a>
+<a name="ln1011">    fail_check();</a>
+<a name="ln1012">    const int radius = spell_range(SPELL_DISPERSAL, pow);</a>
+<a name="ln1013">    if (!apply_monsters_around_square([pow] (monster&amp; mon) {</a>
+<a name="ln1014">            return _disperse_monster(mon, pow);</a>
+<a name="ln1015">        }, you.pos(), radius))</a>
+<a name="ln1016">    {</a>
+<a name="ln1017">        mpr(&quot;The air shimmers briefly around you.&quot;);</a>
+<a name="ln1018">    }</a>
+<a name="ln1019">    return spret::success;</a>
+<a name="ln1020">}</a>
+<a name="ln1021"> </a>
+<a name="ln1022">int gravitas_range(int pow)</a>
+<a name="ln1023">{</a>
+<a name="ln1024">    return pow &gt;= 80 ? 3 : 2;</a>
+<a name="ln1025">}</a>
+<a name="ln1026"> </a>
+<a name="ln1027"> </a>
+<a name="ln1028">#define GRAVITY &quot;by gravitational forces&quot;</a>
+<a name="ln1029"> </a>
+<a name="ln1030">static void _attract_actor(const actor* agent, actor* victim,</a>
+<a name="ln1031">                           const coord_def pos, int pow, int strength)</a>
+<a name="ln1032">{</a>
+<a name="ln1033">    ASSERT(victim); // XXX: change to actor &amp;victim</a>
+<a name="ln1034">    const bool fedhas_prot = agent-&gt;deity() == GOD_FEDHAS</a>
+<a name="ln1035">                             &amp;&amp; victim-&gt;is_monster()</a>
+<a name="ln1036">                             &amp;&amp; fedhas_protects(victim-&gt;as_monster());</a>
+<a name="ln1037"> </a>
+<a name="ln1038">    ray_def ray;</a>
+<a name="ln1039">    if (!find_ray(victim-&gt;pos(), pos, ray, opc_solid))</a>
+<a name="ln1040">    {</a>
+<a name="ln1041">        // This probably shouldn't ever happen, but just in case:</a>
+<a name="ln1042">        if (you.can_see(*victim))</a>
+<a name="ln1043">        {</a>
+<a name="ln1044">            mprf(&quot;%s violently %s moving!&quot;,</a>
+<a name="ln1045">                 victim-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1046">                 victim-&gt;conj_verb(&quot;stop&quot;).c_str());</a>
+<a name="ln1047">        }</a>
+<a name="ln1048">        if (fedhas_prot)</a>
+<a name="ln1049">        {</a>
+<a name="ln1050">            simple_god_message(</a>
+<a name="ln1051">                make_stringf(&quot; protects %s from harm.&quot;,</a>
+<a name="ln1052">                    agent-&gt;is_player() ? &quot;your&quot; : &quot;a&quot;).c_str(), GOD_FEDHAS);</a>
+<a name="ln1053">        }</a>
+<a name="ln1054">        else</a>
+<a name="ln1055">        {</a>
+<a name="ln1056">            victim-&gt;hurt(agent, roll_dice(strength / 2, pow / 20),</a>
+<a name="ln1057">                         BEAM_MMISSILE, KILLED_BY_BEAM, &quot;&quot;, GRAVITY);</a>
+<a name="ln1058">        }</a>
+<a name="ln1059">        return;</a>
+<a name="ln1060">    }</a>
+<a name="ln1061"> </a>
+<a name="ln1062">    const coord_def starting_pos = victim-&gt;pos();</a>
+<a name="ln1063">    for (int i = 0; i &lt; strength; i++)</a>
+<a name="ln1064">    {</a>
+<a name="ln1065">        ray.advance();</a>
+<a name="ln1066">        const coord_def newpos = ray.pos();</a>
+<a name="ln1067"> </a>
+<a name="ln1068">        if (!victim-&gt;can_pass_through_feat(grd(newpos)))</a>
+<a name="ln1069">        {</a>
+<a name="ln1070">            victim-&gt;collide(newpos, agent, pow);</a>
+<a name="ln1071">            break;</a>
+<a name="ln1072">        }</a>
+<a name="ln1073">        else if (actor* act_at_space = actor_at(newpos))</a>
+<a name="ln1074">        {</a>
+<a name="ln1075">            if (victim != act_at_space)</a>
+<a name="ln1076">                victim-&gt;collide(newpos, agent, pow);</a>
+<a name="ln1077">            break;</a>
+<a name="ln1078">        }</a>
+<a name="ln1079">        else if (!victim-&gt;is_habitable(newpos))</a>
+<a name="ln1080">            break;</a>
+<a name="ln1081">        else</a>
+<a name="ln1082">            victim-&gt;move_to_pos(newpos);</a>
+<a name="ln1083"> </a>
+<a name="ln1084">        if (victim-&gt;is_monster() &amp;&amp; !fedhas_prot)</a>
+<a name="ln1085">        {</a>
+<a name="ln1086">            behaviour_event(victim-&gt;as_monster(),</a>
+<a name="ln1087">                            ME_ANNOY, agent, agent ? agent-&gt;pos()</a>
+<a name="ln1088">                                                   : coord_def(0, 0));</a>
+<a name="ln1089">        }</a>
+<a name="ln1090"> </a>
+<a name="ln1091">        if (victim-&gt;pos() == pos)</a>
+<a name="ln1092">            break;</a>
+<a name="ln1093">    }</a>
+<a name="ln1094">    if (starting_pos != victim-&gt;pos())</a>
+<a name="ln1095">    {</a>
+<a name="ln1096">        victim-&gt;apply_location_effects(starting_pos);</a>
+<a name="ln1097">        if (victim-&gt;is_monster())</a>
+<a name="ln1098">            mons_relocated(victim-&gt;as_monster());</a>
+<a name="ln1099">    }</a>
+<a name="ln1100">}</a>
+<a name="ln1101"> </a>
+<a name="ln1102">bool fatal_attraction(const coord_def&amp; pos, const actor *agent, int pow)</a>
+<a name="ln1103">{</a>
+<a name="ln1104">    bool affected = false;</a>
+<a name="ln1105">    for (actor_near_iterator ai(pos, LOS_SOLID); ai; ++ai)</a>
+<a name="ln1106">    {</a>
+<a name="ln1107">        if (*ai == agent || ai-&gt;is_stationary() || ai-&gt;pos() == pos)</a>
+<a name="ln1108">            continue;</a>
+<a name="ln1109"> </a>
+<a name="ln1110">        const int range = (pos - ai-&gt;pos()).rdist();</a>
+<a name="ln1111">        if (range &gt; gravitas_range(pow))</a>
+<a name="ln1112">            continue;</a>
+<a name="ln1113"> </a>
+<a name="ln1114">        const int strength = ((pow + 100) / 20) / (range*range);</a>
+<a name="ln1115"> </a>
+<a name="ln1116">        affected = true;</a>
+<a name="ln1117">        _attract_actor(agent, *ai, pos, pow, strength);</a>
+<a name="ln1118">    }</a>
+<a name="ln1119"> </a>
+<a name="ln1120">    return affected;</a>
+<a name="ln1121">}</a>
+<a name="ln1122"> </a>
+<a name="ln1123">spret cast_gravitas(int pow, const coord_def&amp; where, bool fail)</a>
+<a name="ln1124">{</a>
+<a name="ln1125">    if (cell_is_solid(where))</a>
+<a name="ln1126">    {</a>
+<a name="ln1127">        canned_msg(MSG_UNTHINKING_ACT);</a>
+<a name="ln1128">        return spret::abort;</a>
+<a name="ln1129">    }</a>
+<a name="ln1130"> </a>
+<a name="ln1131">    fail_check();</a>
+<a name="ln1132"> </a>
+<a name="ln1133">    monster* mons = monster_at(where);</a>
+<a name="ln1134"> </a>
+<a name="ln1135">    mprf(&quot;Gravity reorients around %s.&quot;,</a>
+<a name="ln1136">         mons                      ? mons-&gt;name(DESC_THE).c_str() :</a>
+<a name="ln1137">         feat_is_solid(grd(where)) ? feature_description(grd(where),</a>
+<a name="ln1138">                                                         NUM_TRAPS, &quot;&quot;,</a>
+<a name="ln1139">                                                         DESC_THE)</a>
+<a name="ln1140">                                                         .c_str()</a>
+<a name="ln1141">                                   : &quot;empty space&quot;);</a>
+<a name="ln1142">    fatal_attraction(where, &amp;you, pow);</a>
+<a name="ln1143">    return spret::success;</a>
+<a name="ln1144">}</a>
+<a name="ln1145"> </a>
+<a name="ln1146">/**</a>
+<a name="ln1147"> * Where is the closest point along the given path to its source that the given</a>
+<a name="ln1148"> * actor can be moved to?</a>
+<a name="ln1149"> *</a>
+<a name="ln1150"> * @param beckoned      The actor to be moved.</a>
+<a name="ln1151"> * @param path          The path for the actor to be moved along</a>
+<a name="ln1152"> * @return              The closest point for the actor to be moved to;</a>
+<a name="ln1153"> *                      guaranteed to be on the path or its original location.</a>
+<a name="ln1154"> */</a>
+<a name="ln1155">static coord_def _beckon_destination(const actor &amp;beckoned, const bolt &amp;path)</a>
+<a name="ln1156">{</a>
+<a name="ln1157">    if (beckoned.is_stationary()  // don't move statues, etc</a>
+<a name="ln1158">        || mons_is_tentacle_or_tentacle_segment(beckoned.type)) // a mess...</a>
+<a name="ln1159">    {</a>
+<a name="ln1160">        return beckoned.pos();</a>
+<a name="ln1161">    }</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    for (coord_def pos : path.path_taken)</a>
+<a name="ln1164">    {</a>
+<a name="ln1165">        if (actor_at(pos) || !beckoned.is_habitable(pos))</a>
+<a name="ln1166">            continue; // actor could be caster, or a bush</a>
+<a name="ln1167"> </a>
+<a name="ln1168">        return pos;</a>
+<a name="ln1169">    }</a>
+<a name="ln1170"> </a>
+<a name="ln1171">    return beckoned.pos(); // failed to find any point along the path</a>
+<a name="ln1172">}</a>
+<a name="ln1173"> </a>
+<a name="ln1174">/**</a>
+<a name="ln1175"> * Attempt to move the beckoned creature to the spot on the path closest to its</a>
+<a name="ln1176"> * beginning (that is, to the caster of the effect). Also handles some</a>
+<a name="ln1177"> * messaging.</a>
+<a name="ln1178"> *</a>
+<a name="ln1179"> * @param beckoned  The creature being moved.</a>
+<a name="ln1180"> * @param path      The path to move the creature along.</a>
+<a name="ln1181"> * @return          Whether the beckoned creature actually moved.</a>
+<a name="ln1182"> */</a>
+<a name="ln1183">bool beckon(actor &amp;beckoned, const bolt &amp;path)</a>
+<a name="ln1184">{</a>
+<a name="ln1185">    const coord_def dest = _beckon_destination(beckoned, path);</a>
+<a name="ln1186">    if (dest == beckoned.pos())</a>
+<a name="ln1187">        return false;</a>
+<a name="ln1188"> </a>
+<a name="ln1189">    const coord_def old_pos = beckoned.pos();</a>
+<a name="ln1190">    if (!beckoned.move_to_pos(dest))</a>
+<a name="ln1191">        return false;</a>
+<a name="ln1192"> </a>
+<a name="ln1193">    mprf(&quot;%s %s suddenly forward!&quot;,</a>
+<a name="ln1194">         beckoned.name(DESC_THE).c_str(),</a>
+<a name="ln1195">         beckoned.conj_verb(&quot;hurl&quot;).c_str());</a>
+<a name="ln1196"> </a>
+<a name="ln1197">    beckoned.apply_location_effects(old_pos); // traps, etc.</a>
+<a name="ln1198">    if (beckoned.is_monster())</a>
+<a name="ln1199">        mons_relocated(beckoned.as_monster()); // cleanup tentacle segments</a>
+<a name="ln1200"> </a>
+<a name="ln1201">    return true;</a>
+<a name="ln1202">}</a>
+
+</code></pre>
+<div class="balloon" rel="544"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v728/" target="_blank">V728</a> An excessive check can be simplified. The '(A && !B) || (!A && B)' expression is equivalent to the 'bool(A) != bool(B)' expression.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

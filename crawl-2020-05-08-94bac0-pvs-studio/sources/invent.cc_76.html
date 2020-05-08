@@ -1,0 +1,2285 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>invent.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions for inventory related commands.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;invent.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt; // any_of</a>
+<a name="ln11">#include &lt;cctype&gt;</a>
+<a name="ln12">#include &lt;cstdlib&gt;</a>
+<a name="ln13">#include &lt;cstring&gt;</a>
+<a name="ln14">#include &lt;iomanip&gt;</a>
+<a name="ln15">#include &lt;sstream&gt;</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &quot;artefact.h&quot;</a>
+<a name="ln18">#include &quot;colour.h&quot;</a>
+<a name="ln19">#include &quot;command.h&quot;</a>
+<a name="ln20">#include &quot;describe.h&quot;</a>
+<a name="ln21">#include &quot;env.h&quot;</a>
+<a name="ln22">#include &quot;food.h&quot;</a>
+<a name="ln23">#include &quot;god-item.h&quot;</a>
+<a name="ln24">#include &quot;god-passive.h&quot;</a>
+<a name="ln25">#include &quot;initfile.h&quot;</a>
+<a name="ln26">#include &quot;item-prop.h&quot;</a>
+<a name="ln27">#include &quot;items.h&quot;</a>
+<a name="ln28">#include &quot;item-use.h&quot;</a>
+<a name="ln29">#include &quot;item-prop.h&quot;</a>
+<a name="ln30">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln31">#include &quot;known-items.h&quot;</a>
+<a name="ln32">#include &quot;libutil.h&quot;</a>
+<a name="ln33">#include &quot;macro.h&quot;</a>
+<a name="ln34">#include &quot;message.h&quot;</a>
+<a name="ln35">#include &quot;options.h&quot;</a>
+<a name="ln36">#include &quot;output.h&quot;</a>
+<a name="ln37">#include &quot;prompt.h&quot;</a>
+<a name="ln38">#include &quot;religion.h&quot;</a>
+<a name="ln39">#include &quot;showsymb.h&quot;</a>
+<a name="ln40">#include &quot;state.h&quot;</a>
+<a name="ln41">#include &quot;stringutil.h&quot;</a>
+<a name="ln42">#include &quot;terrain.h&quot;</a>
+<a name="ln43">#include &quot;throw.h&quot;</a>
+<a name="ln44">#ifdef USE_TILE</a>
+<a name="ln45"> #include &quot;rltiles/tiledef-icons.h&quot;</a>
+<a name="ln46"> #include &quot;rltiles/tiledef-main.h&quot;</a>
+<a name="ln47"> #include &quot;rltiles/tiledef-dngn.h&quot;</a>
+<a name="ln48"> #include &quot;tilepick.h&quot;</a>
+<a name="ln49">#endif</a>
+<a name="ln50"> </a>
+<a name="ln51">///////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln52">// Inventory menu shenanigans</a>
+<a name="ln53"> </a>
+<a name="ln54">static void _get_inv_items_to_show(vector&lt;const item_def*&gt; &amp;v,</a>
+<a name="ln55">                                   int selector, int excluded_slot = -1);</a>
+<a name="ln56"> </a>
+<a name="ln57">InvTitle::InvTitle(Menu *mn, const string &amp;title, invtitle_annotator tfn)</a>
+<a name="ln58">    : MenuEntry(title, MEL_TITLE)</a>
+<a name="ln59">{</a>
+<a name="ln60">    m       = mn;</a>
+<a name="ln61">    titlefn = tfn;</a>
+<a name="ln62">}</a>
+<a name="ln63"> </a>
+<a name="ln64">string InvTitle::get_text(const bool) const</a>
+<a name="ln65">{</a>
+<a name="ln66">    return titlefn ? titlefn(m, MenuEntry::get_text())</a>
+<a name="ln67">                   : MenuEntry::get_text();</a>
+<a name="ln68">}</a>
+<a name="ln69"> </a>
+<a name="ln70">InvEntry::InvEntry(const item_def &amp;i)</a>
+<a name="ln71">    : MenuEntry(&quot;&quot;, MEL_ITEM), item(&amp;i), _has_star(false)</a>
+<a name="ln72">{</a>
+<a name="ln73">    data = const_cast&lt;item_def *&gt;(item);</a>
+<a name="ln74"> </a>
+<a name="ln75">    if (in_inventory(i) &amp;&amp; i.base_type != OBJ_GOLD)</a>
+<a name="ln76">    {</a>
+<a name="ln77">        // We need to do this in order to get the 'wielded' annotation.</a>
+<a name="ln78">        // We then toss out the first four characters, which look</a>
+<a name="ln79">        // like this: &quot;a - &quot;. Ow. FIXME.</a>
+<a name="ln80">        text = i.name(DESC_INVENTORY_EQUIP, false).substr(4);</a>
+<a name="ln81">    }</a>
+<a name="ln82">    else</a>
+<a name="ln83">        text = i.name(DESC_A, false);</a>
+<a name="ln84"> </a>
+<a name="ln85">    if (item_is_stationary_net(i))</a>
+<a name="ln86">    {</a>
+<a name="ln87">        actor *trapped = actor_at(i.pos);</a>
+<a name="ln88">        text += make_stringf(&quot; (holding %s)&quot;,</a>
+<a name="ln89">                            trapped ? trapped-&gt;name(DESC_A).c_str()</a>
+<a name="ln90">                                    : &quot;nobody&quot;); // buggy net, but don't crash</a>
+<a name="ln91">    }</a>
+<a name="ln92"> </a>
+<a name="ln93">    if (i.base_type != OBJ_GOLD &amp;&amp; in_inventory(i))</a>
+<a name="ln94">        add_hotkey(index_to_letter(i.link));</a>
+<a name="ln95">    else</a>
+<a name="ln96">        add_hotkey(' ');        // dummy hotkey</a>
+<a name="ln97"> </a>
+<a name="ln98">    add_class_hotkeys(i);</a>
+<a name="ln99"> </a>
+<a name="ln100">    quantity = i.quantity;</a>
+<a name="ln101">}</a>
+<a name="ln102"> </a>
+<a name="ln103">const string &amp;InvEntry::get_basename() const</a>
+<a name="ln104">{</a>
+<a name="ln105">    if (basename.empty())</a>
+<a name="ln106">        basename = item-&gt;name(DESC_BASENAME);</a>
+<a name="ln107">    return basename;</a>
+<a name="ln108">}</a>
+<a name="ln109"> </a>
+<a name="ln110">const string &amp;InvEntry::get_qualname() const</a>
+<a name="ln111">{</a>
+<a name="ln112">    if (qualname.empty())</a>
+<a name="ln113">        qualname = item-&gt;name(DESC_QUALNAME);</a>
+<a name="ln114">    return qualname;</a>
+<a name="ln115">}</a>
+<a name="ln116"> </a>
+<a name="ln117">const string &amp;InvEntry::get_fullname() const</a>
+<a name="ln118">{</a>
+<a name="ln119">    return text;</a>
+<a name="ln120">}</a>
+<a name="ln121"> </a>
+<a name="ln122">const string &amp;InvEntry::get_dbname() const</a>
+<a name="ln123">{</a>
+<a name="ln124">    if (dbname.empty())</a>
+<a name="ln125">        dbname = item-&gt;name(DESC_DBNAME);</a>
+<a name="ln126">    return dbname;</a>
+<a name="ln127">}</a>
+<a name="ln128"> </a>
+<a name="ln129">bool InvEntry::is_cursed() const</a>
+<a name="ln130">{</a>
+<a name="ln131">    return item_ident(*item, ISFLAG_KNOW_CURSE) &amp;&amp; item-&gt;cursed();</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">bool InvEntry::is_glowing() const</a>
+<a name="ln135">{</a>
+<a name="ln136">    return !item_ident(*item, ISFLAG_KNOW_TYPE)</a>
+<a name="ln137">           &amp;&amp; (get_equip_desc(*item)</a>
+<a name="ln138">               || (is_artefact(*item)</a>
+<a name="ln139">                   &amp;&amp; (item-&gt;base_type == OBJ_WEAPONS</a>
+<a name="ln140">                       || item-&gt;base_type == OBJ_ARMOUR</a>
+<a name="ln141">                       || item-&gt;base_type == OBJ_BOOKS)));</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">bool InvEntry::is_ego() const</a>
+<a name="ln145">{</a>
+<a name="ln146">    return item_ident(*item, ISFLAG_KNOW_TYPE) &amp;&amp; !is_artefact(*item)</a>
+<a name="ln147">           &amp;&amp; item-&gt;brand != 0</a>
+<a name="ln148">           &amp;&amp; (item-&gt;base_type == OBJ_WEAPONS</a>
+<a name="ln149">               || item-&gt;base_type == OBJ_MISSILES</a>
+<a name="ln150">               || item-&gt;base_type == OBJ_ARMOUR);</a>
+<a name="ln151">}</a>
+<a name="ln152"> </a>
+<a name="ln153">bool InvEntry::is_art() const</a>
+<a name="ln154">{</a>
+<a name="ln155">    return item_ident(*item, ISFLAG_KNOW_TYPE) &amp;&amp; is_artefact(*item);</a>
+<a name="ln156">}</a>
+<a name="ln157"> </a>
+<a name="ln158">bool InvEntry::is_equipped() const</a>
+<a name="ln159">{</a>
+<a name="ln160">    if (item-&gt;link == -1 || item-&gt;pos != ITEM_IN_INVENTORY)</a>
+<a name="ln161">        return false;</a>
+<a name="ln162"> </a>
+<a name="ln163">    for (int i = EQ_FIRST_EQUIP; i &lt; NUM_EQUIP; i++)</a>
+<a name="ln164">        if (item-&gt;link == you.equip[i])</a>
+<a name="ln165">            return true;</a>
+<a name="ln166"> </a>
+<a name="ln167">    return false;</a>
+<a name="ln168">}</a>
+<a name="ln169"> </a>
+<a name="ln170">void InvEntry::select(int qty)</a>
+<a name="ln171">{</a>
+<a name="ln172">    if (item &amp;&amp; item-&gt;quantity &lt; qty)</a>
+<a name="ln173">        qty = item-&gt;quantity;</a>
+<a name="ln174"> </a>
+<a name="ln175">    MenuEntry::select(qty);</a>
+<a name="ln176">}</a>
+<a name="ln177"> </a>
+<a name="ln178">bool InvEntry::has_star() const</a>
+<a name="ln179">{</a>
+<a name="ln180">    return _has_star;</a>
+<a name="ln181">}</a>
+<a name="ln182"> </a>
+<a name="ln183">string InvEntry::get_filter_text() const</a>
+<a name="ln184">{</a>
+<a name="ln185">    return item_prefix(*item) + &quot; &quot; + get_text();</a>
+<a name="ln186">}</a>
+<a name="ln187"> </a>
+<a name="ln188">string InvEntry::get_text(bool need_cursor) const</a>
+<a name="ln189">{</a>
+<a name="ln190">    need_cursor = need_cursor &amp;&amp; show_cursor;</a>
+<a name="ln191"> </a>
+<a name="ln192">    ostringstream tstr;</a>
+<a name="ln193"> </a>
+<a name="ln194">    const bool nosel = hotkeys.empty();</a>
+<a name="ln195">    const char key = nosel ? ' ' : static_cast&lt;char&gt;(hotkeys[0]);</a>
+<a name="ln196"> </a>
+<a name="ln197">    tstr &lt;&lt; ' ';</a>
+<a name="ln198"> </a>
+<a name="ln199">    if (!nosel || tag == &quot;pickup&quot;)</a>
+<a name="ln200">    {</a>
+<a name="ln201">        tstr &lt;&lt; key;</a>
+<a name="ln202"> </a>
+<a name="ln203">        if (need_cursor)</a>
+<a name="ln204">            tstr &lt;&lt; '[';</a>
+<a name="ln205">        else</a>
+<a name="ln206">            tstr &lt;&lt; ' ';</a>
+<a name="ln207"> </a>
+<a name="ln208">        if (nosel)</a>
+<a name="ln209">            tstr &lt;&lt; ' ';</a>
+<a name="ln210">        else if (!selected_qty)</a>
+<a name="ln211">            tstr &lt;&lt; '-';</a>
+<a name="ln212">        else if (selected_qty &lt; quantity)</a>
+<a name="ln213">            tstr &lt;&lt; '#';</a>
+<a name="ln214">        else if (_has_star)</a>
+<a name="ln215">            tstr &lt;&lt; '*';</a>
+<a name="ln216">        else</a>
+<a name="ln217">            tstr &lt;&lt; '+';</a>
+<a name="ln218"> </a>
+<a name="ln219">        if (need_cursor)</a>
+<a name="ln220">            tstr &lt;&lt; ']';</a>
+<a name="ln221">        else</a>
+<a name="ln222">            tstr &lt;&lt; ' ';</a>
+<a name="ln223">    }</a>
+<a name="ln224">    if (InvEntry::show_glyph)</a>
+<a name="ln225">        tstr &lt;&lt; &quot;(&quot; &lt;&lt; glyph_to_tagstr(get_item_glyph(*item)) &lt;&lt; &quot;)&quot; &lt;&lt; &quot; &quot;;</a>
+<a name="ln226"> </a>
+<a name="ln227">    tstr &lt;&lt; text;</a>
+<a name="ln228">    return tstr.str();</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">void get_class_hotkeys(const int type, vector&lt;char&gt; &amp;glyphs)</a>
+<a name="ln232">{</a>
+<a name="ln233">    switch (type)</a>
+<a name="ln234">    {</a>
+<a name="ln235">    case OBJ_GOLD:</a>
+<a name="ln236">        glyphs.push_back('$');</a>
+<a name="ln237">        break;</a>
+<a name="ln238">    case OBJ_MISSILES:</a>
+<a name="ln239">        glyphs.push_back('(');</a>
+<a name="ln240">        break;</a>
+<a name="ln241">    case OBJ_WEAPONS:</a>
+<a name="ln242">        glyphs.push_back(')');</a>
+<a name="ln243">        break;</a>
+<a name="ln244">    case OBJ_ARMOUR:</a>
+<a name="ln245">        glyphs.push_back('[');</a>
+<a name="ln246">        break;</a>
+<a name="ln247">    case OBJ_WANDS:</a>
+<a name="ln248">        glyphs.push_back('/');</a>
+<a name="ln249">        break;</a>
+<a name="ln250">    case OBJ_FOOD:</a>
+<a name="ln251">        glyphs.push_back('%');</a>
+<a name="ln252">        break;</a>
+<a name="ln253">    case OBJ_BOOKS:</a>
+<a name="ln254">        glyphs.push_back(':');</a>
+<a name="ln255">        break;</a>
+<a name="ln256">    case OBJ_SCROLLS:</a>
+<a name="ln257">        glyphs.push_back('?');</a>
+<a name="ln258">        break;</a>
+<a name="ln259">    case OBJ_JEWELLERY:</a>
+<a name="ln260">        glyphs.push_back('&quot;');</a>
+<a name="ln261">        glyphs.push_back('=');</a>
+<a name="ln262">        break;</a>
+<a name="ln263">    case OBJ_POTIONS:</a>
+<a name="ln264">        glyphs.push_back('!');</a>
+<a name="ln265">        break;</a>
+<a name="ln266">    case OBJ_STAVES:</a>
+<a name="ln267">        glyphs.push_back('|');</a>
+<a name="ln268">        break;</a>
+<a name="ln269">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln270">    case OBJ_RODS:</a>
+<a name="ln271">        glyphs.push_back('\\');</a>
+<a name="ln272">        break;</a>
+<a name="ln273">#endif</a>
+<a name="ln274">    case OBJ_MISCELLANY:</a>
+<a name="ln275">        glyphs.push_back('}');</a>
+<a name="ln276">        break;</a>
+<a name="ln277">    default:</a>
+<a name="ln278">        break;</a>
+<a name="ln279">    }</a>
+<a name="ln280">}</a>
+<a name="ln281"> </a>
+<a name="ln282">void InvEntry::add_class_hotkeys(const item_def &amp;i)</a>
+<a name="ln283">{</a>
+<a name="ln284">    const int type = i.base_type;</a>
+<a name="ln285">    if (type == OBJ_JEWELLERY)</a>
+<a name="ln286">    {</a>
+<a name="ln287">        add_hotkey(i.sub_type &gt;= AMU_FIRST_AMULET ? '&quot;' : '=');</a>
+<a name="ln288">        return;</a>
+<a name="ln289">    }</a>
+<a name="ln290"> </a>
+<a name="ln291">    vector&lt;char&gt; glyphs;</a>
+<a name="ln292">    get_class_hotkeys(type, glyphs);</a>
+<a name="ln293">    for (char gly : glyphs)</a>
+<a name="ln294">        add_hotkey(gly);</a>
+<a name="ln295">}</a>
+<a name="ln296"> </a>
+<a name="ln297">bool InvEntry::show_cursor = false;</a>
+<a name="ln298">void InvEntry::set_show_cursor(bool doshow)</a>
+<a name="ln299">{</a>
+<a name="ln300">    show_cursor = doshow;</a>
+<a name="ln301">}</a>
+<a name="ln302"> </a>
+<a name="ln303">bool InvEntry::show_glyph = false;</a>
+<a name="ln304">void InvEntry::set_show_glyph(bool doshow)</a>
+<a name="ln305">{</a>
+<a name="ln306">    show_glyph = doshow;</a>
+<a name="ln307">}</a>
+<a name="ln308"> </a>
+<a name="ln309">InvMenu::InvMenu(int mflags)</a>
+<a name="ln310">    : Menu(mflags, &quot;inventory&quot;), type(menu_type::invlist), pre_select(nullptr),</a>
+<a name="ln311">      title_annotate(nullptr), _mode_special_drop(false)</a>
+<a name="ln312">{</a>
+<a name="ln313">#ifdef USE_TILE_LOCAL</a>
+<a name="ln314">    if (Options.tile_menu_icons)</a>
+<a name="ln315">        set_flags(mflags | MF_USE_TWO_COLUMNS);</a>
+<a name="ln316">#endif</a>
+<a name="ln317"> </a>
+<a name="ln318">    InvEntry::set_show_cursor(false);</a>
+<a name="ln319">}</a>
+<a name="ln320"> </a>
+<a name="ln321">bool InvMenu::mode_special_drop() const</a>
+<a name="ln322">{</a>
+<a name="ln323">    return _mode_special_drop;</a>
+<a name="ln324">}</a>
+<a name="ln325"> </a>
+<a name="ln326">void InvMenu::set_type(menu_type t)</a>
+<a name="ln327">{</a>
+<a name="ln328">    type = t;</a>
+<a name="ln329">}</a>
+<a name="ln330"> </a>
+<a name="ln331">void InvMenu::set_title_annotator(invtitle_annotator afn)</a>
+<a name="ln332">{</a>
+<a name="ln333">    title_annotate = afn;</a>
+<a name="ln334">}</a>
+<a name="ln335"> </a>
+<a name="ln336">void InvMenu::set_title(MenuEntry *t, bool first)</a>
+<a name="ln337">{</a>
+<a name="ln338">    Menu::set_title(t, first);</a>
+<a name="ln339">}</a>
+<a name="ln340"> </a>
+<a name="ln341">void InvMenu::set_preselect(const vector&lt;SelItem&gt; *pre)</a>
+<a name="ln342">{</a>
+<a name="ln343">    pre_select = pre;</a>
+<a name="ln344">}</a>
+<a name="ln345"> </a>
+<a name="ln346">string slot_description()</a>
+<a name="ln347">{</a>
+<a name="ln348">    return make_stringf(&quot;%d/%d slots&quot;, inv_count(), ENDOFPACK);</a>
+<a name="ln349">}</a>
+<a name="ln350"> </a>
+<a name="ln351">void InvMenu::set_title(const string &amp;s)</a>
+<a name="ln352">{</a>
+<a name="ln353">    set_title(new InvTitle(this, s.empty() ? &quot;Inventory: &quot; + slot_description()</a>
+<a name="ln354">                                           : s,</a>
+<a name="ln355">                           title_annotate));</a>
+<a name="ln356">}</a>
+<a name="ln357"> </a>
+<a name="ln358">int InvMenu::pre_process(int key)</a>
+<a name="ln359">{</a>
+<a name="ln360">    if (type == menu_type::drop &amp;&amp; key == '\\')</a>
+<a name="ln361">    {</a>
+<a name="ln362">        _mode_special_drop = !_mode_special_drop;</a>
+<a name="ln363">        key = CK_NO_KEY;</a>
+<a name="ln364">    }</a>
+<a name="ln365">    else if (key == ';'</a>
+<a name="ln366">             &amp;&amp; you.last_unequip != -1</a>
+<a name="ln367">             &amp;&amp; (type == menu_type::drop || type == menu_type::invlist))</a>
+<a name="ln368">    {</a>
+<a name="ln369">        key = index_to_letter(you.last_unequip);</a>
+<a name="ln370">    }</a>
+<a name="ln371">    else if (key == '-')</a>
+<a name="ln372">        _mode_special_drop = false;</a>
+<a name="ln373">    return key;</a>
+<a name="ln374">}</a>
+<a name="ln375"> </a>
+<a name="ln376">static bool _item_is_permadrop_candidate(const item_def &amp;item)</a>
+<a name="ln377">{</a>
+<a name="ln378">    // Known, non-artefact items of the types you see on the '\' menu proper.</a>
+<a name="ln379">    // (No disabling autopickup for &quot;green fizzy potion&quot;, &quot;+3 whip&quot;, etc.)</a>
+<a name="ln380">    if (item_type_unknown(item))</a>
+<a name="ln381">        return false;</a>
+<a name="ln382">    return item.base_type == OBJ_MISCELLANY</a>
+<a name="ln383">        || is_stackable_item(item)</a>
+<a name="ln384">        || item_type_has_ids(item.base_type);</a>
+<a name="ln385">}</a>
+<a name="ln386"> </a>
+<a name="ln387">void InvMenu::select_item_index(int idx, int qty, bool draw_cursor)</a>
+<a name="ln388">{</a>
+<a name="ln389">    if (type != menu_type::drop)</a>
+<a name="ln390">        return Menu::select_item_index(idx, qty, draw_cursor);</a>
+<a name="ln391"> </a>
+<a name="ln392">    InvEntry *ie = static_cast&lt;InvEntry*&gt;(items[idx]);</a>
+<a name="ln393"> </a>
+<a name="ln394">    bool should_toggle_star = _item_is_permadrop_candidate(ie-&gt;item[0])</a>
+<a name="ln395">        &amp;&amp; (ie-&gt;has_star() || _mode_special_drop);</a>
+<a name="ln396"> </a>
+<a name="ln397">    if (should_toggle_star)</a>
+<a name="ln398">    {</a>
+<a name="ln399">        // Toggle starred items back to selected-but-not-starred in this mode</a>
+<a name="ln400">        // instead of turning them all the way off.</a>
+<a name="ln401">        qty = _mode_special_drop ? -2 : 0;</a>
+<a name="ln402">        ie-&gt;set_star(!ie-&gt;has_star());</a>
+<a name="ln403">    }</a>
+<a name="ln404">    Menu::select_item_index(idx, qty, draw_cursor);</a>
+<a name="ln405">}</a>
+<a name="ln406"> </a>
+<a name="ln407">void InvEntry::set_star(bool val)</a>
+<a name="ln408">{</a>
+<a name="ln409">    _has_star = val;</a>
+<a name="ln410">}</a>
+<a name="ln411"> </a>
+<a name="ln412">static bool _has_melded_armour()</a>
+<a name="ln413">{</a>
+<a name="ln414">    for (int e = EQ_CLOAK; e &lt;= EQ_BODY_ARMOUR; e++)</a>
+<a name="ln415">        if (you.melded[e])</a>
+<a name="ln416">            return true;</a>
+<a name="ln417">    return false;</a>
+<a name="ln418">}</a>
+<a name="ln419"> </a>
+<a name="ln420">static bool _has_temp_unwearable_armour()</a>
+<a name="ln421">{</a>
+<a name="ln422">    for (const auto &amp;item : you.inv)</a>
+<a name="ln423">    {</a>
+<a name="ln424">        if (item.defined() &amp;&amp; item.base_type == OBJ_ARMOUR</a>
+<a name="ln425">            &amp;&amp; can_wear_armour(item, false, true)</a>
+<a name="ln426">            &amp;&amp; !can_wear_armour(item, false, false))</a>
+<a name="ln427">        {</a>
+<a name="ln428">            return true;</a>
+<a name="ln429">        }</a>
+<a name="ln430">    }</a>
+<a name="ln431">    return false;</a>
+<a name="ln432">}</a>
+<a name="ln433"> </a>
+<a name="ln434">static bool _has_hand_evokable()</a>
+<a name="ln435">{</a>
+<a name="ln436">    for (const auto &amp;item : you.inv)</a>
+<a name="ln437">    {</a>
+<a name="ln438">        if (item.defined()</a>
+<a name="ln439">            &amp;&amp; item_is_evokable(item, true, true, false, false)</a>
+<a name="ln440">            &amp;&amp; !item_is_evokable(item, true, true, false, true))</a>
+<a name="ln441">        {</a>
+<a name="ln442">            return true;</a>
+<a name="ln443">        }</a>
+<a name="ln444">    }</a>
+<a name="ln445">    return false;</a>
+<a name="ln446">}</a>
+<a name="ln447"> </a>
+<a name="ln448">/**</a>
+<a name="ln449"> * What message should the player be given when they look for items matching</a>
+<a name="ln450"> * the given selector and don't find any?</a>
+<a name="ln451"> *</a>
+<a name="ln452"> * @param selector      The given type of object_selector.</a>
+<a name="ln453"> * @return              A message such as &quot;You aren't carrying any weapons.&quot;</a>
+<a name="ln454"> *                      &quot;Your armour is currently melded into you.&quot;, etc.</a>
+<a name="ln455"> */</a>
+<a name="ln456">string no_selectables_message(int item_selector)</a>
+<a name="ln457">{</a>
+<a name="ln458">    switch (item_selector)</a>
+<a name="ln459">    {</a>
+<a name="ln460">    case OSEL_ANY:</a>
+<a name="ln461">        return &quot;You aren't carrying anything.&quot;;</a>
+<a name="ln462">    case OSEL_WIELD:</a>
+<a name="ln463">    case OBJ_WEAPONS:</a>
+<a name="ln464">        return &quot;You aren't carrying any weapons.&quot;;</a>
+<a name="ln465">    case OSEL_BLESSABLE_WEAPON:</a>
+<a name="ln466">        return &quot;You aren't carrying any weapons that can be blessed.&quot;;</a>
+<a name="ln467">    case OBJ_ARMOUR:</a>
+<a name="ln468">    {</a>
+<a name="ln469">        if (_has_melded_armour())</a>
+<a name="ln470">            return &quot;Your armour is currently melded into you.&quot;;</a>
+<a name="ln471">        else if (_has_temp_unwearable_armour())</a>
+<a name="ln472">            return &quot;You aren't carrying any currently wearable armour.&quot;;</a>
+<a name="ln473">        else</a>
+<a name="ln474">            return &quot;You aren't carrying any wearable armour.&quot;;</a>
+<a name="ln475">    }</a>
+<a name="ln476">    case OSEL_UNIDENT:</a>
+<a name="ln477">        return &quot;You don't have any unidentified items.&quot;;</a>
+<a name="ln478">    case OSEL_ENCHANTABLE_ARMOUR:</a>
+<a name="ln479">        return &quot;You aren't carrying any armour which can be enchanted further.&quot;;</a>
+<a name="ln480">    case OBJ_CORPSES:</a>
+<a name="ln481">        return &quot;You don't have any corpses.&quot;;</a>
+<a name="ln482">    case OBJ_FOOD:</a>
+<a name="ln483">        return &quot;You aren't carrying any food.&quot;;</a>
+<a name="ln484">    case OBJ_POTIONS:</a>
+<a name="ln485">        return &quot;You aren't carrying any potions.&quot;;</a>
+<a name="ln486">    case OBJ_SCROLLS:</a>
+<a name="ln487">        return &quot;You aren't carrying any scrolls.&quot;;</a>
+<a name="ln488">    case OBJ_BOOKS:</a>
+<a name="ln489">        return &quot;You don't have any books.&quot;;</a>
+<a name="ln490">    case OBJ_WANDS:</a>
+<a name="ln491">        return &quot;You aren't carrying any wands.&quot;;</a>
+<a name="ln492">    case OBJ_JEWELLERY:</a>
+<a name="ln493">        return &quot;You aren't carrying any pieces of jewellery.&quot;;</a>
+<a name="ln494">    case OSEL_THROWABLE:</a>
+<a name="ln495">        return &quot;You aren't carrying any items that might be thrown or fired.&quot;;</a>
+<a name="ln496">    case OSEL_EVOKABLE:</a>
+<a name="ln497">        if (_has_hand_evokable())</a>
+<a name="ln498">            return &quot;You aren't carrying any items that you can evoke without wielding.&quot;;</a>
+<a name="ln499">        else</a>
+<a name="ln500">            return &quot;You aren't carrying any items that you can evoke.&quot;;</a>
+<a name="ln501">    case OSEL_CURSED_WORN:</a>
+<a name="ln502">        return &quot;None of your equipped items are cursed.&quot;;</a>
+<a name="ln503">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln504">    case OSEL_UNCURSED_WORN_ARMOUR:</a>
+<a name="ln505">        return &quot;You aren't wearing any piece of uncursed armour.&quot;;</a>
+<a name="ln506">    case OSEL_UNCURSED_WORN_JEWELLERY:</a>
+<a name="ln507">        return &quot;You aren't wearing any piece of uncursed jewellery.&quot;;</a>
+<a name="ln508">#endif</a>
+<a name="ln509">    case OSEL_BRANDABLE_WEAPON:</a>
+<a name="ln510">        return &quot;You aren't carrying any weapons that can be branded.&quot;;</a>
+<a name="ln511">    case OSEL_ENCHANTABLE_WEAPON:</a>
+<a name="ln512">        return &quot;You aren't carrying any weapons that can be enchanted.&quot;;</a>
+<a name="ln513">    case OSEL_BEOGH_GIFT:</a>
+<a name="ln514">        return &quot;You aren't carrying anything you can give to a follower.&quot;;</a>
+<a name="ln515">    case OSEL_CURSABLE:</a>
+<a name="ln516">        return &quot;You don't have any cursable items.&quot;;</a>
+<a name="ln517">    case OSEL_UNCURSED_WORN_RINGS:</a>
+<a name="ln518">        return &quot;You aren't wearing any uncursed rings.&quot;;</a>
+<a name="ln519">    }</a>
+<a name="ln520"> </a>
+<a name="ln521">    return &quot;You aren't carrying any such object.&quot;;</a>
+<a name="ln522">}</a>
+<a name="ln523"> </a>
+<a name="ln524">void InvMenu::load_inv_items(int item_selector, int excluded_slot,</a>
+<a name="ln525">                             function&lt;MenuEntry* (MenuEntry*)&gt; procfn)</a>
+<a name="ln526">{</a>
+<a name="ln527">    vector&lt;const item_def *&gt; tobeshown;</a>
+<a name="ln528">    _get_inv_items_to_show(tobeshown, item_selector, excluded_slot);</a>
+<a name="ln529"> </a>
+<a name="ln530">    load_items(tobeshown, procfn);</a>
+<a name="ln531"> </a>
+<a name="ln532">    if (!item_count())</a>
+<a name="ln533">        set_title(no_selectables_message(item_selector));</a>
+<a name="ln534">    else</a>
+<a name="ln535">        set_title(&quot;&quot;);</a>
+<a name="ln536">}</a>
+<a name="ln537"> </a>
+<a name="ln538">#ifdef USE_TILE</a>
+<a name="ln539">bool get_tiles_for_item(const item_def &amp;item, vector&lt;tile_def&gt;&amp; tileset, bool show_background)</a>
+<a name="ln540">{</a>
+<a name="ln541">    tileidx_t idx = tileidx_item(get_item_info(item));</a>
+<a name="ln542">    if (!idx)</a>
+<a name="ln543">        return false;</a>
+<a name="ln544"> </a>
+<a name="ln545">    if (in_inventory(item))</a>
+<a name="ln546">    {</a>
+<a name="ln547">        const equipment_type eq = item_equip_slot(item);</a>
+<a name="ln548">        if (eq != EQ_NONE)</a>
+<a name="ln549">        {</a>
+<a name="ln550">            if (item_known_cursed(item))</a>
+<a name="ln551">                tileset.emplace_back(TILE_ITEM_SLOT_EQUIP_CURSED, TEX_DEFAULT);</a>
+<a name="ln552">            else</a>
+<a name="ln553">                tileset.emplace_back(TILE_ITEM_SLOT_EQUIP, TEX_DEFAULT);</a>
+<a name="ln554">        }</a>
+<a name="ln555">        else if (item_known_cursed(item))</a>
+<a name="ln556">            tileset.emplace_back(TILE_ITEM_SLOT_CURSED, TEX_DEFAULT);</a>
+<a name="ln557"> </a>
+<a name="ln558">        tileidx_t base_item = tileidx_known_base_item(idx);</a>
+<a name="ln559">        if (base_item)</a>
+<a name="ln560">            tileset.emplace_back(base_item, TEX_DEFAULT);</a>
+<a name="ln561">        tileset.emplace_back(idx, TEX_DEFAULT);</a>
+<a name="ln562"> </a>
+<a name="ln563">        if (eq != EQ_NONE &amp;&amp; you.melded[eq])</a>
+<a name="ln564">            tileset.emplace_back(TILEI_MESH, TEX_ICONS);</a>
+<a name="ln565">    }</a>
+<a name="ln566">    else</a>
+<a name="ln567">    {</a>
+<a name="ln568">        // Do we want to display the floor type or is that too distracting?</a>
+<a name="ln569">        const coord_def c = item.held_by_monster()</a>
+<a name="ln570">            ? item.holding_monster()-&gt;pos()</a>
+<a name="ln571">            : item.pos;</a>
+<a name="ln572">        tileidx_t ch = 0;</a>
+<a name="ln573">        if (c != coord_def() &amp;&amp; show_background &amp;&amp; item.link != ITEM_IN_SHOP)</a>
+<a name="ln574">        {</a>
+<a name="ln575">            ch = tileidx_feature(c);</a>
+<a name="ln576">            if (ch == TILE_FLOOR_NORMAL)</a>
+<a name="ln577">                ch = env.tile_flv(c).floor;</a>
+<a name="ln578">            else if (ch == TILE_WALL_NORMAL)</a>
+<a name="ln579">                ch = env.tile_flv(c).wall;</a>
+<a name="ln580"> </a>
+<a name="ln581">            tileset.emplace_back(ch, get_dngn_tex(ch));</a>
+<a name="ln582">        }</a>
+<a name="ln583">        tileidx_t base_item = tileidx_known_base_item(idx);</a>
+<a name="ln584">        if (base_item)</a>
+<a name="ln585">            tileset.emplace_back(base_item, TEX_DEFAULT);</a>
+<a name="ln586"> </a>
+<a name="ln587">        tileset.emplace_back(idx, TEX_DEFAULT);</a>
+<a name="ln588"> </a>
+<a name="ln589">        if (ch != 0)</a>
+<a name="ln590">        {</a>
+<a name="ln591">            // Needs to be displayed so as to not give away mimics in shallow water.</a>
+<a name="ln592">            if (ch == TILE_DNGN_SHALLOW_WATER)</a>
+<a name="ln593">                tileset.emplace_back(TILEI_MASK_SHALLOW_WATER, TEX_ICONS);</a>
+<a name="ln594">            else if (ch == TILE_DNGN_SHALLOW_WATER_MURKY)</a>
+<a name="ln595">                tileset.emplace_back(TILEI_MASK_SHALLOW_WATER_MURKY, TEX_ICONS);</a>
+<a name="ln596">        }</a>
+<a name="ln597">    }</a>
+<a name="ln598">    if (item.base_type == OBJ_WEAPONS || item.base_type == OBJ_MISSILES</a>
+<a name="ln599">        || item.base_type == OBJ_ARMOUR</a>
+<a name="ln600">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln601">        || item.base_type == OBJ_RODS</a>
+<a name="ln602">#endif</a>
+<a name="ln603">       )</a>
+<a name="ln604">    {</a>
+<a name="ln605">        tileidx_t brand = tileidx_known_brand(item);</a>
+<a name="ln606">        if (brand)</a>
+<a name="ln607">            tileset.emplace_back(brand, TEX_DEFAULT);</a>
+<a name="ln608">    }</a>
+<a name="ln609">    else if (item.base_type == OBJ_CORPSES)</a>
+<a name="ln610">    {</a>
+<a name="ln611">        tileidx_t brand = tileidx_corpse_brand(item);</a>
+<a name="ln612">        if (brand)</a>
+<a name="ln613">            tileset.emplace_back(brand, TEX_DEFAULT);</a>
+<a name="ln614">    }</a>
+<a name="ln615"> </a>
+<a name="ln616">    return true;</a>
+<a name="ln617">}</a>
+<a name="ln618"> </a>
+<a name="ln619">bool InvEntry::get_tiles(vector&lt;tile_def&gt;&amp; tileset) const</a>
+<a name="ln620">{</a>
+<a name="ln621">    if (!Options.tile_menu_icons)</a>
+<a name="ln622">        return false;</a>
+<a name="ln623"> </a>
+<a name="ln624">    // Runes + orb of zot have a special uncollected tile</a>
+<a name="ln625">    if (quantity &lt;= 0 &amp;&amp; (item-&gt;base_type != OBJ_RUNES &amp;&amp; item-&gt;base_type != OBJ_ORBS))</a>
+<a name="ln626">        return false;</a>
+<a name="ln627"> </a>
+<a name="ln628">    return get_tiles_for_item(*item, tileset, show_background);</a>
+<a name="ln629">}</a>
+<a name="ln630">#else</a>
+<a name="ln631">bool InvEntry::get_tiles(vector&lt;tile_def&gt;&amp; /*tileset*/) const { return false; }</a>
+<a name="ln632">#endif</a>
+<a name="ln633"> </a>
+<a name="ln634">bool InvMenu::is_selectable(int index) const</a>
+<a name="ln635">{</a>
+<a name="ln636">    if (type == menu_type::drop)</a>
+<a name="ln637">    {</a>
+<a name="ln638">        InvEntry *item = dynamic_cast&lt;InvEntry*&gt;(items[index]);</a>
+<a name="ln639">        if (item-&gt;is_cursed() &amp;&amp; item-&gt;is_equipped())</a>
+<a name="ln640">            return false;</a>
+<a name="ln641"> </a>
+<a name="ln642">        string text = item-&gt;get_text();</a>
+<a name="ln643"> </a>
+<a name="ln644">        if (text.find(&quot;!*&quot;) != string::npos || text.find(&quot;!d&quot;) != string::npos)</a>
+<a name="ln645">            return false;</a>
+<a name="ln646">    }</a>
+<a name="ln647"> </a>
+<a name="ln648">    return Menu::is_selectable(index);</a>
+<a name="ln649">}</a>
+<a name="ln650"> </a>
+<a name="ln651">template &lt;const string &amp;(InvEntry::*method)() const&gt;</a>
+<a name="ln652">static int compare_item_str(const InvEntry *a, const InvEntry *b)</a>
+<a name="ln653">{</a>
+<a name="ln654">    return (a-&gt;*method)().compare((b-&gt;*method)());</a>
+<a name="ln655">}</a>
+<a name="ln656"> </a>
+<a name="ln657">// Would call this just compare_item, but MSVC mistakenly thinks the next</a>
+<a name="ln658">// one is a specialization rather than an overload.</a>
+<a name="ln659">template &lt;typename T, T (*proc)(const InvEntry *a)&gt;</a>
+<a name="ln660">static int compare_item_fn(const InvEntry *a, const InvEntry *b)</a>
+<a name="ln661">{</a>
+<a name="ln662">    return int(proc(a)) - int(proc(b));</a>
+<a name="ln663">}</a>
+<a name="ln664"> </a>
+<a name="ln665">template &lt;typename T, T (InvEntry::*method)() const&gt;</a>
+<a name="ln666">static int compare_item(const InvEntry *a, const InvEntry *b)</a>
+<a name="ln667">{</a>
+<a name="ln668">    return int((a-&gt;*method)()) - int((b-&gt;*method)());</a>
+<a name="ln669">}</a>
+<a name="ln670"> </a>
+<a name="ln671">template &lt;typename T, T (InvEntry::*method)() const&gt;</a>
+<a name="ln672">static int compare_item_rev(const InvEntry *a, const InvEntry *b)</a>
+<a name="ln673">{</a>
+<a name="ln674">    return int((b-&gt;*method)()) - int((a-&gt;*method)());</a>
+<a name="ln675">}</a>
+<a name="ln676"> </a>
+<a name="ln677">template &lt;item_sort_fn cmp&gt;</a>
+<a name="ln678">static int compare_reverse(const InvEntry *a, const InvEntry *b)</a>
+<a name="ln679">{</a>
+<a name="ln680">    return -cmp(a, b);</a>
+<a name="ln681">}</a>
+<a name="ln682"> </a>
+<a name="ln683">// We need C++11 already!</a>
+<a name="ln684">// Some prototypes to prevent warnings; we can't make these static because</a>
+<a name="ln685">// they're used as template parameters.</a>
+<a name="ln686">int sort_item_qty(const InvEntry *a);</a>
+<a name="ln687">int sort_item_slot(const InvEntry *a);</a>
+<a name="ln688">bool sort_item_identified(const InvEntry *a);</a>
+<a name="ln689">bool sort_item_charged(const InvEntry *a);</a>
+<a name="ln690"> </a>
+<a name="ln691">int sort_item_qty(const InvEntry *a)</a>
+<a name="ln692">{</a>
+<a name="ln693">    return a-&gt;quantity;</a>
+<a name="ln694">}</a>
+<a name="ln695">int sort_item_slot(const InvEntry *a)</a>
+<a name="ln696">{</a>
+<a name="ln697">    return a-&gt;item-&gt;link;</a>
+<a name="ln698">}</a>
+<a name="ln699"> </a>
+<a name="ln700">bool sort_item_identified(const InvEntry *a)</a>
+<a name="ln701">{</a>
+<a name="ln702">    return !item_type_known(*(a-&gt;item));</a>
+<a name="ln703">}</a>
+<a name="ln704"> </a>
+<a name="ln705">bool sort_item_charged(const InvEntry *a)</a>
+<a name="ln706">{</a>
+<a name="ln707">    return a-&gt;item-&gt;base_type != OBJ_WANDS</a>
+<a name="ln708">           || !item_is_evokable(*(a-&gt;item), false, true);</a>
+<a name="ln709">}</a>
+<a name="ln710"> </a>
+<a name="ln711">static bool _compare_invmenu_items(const InvEntry *a, const InvEntry *b,</a>
+<a name="ln712">                                   const item_sort_comparators *cmps)</a>
+<a name="ln713">{</a>
+<a name="ln714">    for (const auto &amp;comparator : *cmps)</a>
+<a name="ln715">    {</a>
+<a name="ln716">        const int cmp = comparator.compare(a, b);</a>
+<a name="ln717">        if (cmp)</a>
+<a name="ln718">            return cmp &lt; 0;</a>
+<a name="ln719">    }</a>
+<a name="ln720">    return a-&gt;item-&gt;link &lt; b-&gt;item-&gt;link;</a>
+<a name="ln721">}</a>
+<a name="ln722"> </a>
+<a name="ln723">struct menu_entry_comparator</a>
+<a name="ln724">{</a>
+<a name="ln725">    const menu_sort_condition *cond;</a>
+<a name="ln726"> </a>
+<a name="ln727">    menu_entry_comparator(const menu_sort_condition *c)</a>
+<a name="ln728">        : cond(c)</a>
+<a name="ln729">    {</a>
+<a name="ln730">    }</a>
+<a name="ln731"> </a>
+<a name="ln732">    bool operator () (const MenuEntry* a, const MenuEntry* b) const</a>
+<a name="ln733">    {</a>
+<a name="ln734">        const InvEntry *ia = dynamic_cast&lt;const InvEntry *&gt;(a);</a>
+<a name="ln735">        const InvEntry *ib = dynamic_cast&lt;const InvEntry *&gt;(b);</a>
+<a name="ln736">        return _compare_invmenu_items(ia, ib, &amp;cond-&gt;cmp);</a>
+<a name="ln737">    }</a>
+<a name="ln738">};</a>
+<a name="ln739"> </a>
+<a name="ln740">void init_item_sort_comparators(item_sort_comparators &amp;list, const string &amp;set)</a>
+<a name="ln741">{</a>
+<a name="ln742">    static struct</a>
+<a name="ln743">    {</a>
+<a name="ln744">        const string cname;</a>
+<a name="ln745">        item_sort_fn cmp;</a>
+<a name="ln746">    } cmp_map[]  =</a>
+<a name="ln747">      {</a>
+<a name="ln748">          { &quot;basename&quot;,  compare_item_str&lt;&amp;InvEntry::get_basename&gt; },</a>
+<a name="ln749">          { &quot;qualname&quot;,  compare_item_str&lt;&amp;InvEntry::get_qualname&gt; },</a>
+<a name="ln750">          { &quot;fullname&quot;,  compare_item_str&lt;&amp;InvEntry::get_fullname&gt; },</a>
+<a name="ln751">          { &quot;dbname&quot;,    compare_item_str&lt;&amp;InvEntry::get_dbname&gt; },</a>
+<a name="ln752">          { &quot;curse&quot;,     compare_item&lt;bool, &amp;InvEntry::is_cursed&gt; },</a>
+<a name="ln753">          { &quot;glowing&quot;,   compare_item_rev&lt;bool, &amp;InvEntry::is_glowing&gt; },</a>
+<a name="ln754">          { &quot;ego&quot;,       compare_item_rev&lt;bool, &amp;InvEntry::is_ego&gt; },</a>
+<a name="ln755">          { &quot;art&quot;,       compare_item_rev&lt;bool, &amp;InvEntry::is_art&gt; },</a>
+<a name="ln756">          { &quot;equipped&quot;,  compare_item_rev&lt;bool, &amp;InvEntry::is_equipped&gt; },</a>
+<a name="ln757">          { &quot;identified&quot;,compare_item_fn&lt;bool, sort_item_identified&gt; },</a>
+<a name="ln758">          { &quot;charged&quot;,   compare_item_fn&lt;bool, sort_item_charged&gt;},</a>
+<a name="ln759">          { &quot;qty&quot;,       compare_item_fn&lt;int, sort_item_qty&gt; },</a>
+<a name="ln760">          { &quot;slot&quot;,      compare_item_fn&lt;int, sort_item_slot&gt; },</a>
+<a name="ln761">      };</a>
+<a name="ln762"> </a>
+<a name="ln763">    list.clear();</a>
+<a name="ln764">    for (string s : split_string(&quot;,&quot;, set))</a>
+<a name="ln765">    {</a>
+<a name="ln766">        if (s.empty())</a>
+<a name="ln767">            continue;</a>
+<a name="ln768"> </a>
+<a name="ln769">        const bool negated = s[0] == '&gt;';</a>
+<a name="ln770">        if (s[0] == '&lt;' || s[0] == '&gt;')</a>
+<a name="ln771">            s = s.substr(1);</a>
+<a name="ln772"> </a>
+<a name="ln773">        for (const auto &amp;ci : cmp_map)</a>
+<a name="ln774">            if (ci.cname == s)</a>
+<a name="ln775">            {</a>
+<a name="ln776">                list.emplace_back(ci.cmp, negated);</a>
+<a name="ln777">                break;</a>
+<a name="ln778">            }</a>
+<a name="ln779">    }</a>
+<a name="ln780"> </a>
+<a name="ln781">    if (list.empty())</a>
+<a name="ln782">        list.emplace_back(compare_item_str&lt;&amp;InvEntry::get_fullname&gt;);</a>
+<a name="ln783">}</a>
+<a name="ln784"> </a>
+<a name="ln785">const menu_sort_condition *InvMenu::find_menu_sort_condition() const</a>
+<a name="ln786">{</a>
+<a name="ln787">    for (int i = Options.sort_menus.size() - 1; i &gt;= 0; --i)</a>
+<a name="ln788">        if (Options.sort_menus[i].matches(type))</a>
+<a name="ln789">            return &amp;Options.sort_menus[i];</a>
+<a name="ln790"> </a>
+<a name="ln791">    return nullptr;</a>
+<a name="ln792">}</a>
+<a name="ln793"> </a>
+<a name="ln794">void InvMenu::sort_menu(vector&lt;InvEntry*&gt; &amp;invitems,</a>
+<a name="ln795">                        const menu_sort_condition *cond)</a>
+<a name="ln796">{</a>
+<a name="ln797">    if (!cond || cond-&gt;sort == -1 || (int) invitems.size() &lt; cond-&gt;sort)</a>
+<a name="ln798">        return;</a>
+<a name="ln799"> </a>
+<a name="ln800">    sort(invitems.begin(), invitems.end(), menu_entry_comparator(cond));</a>
+<a name="ln801">}</a>
+<a name="ln802"> </a>
+<a name="ln803">FixedVector&lt;int, NUM_OBJECT_CLASSES&gt; inv_order(</a>
+<a name="ln804">    OBJ_WEAPONS,</a>
+<a name="ln805">    OBJ_MISSILES,</a>
+<a name="ln806">    OBJ_ARMOUR,</a>
+<a name="ln807">    OBJ_STAVES,</a>
+<a name="ln808">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln809">    OBJ_RODS,</a>
+<a name="ln810">#endif</a>
+<a name="ln811">    OBJ_JEWELLERY,</a>
+<a name="ln812">    OBJ_WANDS,</a>
+<a name="ln813">    OBJ_SCROLLS,</a>
+<a name="ln814">    OBJ_POTIONS,</a>
+<a name="ln815">    OBJ_BOOKS,</a>
+<a name="ln816">    OBJ_MISCELLANY,</a>
+<a name="ln817">    OBJ_FOOD,</a>
+<a name="ln818">    // These four can't actually be in your inventory.</a>
+<a name="ln819">    OBJ_CORPSES,</a>
+<a name="ln820">    OBJ_RUNES,</a>
+<a name="ln821">    OBJ_ORBS,</a>
+<a name="ln822">    OBJ_GOLD);</a>
+<a name="ln823"> </a>
+<a name="ln824">menu_letter InvMenu::load_items(const vector&lt;item_def&gt;&amp; mitems,</a>
+<a name="ln825">                                function&lt;MenuEntry* (MenuEntry*)&gt; procfn,</a>
+<a name="ln826">                                menu_letter ckey, bool sort)</a>
+<a name="ln827">{</a>
+<a name="ln828">    vector&lt;const item_def*&gt; xlatitems;</a>
+<a name="ln829">    for (const item_def &amp;item : mitems)</a>
+<a name="ln830">        xlatitems.push_back(&amp;item);</a>
+<a name="ln831">    return load_items(xlatitems, procfn, ckey, sort);</a>
+<a name="ln832">}</a>
+<a name="ln833"> </a>
+<a name="ln834">menu_letter InvMenu::load_items(const vector&lt;const item_def*&gt; &amp;mitems,</a>
+<a name="ln835">                                function&lt;MenuEntry* (MenuEntry*)&gt; procfn,</a>
+<a name="ln836">                                menu_letter ckey, bool sort)</a>
+<a name="ln837">{</a>
+<a name="ln838">    FixedVector&lt; int, NUM_OBJECT_CLASSES &gt; inv_class(0);</a>
+<a name="ln839">    for (const item_def * const mitem : mitems)</a>
+<a name="ln840">        inv_class[mitem-&gt;base_type]++;</a>
+<a name="ln841"> </a>
+<a name="ln842">    vector&lt;InvEntry*&gt; items_in_class;</a>
+<a name="ln843">    const menu_sort_condition *cond = nullptr;</a>
+<a name="ln844">    if (sort) cond = find_menu_sort_condition();</a>
+<a name="ln845"> </a>
+<a name="ln846">    for (int obj = 0; obj &lt; NUM_OBJECT_CLASSES; ++obj)</a>
+<a name="ln847">    {</a>
+<a name="ln848">        int i = inv_order[obj];</a>
+<a name="ln849"> </a>
+<a name="ln850">        if (!inv_class[i])</a>
+<a name="ln851">            continue;</a>
+<a name="ln852"> </a>
+<a name="ln853">        string subtitle = item_class_name(i);</a>
+<a name="ln854"> </a>
+<a name="ln855">        // Mention the class selection shortcuts.</a>
+<a name="ln856">        if (is_set(MF_MULTISELECT))</a>
+<a name="ln857">        {</a>
+<a name="ln858">            vector&lt;char&gt; glyphs;</a>
+<a name="ln859">            get_class_hotkeys(i, glyphs);</a>
+<a name="ln860">            if (!glyphs.empty())</a>
+<a name="ln861">            {</a>
+<a name="ln862">                // longest string</a>
+<a name="ln863">                const string str = &quot;Magical Staves &quot;;</a>
+<a name="ln864">                subtitle += string(strwidth(str) - strwidth(subtitle),</a>
+<a name="ln865">                                   ' ');</a>
+<a name="ln866">                subtitle += &quot;(select all with &lt;w&gt;&quot;;</a>
+<a name="ln867">                for (char gly : glyphs)</a>
+<a name="ln868">                    subtitle += gly;</a>
+<a name="ln869">                subtitle += &quot;&lt;/w&gt;&lt;blue&gt;)&quot;;</a>
+<a name="ln870">            }</a>
+<a name="ln871">        }</a>
+<a name="ln872">        add_entry(new MenuEntry(subtitle, MEL_SUBTITLE));</a>
+<a name="ln873"> </a>
+<a name="ln874">        items_in_class.clear();</a>
+<a name="ln875"> </a>
+<a name="ln876">        InvEntry *forced_first = nullptr;</a>
+<a name="ln877">        for (const item_def * const mitem : mitems)</a>
+<a name="ln878">        {</a>
+<a name="ln879">            if (mitem-&gt;base_type != i)</a>
+<a name="ln880">                continue;</a>
+<a name="ln881"> </a>
+<a name="ln882">            InvEntry * const ie = new InvEntry(*mitem);</a>
+<a name="ln883">            if (mitem-&gt;sub_type == get_max_subtype(mitem-&gt;base_type))</a>
+<a name="ln884">                forced_first = ie;</a>
+<a name="ln885">            else</a>
+<a name="ln886">                items_in_class.push_back(ie);</a>
+<a name="ln887">        }</a>
+<a name="ln888"> </a>
+<a name="ln889">        sort_menu(items_in_class, cond);</a>
+<a name="ln890">        if (forced_first)</a>
+<a name="ln891">            items_in_class.insert(items_in_class.begin(),forced_first);</a>
+<a name="ln892"> </a>
+<a name="ln893">        for (InvEntry *ie : items_in_class)</a>
+<a name="ln894">        {</a>
+<a name="ln895">            if (tag == &quot;pickup&quot;)</a>
+<a name="ln896">            {</a>
+<a name="ln897">                if (ie-&gt;item &amp;&amp; item_is_stationary(*ie-&gt;item))</a>
+<a name="ln898">                    ie-&gt;tag = &quot;nopickup&quot;;</a>
+<a name="ln899">                else</a>
+<a name="ln900">                    ie-&gt;tag = &quot;pickup&quot;;</a>
+<a name="ln901">            }</a>
+<a name="ln902">            if (get_flags() &amp; MF_NOSELECT)</a>
+<a name="ln903">                ie-&gt;hotkeys.clear();</a>
+<a name="ln904">            // If there's no hotkey, provide one.</a>
+<a name="ln905">            else if (ie-&gt;hotkeys[0] == ' ')</a>
+<a name="ln906">            {</a>
+<a name="ln907">                if (ie-&gt;tag == &quot;nopickup&quot;)</a>
+<a name="ln908">                    ie-&gt;hotkeys.clear();</a>
+<a name="ln909">                else</a>
+<a name="ln910">                    ie-&gt;hotkeys[0] = ckey++;</a>
+<a name="ln911">            }</a>
+<a name="ln912">            do_preselect(ie);</a>
+<a name="ln913"> </a>
+<a name="ln914">            add_entry(procfn ? procfn(ie) : ie);</a>
+<a name="ln915">        }</a>
+<a name="ln916">    }</a>
+<a name="ln917"> </a>
+<a name="ln918">    return ckey;</a>
+<a name="ln919">}</a>
+<a name="ln920"> </a>
+<a name="ln921">void InvMenu::do_preselect(InvEntry *ie)</a>
+<a name="ln922">{</a>
+<a name="ln923">    if (!pre_select || pre_select-&gt;empty())</a>
+<a name="ln924">        return;</a>
+<a name="ln925"> </a>
+<a name="ln926">    for (const SelItem &amp;presel : *pre_select)</a>
+<a name="ln927">        if (ie-&gt;item &amp;&amp; ie-&gt;item == presel.item)</a>
+<a name="ln928">        {</a>
+<a name="ln929">            ie-&gt;selected_qty = presel.quantity;</a>
+<a name="ln930">            break;</a>
+<a name="ln931">        }</a>
+<a name="ln932">}</a>
+<a name="ln933"> </a>
+<a name="ln934">vector&lt;SelItem&gt; InvMenu::get_selitems() const</a>
+<a name="ln935">{</a>
+<a name="ln936">    vector&lt;SelItem&gt; selected_items;</a>
+<a name="ln937">    for (MenuEntry *me : sel)</a>
+<a name="ln938">    {</a>
+<a name="ln939">        InvEntry *inv = dynamic_cast&lt;InvEntry*&gt;(me);</a>
+<a name="ln940">        selected_items.emplace_back(inv-&gt;hotkeys[0], inv-&gt;selected_qty,</a>
+<a name="ln941">                                    inv-&gt;item, inv-&gt;has_star());</a>
+<a name="ln942">    }</a>
+<a name="ln943">    return selected_items;</a>
+<a name="ln944">}</a>
+<a name="ln945"> </a>
+<a name="ln946">string InvMenu::help_key() const</a>
+<a name="ln947">{</a>
+<a name="ln948">    return type == menu_type::drop || type == menu_type::pickup ? &quot;pick-up&quot;</a>
+<a name="ln949">                                                                : &quot;&quot;;</a>
+<a name="ln950">}</a>
+<a name="ln951"> </a>
+<a name="ln952">int InvMenu::getkey() const</a>
+<a name="ln953">{</a>
+<a name="ln954">    auto mkey = lastch;</a>
+<a name="ln955">    if (type == menu_type::know &amp;&amp; (mkey == 0 || mkey == CK_ENTER))</a>
+<a name="ln956">        return mkey;</a>
+<a name="ln957"> </a>
+<a name="ln958">    if (!isaalnum(mkey) &amp;&amp; mkey != '$' &amp;&amp; mkey != '-' &amp;&amp; mkey != '?'</a>
+<a name="ln959">        &amp;&amp; mkey != '*' &amp;&amp; !key_is_escape(mkey) &amp;&amp; mkey != '\\'</a>
+<a name="ln960">        &amp;&amp; mkey != ',')</a>
+<a name="ln961">    {</a>
+<a name="ln962">        mkey = ' ';</a>
+<a name="ln963">    }</a>
+<a name="ln964">    return mkey;</a>
+<a name="ln965">}</a>
+<a name="ln966"> </a>
+<a name="ln967">//////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln968"> </a>
+<a name="ln969">bool in_inventory(const item_def &amp;i)</a>
+<a name="ln970">{</a>
+<a name="ln971">    return i.pos == ITEM_IN_INVENTORY;</a>
+<a name="ln972">}</a>
+<a name="ln973"> </a>
+<a name="ln974">const char *item_class_name(int type, bool terse)</a>
+<a name="ln975">{</a>
+<a name="ln976">    if (terse)</a>
+<a name="ln977">    {</a>
+<a name="ln978">        switch (type)</a>
+<a name="ln979">        {</a>
+<a name="ln980">        case OBJ_STAVES:     return &quot;magical staff&quot;;</a>
+<a name="ln981">        case OBJ_MISCELLANY: return &quot;misc&quot;;</a>
+<a name="ln982">        default:             return base_type_string((object_class_type) type);</a>
+<a name="ln983">        }</a>
+<a name="ln984">    }</a>
+<a name="ln985">    else</a>
+<a name="ln986">    {</a>
+<a name="ln987">        switch (type)</a>
+<a name="ln988">        {</a>
+<a name="ln989">        case OBJ_GOLD:       return &quot;Gold&quot;;</a>
+<a name="ln990">        case OBJ_WEAPONS:    return &quot;Hand Weapons&quot;;</a>
+<a name="ln991">        case OBJ_MISSILES:   return &quot;Missiles&quot;;</a>
+<a name="ln992">        case OBJ_ARMOUR:     return &quot;Armour&quot;;</a>
+<a name="ln993">        case OBJ_WANDS:      return &quot;Wands&quot;;</a>
+<a name="ln994">        case OBJ_FOOD:       return &quot;Comestibles&quot;;</a>
+<a name="ln995">        case OBJ_SCROLLS:    return &quot;Scrolls&quot;;</a>
+<a name="ln996">        case OBJ_JEWELLERY:  return &quot;Jewellery&quot;;</a>
+<a name="ln997">        case OBJ_POTIONS:    return &quot;Potions&quot;;</a>
+<a name="ln998">        case OBJ_BOOKS:      return &quot;Books&quot;;</a>
+<a name="ln999">        case OBJ_STAVES:     return &quot;Magical Staves&quot;;</a>
+<a name="ln1000">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1001">        case OBJ_RODS:       return &quot;Rods&quot;;</a>
+<a name="ln1002">#endif</a>
+<a name="ln1003">        case OBJ_ORBS:       return &quot;Orbs of Power&quot;;</a>
+<a name="ln1004">        case OBJ_MISCELLANY: return &quot;Miscellaneous&quot;;</a>
+<a name="ln1005">        case OBJ_CORPSES:    return &quot;Carrion&quot;;</a>
+<a name="ln1006">        case OBJ_RUNES:      return &quot;Runes of Zot&quot;;</a>
+<a name="ln1007">        }</a>
+<a name="ln1008">    }</a>
+<a name="ln1009">    return &quot;&quot;;</a>
+<a name="ln1010">}</a>
+<a name="ln1011"> </a>
+<a name="ln1012">const char* item_slot_name(equipment_type type)</a>
+<a name="ln1013">{</a>
+<a name="ln1014">    switch (type)</a>
+<a name="ln1015">    {</a>
+<a name="ln1016">    case EQ_CLOAK:       return &quot;cloak&quot;;</a>
+<a name="ln1017">    case EQ_HELMET:      return &quot;helmet&quot;;</a>
+<a name="ln1018">    case EQ_GLOVES:      return &quot;gloves&quot;;</a>
+<a name="ln1019">    case EQ_BOOTS:       return &quot;boots&quot;;</a>
+<a name="ln1020">    case EQ_SHIELD:      return &quot;shield&quot;;</a>
+<a name="ln1021">    case EQ_BODY_ARMOUR: return &quot;body&quot;;</a>
+<a name="ln1022">    default:             return &quot;&quot;;</a>
+<a name="ln1023">    }</a>
+<a name="ln1024">}</a>
+<a name="ln1025"> </a>
+<a name="ln1026">vector&lt;SelItem&gt; select_items(const vector&lt;const item_def*&gt; &amp;items,</a>
+<a name="ln1027">                             const char *title, bool noselect,</a>
+<a name="ln1028">                             menu_type mtype)</a>
+<a name="ln1029">{</a>
+<a name="ln1030">    vector&lt;SelItem&gt; selected;</a>
+<a name="ln1031">    if (!items.empty())</a>
+<a name="ln1032">    {</a>
+<a name="ln1033">        InvMenu menu;</a>
+<a name="ln1034">        menu.set_type(mtype);</a>
+<a name="ln1035">        menu.set_title(title);</a>
+<a name="ln1036">        if (mtype == menu_type::pickup)</a>
+<a name="ln1037">            menu.set_tag(&quot;pickup&quot;);</a>
+<a name="ln1038"> </a>
+<a name="ln1039">        menu.load_items(items);</a>
+<a name="ln1040">        int new_flags = noselect ? MF_NOSELECT</a>
+<a name="ln1041">                                 : MF_MULTISELECT | MF_ALLOW_FILTER;</a>
+<a name="ln1042"> </a>
+<a name="ln1043">        if (mtype == menu_type::sel_one)</a>
+<a name="ln1044">        {</a>
+<a name="ln1045">            new_flags |= MF_SINGLESELECT;</a>
+<a name="ln1046">            new_flags &amp;= ~MF_MULTISELECT;</a>
+<a name="ln1047">        }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">        new_flags |= MF_ALLOW_FORMATTING;</a>
+<a name="ln1050">        new_flags |= menu.get_flags() &amp; MF_USE_TWO_COLUMNS;</a>
+<a name="ln1051">        menu.set_flags(new_flags);</a>
+<a name="ln1052">        menu.show();</a>
+<a name="ln1053">        selected = menu.get_selitems();</a>
+<a name="ln1054">    }</a>
+<a name="ln1055">    return selected;</a>
+<a name="ln1056">}</a>
+<a name="ln1057"> </a>
+<a name="ln1058">bool item_is_selected(const item_def &amp;i, int selector)</a>
+<a name="ln1059">{</a>
+<a name="ln1060">    const object_class_type itype = i.base_type;</a>
+<a name="ln1061">    if (selector == OSEL_ANY || selector == itype</a>
+<a name="ln1062">                                &amp;&amp; itype != OBJ_FOOD &amp;&amp; itype != OBJ_ARMOUR)</a>
+<a name="ln1063">    {</a>
+<a name="ln1064">        return true;</a>
+<a name="ln1065">    }</a>
+<a name="ln1066"> </a>
+<a name="ln1067">    switch (selector)</a>
+<a name="ln1068">    {</a>
+<a name="ln1069">    case OBJ_ARMOUR:</a>
+<a name="ln1070">        return itype == OBJ_ARMOUR &amp;&amp; can_wear_armour(i, false, false);</a>
+<a name="ln1071"> </a>
+<a name="ln1072">    case OSEL_WORN_ARMOUR:</a>
+<a name="ln1073">        return itype == OBJ_ARMOUR &amp;&amp; item_is_equipped(i);</a>
+<a name="ln1074"> </a>
+<a name="ln1075">    case OSEL_UNIDENT:</a>
+<a name="ln1076">        return !fully_identified(i) &amp;&amp; itype != OBJ_BOOKS;</a>
+<a name="ln1077"> </a>
+<a name="ln1078">    case OBJ_MISSILES:</a>
+<a name="ln1079">        return itype == OBJ_MISSILES || itype == OBJ_WEAPONS;</a>
+<a name="ln1080"> </a>
+<a name="ln1081">    case OSEL_THROWABLE:</a>
+<a name="ln1082">    {</a>
+<a name="ln1083">        if (itype != OBJ_WEAPONS &amp;&amp; itype != OBJ_MISSILES)</a>
+<a name="ln1084">            return false;</a>
+<a name="ln1085"> </a>
+<a name="ln1086">        const launch_retval projected = is_launched(&amp;you, you.weapon(), i);</a>
+<a name="ln1087"> </a>
+<a name="ln1088">        if (projected == launch_retval::FUMBLED)</a>
+<a name="ln1089">            return false;</a>
+<a name="ln1090"> </a>
+<a name="ln1091">        return true;</a>
+<a name="ln1092">    }</a>
+<a name="ln1093">    case OBJ_WEAPONS:</a>
+<a name="ln1094">    case OSEL_WIELD:</a>
+<a name="ln1095">        return item_is_wieldable(i);</a>
+<a name="ln1096"> </a>
+<a name="ln1097">    case OBJ_SCROLLS:</a>
+<a name="ln1098">        return itype == OBJ_SCROLLS</a>
+<a name="ln1099">               || (itype == OBJ_BOOKS &amp;&amp; i.sub_type != BOOK_MANUAL);</a>
+<a name="ln1100"> </a>
+<a name="ln1101">    case OSEL_EVOKABLE:</a>
+<a name="ln1102">        return item_is_evokable(i, true, true);</a>
+<a name="ln1103"> </a>
+<a name="ln1104">    case OSEL_ENCHANTABLE_ARMOUR:</a>
+<a name="ln1105">        return is_enchantable_armour(i, true);</a>
+<a name="ln1106"> </a>
+<a name="ln1107">    case OBJ_FOOD:</a>
+<a name="ln1108">        return itype == OBJ_FOOD &amp;&amp; !is_inedible(i);</a>
+<a name="ln1109"> </a>
+<a name="ln1110">    case OSEL_CURSED_WORN:</a>
+<a name="ln1111">        return i.cursed() &amp;&amp; item_is_equipped(i)</a>
+<a name="ln1112">               &amp;&amp; (&amp;i != you.weapon() || is_weapon(i));</a>
+<a name="ln1113"> </a>
+<a name="ln1114">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1115">    case OSEL_UNCURSED_WORN_ARMOUR:</a>
+<a name="ln1116">        return !i.cursed() &amp;&amp; item_is_equipped(i) &amp;&amp; itype == OBJ_ARMOUR;</a>
+<a name="ln1117"> </a>
+<a name="ln1118">    case OSEL_UNCURSED_WORN_JEWELLERY:</a>
+<a name="ln1119">        return !i.cursed() &amp;&amp; item_is_equipped(i) &amp;&amp; itype == OBJ_JEWELLERY;</a>
+<a name="ln1120">#endif</a>
+<a name="ln1121"> </a>
+<a name="ln1122">    case OSEL_BRANDABLE_WEAPON:</a>
+<a name="ln1123">        return is_brandable_weapon(i, true);</a>
+<a name="ln1124"> </a>
+<a name="ln1125">    case OSEL_ENCHANTABLE_WEAPON:</a>
+<a name="ln1126">        return itype == OBJ_WEAPONS</a>
+<a name="ln1127">               &amp;&amp; !is_artefact(i)</a>
+<a name="ln1128">               &amp;&amp; (!item_ident(i, ISFLAG_KNOW_PLUSES)</a>
+<a name="ln1129">                   || i.plus &lt; MAX_WPN_ENCHANT);</a>
+<a name="ln1130"> </a>
+<a name="ln1131">    case OSEL_BLESSABLE_WEAPON:</a>
+<a name="ln1132">        return is_brandable_weapon(i, you_worship(GOD_SHINING_ONE), true);</a>
+<a name="ln1133"> </a>
+<a name="ln1134">    case OSEL_BEOGH_GIFT:</a>
+<a name="ln1135">        return (itype == OBJ_WEAPONS</a>
+<a name="ln1136">                || is_shield(i)</a>
+<a name="ln1137">                || itype == OBJ_ARMOUR</a>
+<a name="ln1138">                   &amp;&amp; get_armour_slot(i) == EQ_BODY_ARMOUR)</a>
+<a name="ln1139">                &amp;&amp; !item_is_equipped(i);</a>
+<a name="ln1140"> </a>
+<a name="ln1141">    case OSEL_CURSABLE:</a>
+<a name="ln1142">        return item_is_cursable(i);</a>
+<a name="ln1143"> </a>
+<a name="ln1144">    case OSEL_UNCURSED_WORN_RINGS:</a>
+<a name="ln1145">        return !i.cursed() &amp;&amp; item_is_equipped(i) &amp;&amp; itype == OBJ_JEWELLERY</a>
+<a name="ln1146">            &amp;&amp; !jewellery_is_amulet(i);</a>
+<a name="ln1147"> </a>
+<a name="ln1148">    default:</a>
+<a name="ln1149">        return false;</a>
+<a name="ln1150">    }</a>
+<a name="ln1151">}</a>
+<a name="ln1152"> </a>
+<a name="ln1153">static void _get_inv_items_to_show(vector&lt;const item_def*&gt; &amp;v,</a>
+<a name="ln1154">                                   int selector, int excluded_slot)</a>
+<a name="ln1155">{</a>
+<a name="ln1156">    for (const auto &amp;item : you.inv)</a>
+<a name="ln1157">    {</a>
+<a name="ln1158">        if (item.defined()</a>
+<a name="ln1159">            &amp;&amp; item.link != excluded_slot</a>
+<a name="ln1160">            &amp;&amp; item_is_selected(item, selector))</a>
+<a name="ln1161">        {</a>
+<a name="ln1162">            v.push_back(&amp;item);</a>
+<a name="ln1163">        }</a>
+<a name="ln1164">    }</a>
+<a name="ln1165">}</a>
+<a name="ln1166"> </a>
+<a name="ln1167"> </a>
+<a name="ln1168">/**</a>
+<a name="ln1169"> * Does the player have any items of the given type?</a>
+<a name="ln1170"> *</a>
+<a name="ln1171"> * @param selector          A object_selector.</a>
+<a name="ln1172"> * @param excluded_slot     An item slot to ignore.</a>
+<a name="ln1173"> * @param inspect_floor     If true, also check the floor where the player is</a>
+<a name="ln1174"> *                          standing.</a>
+<a name="ln1175"> *</a>
+<a name="ln1176"> * @return                  Whether there are any items matching the given</a>
+<a name="ln1177"> *                          selector in the player's inventory.</a>
+<a name="ln1178"> */</a>
+<a name="ln1179">bool any_items_of_type(int selector, int excluded_slot, bool inspect_floor)</a>
+<a name="ln1180">{</a>
+<a name="ln1181">    bool ret = any_of(begin(you.inv), end(you.inv),</a>
+<a name="ln1182">                  [=] (const item_def &amp;item) -&gt; bool</a>
+<a name="ln1183">                  {</a>
+<a name="ln1184">                      return item.defined() &amp;&amp; item.link != excluded_slot</a>
+<a name="ln1185">                          &amp;&amp; item_is_selected(item, selector);</a>
+<a name="ln1186">                  });</a>
+<a name="ln1187">    if (!ret &amp;&amp; inspect_floor)</a>
+<a name="ln1188">    {</a>
+<a name="ln1189">        auto item_floor = item_list_on_square(you.visible_igrd(you.pos()));</a>
+<a name="ln1190">        ret = any_of(begin(item_floor), end(item_floor),</a>
+<a name="ln1191">                      [=] (const item_def* item) -&gt; bool</a>
+<a name="ln1192">                      {</a>
+<a name="ln1193">                          return item-&gt;defined()</a>
+<a name="ln1194">                                    &amp;&amp; item_is_selected(*item, selector);</a>
+<a name="ln1195">                      });</a>
+<a name="ln1196">    }</a>
+<a name="ln1197">    return ret;</a>
+<a name="ln1198">}</a>
+<a name="ln1199"> </a>
+<a name="ln1200">// Use title = nullptr for stock Inventory title</a>
+<a name="ln1201">// type = menu_type::drop allows the multidrop toggle</a>
+<a name="ln1202">static unsigned char _invent_select(const char *title = nullptr,</a>
+<a name="ln1203">                                    menu_type type = menu_type::invlist,</a>
+<a name="ln1204">                                    int item_selector = OSEL_ANY,</a>
+<a name="ln1205">                                    int excluded_slot = -1,</a>
+<a name="ln1206">                                    int flags = MF_NOSELECT,</a>
+<a name="ln1207">                                    invtitle_annotator titlefn = nullptr,</a>
+<a name="ln1208">                                    vector&lt;SelItem&gt; *items = nullptr,</a>
+<a name="ln1209">                                    vector&lt;text_pattern&gt; *filter = nullptr,</a>
+<a name="ln1210">                                    Menu::selitem_tfn selitemfn = nullptr,</a>
+<a name="ln1211">                                    const vector&lt;SelItem&gt; *pre_select = nullptr)</a>
+<a name="ln1212">{</a>
+<a name="ln1213">    InvMenu menu(flags | MF_ALLOW_FORMATTING);</a>
+<a name="ln1214"> </a>
+<a name="ln1215">    menu.set_preselect(pre_select);</a>
+<a name="ln1216">    menu.set_title_annotator(titlefn);</a>
+<a name="ln1217">    menu.f_selitem = selitemfn;</a>
+<a name="ln1218">    if (filter)</a>
+<a name="ln1219">        menu.set_select_filter(*filter);</a>
+<a name="ln1220">    menu.load_inv_items(item_selector, excluded_slot);</a>
+<a name="ln1221">    menu.set_type(type);</a>
+<a name="ln1222"> </a>
+<a name="ln1223">    // Don't override title if there are no items.</a>
+<a name="ln1224">    if (title &amp;&amp; menu.item_count())</a>
+<a name="ln1225">        menu.set_title(title);</a>
+<a name="ln1226"> </a>
+<a name="ln1227">    menu.show(true);</a>
+<a name="ln1228"> </a>
+<a name="ln1229">    if (items)</a>
+<a name="ln1230">        *items = menu.get_selitems();</a>
+<a name="ln1231"> </a>
+<a name="ln1232">    return menu.getkey();</a>
+<a name="ln1233">}</a>
+<a name="ln1234"> </a>
+<a name="ln1235">void display_inventory()</a>
+<a name="ln1236">{</a>
+<a name="ln1237">    InvMenu menu(MF_SINGLESELECT | MF_ALLOW_FORMATTING);</a>
+<a name="ln1238">    menu.load_inv_items(OSEL_ANY, -1);</a>
+<a name="ln1239">    menu.set_type(menu_type::invlist);</a>
+<a name="ln1240"> </a>
+<a name="ln1241">    menu.on_single_selection = [](const MenuEntry&amp; item)</a>
+<a name="ln1242">    {</a>
+<a name="ln1243">        unsigned char select = item.hotkeys[0];</a>
+<a name="ln1244">        const int invidx = letter_to_index(select);</a>
+<a name="ln1245">        ASSERT(you.inv[invidx].defined());</a>
+<a name="ln1246">        return describe_item(you.inv[invidx]);</a>
+<a name="ln1247">    };</a>
+<a name="ln1248"> </a>
+<a name="ln1249">    menu.show(true);</a>
+<a name="ln1250">    if (!crawl_state.doing_prev_cmd_again)</a>
+<a name="ln1251">        redraw_screen();</a>
+<a name="ln1252">}</a>
+<a name="ln1253"> </a>
+<a name="ln1254">// Reads in digits for a count and apprends then to val, the</a>
+<a name="ln1255">// return value is the character that stopped the reading.</a>
+<a name="ln1256">static unsigned char _get_invent_quant(unsigned char keyin, int &amp;quant)</a>
+<a name="ln1257">{</a>
+<a name="ln1258">    quant = keyin - '0';</a>
+<a name="ln1259"> </a>
+<a name="ln1260">    while (true)</a>
+<a name="ln1261">    {</a>
+<a name="ln1262">        keyin = get_ch();</a>
+<a name="ln1263"> </a>
+<a name="ln1264">        if (!isadigit(keyin))</a>
+<a name="ln1265">            break;</a>
+<a name="ln1266"> </a>
+<a name="ln1267">        quant *= 10;</a>
+<a name="ln1268">        quant += (keyin - '0');</a>
+<a name="ln1269"> </a>
+<a name="ln1270">        if (quant &gt; 9999999)</a>
+<a name="ln1271">        {</a>
+<a name="ln1272">            quant = 9999999;</a>
+<a name="ln1273">            keyin = '\0';</a>
+<a name="ln1274">            break;</a>
+<a name="ln1275">        }</a>
+<a name="ln1276">    }</a>
+<a name="ln1277"> </a>
+<a name="ln1278">    return keyin;</a>
+<a name="ln1279">}</a>
+<a name="ln1280"> </a>
+<a name="ln1281">static string _drop_selitem_text(const vector&lt;MenuEntry*&gt; *s)</a>
+<a name="ln1282">{</a>
+<a name="ln1283">    bool extraturns = false;</a>
+<a name="ln1284"> </a>
+<a name="ln1285">    if (s-&gt;empty())</a>
+<a name="ln1286">        return &quot;&quot;;</a>
+<a name="ln1287"> </a>
+<a name="ln1288">    for (MenuEntry *entry : *s)</a>
+<a name="ln1289">    {</a>
+<a name="ln1290">        const item_def *item = static_cast&lt;item_def *&gt;(entry-&gt;data);</a>
+<a name="ln1291">        const int eq = get_equip_slot(item);</a>
+<a name="ln1292">        if (eq &gt; EQ_WEAPON &amp;&amp; eq &lt; NUM_EQUIP)</a>
+<a name="ln1293">        {</a>
+<a name="ln1294">            extraturns = true;</a>
+<a name="ln1295">            break;</a>
+<a name="ln1296">        }</a>
+<a name="ln1297">    }</a>
+<a name="ln1298"> </a>
+<a name="ln1299">    return make_stringf(&quot; (%u%s turn%s)&quot;,</a>
+<a name="ln1300">                        (unsigned int)s-&gt;size(),</a>
+<a name="ln1301">                        extraturns? &quot;+&quot; : &quot;&quot;,</a>
+<a name="ln1302">                        s-&gt;size() &gt; 1? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln1303">}</a>
+<a name="ln1304"> </a>
+<a name="ln1305">static string _drop_prompt(bool as_menu_title, bool menu_autopickup_mode)</a>
+<a name="ln1306">{</a>
+<a name="ln1307">    string prompt_base;</a>
+<a name="ln1308"> </a>
+<a name="ln1309">    if (as_menu_title &amp;&amp; menu_autopickup_mode)</a>
+<a name="ln1310">        prompt_base = &quot;Drop (and turn off autopickup for) what? &quot;;</a>
+<a name="ln1311">    else if (as_menu_title)</a>
+<a name="ln1312">        prompt_base = &quot;Drop what?                               &quot;;</a>
+<a name="ln1313">    else</a>
+<a name="ln1314">        prompt_base = &quot;Drop what? &quot;;</a>
+<a name="ln1315">    return prompt_base + slot_description()</a>
+<a name="ln1316">#ifdef TOUCH_UI</a>
+<a name="ln1317">                          + &quot; (&lt;Enter&gt; or tap header to drop)&quot;;</a>
+<a name="ln1318">#else</a>
+<a name="ln1319">                          + &quot; (_ for help)&quot;;</a>
+<a name="ln1320">#endif</a>
+<a name="ln1321">}</a>
+<a name="ln1322"> </a>
+<a name="ln1323">static string _drop_menu_titlefn(const Menu *m, const string &amp;)</a>
+<a name="ln1324">{</a>
+<a name="ln1325">    const InvMenu *invmenu = static_cast&lt;const InvMenu *&gt;(m);</a>
+<a name="ln1326">    return _drop_prompt(true, invmenu-&gt;mode_special_drop());</a>
+<a name="ln1327">}</a>
+<a name="ln1328"> </a>
+<a name="ln1329">/**</a>
+<a name="ln1330"> * Prompt the player to select zero or more items to drop.</a>
+<a name="ln1331"> * TODO: deduplicate/merge with prompt_invent_item().</a>
+<a name="ln1332"> *</a>
+<a name="ln1333"> * @param   Items already selected to drop.</a>
+<a name="ln1334"> * @return  The total set of items the player's chosen to drop.</a>
+<a name="ln1335"> */</a>
+<a name="ln1336">vector&lt;SelItem&gt; prompt_drop_items(const vector&lt;SelItem&gt; &amp;preselected_items)</a>
+<a name="ln1337">{</a>
+<a name="ln1338">    unsigned char  keyin = '?';</a>
+<a name="ln1339">    int            ret = PROMPT_ABORT;</a>
+<a name="ln1340"> </a>
+<a name="ln1341">    bool           need_redraw = false;</a>
+<a name="ln1342">    bool           need_prompt = true;</a>
+<a name="ln1343">    bool           need_getch  = false;</a>
+<a name="ln1344"> </a>
+<a name="ln1345">    vector&lt;SelItem&gt; items;</a>
+<a name="ln1346">    int count = -1;</a>
+<a name="ln1347">    while (true)</a>
+<a name="ln1348">    {</a>
+<a name="ln1349">        if (need_redraw &amp;&amp; !crawl_state.doing_prev_cmd_again)</a>
+<a name="ln1350">        {</a>
+<a name="ln1351">            redraw_screen();</a>
+<a name="ln1352">            clear_messages();</a>
+<a name="ln1353">        }</a>
+<a name="ln1354"> </a>
+<a name="ln1355">        if (need_prompt)</a>
+<a name="ln1356">        {</a>
+<a name="ln1357">            const string prompt = _drop_prompt(false, false);</a>
+<a name="ln1358">            mprf(MSGCH_PROMPT, &quot;%s (&lt;w&gt;?&lt;/w&gt; for menu, &lt;w&gt;Esc&lt;/w&gt; to quit)&quot;,</a>
+<a name="ln1359">                 prompt.c_str());</a>
+<a name="ln1360">        }</a>
+<a name="ln1361"> </a>
+<a name="ln1362">        if (need_getch)</a>
+<a name="ln1363">            keyin = get_ch();</a>
+<a name="ln1364"> </a>
+<a name="ln1365">        need_redraw = false;</a>
+<a name="ln1366">        need_prompt = true;</a>
+<a name="ln1367">        need_getch  = true;</a>
+<a name="ln1368"> </a>
+<a name="ln1369">        if (keyin == '_')</a>
+<a name="ln1370">            show_specific_help(&quot;pick-up&quot;);</a>
+<a name="ln1371">        else if (keyin == '?' || keyin == '*' || keyin == ',')</a>
+<a name="ln1372">        {</a>
+<a name="ln1373">            // The &quot;view inventory listing&quot; mode.</a>
+<a name="ln1374">            const int ch = _invent_select(&quot;&quot;,</a>
+<a name="ln1375">                                          menu_type::drop,</a>
+<a name="ln1376">                                          OSEL_ANY,</a>
+<a name="ln1377">                                          -1,</a>
+<a name="ln1378">                                          MF_MULTISELECT | MF_ALLOW_FILTER,</a>
+<a name="ln1379">                                          _drop_menu_titlefn,</a>
+<a name="ln1380">                                          &amp;items,</a>
+<a name="ln1381">                                          &amp;Options.drop_filter,</a>
+<a name="ln1382">                                          _drop_selitem_text,</a>
+<a name="ln1383">                                          &amp;preselected_items);</a>
+<a name="ln1384"> </a>
+<a name="ln1385">            if (key_is_escape(ch))</a>
+<a name="ln1386">            {</a>
+<a name="ln1387">                keyin       = ch;</a>
+<a name="ln1388">                need_prompt = false;</a>
+<a name="ln1389">                need_getch  = false;</a>
+<a name="ln1390">            }</a>
+<a name="ln1391">            else</a>
+<a name="ln1392">            {</a>
+<a name="ln1393">                keyin       = 0;</a>
+<a name="ln1394">                need_prompt = true;</a>
+<a name="ln1395">                need_getch  = true;</a>
+<a name="ln1396">            }</a>
+<a name="ln1397"> </a>
+<a name="ln1398">            if (!items.empty())</a>
+<a name="ln1399">            {</a>
+<a name="ln1400">                if (!crawl_state.doing_prev_cmd_again)</a>
+<a name="ln1401">                {</a>
+<a name="ln1402">                    redraw_screen();</a>
+<a name="ln1403">                    clear_messages();</a>
+<a name="ln1404">                }</a>
+<a name="ln1405"> </a>
+<a name="ln1406">                for (SelItem &amp;sel : items)</a>
+<a name="ln1407">                    sel.slot = letter_to_index(sel.slot);</a>
+<a name="ln1408">                return items;</a>
+<a name="ln1409">            }</a>
+<a name="ln1410"> </a>
+<a name="ln1411">            need_redraw = !(keyin == '?' || keyin == '*'</a>
+<a name="ln1412">                            || keyin == ',' || keyin == '+');</a>
+<a name="ln1413">        }</a>
+<a name="ln1414">        else if (isadigit(keyin))</a>
+<a name="ln1415">        {</a>
+<a name="ln1416">            // The &quot;read in quantity&quot; mode</a>
+<a name="ln1417">            keyin = _get_invent_quant(keyin, count);</a>
+<a name="ln1418"> </a>
+<a name="ln1419">            need_prompt = false;</a>
+<a name="ln1420">            need_getch  = false;</a>
+<a name="ln1421">        }</a>
+<a name="ln1422">        else if (key_is_escape(keyin)</a>
+<a name="ln1423">                || (Options.easy_quit_item_prompts &amp;&amp; keyin == ' '))</a>
+<a name="ln1424">        {</a>
+<a name="ln1425">            ret = PROMPT_ABORT;</a>
+<a name="ln1426">            break;</a>
+<a name="ln1427">        }</a>
+<a name="ln1428">        else if (isaalpha(keyin))</a>
+<a name="ln1429">        {</a>
+<a name="ln1430">            ret = letter_to_index(keyin);</a>
+<a name="ln1431"> </a>
+<a name="ln1432">            if (!you.inv[ret].defined())</a>
+<a name="ln1433">                mpr(&quot;You don't have any such object.&quot;);</a>
+<a name="ln1434">            else</a>
+<a name="ln1435">                break;</a>
+<a name="ln1436">        }</a>
+<a name="ln1437">        else if (keyin == ';')</a>
+<a name="ln1438">        {</a>
+<a name="ln1439">            ret = you.last_unequip;</a>
+<a name="ln1440">            break;</a>
+<a name="ln1441">        }</a>
+<a name="ln1442">        else if (!isspace(keyin))</a>
+<a name="ln1443">        {</a>
+<a name="ln1444">            // We've got a character we don't understand...</a>
+<a name="ln1445">            canned_msg(MSG_HUH);</a>
+<a name="ln1446">        }</a>
+<a name="ln1447">        else</a>
+<a name="ln1448">        {</a>
+<a name="ln1449">            // We're going to loop back up, so don't draw another prompt.</a>
+<a name="ln1450">            need_prompt = false;</a>
+<a name="ln1451">        }</a>
+<a name="ln1452">    }</a>
+<a name="ln1453"> </a>
+<a name="ln1454">    if (ret != PROMPT_ABORT)</a>
+<a name="ln1455">        items.emplace_back(ret, count, &amp;you.inv[ret]);</a>
+<a name="ln1456">    return items;</a>
+<a name="ln1457">}</a>
+<a name="ln1458"> </a>
+<a name="ln1459">static bool item_matches_digit_inscription(item_def &amp;item, char digit, operation_types oper)</a>
+<a name="ln1460">{</a>
+<a name="ln1461">    const string&amp; r(item.inscription);</a>
+<a name="ln1462">    const char iletter = static_cast&lt;char&gt;(oper);</a>
+<a name="ln1463">    for (unsigned int j = 0; j + 2 &lt; r.size(); ++j)</a>
+<a name="ln1464">        if (r[j] == '@' &amp;&amp; (r[j+1] == iletter || r[j+1] == '*') &amp;&amp; r[j+2] == digit)</a>
+<a name="ln1465">            return true;</a>
+<a name="ln1466">    return false;</a>
+<a name="ln1467">}</a>
+<a name="ln1468"> </a>
+<a name="ln1469">item_def *digit_inscription_to_item(char digit, operation_types oper)</a>
+<a name="ln1470">{</a>
+<a name="ln1471">    for (int i = 0; i &lt; ENDOFPACK; ++i)</a>
+<a name="ln1472">        if (you.inv[i].defined()</a>
+<a name="ln1473">                &amp;&amp; item_matches_digit_inscription(you.inv[i], digit, oper))</a>
+<a name="ln1474">        {</a>
+<a name="ln1475">            return &amp;you.inv[i];</a>
+<a name="ln1476">        }</a>
+<a name="ln1477"> </a>
+<a name="ln1478">    for (stack_iterator si(you.pos(), true); si; ++si)</a>
+<a name="ln1479">        if (item_matches_digit_inscription(*si, digit, oper))</a>
+<a name="ln1480">            return &amp;*si;</a>
+<a name="ln1481"> </a>
+<a name="ln1482">    return nullptr;</a>
+<a name="ln1483">}</a>
+<a name="ln1484"> </a>
+<a name="ln1485">static bool _has_warning_inscription(const item_def&amp; item,</a>
+<a name="ln1486">                             operation_types oper)</a>
+<a name="ln1487">{</a>
+<a name="ln1488">    const char iletter = static_cast&lt;char&gt;(oper);</a>
+<a name="ln1489"> </a>
+<a name="ln1490">    const string&amp; r(item.inscription);</a>
+<a name="ln1491">    for (unsigned int i = 0; i + 1 &lt; r.size(); ++i)</a>
+<a name="ln1492">    {</a>
+<a name="ln1493">        if (r[i] == '!')</a>
+<a name="ln1494">        {</a>
+<a name="ln1495">            if (r[i+1] == iletter || r[i+1] == '*')</a>
+<a name="ln1496">                return true;</a>
+<a name="ln1497">            else if (oper == OPER_ZAP &amp;&amp; r[i+1] == 'z') // for the 0.3.4. keys</a>
+<a name="ln1498">                return true;</a>
+<a name="ln1499">            else if (oper == OPER_EVOKE</a>
+<a name="ln1500">                     &amp;&amp; (r[i+1] == 'V' || toalower(r[i+1]) == 'z'))</a>
+<a name="ln1501">            {</a>
+<a name="ln1502">                return true;</a>
+<a name="ln1503">            }</a>
+<a name="ln1504">        }</a>
+<a name="ln1505">    }</a>
+<a name="ln1506"> </a>
+<a name="ln1507">    return false;</a>
+<a name="ln1508">}</a>
+<a name="ln1509"> </a>
+<a name="ln1510">// In order to equip this item, we may need to remove an old item in the</a>
+<a name="ln1511">// corresponding slot which has a warning inscription. If this is the case,</a>
+<a name="ln1512">// prompt the user for confirmation.</a>
+<a name="ln1513">bool check_old_item_warning(const item_def&amp; item,</a>
+<a name="ln1514">                             operation_types oper)</a>
+<a name="ln1515">{</a>
+<a name="ln1516">    item_def old_item;</a>
+<a name="ln1517">    string prompt;</a>
+<a name="ln1518">    bool penance = false;</a>
+<a name="ln1519">    if (oper == OPER_WIELD) // can we safely unwield old item?</a>
+<a name="ln1520">    {</a>
+<a name="ln1521">        if (!you.weapon())</a>
+<a name="ln1522">            return true;</a>
+<a name="ln1523"> </a>
+<a name="ln1524">        int equip = you.equip[EQ_WEAPON];</a>
+<a name="ln1525">        if (equip == -1 || item.link == equip)</a>
+<a name="ln1526">            return true;</a>
+<a name="ln1527"> </a>
+<a name="ln1528">        old_item = *you.weapon();</a>
+<a name="ln1529">        if (!needs_handle_warning(old_item, OPER_WIELD, penance))</a>
+<a name="ln1530">            return true;</a>
+<a name="ln1531"> </a>
+<a name="ln1532">        prompt += &quot;Really unwield &quot;;</a>
+<a name="ln1533">    }</a>
+<a name="ln1534">    else if (oper == OPER_WEAR) // can we safely take off old item?</a>
+<a name="ln1535">    {</a>
+<a name="ln1536">        if (item.base_type != OBJ_ARMOUR)</a>
+<a name="ln1537">            return true;</a>
+<a name="ln1538"> </a>
+<a name="ln1539">        equipment_type eq_slot = get_armour_slot(item);</a>
+<a name="ln1540">        int equip = you.equip[eq_slot];</a>
+<a name="ln1541">        if (equip == -1 || item.link == equip)</a>
+<a name="ln1542">            return true;</a>
+<a name="ln1543"> </a>
+<a name="ln1544">        old_item = you.inv[you.equip[eq_slot]];</a>
+<a name="ln1545"> </a>
+<a name="ln1546">        if (!needs_handle_warning(old_item, OPER_TAKEOFF, penance))</a>
+<a name="ln1547">            return true;</a>
+<a name="ln1548"> </a>
+<a name="ln1549">        prompt += &quot;Really take off &quot;;</a>
+<a name="ln1550">    }</a>
+<a name="ln1551">    else if (oper == OPER_PUTON) // can we safely remove old item?</a>
+<a name="ln1552">    {</a>
+<a name="ln1553">        if (item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln1554">            return true;</a>
+<a name="ln1555"> </a>
+<a name="ln1556">        if (jewellery_is_amulet(item))</a>
+<a name="ln1557">        {</a>
+<a name="ln1558">            int equip = you.equip[EQ_AMULET];</a>
+<a name="ln1559">            if (equip == -1 || item.link == equip)</a>
+<a name="ln1560">                return true;</a>
+<a name="ln1561"> </a>
+<a name="ln1562">            old_item = you.inv[equip];</a>
+<a name="ln1563">            if (!needs_handle_warning(old_item, OPER_TAKEOFF, penance))</a>
+<a name="ln1564">                return true;</a>
+<a name="ln1565"> </a>
+<a name="ln1566">            prompt += &quot;Really remove &quot;;</a>
+<a name="ln1567">        }</a>
+<a name="ln1568">        else // rings handled in prompt_ring_to_remove</a>
+<a name="ln1569">            return true;</a>
+<a name="ln1570">    }</a>
+<a name="ln1571">    else // anything else doesn't have a counterpart</a>
+<a name="ln1572">        return true;</a>
+<a name="ln1573"> </a>
+<a name="ln1574">    // now ask</a>
+<a name="ln1575">    prompt += old_item.name(DESC_INVENTORY);</a>
+<a name="ln1576">    prompt += &quot;?&quot;;</a>
+<a name="ln1577">    if (penance)</a>
+<a name="ln1578">        prompt += &quot; This could place you under penance!&quot;;</a>
+<a name="ln1579">    return yesno(prompt.c_str(), false, 'n');</a>
+<a name="ln1580">}</a>
+<a name="ln1581"> </a>
+<a name="ln1582">static string _operation_verb(operation_types oper)</a>
+<a name="ln1583">{</a>
+<a name="ln1584">    switch (oper)</a>
+<a name="ln1585">    {</a>
+<a name="ln1586">    case OPER_WIELD:          return &quot;wield&quot;;</a>
+<a name="ln1587">    case OPER_QUAFF:          return &quot;quaff&quot;;</a>
+<a name="ln1588">    case OPER_DROP:           return &quot;drop&quot;;</a>
+<a name="ln1589">    case OPER_EAT:            return &quot;eat&quot;;</a>
+<a name="ln1590">    case OPER_TAKEOFF:        return &quot;take off&quot;;</a>
+<a name="ln1591">    case OPER_WEAR:           return &quot;wear&quot;;</a>
+<a name="ln1592">    case OPER_PUTON:          return &quot;put on&quot;;</a>
+<a name="ln1593">    case OPER_REMOVE:         return &quot;remove&quot;;</a>
+<a name="ln1594">    case OPER_READ:           return &quot;read&quot;;</a>
+<a name="ln1595">    case OPER_MEMORISE:       return &quot;memorise from&quot;;</a>
+<a name="ln1596">    case OPER_ZAP:            return &quot;zap&quot;;</a>
+<a name="ln1597">    case OPER_FIRE:           return &quot;fire&quot;;</a>
+<a name="ln1598">    case OPER_EVOKE:          return &quot;evoke&quot;;</a>
+<a name="ln1599">    case OPER_DESTROY:        return &quot;destroy&quot;;</a>
+<a name="ln1600">    case OPER_QUIVER:         return &quot;quiver&quot;;</a>
+<a name="ln1601">    case OPER_ANY:</a>
+<a name="ln1602">    default:</a>
+<a name="ln1603">        return &quot;choose&quot;;</a>
+<a name="ln1604">    }</a>
+<a name="ln1605">}</a>
+<a name="ln1606"> </a>
+<a name="ln1607">static bool _is_wielded(const item_def &amp;item)</a>
+<a name="ln1608">{</a>
+<a name="ln1609">    int equip = you.equip[EQ_WEAPON];</a>
+<a name="ln1610">    return equip != -1 &amp;&amp; item.link == equip;</a>
+<a name="ln1611">}</a>
+<a name="ln1612"> </a>
+<a name="ln1613">static bool _is_known_no_tele_item(const item_def &amp;item)</a>
+<a name="ln1614">{</a>
+<a name="ln1615">    if (!is_artefact(item))</a>
+<a name="ln1616">        return false;</a>
+<a name="ln1617"> </a>
+<a name="ln1618">    return artefact_known_property(item, ARTP_PREVENT_TELEPORTATION);</a>
+<a name="ln1619">}</a>
+<a name="ln1620"> </a>
+<a name="ln1621">bool needs_notele_warning(const item_def &amp;item, operation_types oper)</a>
+<a name="ln1622">{</a>
+<a name="ln1623">    return (oper == OPER_PUTON || oper == OPER_WEAR</a>
+<a name="ln1624">                || oper == OPER_WIELD &amp;&amp; !_is_wielded(item))</a>
+<a name="ln1625">                &amp;&amp; (_is_known_no_tele_item(item) &amp;&amp; you.duration[DUR_TELEPORT]);</a>
+<a name="ln1626">}</a>
+<a name="ln1627"> </a>
+<a name="ln1628">bool needs_handle_warning(const item_def &amp;item, operation_types oper,</a>
+<a name="ln1629">                          bool &amp;penance)</a>
+<a name="ln1630">{</a>
+<a name="ln1631">    if (_has_warning_inscription(item, oper))</a>
+<a name="ln1632">        return true;</a>
+<a name="ln1633"> </a>
+<a name="ln1634">    // Curses first.</a>
+<a name="ln1635">    if (item_known_cursed(item)</a>
+<a name="ln1636">        &amp;&amp; (oper == OPER_WIELD &amp;&amp; is_weapon(item) &amp;&amp; !_is_wielded(item)</a>
+<a name="ln1637">            || oper == OPER_PUTON || oper == OPER_WEAR))</a>
+<a name="ln1638">    {</a>
+<a name="ln1639">        return true;</a>
+<a name="ln1640">    }</a>
+<a name="ln1641"> </a>
+<a name="ln1642">    // The consequences of evokables are generally known.</a>
+<a name="ln1643">    if (item.base_type == OBJ_MISCELLANY</a>
+<a name="ln1644">        &amp;&amp; oper == OPER_EVOKE &amp;&amp; god_hates_item(item))</a>
+<a name="ln1645">    {</a>
+<a name="ln1646">        penance = true;</a>
+<a name="ln1647">        return true;</a>
+<a name="ln1648">    }</a>
+<a name="ln1649"> </a>
+<a name="ln1650">    // Everything else depends on knowing the item subtype/brand.</a>
+<a name="ln1651">    if (!item_type_known(item))</a>
+<a name="ln1652">        return false;</a>
+<a name="ln1653"> </a>
+<a name="ln1654">    if (oper == OPER_REMOVE</a>
+<a name="ln1655">        &amp;&amp; item.is_type(OBJ_JEWELLERY, AMU_FAITH)</a>
+<a name="ln1656">        &amp;&amp; !(you_worship(GOD_RU) &amp;&amp; you.piety &gt;= piety_breakpoint(5))</a>
+<a name="ln1657">        &amp;&amp; !you_worship(GOD_GOZAG)</a>
+<a name="ln1658">        &amp;&amp; !you_worship(GOD_NO_GOD)</a>
+<a name="ln1659">        &amp;&amp; !you_worship(GOD_XOM))</a>
+<a name="ln1660">    {</a>
+<a name="ln1661">        return true;</a>
+<a name="ln1662">    }</a>
+<a name="ln1663"> </a>
+<a name="ln1664">    if (oper == OPER_REMOVE &amp;&amp; item.is_type(OBJ_JEWELLERY, AMU_HARM))</a>
+<a name="ln1665">        return true;</a>
+<a name="ln1666"> </a>
+<a name="ln1667">    if (needs_notele_warning(item, oper))</a>
+<a name="ln1668">        return true;</a>
+<a name="ln1669"> </a>
+<a name="ln1670">    if (oper == OPER_ATTACK &amp;&amp; god_hates_item(item)</a>
+<a name="ln1671">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1672">        &amp;&amp; !you_worship(GOD_PAKELLAS)</a>
+<a name="ln1673">#endif</a>
+<a name="ln1674">       )</a>
+<a name="ln1675">    {</a>
+<a name="ln1676">        penance = true;</a>
+<a name="ln1677">        return true;</a>
+<a name="ln1678">    }</a>
+<a name="ln1679"> </a>
+<a name="ln1680">    if (oper == OPER_WIELD // unwielding uses OPER_WIELD too</a>
+<a name="ln1681">        &amp;&amp; is_weapon(item))</a>
+<a name="ln1682">    {</a>
+<a name="ln1683">        if (get_weapon_brand(item) == SPWPN_DISTORTION</a>
+<a name="ln1684">            &amp;&amp; !have_passive(passive_t::safe_distortion))</a>
+<a name="ln1685">        {</a>
+<a name="ln1686">            return true;</a>
+<a name="ln1687">        }</a>
+<a name="ln1688"> </a>
+<a name="ln1689">        if (is_artefact(item) &amp;&amp; artefact_property(item, ARTP_CONTAM))</a>
+<a name="ln1690">        {</a>
+<a name="ln1691">            if (_is_wielded(item) &amp;&amp; you_worship(GOD_ZIN))</a>
+<a name="ln1692">                penance = true;</a>
+<a name="ln1693">            return true;</a>
+<a name="ln1694">        }</a>
+<a name="ln1695"> </a>
+<a name="ln1696">        if (is_artefact(item) &amp;&amp; (artefact_property(item, ARTP_DRAIN)</a>
+<a name="ln1697">                                  || artefact_property(item, ARTP_FRAGILE)))</a>
+<a name="ln1698">        {</a>
+<a name="ln1699">            return true;</a>
+<a name="ln1700">        }</a>
+<a name="ln1701">    }</a>
+<a name="ln1702"> </a>
+<a name="ln1703">    if (oper == OPER_PUTON || oper == OPER_WEAR || oper == OPER_TAKEOFF</a>
+<a name="ln1704">        || oper == OPER_REMOVE)</a>
+<a name="ln1705">    {</a>
+<a name="ln1706">        if (is_artefact(item) &amp;&amp; artefact_property(item, ARTP_CONTAM))</a>
+<a name="ln1707">        {</a>
+<a name="ln1708">            if ((oper == OPER_TAKEOFF || oper == OPER_REMOVE)</a>
+<a name="ln1709">                 &amp;&amp; you_worship(GOD_ZIN))</a>
+<a name="ln1710">            {</a>
+<a name="ln1711">                penance = true;</a>
+<a name="ln1712">            }</a>
+<a name="ln1713">            return true;</a>
+<a name="ln1714">        }</a>
+<a name="ln1715"> </a>
+<a name="ln1716">        if (is_artefact(item) &amp;&amp; (artefact_property(item, ARTP_DRAIN)</a>
+<a name="ln1717">                                  || artefact_property(item, ARTP_FRAGILE)))</a>
+<a name="ln1718">        {</a>
+<a name="ln1719">            return true;</a>
+<a name="ln1720">        }</a>
+<a name="ln1721">    }</a>
+<a name="ln1722"> </a>
+<a name="ln1723">    if (oper == OPER_EVOKE &amp;&amp; god_hates_item(item))</a>
+<a name="ln1724">    {</a>
+<a name="ln1725">        penance = true;</a>
+<a name="ln1726">        return true;</a>
+<a name="ln1727">    }</a>
+<a name="ln1728"> </a>
+<a name="ln1729">    // If you're invis from an item, warn that you're about to get an extra dose</a>
+<a name="ln1730">    // of contam from removing it. This check is rough, since we need to</a>
+<a name="ln1731">    // establish that the operation is a removal, the item being removed is in</a>
+<a name="ln1732">    // fact the +Invis one, and no other +Invis sources exist, and the player</a>
+<a name="ln1733">    // is currently invis from +Invis.</a>
+<a name="ln1734">    if ((oper == OPER_TAKEOFF || oper == OPER_REMOVE || (oper == OPER_WIELD &amp;&amp; item_is_equipped(item)))</a>
+<a name="ln1735">        &amp;&amp; (</a>
+<a name="ln1736">                (is_artefact(item) &amp;&amp; artefact_property(item, ARTP_INVISIBLE))</a>
+<a name="ln1737">                || (item.base_type == OBJ_ARMOUR &amp;&amp; get_armour_ego_type(item) == SPARM_INVISIBILITY)</a>
+<a name="ln1738">            )</a>
+<a name="ln1739">        &amp;&amp; you.evokable_invis() &lt; 2 // If you've got 2 sources, removing 1 is fine.</a>
+<a name="ln1740">        &amp;&amp; you.duration[DUR_INVIS] &gt; 1</a>
+<a name="ln1741">        &amp;&amp; !you.attribute[ATTR_INVIS_UNCANCELLABLE])</a>
+<a name="ln1742">    {</a>
+<a name="ln1743">        return true;</a>
+<a name="ln1744">    }</a>
+<a name="ln1745"> </a>
+<a name="ln1746">    return false;</a>
+<a name="ln1747">}</a>
+<a name="ln1748"> </a>
+<a name="ln1749">// If there are warning inscriptions associated with performing this operation</a>
+<a name="ln1750">// on this item, prompt the user for confirmation. Return true if all prompts</a>
+<a name="ln1751">// are OK'd.</a>
+<a name="ln1752">bool check_warning_inscriptions(const item_def&amp; item,</a>
+<a name="ln1753">                                 operation_types oper)</a>
+<a name="ln1754">{</a>
+<a name="ln1755">    bool penance = false;</a>
+<a name="ln1756">    if (item.defined()</a>
+<a name="ln1757">        &amp;&amp; needs_handle_warning(item, oper, penance))</a>
+<a name="ln1758">    {</a>
+<a name="ln1759">        // When it's about destroying an item, don't even ask.</a>
+<a name="ln1760">        // If the player really wants to do that, they'll have</a>
+<a name="ln1761">        // to remove the inscription.</a>
+<a name="ln1762">        if (oper == OPER_DESTROY)</a>
+<a name="ln1763">            return false;</a>
+<a name="ln1764"> </a>
+<a name="ln1765">        // Common pattern for wield/wear/put:</a>
+<a name="ln1766">        // - if the player isn't capable of equipping it, return true</a>
+<a name="ln1767">        //   immediately. No point warning, since the op is impossible.</a>
+<a name="ln1768">        // - if the item is already worn, treat this as the corresponding</a>
+<a name="ln1769">        //   unequip operation</a>
+<a name="ln1770">        if (oper == OPER_WIELD)</a>
+<a name="ln1771">        {</a>
+<a name="ln1772">            // Can't use can_wield in item-use.cc because it wants</a>
+<a name="ln1773">            // a non-const item_def.</a>
+<a name="ln1774">            if (!you.can_wield(item))</a>
+<a name="ln1775">                return true;</a>
+<a name="ln1776"> </a>
+<a name="ln1777">            int equip = you.equip[EQ_WEAPON];</a>
+<a name="ln1778">            if (equip != -1 &amp;&amp; item.link == equip)</a>
+<a name="ln1779">                return check_old_item_warning(item, oper);</a>
+<a name="ln1780">        }</a>
+<a name="ln1781">        else if (oper == OPER_WEAR)</a>
+<a name="ln1782">        {</a>
+<a name="ln1783">            if (!can_wear_armour(item, false, false))</a>
+<a name="ln1784">                return true;</a>
+<a name="ln1785"> </a>
+<a name="ln1786">            int equip = you.equip[get_armour_slot(item)];</a>
+<a name="ln1787">            if (equip != -1 &amp;&amp; item.link == equip)</a>
+<a name="ln1788">                return check_old_item_warning(item, oper);</a>
+<a name="ln1789">        }</a>
+<a name="ln1790">        else if (oper == OPER_PUTON)</a>
+<a name="ln1791">        {</a>
+<a name="ln1792">            if (item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln1793">                return true;</a>
+<a name="ln1794"> </a>
+<a name="ln1795">            if (jewellery_is_amulet(item))</a>
+<a name="ln1796">            {</a>
+<a name="ln1797">                int equip = you.equip[EQ_AMULET];</a>
+<a name="ln1798">                if (equip != -1 &amp;&amp; item.link == equip)</a>
+<a name="ln1799">                    return check_old_item_warning(item, oper);</a>
+<a name="ln1800">            }</a>
+<a name="ln1801">            else</a>
+<a name="ln1802">            {</a>
+<a name="ln1803">                for (int slots = EQ_FIRST_JEWELLERY; slots &lt;= EQ_LAST_JEWELLERY; ++slots)</a>
+<a name="ln1804">                {</a>
+<a name="ln1805">                    if (slots == EQ_AMULET)</a>
+<a name="ln1806">                        continue;</a>
+<a name="ln1807"> </a>
+<a name="ln1808">                    int equip = you.equip[slots];</a>
+<a name="ln1809">                    if (equip != -1 &amp;&amp; item.link == equip)</a>
+<a name="ln1810">                        return check_old_item_warning(item, oper);</a>
+<a name="ln1811">                }</a>
+<a name="ln1812">            }</a>
+<a name="ln1813">        }</a>
+<a name="ln1814">        else if (oper == OPER_REMOVE || oper == OPER_TAKEOFF)</a>
+<a name="ln1815">        {</a>
+<a name="ln1816">            // Don't ask if it will fail anyway.</a>
+<a name="ln1817">            if (item.cursed())</a>
+<a name="ln1818">                return true;</a>
+<a name="ln1819">        }</a>
+<a name="ln1820"> </a>
+<a name="ln1821">        // XXX: duplicates a check in delay.cc:_finish_delay()</a>
+<a name="ln1822">        string prompt = &quot;Really &quot; + _operation_verb(oper) + &quot; &quot;;</a>
+<a name="ln1823">        prompt += (in_inventory(item) ? item.name(DESC_INVENTORY)</a>
+<a name="ln1824">                                      : item.name(DESC_A));</a>
+<a name="ln1825">        if (needs_notele_warning(item, oper)</a>
+<a name="ln1826">            &amp;&amp; item_ident(item, ISFLAG_KNOW_TYPE))</a>
+<a name="ln1827">        {</a>
+<a name="ln1828">            prompt += &quot; while about to teleport&quot;;</a>
+<a name="ln1829">        }</a>
+<a name="ln1830">        prompt += &quot;?&quot;;</a>
+<a name="ln1831">        if (penance)</a>
+<a name="ln1832">            prompt += &quot; This could place you under penance!&quot;;</a>
+<a name="ln1833">        return yesno(prompt.c_str(), false, 'n')</a>
+<a name="ln1834">               &amp;&amp; check_old_item_warning(item, oper);</a>
+<a name="ln1835">    }</a>
+<a name="ln1836">    else</a>
+<a name="ln1837">        return check_old_item_warning(item, oper);</a>
+<a name="ln1838">}</a>
+<a name="ln1839"> </a>
+<a name="ln1840">/**</a>
+<a name="ln1841"> * Prompts the user for an item.</a>
+<a name="ln1842"> *</a>
+<a name="ln1843"> * Prompts the user for an item, handling the '?' and '*' listings,</a>
+<a name="ln1844"> * and returns the inventory slot to the caller (which if</a>
+<a name="ln1845"> * must_exist is true (the default) will be an assigned item), with</a>
+<a name="ln1846"> * a positive quantity.</a>
+<a name="ln1847"> *</a>
+<a name="ln1848"> * Note: Does not check if the item is appropriate.</a>
+<a name="ln1849"> *</a>
+<a name="ln1850"> * @param prompt           The question to ask the user.</a>
+<a name="ln1851"> * @param mtype            The menu type.</a>
+<a name="ln1852"> * @param type_expect      The object_class_type or object_selector for</a>
+<a name="ln1853"> *                         items to be listed.</a>
+<a name="ln1854"> * @param oper             The operation_type that will be used on the result.</a>
+<a name="ln1855"> *                         Modifies some checks, including applicability of</a>
+<a name="ln1856"> *                         warning inscriptions.</a>
+<a name="ln1857"> * @param flags            See comments on invent_prompt_flags.</a>
+<a name="ln1858"> * @param other_valid_char A character that, if not '\0', will cause</a>
+<a name="ln1859"> *                         PROMPT_GOT_SPECIAL to be returned when pressed.</a>
+<a name="ln1860"> *</a>
+<a name="ln1861"> * @return  the inventory slot of an item or one of the following special values</a>
+<a name="ln1862"> *          - PROMPT_ABORT:       if the player hits escape.</a>
+<a name="ln1863"> *          - PROMPT_GOT_SPECIAL: if the player hits the &quot;other_valid_char&quot;.</a>
+<a name="ln1864"> *          - PROMPT_NOTHING:     if there are no matching items.</a>
+<a name="ln1865"> */</a>
+<a name="ln1866">int prompt_invent_item(const char *prompt,</a>
+<a name="ln1867">                       menu_type mtype, int type_expect,</a>
+<a name="ln1868">                       operation_types oper,</a>
+<a name="ln1869">                       invent_prompt_flags flags,</a>
+<a name="ln1870">                       const char other_valid_char)</a>
+<a name="ln1871">{</a>
+<a name="ln1872">    const bool do_warning = !(flags &amp; invprompt_flag::no_warning);</a>
+<a name="ln1873">    const bool allow_list_known = !(flags &amp; invprompt_flag::hide_known);</a>
+<a name="ln1874">    const bool must_exist = !(flags &amp; invprompt_flag::unthings_ok);</a>
+<a name="ln1875">    const bool auto_list = !(flags &amp; invprompt_flag::manual_list);</a>
+<a name="ln1876">    const bool allow_easy_quit = !(flags &amp; invprompt_flag::escape_only);</a>
+<a name="ln1877"> </a>
+<a name="ln1878">    if (!any_items_of_type(type_expect)</a>
+<a name="ln1879">        &amp;&amp; type_expect == OSEL_THROWABLE</a>
+<a name="ln1880">        &amp;&amp; (oper == OPER_FIRE || oper == OPER_QUIVER)</a>
+<a name="ln1881">        &amp;&amp; mtype == menu_type::invlist)</a>
+<a name="ln1882">    {</a>
+<a name="ln1883">        type_expect = OSEL_ANY;</a>
+<a name="ln1884">    }</a>
+<a name="ln1885"> </a>
+<a name="ln1886">    if (!any_items_of_type(type_expect) &amp;&amp; type_expect != OSEL_WIELD)</a>
+<a name="ln1887">    {</a>
+<a name="ln1888">        mprf(MSGCH_PROMPT, &quot;%s&quot;,</a>
+<a name="ln1889">             no_selectables_message(type_expect).c_str());</a>
+<a name="ln1890">        return PROMPT_NOTHING;</a>
+<a name="ln1891">    }</a>
+<a name="ln1892"> </a>
+<a name="ln1893">    unsigned char  keyin = 0;</a>
+<a name="ln1894">    int            ret = PROMPT_ABORT;</a>
+<a name="ln1895"> </a>
+<a name="ln1896">    int current_type_expected = type_expect;</a>
+<a name="ln1897">    bool           need_redraw = false;</a>
+<a name="ln1898">    bool           need_prompt = true;</a>
+<a name="ln1899">    bool           need_getch  = true;</a>
+<a name="ln1900"> </a>
+<a name="ln1901">    if (auto_list)</a>
+<a name="ln1902">    {</a>
+<a name="ln1903">        need_getch = false;</a>
+<a name="ln1904"> </a>
+<a name="ln1905">        if (any_items_of_type(type_expect))</a>
+<a name="ln1906">            keyin = '?';</a>
+<a name="ln1907">        else</a>
+<a name="ln1908">            keyin = '*';</a>
+<a name="ln1909">    }</a>
+<a name="ln1910"> </a>
+<a name="ln1911">    while (true)</a>
+<a name="ln1912">    {</a>
+<a name="ln1913">        if (need_redraw &amp;&amp; !crawl_state.doing_prev_cmd_again)</a>
+<a name="ln1914">        {</a>
+<a name="ln1915">            redraw_screen();</a>
+<a name="ln1916">            clear_messages();</a>
+<a name="ln1917">        }</a>
+<a name="ln1918"> </a>
+<a name="ln1919">        if (need_prompt)</a>
+<a name="ln1920">        {</a>
+<a name="ln1921">            mprf(MSGCH_PROMPT, &quot;%s (&lt;w&gt;?&lt;/w&gt; for menu, &lt;w&gt;Esc&lt;/w&gt; to quit)&quot;,</a>
+<a name="ln1922">                 prompt);</a>
+<a name="ln1923">        }</a>
+<a name="ln1924">        else</a>
+<a name="ln1925">            flush_prev_message();</a>
+<a name="ln1926"> </a>
+<a name="ln1927">        if (need_getch)</a>
+<a name="ln1928">            keyin = get_ch();</a>
+<a name="ln1929"> </a>
+<a name="ln1930">        need_redraw = false;</a>
+<a name="ln1931">        need_prompt = true;</a>
+<a name="ln1932">        need_getch  = true;</a>
+<a name="ln1933"> </a>
+<a name="ln1934">        // Note:  We handle any &quot;special&quot; character first, so that</a>
+<a name="ln1935">        //        it can be used to override the others.</a>
+<a name="ln1936">        if (other_valid_char != 0 &amp;&amp; keyin == other_valid_char)</a>
+<a name="ln1937">        {</a>
+<a name="ln1938">            ret = PROMPT_GOT_SPECIAL;</a>
+<a name="ln1939">            break;</a>
+<a name="ln1940">        }</a>
+<a name="ln1941">        else if (keyin == '?' || keyin == '*')</a>
+<a name="ln1942">        {</a>
+<a name="ln1943">            // The &quot;view inventory listing&quot; mode.</a>
+<a name="ln1944">            vector&lt; SelItem &gt; items;</a>
+<a name="ln1945">            current_type_expected = keyin == '*' ? OSEL_ANY : type_expect;</a>
+<a name="ln1946">            int mflags = MF_SINGLESELECT | MF_ANYPRINTABLE | MF_NO_SELECT_QTY;</a>
+<a name="ln1947">            if (other_valid_char == '-')</a>
+<a name="ln1948">                mflags |= MF_SPECIAL_MINUS;</a>
+<a name="ln1949">            keyin = _invent_select(</a>
+<a name="ln1950">                        prompt,</a>
+<a name="ln1951">                        mtype,</a>
+<a name="ln1952">                        current_type_expected,</a>
+<a name="ln1953">                        -1,</a>
+<a name="ln1954">                        mflags,</a>
+<a name="ln1955">                        nullptr,</a>
+<a name="ln1956">                        &amp;items);</a>
+<a name="ln1957"> </a>
+<a name="ln1958">            if (allow_list_known &amp;&amp; keyin == '\\')</a>
+<a name="ln1959">            {</a>
+<a name="ln1960">                check_item_knowledge();</a>
+<a name="ln1961">                keyin = '?';</a>
+<a name="ln1962">            }</a>
+<a name="ln1963"> </a>
+<a name="ln1964">            need_prompt = false;</a>
+<a name="ln1965">            need_getch  = false;</a>
+<a name="ln1966"> </a>
+<a name="ln1967">            // Don't redraw if we're just going to display another listing</a>
+<a name="ln1968">            need_redraw = keyin != '?' &amp;&amp; keyin != '*';</a>
+<a name="ln1969"> </a>
+<a name="ln1970">            if (!items.empty())</a>
+<a name="ln1971">            {</a>
+<a name="ln1972">                if (!crawl_state.doing_prev_cmd_again)</a>
+<a name="ln1973">                {</a>
+<a name="ln1974">                    redraw_screen();</a>
+<a name="ln1975">                    clear_messages();</a>
+<a name="ln1976">                }</a>
+<a name="ln1977">            }</a>
+<a name="ln1978">        }</a>
+<a name="ln1979">        else if (isadigit(keyin))</a>
+<a name="ln1980">        {</a>
+<a name="ln1981">            // scan for our item</a>
+<a name="ln1982">            item_def *item = digit_inscription_to_item(keyin, oper);</a>
+<a name="ln1983">            if (item &amp;&amp; in_inventory(*item))</a>
+<a name="ln1984">            {</a>
+<a name="ln1985">                ret = item-&gt;link;</a>
+<a name="ln1986">                if (!do_warning || check_warning_inscriptions(*item, oper))</a>
+<a name="ln1987">                    break;</a>
+<a name="ln1988">            }</a>
+<a name="ln1989">        }</a>
+<a name="ln1990">        else if (key_is_escape(keyin)</a>
+<a name="ln1991">                 || (Options.easy_quit_item_prompts</a>
+<a name="ln1992">                     &amp;&amp; allow_easy_quit &amp;&amp; keyin == ' '))</a>
+<a name="ln1993">        {</a>
+<a name="ln1994">            ret = PROMPT_ABORT;</a>
+<a name="ln1995">            break;</a>
+<a name="ln1996">        }</a>
+<a name="ln1997">        else if (allow_list_known &amp;&amp; keyin == '\\')</a>
+<a name="ln1998">        {</a>
+<a name="ln1999">            check_item_knowledge();</a>
+<a name="ln2000">            keyin = '?';</a>
+<a name="ln2001">            need_getch = false;</a>
+<a name="ln2002">        }</a>
+<a name="ln2003">        else if (isaalpha(keyin))</a>
+<a name="ln2004">        {</a>
+<a name="ln2005">            ret = letter_to_index(keyin);</a>
+<a name="ln2006"> </a>
+<a name="ln2007">            if (must_exist &amp;&amp; !you.inv[ret].defined())</a>
+<a name="ln2008">                mpr(&quot;You don't have any such object.&quot;);</a>
+<a name="ln2009">            else if (must_exist &amp;&amp; !item_is_selected(you.inv[ret],</a>
+<a name="ln2010">                                                     current_type_expected))</a>
+<a name="ln2011">            {</a>
+<a name="ln2012">                mpr(&quot;That's the wrong kind of item! (Use * to select it.)&quot;);</a>
+<a name="ln2013">            }</a>
+<a name="ln2014">            else if (!do_warning || check_warning_inscriptions(you.inv[ret], oper))</a>
+<a name="ln2015">                break;</a>
+<a name="ln2016">        }</a>
+<a name="ln2017">        else if (keyin == ';')</a>
+<a name="ln2018">        {</a>
+<a name="ln2019">            ret = you.last_unequip;</a>
+<a name="ln2020">            break;</a>
+<a name="ln2021">        }</a>
+<a name="ln2022">        else if (!isspace(keyin))</a>
+<a name="ln2023">        {</a>
+<a name="ln2024">            // We've got a character we don't understand...</a>
+<a name="ln2025">            canned_msg(MSG_HUH);</a>
+<a name="ln2026">        }</a>
+<a name="ln2027">        else</a>
+<a name="ln2028">        {</a>
+<a name="ln2029">            // We're going to loop back up, so don't draw another prompt.</a>
+<a name="ln2030">            need_prompt = false;</a>
+<a name="ln2031">        }</a>
+<a name="ln2032">    }</a>
+<a name="ln2033"> </a>
+<a name="ln2034">    return ret;</a>
+<a name="ln2035">}</a>
+<a name="ln2036"> </a>
+<a name="ln2037">bool prompt_failed(int retval)</a>
+<a name="ln2038">{</a>
+<a name="ln2039">    if (retval != PROMPT_ABORT &amp;&amp; retval != PROMPT_NOTHING)</a>
+<a name="ln2040">        return false;</a>
+<a name="ln2041"> </a>
+<a name="ln2042">    if (retval == PROMPT_ABORT)</a>
+<a name="ln2043">        canned_msg(MSG_OK);</a>
+<a name="ln2044"> </a>
+<a name="ln2045">    crawl_state.cancel_cmd_repeat();</a>
+<a name="ln2046"> </a>
+<a name="ln2047">    return true;</a>
+<a name="ln2048">}</a>
+<a name="ln2049"> </a>
+<a name="ln2050">// Most items are wieldable, but this function check for items that needs to be</a>
+<a name="ln2051">// wielded to be used normally.</a>
+<a name="ln2052">bool item_is_wieldable(const item_def &amp;item)</a>
+<a name="ln2053">{</a>
+<a name="ln2054">    return is_weapon(item) &amp;&amp; you.species != SP_FELID;</a>
+<a name="ln2055">}</a>
+<a name="ln2056"> </a>
+<a name="ln2057">/// Does the item only serve to produce summons or allies?</a>
+<a name="ln2058">static bool _item_ally_only(const item_def &amp;item)</a>
+<a name="ln2059">{</a>
+<a name="ln2060">    if (item.base_type == OBJ_WANDS)</a>
+<a name="ln2061">        return item.sub_type == WAND_ENSLAVEMENT;</a>
+<a name="ln2062">    else if (item.base_type == OBJ_MISCELLANY)</a>
+<a name="ln2063">    {</a>
+<a name="ln2064">        switch (item.sub_type)</a>
+<a name="ln2065">        {</a>
+<a name="ln2066">        case MISC_PHANTOM_MIRROR:</a>
+<a name="ln2067">        case MISC_HORN_OF_GERYON:</a>
+<a name="ln2068">        case MISC_BOX_OF_BEASTS:</a>
+<a name="ln2069">            return true;</a>
+<a name="ln2070">        default:</a>
+<a name="ln2071">            return false;</a>
+<a name="ln2072">        }</a>
+<a name="ln2073">    }</a>
+<a name="ln2074">    return false;</a>
+<a name="ln2075">}</a>
+<a name="ln2076"> </a>
+<a name="ln2077">/**</a>
+<a name="ln2078"> * Return whether an item can be evoked.</a>
+<a name="ln2079"> *</a>
+<a name="ln2080"> * @param item      The item to check</a>
+<a name="ln2081"> * @param unskilled Do items that don't use Evocations skill (weapons of</a>
+<a name="ln2082"> *                  reaching and tremorstones) count?</a>
+<a name="ln2083"> * @param known     When set, return true for items of unknown type which</a>
+<a name="ln2084"> *                  might be evokable.</a>
+<a name="ln2085"> * @param msg       Whether we need to print a message.</a>
+<a name="ln2086"> * @param equip     When false, ignore wield and meld requirements.</a>
+<a name="ln2087"> */</a>
+<a name="ln2088">bool item_is_evokable(const item_def &amp;item, bool unskilled, bool known,</a>
+<a name="ln2089">                      bool msg, bool equip)</a>
+<a name="ln2090">{</a>
+<a name="ln2091">    const string error = item_is_melded(item)</a>
+<a name="ln2092">            ? &quot;Your &quot; + item.name(DESC_QUALNAME) + &quot; is melded into your body.&quot;</a>
+<a name="ln2093">            : &quot;That item can only be evoked when wielded.&quot;;</a>
+<a name="ln2094"> </a>
+<a name="ln2095">    const bool no_evocables = you.get_mutation_level(MUT_NO_ARTIFICE);</a>
+<a name="ln2096">    const char* const no_evocable_error = &quot;You cannot evoke magical items.&quot;;</a>
+<a name="ln2097"> </a>
+<a name="ln2098">    if (is_unrandom_artefact(item))</a>
+<a name="ln2099">    {</a>
+<a name="ln2100">        const unrandart_entry* entry = get_unrand_entry(item.unrand_idx);</a>
+<a name="ln2101"> </a>
+<a name="ln2102">        if (entry-&gt;evoke_func &amp;&amp; item_type_known(item))</a>
+<a name="ln2103">        {</a>
+<a name="ln2104">            if (no_evocables)</a>
+<a name="ln2105">            {</a>
+<a name="ln2106">                if (msg)</a>
+<a name="ln2107">                    mpr(no_evocable_error);</a>
+<a name="ln2108">                return false;</a>
+<a name="ln2109">            }</a>
+<a name="ln2110"> </a>
+<a name="ln2111">            if (item_is_equipped(item) &amp;&amp; !item_is_melded(item) || !equip)</a>
+<a name="ln2112">                return true;</a>
+<a name="ln2113"> </a>
+<a name="ln2114">            if (msg)</a>
+<a name="ln2115">                mpr(error);</a>
+<a name="ln2116"> </a>
+<a name="ln2117">            return false;</a>
+<a name="ln2118">        }</a>
+<a name="ln2119">        // Unrandart might still be evokable (e.g., reaching)</a>
+<a name="ln2120">    }</a>
+<a name="ln2121"> </a>
+<a name="ln2122">    if (no_evocables</a>
+<a name="ln2123">        &amp;&amp; item.base_type != OBJ_WEAPONS // reaching is ok.</a>
+<a name="ln2124">        &amp;&amp; !(item.base_type == OBJ_MISCELLANY</a>
+<a name="ln2125">             &amp;&amp; item.sub_type == MISC_ZIGGURAT)) // zigfigs are OK.</a>
+<a name="ln2126">    {</a>
+<a name="ln2127">        // the rest are forbidden under sac evocables.</a>
+<a name="ln2128">        if (msg)</a>
+<a name="ln2129">            mpr(no_evocable_error);</a>
+<a name="ln2130">        return false;</a>
+<a name="ln2131">    }</a>
+<a name="ln2132"> </a>
+<a name="ln2133">    // TODO: check other summoning constraints here?</a>
+<a name="ln2134">    if (_item_ally_only(item) &amp;&amp; you.has_mutation(MUT_NO_LOVE))</a>
+<a name="ln2135">    {</a>
+<a name="ln2136">        if (msg)</a>
+<a name="ln2137">            mpr(&quot;That item cannot be used by those hated by all!&quot;);</a>
+<a name="ln2138">        return false;</a>
+<a name="ln2139">    }</a>
+<a name="ln2140"> </a>
+<a name="ln2141">    const bool wielded = !equip || you.equip[EQ_WEAPON] == item.link</a>
+<a name="ln2142">                                   &amp;&amp; !item_is_melded(item);</a>
+<a name="ln2143"> </a>
+<a name="ln2144">    switch (item.base_type)</a>
+<a name="ln2145">    {</a>
+<a name="ln2146">    case OBJ_WANDS:</a>
+<a name="ln2147">        return true;</a>
+<a name="ln2148"> </a>
+<a name="ln2149">    case OBJ_WEAPONS:</a>
+<a name="ln2150">        if ((!wielded || !unskilled) &amp;&amp; !msg)</a>
+<a name="ln2151">            return false;</a>
+<a name="ln2152"> </a>
+<a name="ln2153">        if (unskilled &amp;&amp; weapon_reach(item) &gt; REACH_NONE &amp;&amp; item_type_known(item))</a>
+<a name="ln2154">        {</a>
+<a name="ln2155">            if (!wielded)</a>
+<a name="ln2156">            {</a>
+<a name="ln2157">                if (msg)</a>
+<a name="ln2158">                    mpr(error);</a>
+<a name="ln2159">                return false;</a>
+<a name="ln2160">            }</a>
+<a name="ln2161">            return true;</a>
+<a name="ln2162">        }</a>
+<a name="ln2163"> </a>
+<a name="ln2164">        if (msg)</a>
+<a name="ln2165">            mpr(&quot;That item cannot be evoked!&quot;);</a>
+<a name="ln2166">        return false;</a>
+<a name="ln2167"> </a>
+<a name="ln2168">    case OBJ_STAVES:</a>
+<a name="ln2169">        if (known &amp;&amp; !item_type_known(item)</a>
+<a name="ln2170">            || item.sub_type == STAFF_ENERGY</a>
+<a name="ln2171">               &amp;&amp; item_type_known(item))</a>
+<a name="ln2172">        {</a>
+<a name="ln2173">            if (!wielded)</a>
+<a name="ln2174">            {</a>
+<a name="ln2175">                if (msg)</a>
+<a name="ln2176">                    mpr(error);</a>
+<a name="ln2177">                return false;</a>
+<a name="ln2178">            }</a>
+<a name="ln2179">            return true;</a>
+<a name="ln2180">        }</a>
+<a name="ln2181">        if (msg)</a>
+<a name="ln2182">            mpr(&quot;That item cannot be evoked!&quot;);</a>
+<a name="ln2183">        return false;</a>
+<a name="ln2184"> </a>
+<a name="ln2185">    case OBJ_MISCELLANY:</a>
+<a name="ln2186">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2187">        if (item.sub_type != MISC_BUGGY_LANTERN_OF_SHADOWS</a>
+<a name="ln2188">            &amp;&amp; item.sub_type != MISC_BUGGY_EBONY_CASKET)</a>
+<a name="ln2189">        {</a>
+<a name="ln2190">#endif</a>
+<a name="ln2191">            return unskilled || item.sub_type != MISC_TIN_OF_TREMORSTONES;</a>
+<a name="ln2192">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2193">        }</a>
+<a name="ln2194">        // removed items fallthrough to failure</a>
+<a name="ln2195">#endif</a>
+<a name="ln2196"> </a>
+<a name="ln2197">    default:</a>
+<a name="ln2198">        if (msg)</a>
+<a name="ln2199">            mpr(&quot;That item cannot be evoked!&quot;);</a>
+<a name="ln2200">        return false;</a>
+<a name="ln2201">    }</a>
+<a name="ln2202">}</a>
+<a name="ln2203"> </a>
+<a name="ln2204">/**</a>
+<a name="ln2205"> * What xp-charged evocable items is the player currently devoting XP to, if</a>
+<a name="ln2206"> * any?</a>
+<a name="ln2207"> *</a>
+<a name="ln2208"> * @param[out] evokers  A vector, to be filled with a list of the elemental</a>
+<a name="ln2209"> *                      evokers that the player is currently charging.</a>
+<a name="ln2210"> *                      (Only one of a type is charged at a time.)</a>
+<a name="ln2211"> */</a>
+<a name="ln2212">void list_charging_evokers(FixedVector&lt;item_def*, NUM_MISCELLANY&gt; &amp;evokers)</a>
+<a name="ln2213">{</a>
+<a name="ln2214">    for (auto &amp;item : you.inv)</a>
+<a name="ln2215">    {</a>
+<a name="ln2216">        // can't charge non-evokers, or evokers that are full</a>
+<a name="ln2217">        if (!is_xp_evoker(item) || evoker_debt(item.sub_type) == 0)</a>
+<a name="ln2218">            continue;</a>
+<a name="ln2219"> </a>
+<a name="ln2220">        evokers[item.sub_type] = &amp;item;</a>
+<a name="ln2221">    }</a>
+<a name="ln2222">}</a>
+<a name="ln2223"> </a>
+<a name="ln2224">void identify_inventory()</a>
+<a name="ln2225">{</a>
+<a name="ln2226">    for (auto &amp;item : you.inv)</a>
+<a name="ln2227">    {</a>
+<a name="ln2228">        if (item.defined())</a>
+<a name="ln2229">        {</a>
+<a name="ln2230">            set_ident_type(item, true);</a>
+<a name="ln2231">            set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln2232">        }</a>
+<a name="ln2233">    }</a>
+<a name="ln2234">}</a>
+
+</code></pre>
+<div class="balloon" rel="639"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'item'.</p></div>
+<div class="balloon" rel="940"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'inv'.</p></div>
+<div class="balloon" rel="1137"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1395"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'need_getch' variable was assigned the same value.</p></div>
+<div class="balloon" rel="1624"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="2141"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

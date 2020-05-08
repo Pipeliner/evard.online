@@ -1,0 +1,3050 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>hiscores.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief deal with reading and writing of highscore file</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">/*</a>
+<a name="ln7"> * ----------- MODIFYING THE PRINTED SCORE FORMAT ---------------------</a>
+<a name="ln8"> *   Do this at your leisure. Change hiscores_format_single() as much</a>
+<a name="ln9"> * as you like.</a>
+<a name="ln10"> *</a>
+<a name="ln11"> */</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;AppHdr.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;hiscores.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">#include &lt;algorithm&gt;</a>
+<a name="ln18">#include &lt;cctype&gt;</a>
+<a name="ln19">#include &lt;cstdio&gt;</a>
+<a name="ln20">#include &lt;cstdlib&gt;</a>
+<a name="ln21">#include &lt;memory&gt;</a>
+<a name="ln22">#ifndef TARGET_COMPILER_VC</a>
+<a name="ln23">#include &lt;unistd.h&gt;</a>
+<a name="ln24">#endif</a>
+<a name="ln25"> </a>
+<a name="ln26">#include &quot;branch.h&quot;</a>
+<a name="ln27">#include &quot;chardump.h&quot;</a>
+<a name="ln28">#include &quot;cio.h&quot;</a>
+<a name="ln29">#include &quot;dungeon.h&quot;</a>
+<a name="ln30">#include &quot;end.h&quot;</a>
+<a name="ln31">#include &quot;english.h&quot;</a>
+<a name="ln32">#include &quot;files.h&quot;</a>
+<a name="ln33">#include &quot;initfile.h&quot;</a>
+<a name="ln34">#include &quot;item-prop.h&quot;</a>
+<a name="ln35">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln36">#include &quot;items.h&quot;</a>
+<a name="ln37">#include &quot;jobs.h&quot;</a>
+<a name="ln38">#include &quot;kills.h&quot;</a>
+<a name="ln39">#include &quot;libutil.h&quot;</a>
+<a name="ln40">#include &quot;menu.h&quot;</a>
+<a name="ln41">#include &quot;misc.h&quot;</a>
+<a name="ln42">#include &quot;mon-util.h&quot;</a>
+<a name="ln43">#include &quot;options.h&quot;</a>
+<a name="ln44">#include &quot;ouch.h&quot;</a>
+<a name="ln45">#include &quot;place.h&quot;</a>
+<a name="ln46">#include &quot;religion.h&quot;</a>
+<a name="ln47">#include &quot;scroller.h&quot;</a>
+<a name="ln48">#include &quot;skills.h&quot;</a>
+<a name="ln49">#include &quot;state.h&quot;</a>
+<a name="ln50">#include &quot;status.h&quot;</a>
+<a name="ln51">#include &quot;stringutil.h&quot;</a>
+<a name="ln52">#ifdef USE_TILE</a>
+<a name="ln53"> #include &quot;tilepick.h&quot;</a>
+<a name="ln54">#endif</a>
+<a name="ln55">#ifdef USE_TILE_LOCAL</a>
+<a name="ln56"> #include &quot;tilereg-crt.h&quot;</a>
+<a name="ln57">#endif</a>
+<a name="ln58">#include &quot;unwind.h&quot;</a>
+<a name="ln59">#include &quot;version.h&quot;</a>
+<a name="ln60">#include &quot;outer-menu.h&quot;</a>
+<a name="ln61"> </a>
+<a name="ln62">using namespace ui;</a>
+<a name="ln63"> </a>
+<a name="ln64">#define SCORE_VERSION &quot;0.1&quot;</a>
+<a name="ln65"> </a>
+<a name="ln66">// enough memory allocated to snarf in the scorefile entries</a>
+<a name="ln67">static unique_ptr&lt;scorefile_entry&gt; hs_list[SCORE_FILE_ENTRIES];</a>
+<a name="ln68">static int hs_list_size = 0;</a>
+<a name="ln69">static bool hs_list_initalized = false;</a>
+<a name="ln70"> </a>
+<a name="ln71">static FILE *_hs_open(const char *mode, const string &amp;filename);</a>
+<a name="ln72">static void  _hs_close(FILE *handle);</a>
+<a name="ln73">static bool  _hs_read(FILE *scores, scorefile_entry &amp;dest);</a>
+<a name="ln74">static void  _hs_write(FILE *scores, scorefile_entry &amp;entry);</a>
+<a name="ln75">static time_t _parse_time(const string &amp;st);</a>
+<a name="ln76">static string _xlog_escape(const string &amp;s);</a>
+<a name="ln77">static string _xlog_unescape(const string &amp;s);</a>
+<a name="ln78">static vector&lt;string&gt; _xlog_split_fields(const string &amp;s);</a>
+<a name="ln79"> </a>
+<a name="ln80">static string _score_file_name()</a>
+<a name="ln81">{</a>
+<a name="ln82">    string ret;</a>
+<a name="ln83">    if (!SysEnv.scorefile.empty())</a>
+<a name="ln84">        ret = SysEnv.scorefile;</a>
+<a name="ln85">    else</a>
+<a name="ln86">        ret = Options.shared_dir + &quot;scores&quot;;</a>
+<a name="ln87"> </a>
+<a name="ln88">    ret += crawl_state.game_type_qualifier();</a>
+<a name="ln89">    if (crawl_state.game_is_sprint() &amp;&amp; !crawl_state.map.empty())</a>
+<a name="ln90">        ret += &quot;-&quot; + crawl_state.map;</a>
+<a name="ln91"> </a>
+<a name="ln92">    return ret;</a>
+<a name="ln93">}</a>
+<a name="ln94"> </a>
+<a name="ln95">static string _log_file_name()</a>
+<a name="ln96">{</a>
+<a name="ln97">    return Options.shared_dir + &quot;logfile&quot; + crawl_state.game_type_qualifier();</a>
+<a name="ln98">}</a>
+<a name="ln99"> </a>
+<a name="ln100">int hiscores_new_entry(const scorefile_entry &amp;ne)</a>
+<a name="ln101">{</a>
+<a name="ln102">    unwind_bool score_update(crawl_state.updating_scores, true);</a>
+<a name="ln103"> </a>
+<a name="ln104">    FILE *scores;</a>
+<a name="ln105">    int i;</a>
+<a name="ln106">    bool inserted = false;</a>
+<a name="ln107">    int newest_entry = -1;</a>
+<a name="ln108"> </a>
+<a name="ln109">    // open highscore file (reading) -- nullptr is fatal!</a>
+<a name="ln110">    //</a>
+<a name="ln111">    // Opening as a+ instead of r+ to force an exclusive lock (see</a>
+<a name="ln112">    // hs_open) and to create the file if it's not there already.</a>
+<a name="ln113">    scores = _hs_open(&quot;a+&quot;, _score_file_name());</a>
+<a name="ln114">    if (scores == nullptr)</a>
+<a name="ln115">        end(1, true, &quot;failed to open score file for writing&quot;);</a>
+<a name="ln116"> </a>
+<a name="ln117">    // we're at the end of the file, seek back to beginning.</a>
+<a name="ln118">    fseek(scores, 0, SEEK_SET);</a>
+<a name="ln119"> </a>
+<a name="ln120">    // read highscore file, inserting new entry at appropriate point,</a>
+<a name="ln121">    for (i = 0; i &lt; SCORE_FILE_ENTRIES; i++)</a>
+<a name="ln122">    {</a>
+<a name="ln123">        hs_list[i].reset(new scorefile_entry);</a>
+<a name="ln124">        if (_hs_read(scores, *hs_list[i]) == false)</a>
+<a name="ln125">            break;</a>
+<a name="ln126"> </a>
+<a name="ln127">        // compare points..</a>
+<a name="ln128">        if (!inserted &amp;&amp; ne.get_score() &gt;= hs_list[i]-&gt;get_score())</a>
+<a name="ln129">        {</a>
+<a name="ln130">            newest_entry = i;           // for later printing</a>
+<a name="ln131">            inserted = true;</a>
+<a name="ln132">            // copy read entry to i+1th position</a>
+<a name="ln133">            // Fixed a nasty overflow bug here -- Sharp</a>
+<a name="ln134">            if (i+1 &lt; SCORE_FILE_ENTRIES)</a>
+<a name="ln135">            {</a>
+<a name="ln136">                hs_list[i + 1] = move(hs_list[i]);</a>
+<a name="ln137">                hs_list[i].reset(new scorefile_entry(ne));</a>
+<a name="ln138">                i++;</a>
+<a name="ln139">            }</a>
+<a name="ln140">            else</a>
+<a name="ln141">                *hs_list[i] = ne; // copy new entry to current position</a>
+<a name="ln142">        }</a>
+<a name="ln143">    }</a>
+<a name="ln144"> </a>
+<a name="ln145">    // special case: lowest score, with room</a>
+<a name="ln146">    if (!inserted &amp;&amp; i &lt; SCORE_FILE_ENTRIES)</a>
+<a name="ln147">    {</a>
+<a name="ln148">        newest_entry = i;</a>
+<a name="ln149">        inserted = true;</a>
+<a name="ln150">        // copy new entry</a>
+<a name="ln151">        hs_list[i].reset(new scorefile_entry(ne));</a>
+<a name="ln152">        i++;</a>
+<a name="ln153">    }</a>
+<a name="ln154"> </a>
+<a name="ln155">    hs_list_size = i;</a>
+<a name="ln156">    hs_list_initalized = true;</a>
+<a name="ln157"> </a>
+<a name="ln158">    // If we've still not inserted it, it's not a highscore.</a>
+<a name="ln159">    if (!inserted)</a>
+<a name="ln160">    {</a>
+<a name="ln161">        _hs_close(scores);</a>
+<a name="ln162">        return -1;</a>
+<a name="ln163">    }</a>
+<a name="ln164"> </a>
+<a name="ln165">    // The old code closed and reopened the score file, leading to a</a>
+<a name="ln166">    // race condition where one Crawl process could overwrite the</a>
+<a name="ln167">    // other's highscore. Now we truncate and rewrite the file without</a>
+<a name="ln168">    // closing it.</a>
+<a name="ln169">    if (ftruncate(fileno(scores), 0))</a>
+<a name="ln170">        end(1, true, &quot;unable to truncate scorefile&quot;);</a>
+<a name="ln171"> </a>
+<a name="ln172">    rewind(scores);</a>
+<a name="ln173"> </a>
+<a name="ln174">    // write scorefile entries.</a>
+<a name="ln175">    for (i = 0; i &lt; hs_list_size; i++)</a>
+<a name="ln176">    {</a>
+<a name="ln177">        _hs_write(scores, *hs_list[i]);</a>
+<a name="ln178"> </a>
+<a name="ln179">        // Leave in memory. Does this anyway if !inserted.</a>
+<a name="ln180">        // Can write cleanup function if nessicary??</a>
+<a name="ln181">        // hs_list[i].reset(nullptr);</a>
+<a name="ln182">    }</a>
+<a name="ln183"> </a>
+<a name="ln184">    // close scorefile.</a>
+<a name="ln185">    _hs_close(scores);</a>
+<a name="ln186">    return newest_entry;</a>
+<a name="ln187">}</a>
+<a name="ln188"> </a>
+<a name="ln189">void logfile_new_entry(const scorefile_entry &amp;ne)</a>
+<a name="ln190">{</a>
+<a name="ln191">    unwind_bool logfile_update(crawl_state.updating_scores, true);</a>
+<a name="ln192"> </a>
+<a name="ln193">    FILE *logfile;</a>
+<a name="ln194">    scorefile_entry le = ne;</a>
+<a name="ln195"> </a>
+<a name="ln196">    // open logfile (appending) -- nullptr *is* fatal here.</a>
+<a name="ln197">    logfile = _hs_open(&quot;a&quot;, _log_file_name());</a>
+<a name="ln198">    if (logfile == nullptr)</a>
+<a name="ln199">    {</a>
+<a name="ln200">        mprf(MSGCH_ERROR, &quot;ERROR: failure writing to the logfile.&quot;);</a>
+<a name="ln201">        return;</a>
+<a name="ln202">    }</a>
+<a name="ln203"> </a>
+<a name="ln204">    _hs_write(logfile, le);</a>
+<a name="ln205"> </a>
+<a name="ln206">    // close logfile.</a>
+<a name="ln207">    _hs_close(logfile);</a>
+<a name="ln208">}</a>
+<a name="ln209"> </a>
+<a name="ln210">template &lt;class t_printf&gt;</a>
+<a name="ln211">static void _hiscores_print_entry(const scorefile_entry &amp;se,</a>
+<a name="ln212">                                  int index, int format, t_printf pf)</a>
+<a name="ln213">{</a>
+<a name="ln214">    char buf[200];</a>
+<a name="ln215">    // print position (tracked implicitly by order score file)</a>
+<a name="ln216">    snprintf(buf, sizeof buf, &quot;%3d.&quot;, index + 1);</a>
+<a name="ln217"> </a>
+<a name="ln218">    pf(&quot;%s&quot;, buf);</a>
+<a name="ln219"> </a>
+<a name="ln220">    string entry;</a>
+<a name="ln221">    // format the entry</a>
+<a name="ln222">    if (format == SCORE_TERSE)</a>
+<a name="ln223">        entry = hiscores_format_single(se);</a>
+<a name="ln224">    else</a>
+<a name="ln225">        entry = hiscores_format_single_long(se, (format == SCORE_VERBOSE));</a>
+<a name="ln226"> </a>
+<a name="ln227">    entry += &quot;\n&quot;;</a>
+<a name="ln228">    pf(&quot;%s&quot;, entry.c_str());</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">// Reads hiscores file to memory</a>
+<a name="ln232">void hiscores_read_to_memory()</a>
+<a name="ln233">{</a>
+<a name="ln234">    FILE *scores;</a>
+<a name="ln235">    int i;</a>
+<a name="ln236"> </a>
+<a name="ln237">    // open highscore file (reading)</a>
+<a name="ln238">    scores = _hs_open(&quot;r&quot;, _score_file_name());</a>
+<a name="ln239">    if (scores == nullptr)</a>
+<a name="ln240">        return;</a>
+<a name="ln241"> </a>
+<a name="ln242">    // read highscore file</a>
+<a name="ln243">    for (i = 0; i &lt; SCORE_FILE_ENTRIES; i++)</a>
+<a name="ln244">    {</a>
+<a name="ln245">        hs_list[i].reset(new scorefile_entry);</a>
+<a name="ln246">        if (_hs_read(scores, *hs_list[i]) == false)</a>
+<a name="ln247">            break;</a>
+<a name="ln248">    }</a>
+<a name="ln249"> </a>
+<a name="ln250">    hs_list_size = i;</a>
+<a name="ln251">    hs_list_initalized = true;</a>
+<a name="ln252"> </a>
+<a name="ln253">    //close off</a>
+<a name="ln254">    _hs_close(scores);</a>
+<a name="ln255">}</a>
+<a name="ln256"> </a>
+<a name="ln257">// Writes all entries in the scorefile to stdout in human-readable form.</a>
+<a name="ln258">void hiscores_print_all(int display_count, int format)</a>
+<a name="ln259">{</a>
+<a name="ln260">    unwind_bool scorefile_display(crawl_state.updating_scores, true);</a>
+<a name="ln261"> </a>
+<a name="ln262">    FILE *scores = _hs_open(&quot;r&quot;, _score_file_name());</a>
+<a name="ln263">    if (scores == nullptr)</a>
+<a name="ln264">    {</a>
+<a name="ln265">        // will only happen from command line</a>
+<a name="ln266">        puts(&quot;No scores.&quot;);</a>
+<a name="ln267">        return;</a>
+<a name="ln268">    }</a>
+<a name="ln269"> </a>
+<a name="ln270">    for (int entry = 0; display_count &lt;= 0 || entry &lt; display_count; ++entry)</a>
+<a name="ln271">    {</a>
+<a name="ln272">        scorefile_entry se;</a>
+<a name="ln273">        if (!_hs_read(scores, se))</a>
+<a name="ln274">            break;</a>
+<a name="ln275"> </a>
+<a name="ln276">        if (format == -1)</a>
+<a name="ln277">            printf(&quot;%s&quot;, se.raw_string().c_str());</a>
+<a name="ln278">        else</a>
+<a name="ln279">            _hiscores_print_entry(se, entry, format, printf);</a>
+<a name="ln280">    }</a>
+<a name="ln281"> </a>
+<a name="ln282">    _hs_close(scores);</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">// Displays high scores using curses. For output to the console, use</a>
+<a name="ln286">// hiscores_print_all.</a>
+<a name="ln287">string hiscores_print_list(int display_count, int format, int newest_entry, int&amp; start_out)</a>
+<a name="ln288">{</a>
+<a name="ln289">    unwind_bool scorefile_display(crawl_state.updating_scores, true);</a>
+<a name="ln290">    string ret;</a>
+<a name="ln291"> </a>
+<a name="ln292">    // Additional check to preserve previous functionality</a>
+<a name="ln293">    if (!hs_list_initalized) {</a>
+<a name="ln294">        hiscores_read_to_memory();</a>
+<a name="ln295">    }</a>
+<a name="ln296"> </a>
+<a name="ln297">    int i, total_entries;</a>
+<a name="ln298"> </a>
+<a name="ln299">    if (display_count &lt;= 0)</a>
+<a name="ln300">        return &quot;&quot;;</a>
+<a name="ln301"> </a>
+<a name="ln302">    total_entries = hs_list_size;</a>
+<a name="ln303"> </a>
+<a name="ln304">    int start = newest_entry - display_count / 2;</a>
+<a name="ln305"> </a>
+<a name="ln306">    if (start + display_count &gt; total_entries)</a>
+<a name="ln307">        start = total_entries - display_count;</a>
+<a name="ln308"> </a>
+<a name="ln309">    if (start &lt; 0)</a>
+<a name="ln310">        start = 0;</a>
+<a name="ln311"> </a>
+<a name="ln312">    const int finish = start + display_count;</a>
+<a name="ln313"> </a>
+<a name="ln314">    for (i = start; i &lt; finish &amp;&amp; i &lt; total_entries; i++)</a>
+<a name="ln315">    {</a>
+<a name="ln316">        // check for recently added entry</a>
+<a name="ln317">        if (i == newest_entry)</a>
+<a name="ln318">            ret += &quot;&lt;yellow&gt;&quot;;</a>
+<a name="ln319"> </a>
+<a name="ln320">        _hiscores_print_entry(*hs_list[i], i, format, [&amp;ret](const char */*fmt*/, const char *s){</a>
+<a name="ln321">            ret += string(s);</a>
+<a name="ln322">        });</a>
+<a name="ln323"> </a>
+<a name="ln324">        // return to normal color for next entry</a>
+<a name="ln325">        if (i == newest_entry)</a>
+<a name="ln326">            ret += &quot;&lt;lightgrey&gt;&quot;;</a>
+<a name="ln327">    }</a>
+<a name="ln328"> </a>
+<a name="ln329">    start_out = start;</a>
+<a name="ln330">    return ret;</a>
+<a name="ln331">}</a>
+<a name="ln332"> </a>
+<a name="ln333">static void _show_morgue(scorefile_entry&amp; se)</a>
+<a name="ln334">{</a>
+<a name="ln335">    int flags = FS_PREWRAPPED_TEXT;</a>
+<a name="ln336">    formatted_scroller morgue_file(flags);</a>
+<a name="ln337"> </a>
+<a name="ln338">    morgue_file.set_tag(&quot;morgue&quot;);</a>
+<a name="ln339">    morgue_file.set_more();</a>
+<a name="ln340"> </a>
+<a name="ln341">    string morgue_base = morgue_name(se.get_name(), se.get_death_time());</a>
+<a name="ln342">    string morgue_path = morgue_directory()</a>
+<a name="ln343">                         + strip_filename_unsafe_chars(morgue_base) + &quot;.txt&quot;;</a>
+<a name="ln344">    FILE* morgue = lk_open(&quot;r&quot;, morgue_path);</a>
+<a name="ln345"> </a>
+<a name="ln346">    if (!morgue) // TODO: add an error message</a>
+<a name="ln347">        return;</a>
+<a name="ln348"> </a>
+<a name="ln349">    char buf[200];</a>
+<a name="ln350">    string morgue_text = &quot;&quot;;</a>
+<a name="ln351"> </a>
+<a name="ln352">    while (fgets(buf, sizeof buf, morgue) != nullptr)</a>
+<a name="ln353">    {</a>
+<a name="ln354">        string line = string(buf);</a>
+<a name="ln355">        size_t newline_pos = line.find_last_of('\n');</a>
+<a name="ln356">        if (newline_pos != string::npos)</a>
+<a name="ln357">            line.erase(newline_pos);</a>
+<a name="ln358">        morgue_text += &quot;&lt;w&gt;&quot; + replace_all(line, &quot;&lt;&quot;, &quot;&lt;&lt;&quot;) + &quot;&lt;/w&gt;&quot; + '\n';</a>
+<a name="ln359">    }</a>
+<a name="ln360"> </a>
+<a name="ln361">    lk_close(morgue);</a>
+<a name="ln362"> </a>
+<a name="ln363">    column_composer cols(2, 40);</a>
+<a name="ln364">    cols.add_formatted(</a>
+<a name="ln365">            0,</a>
+<a name="ln366">            morgue_text,</a>
+<a name="ln367">            true);</a>
+<a name="ln368"> </a>
+<a name="ln369">    vector&lt;formatted_string&gt; blines = cols.formatted_lines();</a>
+<a name="ln370"> </a>
+<a name="ln371">    unsigned i;</a>
+<a name="ln372">    for (i = 0; i &lt; blines.size(); ++i)</a>
+<a name="ln373">        morgue_file.add_formatted_string(blines[i], true);</a>
+<a name="ln374"> </a>
+<a name="ln375">    morgue_file.show();</a>
+<a name="ln376">}</a>
+<a name="ln377"> </a>
+<a name="ln378">class UIHiscoresMenu : public Widget</a>
+<a name="ln379">{</a>
+<a name="ln380">public:</a>
+<a name="ln381">    UIHiscoresMenu();</a>
+<a name="ln382"> </a>
+<a name="ln383">    virtual shared_ptr&lt;Widget&gt; get_child_at_offset(int, int) override {</a>
+<a name="ln384">        return static_pointer_cast&lt;Widget&gt;(m_root);</a>
+<a name="ln385">    }</a>
+<a name="ln386"> </a>
+<a name="ln387">    virtual void _render() override;</a>
+<a name="ln388">    virtual SizeReq _get_preferred_size(Direction dim, int prosp_width) override;</a>
+<a name="ln389">    virtual void _allocate_region() override;</a>
+<a name="ln390"> </a>
+<a name="ln391">    void on_show();</a>
+<a name="ln392"> </a>
+<a name="ln393">    bool done = false;</a>
+<a name="ln394"> </a>
+<a name="ln395">private:</a>
+<a name="ln396">    void _construct_hiscore_table();</a>
+<a name="ln397">    void _add_hiscore_row(scorefile_entry&amp; se, int id);</a>
+<a name="ln398"> </a>
+<a name="ln399">    Widget* initial_focus = nullptr;</a>
+<a name="ln400">    bool have_allocated {false};</a>
+<a name="ln401"> </a>
+<a name="ln402">    shared_ptr&lt;Box&gt; m_root;</a>
+<a name="ln403">    shared_ptr&lt;Text&gt; m_description;</a>
+<a name="ln404">    shared_ptr&lt;OuterMenu&gt; m_score_entries;</a>
+<a name="ln405">};</a>
+<a name="ln406"> </a>
+<a name="ln407">static int nhsr;</a>
+<a name="ln408"> </a>
+<a name="ln409">UIHiscoresMenu::UIHiscoresMenu()</a>
+<a name="ln410">{</a>
+<a name="ln411">    m_root = make_shared&lt;Box&gt;(Widget::VERT);</a>
+<a name="ln412">    add_internal_child(m_root);</a>
+<a name="ln413">    m_root-&gt;set_cross_alignment(Widget::STRETCH);</a>
+<a name="ln414"> </a>
+<a name="ln415">    auto title_hbox = make_shared&lt;Box&gt;(Widget::HORZ);</a>
+<a name="ln416">    title_hbox-&gt;set_margin_for_sdl(0, 0, 20, 0);</a>
+<a name="ln417">    title_hbox-&gt;set_margin_for_crt(0, 0, 1, 0);</a>
+<a name="ln418"> </a>
+<a name="ln419">#ifdef USE_TILE</a>
+<a name="ln420">    auto tile = make_shared&lt;Image&gt;();</a>
+<a name="ln421">    tile-&gt;set_tile(tile_def(TILEG_STARTUP_HIGH_SCORES, TEX_GUI));</a>
+<a name="ln422">    title_hbox-&gt;add_child(move(tile));</a>
+<a name="ln423">#endif</a>
+<a name="ln424"> </a>
+<a name="ln425">    auto title = make_shared&lt;Text&gt;(formatted_string(</a>
+<a name="ln426">                &quot;Dungeon Crawl Stone Soup: High Scores&quot;, YELLOW));</a>
+<a name="ln427">    title-&gt;set_margin_for_sdl(0, 0, 0, 16);</a>
+<a name="ln428">    title_hbox-&gt;add_child(move(title));</a>
+<a name="ln429"> </a>
+<a name="ln430">    title_hbox-&gt;set_main_alignment(Widget::CENTER);</a>
+<a name="ln431">    title_hbox-&gt;set_cross_alignment(Widget::CENTER);</a>
+<a name="ln432"> </a>
+<a name="ln433">    m_description = make_shared&lt;Text&gt;(string(9, '\n'));</a>
+<a name="ln434"> </a>
+<a name="ln435">    m_score_entries= make_shared&lt;OuterMenu&gt;(true, 1, 100);</a>
+<a name="ln436">    nhsr = 0;</a>
+<a name="ln437">    _construct_hiscore_table();</a>
+<a name="ln438"> </a>
+<a name="ln439">    m_root-&gt;add_child(move(title_hbox));</a>
+<a name="ln440">    if (initial_focus)</a>
+<a name="ln441">    {</a>
+<a name="ln442">        m_root-&gt;add_child(m_description);</a>
+<a name="ln443">        m_root-&gt;add_child(m_score_entries);</a>
+<a name="ln444">    }</a>
+<a name="ln445">    else</a>
+<a name="ln446">    {</a>
+<a name="ln447">        auto placeholder = formatted_string(&quot;No high scores yet...&quot;, DARKGRAY);</a>
+<a name="ln448">        m_root-&gt;add_child(make_shared&lt;Text&gt;(placeholder));</a>
+<a name="ln449">        initial_focus = this;</a>
+<a name="ln450">    }</a>
+<a name="ln451"> </a>
+<a name="ln452">    on_hotkey_event([this](const KeyEvent&amp; ev) {</a>
+<a name="ln453">        return done = (key_is_escape(ev.key()) || ev.key() == CK_MOUSE_CMD);</a>
+<a name="ln454">    });</a>
+<a name="ln455">}</a>
+<a name="ln456"> </a>
+<a name="ln457">void UIHiscoresMenu::_construct_hiscore_table()</a>
+<a name="ln458">{</a>
+<a name="ln459">    FILE *scores = _hs_open(&quot;r&quot;, _score_file_name());</a>
+<a name="ln460"> </a>
+<a name="ln461">    if (scores == nullptr)</a>
+<a name="ln462">        return;</a>
+<a name="ln463"> </a>
+<a name="ln464">    int i;</a>
+<a name="ln465">    // read highscore file</a>
+<a name="ln466">    for (i = 0; i &lt; SCORE_FILE_ENTRIES; i++)</a>
+<a name="ln467">    {</a>
+<a name="ln468">        hs_list[i].reset(new scorefile_entry);</a>
+<a name="ln469">        if (_hs_read(scores, *hs_list[i]) == false)</a>
+<a name="ln470">            break;</a>
+<a name="ln471">    }</a>
+<a name="ln472"> </a>
+<a name="ln473">    _hs_close(scores);</a>
+<a name="ln474"> </a>
+<a name="ln475">    for (int j=0; j&lt;i; j++)</a>
+<a name="ln476">        _add_hiscore_row(*hs_list[j], j);</a>
+<a name="ln477">}</a>
+<a name="ln478"> </a>
+<a name="ln479">void UIHiscoresMenu::_add_hiscore_row(scorefile_entry&amp; se, int id)</a>
+<a name="ln480">{</a>
+<a name="ln481">    auto tmp = make_shared&lt;Text&gt;();</a>
+<a name="ln482"> </a>
+<a name="ln483">    tmp-&gt;set_text(hiscores_format_single(se));</a>
+<a name="ln484">    auto btn = make_shared&lt;MenuButton&gt;();</a>
+<a name="ln485">    tmp-&gt;set_margin_for_sdl(2);</a>
+<a name="ln486">    btn-&gt;set_child(move(tmp));</a>
+<a name="ln487">    btn-&gt;on_activate_event([id](const ActivateEvent&amp;) {</a>
+<a name="ln488">        _show_morgue(*hs_list[id]);</a>
+<a name="ln489">        return true;</a>
+<a name="ln490">    });</a>
+<a name="ln491">    btn-&gt;on_focusin_event([this, se](const FocusEvent&amp;) {</a>
+<a name="ln492">        formatted_string desc(hiscores_format_single_long(se, true));</a>
+<a name="ln493">        desc.cprintf(string(max(0, 9-count_linebreaks(desc)), '\n'));</a>
+<a name="ln494">        m_description-&gt;set_text(move(desc));</a>
+<a name="ln495">        return false;</a>
+<a name="ln496">    });</a>
+<a name="ln497"> </a>
+<a name="ln498">    if (!initial_focus)</a>
+<a name="ln499">        initial_focus = btn.get();</a>
+<a name="ln500">    m_score_entries-&gt;add_button(move(btn), 0, nhsr++);</a>
+<a name="ln501">}</a>
+<a name="ln502"> </a>
+<a name="ln503">void UIHiscoresMenu::_render()</a>
+<a name="ln504">{</a>
+<a name="ln505">    m_root-&gt;render();</a>
+<a name="ln506">}</a>
+<a name="ln507"> </a>
+<a name="ln508">void UIHiscoresMenu::on_show()</a>
+<a name="ln509">{</a>
+<a name="ln510">    ui::set_focused_widget(initial_focus);</a>
+<a name="ln511">}</a>
+<a name="ln512"> </a>
+<a name="ln513">SizeReq UIHiscoresMenu::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln514">{</a>
+<a name="ln515">    return m_root-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln516">}</a>
+<a name="ln517"> </a>
+<a name="ln518">void UIHiscoresMenu::_allocate_region()</a>
+<a name="ln519">{</a>
+<a name="ln520">    if (!have_allocated)</a>
+<a name="ln521">    {</a>
+<a name="ln522">        have_allocated = true;</a>
+<a name="ln523">        on_show();</a>
+<a name="ln524">    }</a>
+<a name="ln525">    m_root-&gt;allocate_region(m_region);</a>
+<a name="ln526">}</a>
+<a name="ln527"> </a>
+<a name="ln528">void show_hiscore_table()</a>
+<a name="ln529">{</a>
+<a name="ln530">    unwind_var&lt;string&gt; sprintmap(crawl_state.map, crawl_state.sprint_map);</a>
+<a name="ln531">    auto hiscore_ui = make_shared&lt;UIHiscoresMenu&gt;();</a>
+<a name="ln532">    auto popup = make_shared&lt;ui::Popup&gt;(hiscore_ui);</a>
+<a name="ln533">    ui::run_layout(move(popup), hiscore_ui-&gt;done);</a>
+<a name="ln534">}</a>
+<a name="ln535"> </a>
+<a name="ln536">// Trying to supply an appropriate verb for the attack type. -- bwr</a>
+<a name="ln537">static const char *_range_type_verb(const char *const aux)</a>
+<a name="ln538">{</a>
+<a name="ln539">    if (strncmp(aux, &quot;Shot &quot;, 5) == 0)                // launched</a>
+<a name="ln540">        return &quot;shot&quot;;</a>
+<a name="ln541">    else if (aux[0] == 0                                // unknown</a>
+<a name="ln542">             || strncmp(aux, &quot;Hit &quot;, 4) == 0          // thrown</a>
+<a name="ln543">             || strncmp(aux, &quot;volley &quot;, 7) == 0)      // manticore spikes</a>
+<a name="ln544">    {</a>
+<a name="ln545">        return &quot;hit from afar&quot;;</a>
+<a name="ln546">    }</a>
+<a name="ln547"> </a>
+<a name="ln548">    return &quot;blasted&quot;;                                 // spells, wands</a>
+<a name="ln549">}</a>
+<a name="ln550"> </a>
+<a name="ln551">string hiscores_format_single(const scorefile_entry &amp;se)</a>
+<a name="ln552">{</a>
+<a name="ln553">    return se.hiscore_line(scorefile_entry::DDV_ONELINE);</a>
+<a name="ln554">}</a>
+<a name="ln555"> </a>
+<a name="ln556">static bool _hiscore_same_day(time_t t1, time_t t2)</a>
+<a name="ln557">{</a>
+<a name="ln558">    struct tm *d1  = TIME_FN(&amp;t1);</a>
+<a name="ln559">    const int year = d1-&gt;tm_year;</a>
+<a name="ln560">    const int mon  = d1-&gt;tm_mon;</a>
+<a name="ln561">    const int day  = d1-&gt;tm_mday;</a>
+<a name="ln562"> </a>
+<a name="ln563">    struct tm *d2  = TIME_FN(&amp;t2);</a>
+<a name="ln564"> </a>
+<a name="ln565">    return d2-&gt;tm_mday == day &amp;&amp; d2-&gt;tm_mon == mon &amp;&amp; d2-&gt;tm_year == year;</a>
+<a name="ln566">}</a>
+<a name="ln567"> </a>
+<a name="ln568">static string _hiscore_date_string(time_t time)</a>
+<a name="ln569">{</a>
+<a name="ln570">    struct tm *date = TIME_FN(&amp;time);</a>
+<a name="ln571"> </a>
+<a name="ln572">    const char *mons[12] = { &quot;Jan&quot;, &quot;Feb&quot;, &quot;Mar&quot;, &quot;Apr&quot;, &quot;May&quot;, &quot;June&quot;,</a>
+<a name="ln573">                             &quot;July&quot;, &quot;Aug&quot;, &quot;Sept&quot;, &quot;Oct&quot;, &quot;Nov&quot;, &quot;Dec&quot; };</a>
+<a name="ln574"> </a>
+<a name="ln575">    return make_stringf(&quot;%s %d, %d&quot;, mons[date-&gt;tm_mon], date-&gt;tm_mday,</a>
+<a name="ln576">                                     date-&gt;tm_year + 1900);</a>
+<a name="ln577">}</a>
+<a name="ln578"> </a>
+<a name="ln579">static string _hiscore_newline_string()</a>
+<a name="ln580">{</a>
+<a name="ln581">    return &quot;\n             &quot;;</a>
+<a name="ln582">}</a>
+<a name="ln583"> </a>
+<a name="ln584">string hiscores_format_single_long(const scorefile_entry &amp;se, bool verbose)</a>
+<a name="ln585">{</a>
+<a name="ln586">    return se.hiscore_line(verbose ? scorefile_entry::DDV_VERBOSE</a>
+<a name="ln587">                                   : scorefile_entry::DDV_NORMAL);</a>
+<a name="ln588">}</a>
+<a name="ln589"> </a>
+<a name="ln590">// --------------------------------------------------------------------------</a>
+<a name="ln591">// BEGIN private functions</a>
+<a name="ln592">// --------------------------------------------------------------------------</a>
+<a name="ln593"> </a>
+<a name="ln594">static FILE *_hs_open(const char *mode, const string &amp;scores)</a>
+<a name="ln595">{</a>
+<a name="ln596">    // allow reading from standard input</a>
+<a name="ln597">    if (scores == &quot;-&quot;)</a>
+<a name="ln598">        return stdin;</a>
+<a name="ln599"> </a>
+<a name="ln600">    return lk_open(mode, scores);</a>
+<a name="ln601">}</a>
+<a name="ln602"> </a>
+<a name="ln603">static void _hs_close(FILE *handle)</a>
+<a name="ln604">{</a>
+<a name="ln605">    lk_close(handle);</a>
+<a name="ln606">}</a>
+<a name="ln607"> </a>
+<a name="ln608">static bool _hs_read(FILE *scores, scorefile_entry &amp;dest)</a>
+<a name="ln609">{</a>
+<a name="ln610">    char inbuf[1300];</a>
+<a name="ln611">    if (!scores || feof(scores))</a>
+<a name="ln612">        return false;</a>
+<a name="ln613"> </a>
+<a name="ln614">    memset(inbuf, 0, sizeof inbuf);</a>
+<a name="ln615">    dest.reset();</a>
+<a name="ln616"> </a>
+<a name="ln617">    if (!fgets(inbuf, sizeof inbuf, scores))</a>
+<a name="ln618">        return false;</a>
+<a name="ln619"> </a>
+<a name="ln620">    return dest.parse(inbuf);</a>
+<a name="ln621">}</a>
+<a name="ln622"> </a>
+<a name="ln623">static int _val_char(char digit)</a>
+<a name="ln624">{</a>
+<a name="ln625">    return digit - '0';</a>
+<a name="ln626">}</a>
+<a name="ln627"> </a>
+<a name="ln628">static time_t _parse_time(const string &amp;st)</a>
+<a name="ln629">{</a>
+<a name="ln630">    struct tm  date;</a>
+<a name="ln631"> </a>
+<a name="ln632">    if (st.length() &lt; 15)</a>
+<a name="ln633">        return static_cast&lt;time_t&gt;(0);</a>
+<a name="ln634"> </a>
+<a name="ln635">    date.tm_year  =   _val_char(st[0]) * 1000 + _val_char(st[1]) * 100</a>
+<a name="ln636">                    + _val_char(st[2]) *   10 + _val_char(st[3]) - 1900;</a>
+<a name="ln637"> </a>
+<a name="ln638">    date.tm_mon   = _val_char(st[4])  * 10 + _val_char(st[5]);</a>
+<a name="ln639">    date.tm_mday  = _val_char(st[6])  * 10 + _val_char(st[7]);</a>
+<a name="ln640">    date.tm_hour  = _val_char(st[8])  * 10 + _val_char(st[9]);</a>
+<a name="ln641">    date.tm_min   = _val_char(st[10]) * 10 + _val_char(st[11]);</a>
+<a name="ln642">    date.tm_sec   = _val_char(st[12]) * 10 + _val_char(st[13]);</a>
+<a name="ln643">    date.tm_isdst = (st[14] == 'D');</a>
+<a name="ln644"> </a>
+<a name="ln645">    return mktime(&amp;date);</a>
+<a name="ln646">}</a>
+<a name="ln647"> </a>
+<a name="ln648">static void _hs_write(FILE *scores, scorefile_entry &amp;se)</a>
+<a name="ln649">{</a>
+<a name="ln650">    fprintf(scores, &quot;%s&quot;, se.raw_string().c_str());</a>
+<a name="ln651">}</a>
+<a name="ln652"> </a>
+<a name="ln653">static const char *kill_method_names[] =</a>
+<a name="ln654">{</a>
+<a name="ln655">    &quot;mon&quot;, &quot;pois&quot;, &quot;cloud&quot;, &quot;beam&quot;, &quot;lava&quot;, &quot;water&quot;,</a>
+<a name="ln656">    &quot;stupidity&quot;, &quot;weakness&quot;, &quot;clumsiness&quot;, &quot;trap&quot;, &quot;leaving&quot;, &quot;winning&quot;,</a>
+<a name="ln657">    &quot;quitting&quot;, &quot;wizmode&quot;, &quot;draining&quot;, &quot;starvation&quot;, &quot;freezing&quot;, &quot;burning&quot;,</a>
+<a name="ln658">    &quot;wild_magic&quot;, &quot;xom&quot;, &quot;rotting&quot;, &quot;targeting&quot;, &quot;spore&quot;,</a>
+<a name="ln659">    &quot;tso_smiting&quot;, &quot;petrification&quot;, &quot;something&quot;,</a>
+<a name="ln660">    &quot;falling_down_stairs&quot;, &quot;acid&quot;, &quot;curare&quot;,</a>
+<a name="ln661">    &quot;beogh_smiting&quot;, &quot;divine_wrath&quot;, &quot;bounce&quot;, &quot;reflect&quot;, &quot;self_aimed&quot;,</a>
+<a name="ln662">    &quot;falling_through_gate&quot;, &quot;disintegration&quot;, &quot;headbutt&quot;, &quot;rolling&quot;,</a>
+<a name="ln663">    &quot;mirror_damage&quot;, &quot;spines&quot;, &quot;frailty&quot;, &quot;barbs&quot;, &quot;being_thrown&quot;,</a>
+<a name="ln664">    &quot;collision&quot;,</a>
+<a name="ln665">};</a>
+<a name="ln666"> </a>
+<a name="ln667">static const char *_kill_method_name(kill_method_type kmt)</a>
+<a name="ln668">{</a>
+<a name="ln669">    COMPILE_CHECK(NUM_KILLBY == ARRAYSZ(kill_method_names));</a>
+<a name="ln670"> </a>
+<a name="ln671">    if (kmt == NUM_KILLBY)</a>
+<a name="ln672">        return &quot;&quot;;</a>
+<a name="ln673"> </a>
+<a name="ln674">    return kill_method_names[kmt];</a>
+<a name="ln675">}</a>
+<a name="ln676"> </a>
+<a name="ln677">static kill_method_type _str_to_kill_method(const string &amp;s)</a>
+<a name="ln678">{</a>
+<a name="ln679">    COMPILE_CHECK(NUM_KILLBY == ARRAYSZ(kill_method_names));</a>
+<a name="ln680"> </a>
+<a name="ln681">    for (int i = 0; i &lt; NUM_KILLBY; ++i)</a>
+<a name="ln682">    {</a>
+<a name="ln683">        if (s == kill_method_names[i])</a>
+<a name="ln684">            return static_cast&lt;kill_method_type&gt;(i);</a>
+<a name="ln685">    }</a>
+<a name="ln686"> </a>
+<a name="ln687">    return NUM_KILLBY;</a>
+<a name="ln688">}</a>
+<a name="ln689"> </a>
+<a name="ln690">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln691">// scorefile_entry</a>
+<a name="ln692"> </a>
+<a name="ln693">scorefile_entry::scorefile_entry(int dam, mid_t dsource, int dtype,</a>
+<a name="ln694">                                 const char *aux, bool death_cause_only,</a>
+<a name="ln695">                                 const char *dsource_name, time_t dt)</a>
+<a name="ln696">{</a>
+<a name="ln697">    reset();</a>
+<a name="ln698"> </a>
+<a name="ln699">    init_death_cause(dam, dsource, dtype, aux, dsource_name);</a>
+<a name="ln700">    if (!death_cause_only)</a>
+<a name="ln701">        init(dt);</a>
+<a name="ln702">}</a>
+<a name="ln703"> </a>
+<a name="ln704">scorefile_entry::scorefile_entry()</a>
+<a name="ln705">{</a>
+<a name="ln706">    // Completely uninitialised, caveat user.</a>
+<a name="ln707">    reset();</a>
+<a name="ln708">}</a>
+<a name="ln709"> </a>
+<a name="ln710">scorefile_entry::scorefile_entry(const scorefile_entry &amp;se)</a>
+<a name="ln711">{</a>
+<a name="ln712">    init_from(se);</a>
+<a name="ln713">}</a>
+<a name="ln714"> </a>
+<a name="ln715">scorefile_entry &amp;scorefile_entry::operator = (const scorefile_entry &amp;se)</a>
+<a name="ln716">{</a>
+<a name="ln717">    init_from(se);</a>
+<a name="ln718">    return *this;</a>
+<a name="ln719">}</a>
+<a name="ln720"> </a>
+<a name="ln721">void scorefile_entry::init_from(const scorefile_entry &amp;se)</a>
+<a name="ln722">{</a>
+<a name="ln723">    version            = se.version;</a>
+<a name="ln724">    save_rcs_version   = se.save_rcs_version;</a>
+<a name="ln725">    save_tag_version   = se.save_tag_version;</a>
+<a name="ln726">    tiles              = se.tiles;</a>
+<a name="ln727">    points             = se.points;</a>
+<a name="ln728">    name               = se.name;</a>
+<a name="ln729">    race               = se.race;</a>
+<a name="ln730">    job                = se.job;</a>
+<a name="ln731">    race_class_name    = se.race_class_name;</a>
+<a name="ln732">    lvl                = se.lvl;</a>
+<a name="ln733">    best_skill         = se.best_skill;</a>
+<a name="ln734">    best_skill_lvl     = se.best_skill_lvl;</a>
+<a name="ln735">    title              = se.title;</a>
+<a name="ln736">    death_type         = se.death_type;</a>
+<a name="ln737">    death_source       = se.death_source;</a>
+<a name="ln738">    death_source_name  = se.death_source_name;</a>
+<a name="ln739">    death_source_flags = se.death_source_flags;</a>
+<a name="ln740">    auxkilldata        = se.auxkilldata;</a>
+<a name="ln741">    indirectkiller     = se.indirectkiller;</a>
+<a name="ln742">    killerpath         = se.killerpath;</a>
+<a name="ln743">    last_banisher      = se.last_banisher;</a>
+<a name="ln744">    dlvl               = se.dlvl;</a>
+<a name="ln745">    absdepth           = se.absdepth;</a>
+<a name="ln746">    branch             = se.branch;</a>
+<a name="ln747">    map                = se.map;</a>
+<a name="ln748">    mapdesc            = se.mapdesc;</a>
+<a name="ln749">    killer_map         = se.killer_map;</a>
+<a name="ln750">    final_hp           = se.final_hp;</a>
+<a name="ln751">    final_max_hp       = se.final_max_hp;</a>
+<a name="ln752">    final_max_max_hp   = se.final_max_max_hp;</a>
+<a name="ln753">    final_mp           = se.final_mp;</a>
+<a name="ln754">    final_max_mp       = se.final_max_mp;</a>
+<a name="ln755">    final_base_max_mp  = se.final_base_max_mp;</a>
+<a name="ln756">    damage             = se.damage;</a>
+<a name="ln757">    source_damage      = se.source_damage;</a>
+<a name="ln758">    turn_damage        = se.turn_damage;</a>
+<a name="ln759">    str                = se.str;</a>
+<a name="ln760">    intel              = se.intel;</a>
+<a name="ln761">    dex                = se.dex;</a>
+<a name="ln762">    ac                 = se.ac;</a>
+<a name="ln763">    ev                 = se.ev;</a>
+<a name="ln764">    sh                 = se.sh;</a>
+<a name="ln765">    god                = se.god;</a>
+<a name="ln766">    piety              = se.piety;</a>
+<a name="ln767">    penance            = se.penance;</a>
+<a name="ln768">    wiz_mode           = se.wiz_mode;</a>
+<a name="ln769">    explore_mode       = se.explore_mode;</a>
+<a name="ln770">    birth_time         = se.birth_time;</a>
+<a name="ln771">    death_time         = se.death_time;</a>
+<a name="ln772">    real_time          = se.real_time;</a>
+<a name="ln773">    num_turns          = se.num_turns;</a>
+<a name="ln774">    num_aut            = se.num_aut;</a>
+<a name="ln775">    num_diff_runes     = se.num_diff_runes;</a>
+<a name="ln776">    num_runes          = se.num_runes;</a>
+<a name="ln777">    kills              = se.kills;</a>
+<a name="ln778">    maxed_skills       = se.maxed_skills;</a>
+<a name="ln779">    fifteen_skills     = se.fifteen_skills;</a>
+<a name="ln780">    status_effects     = se.status_effects;</a>
+<a name="ln781">    gold               = se.gold;</a>
+<a name="ln782">    gold_spent         = se.gold_spent;</a>
+<a name="ln783">    gold_found         = se.gold_found;</a>
+<a name="ln784">    zigs               = se.zigs;</a>
+<a name="ln785">    zigmax             = se.zigmax;</a>
+<a name="ln786">    scrolls_used       = se.scrolls_used;</a>
+<a name="ln787">    potions_used       = se.potions_used;</a>
+<a name="ln788">    seed               = se.seed;</a>
+<a name="ln789">    fixup_char_name();</a>
+<a name="ln790"> </a>
+<a name="ln791">    // We could just reset raw_line to &quot;&quot; instead.</a>
+<a name="ln792">    raw_line          = se.raw_line;</a>
+<a name="ln793">}</a>
+<a name="ln794"> </a>
+<a name="ln795">actor* scorefile_entry::killer() const</a>
+<a name="ln796">{</a>
+<a name="ln797">    return actor_by_mid(death_source);</a>
+<a name="ln798">}</a>
+<a name="ln799"> </a>
+<a name="ln800">xlog_fields scorefile_entry::get_fields() const</a>
+<a name="ln801">{</a>
+<a name="ln802">    if (!fields)</a>
+<a name="ln803">        return xlog_fields();</a>
+<a name="ln804">    else</a>
+<a name="ln805">        return *fields;</a>
+<a name="ln806">}</a>
+<a name="ln807"> </a>
+<a name="ln808">bool scorefile_entry::parse(const string &amp;line)</a>
+<a name="ln809">{</a>
+<a name="ln810">    // Scorefile formats down the ages:</a>
+<a name="ln811">    //</a>
+<a name="ln812">    // 1) old-style lines which were 80 character blocks</a>
+<a name="ln813">    // 2) 4.0 pr1 through pr7 versions which were newline terminated</a>
+<a name="ln814">    // 3) 4.0 pr8 and onwards which are colon-separated fields (and</a>
+<a name="ln815">    //    start with a colon), and may exceed 80 characters!</a>
+<a name="ln816">    // 4) 0.2 and onwards, which are xlogfile format - no leading</a>
+<a name="ln817">    //    colon, fields separated by colons, each field specified as</a>
+<a name="ln818">    //    key=value. Colons are not allowed in key names, must be escaped to</a>
+<a name="ln819">    //    :: in values.</a>
+<a name="ln820">    //</a>
+<a name="ln821">    // 0.3 only reads and writes entries of type (4).</a>
+<a name="ln822"> </a>
+<a name="ln823">    // Leading colon implies 4.0 style line:</a>
+<a name="ln824">    if (line[0] == ':')</a>
+<a name="ln825">    {</a>
+<a name="ln826">        dprf(&quot;Corrupted xlog-line: %s&quot;, line.c_str());</a>
+<a name="ln827">        return false;</a>
+<a name="ln828">    }</a>
+<a name="ln829"> </a>
+<a name="ln830">    raw_line = line;</a>
+<a name="ln831">    return parse_scoreline(line);</a>
+<a name="ln832">}</a>
+<a name="ln833"> </a>
+<a name="ln834">string scorefile_entry::raw_string() const</a>
+<a name="ln835">{</a>
+<a name="ln836">    if (!raw_line.empty())</a>
+<a name="ln837">        return raw_line;</a>
+<a name="ln838"> </a>
+<a name="ln839">    set_score_fields();</a>
+<a name="ln840"> </a>
+<a name="ln841">    if (!fields)</a>
+<a name="ln842">        return &quot;&quot;;</a>
+<a name="ln843"> </a>
+<a name="ln844">    return fields-&gt;xlog_line() + &quot;\n&quot;;</a>
+<a name="ln845">}</a>
+<a name="ln846"> </a>
+<a name="ln847">bool scorefile_entry::parse_scoreline(const string &amp;line)</a>
+<a name="ln848">{</a>
+<a name="ln849">    fields.reset(new xlog_fields(line));</a>
+<a name="ln850">    init_with_fields();</a>
+<a name="ln851"> </a>
+<a name="ln852">    return true;</a>
+<a name="ln853">}</a>
+<a name="ln854"> </a>
+<a name="ln855">static const char* _short_branch_name(int branch)</a>
+<a name="ln856">{</a>
+<a name="ln857">    if (branch &gt;= 0 &amp;&amp; branch &lt; NUM_BRANCHES)</a>
+<a name="ln858">        return branches[branch].abbrevname;</a>
+<a name="ln859">    return &quot;&quot;;</a>
+<a name="ln860">}</a>
+<a name="ln861"> </a>
+<a name="ln862">enum old_job_type</a>
+<a name="ln863">{</a>
+<a name="ln864">    OLD_JOB_THIEF        = -1,</a>
+<a name="ln865">    OLD_JOB_DEATH_KNIGHT = -2,</a>
+<a name="ln866">    OLD_JOB_PALADIN      = -3,</a>
+<a name="ln867">    OLD_JOB_REAVER       = -4,</a>
+<a name="ln868">    OLD_JOB_STALKER      = -5,</a>
+<a name="ln869">    OLD_JOB_JESTER       = -6,</a>
+<a name="ln870">    OLD_JOB_PRIEST       = -7,</a>
+<a name="ln871">    OLD_JOB_HEALER       = -8,</a>
+<a name="ln872">    NUM_OLD_JOBS = -OLD_JOB_HEALER</a>
+<a name="ln873">};</a>
+<a name="ln874"> </a>
+<a name="ln875">static const char* _job_name(int job)</a>
+<a name="ln876">{</a>
+<a name="ln877">    switch (job)</a>
+<a name="ln878">    {</a>
+<a name="ln879">    case OLD_JOB_THIEF:</a>
+<a name="ln880">        return &quot;Thief&quot;;</a>
+<a name="ln881">    case OLD_JOB_DEATH_KNIGHT:</a>
+<a name="ln882">        return &quot;Death Knight&quot;;</a>
+<a name="ln883">    case OLD_JOB_PALADIN:</a>
+<a name="ln884">        return &quot;Paladin&quot;;</a>
+<a name="ln885">    case OLD_JOB_REAVER:</a>
+<a name="ln886">        return &quot;Reaver&quot;;</a>
+<a name="ln887">    case OLD_JOB_STALKER:</a>
+<a name="ln888">        return &quot;Stalker&quot;;</a>
+<a name="ln889">    case OLD_JOB_JESTER:</a>
+<a name="ln890">        return &quot;Jester&quot;;</a>
+<a name="ln891">    case OLD_JOB_PRIEST:</a>
+<a name="ln892">        return &quot;Priest&quot;;</a>
+<a name="ln893">    case OLD_JOB_HEALER:</a>
+<a name="ln894">        return &quot;Healer&quot;;</a>
+<a name="ln895">    }</a>
+<a name="ln896"> </a>
+<a name="ln897">    return get_job_name(static_cast&lt;job_type&gt;(job));</a>
+<a name="ln898">}</a>
+<a name="ln899"> </a>
+<a name="ln900">static const char* _job_abbrev(int job)</a>
+<a name="ln901">{</a>
+<a name="ln902">    switch (job)</a>
+<a name="ln903">    {</a>
+<a name="ln904">    case OLD_JOB_THIEF:</a>
+<a name="ln905">        return &quot;Th&quot;;</a>
+<a name="ln906">    case OLD_JOB_DEATH_KNIGHT:</a>
+<a name="ln907">        return &quot;DK&quot;;</a>
+<a name="ln908">    case OLD_JOB_PALADIN:</a>
+<a name="ln909">        return &quot;Pa&quot;;</a>
+<a name="ln910">    case OLD_JOB_REAVER:</a>
+<a name="ln911">        return &quot;Re&quot;;</a>
+<a name="ln912">    case OLD_JOB_STALKER:</a>
+<a name="ln913">        return &quot;St&quot;;</a>
+<a name="ln914">    case OLD_JOB_JESTER:</a>
+<a name="ln915">        return &quot;Jr&quot;;</a>
+<a name="ln916">    case OLD_JOB_PRIEST:</a>
+<a name="ln917">        return &quot;Pr&quot;;</a>
+<a name="ln918">    case OLD_JOB_HEALER:</a>
+<a name="ln919">        return &quot;He&quot;;</a>
+<a name="ln920">    }</a>
+<a name="ln921"> </a>
+<a name="ln922">    return get_job_abbrev(static_cast&lt;job_type&gt;(job));</a>
+<a name="ln923">}</a>
+<a name="ln924"> </a>
+<a name="ln925">static int _job_by_name(const string&amp; name)</a>
+<a name="ln926">{</a>
+<a name="ln927">    int job = get_job_by_name(name.c_str());</a>
+<a name="ln928"> </a>
+<a name="ln929">    if (job != JOB_UNKNOWN)</a>
+<a name="ln930">        return job;</a>
+<a name="ln931"> </a>
+<a name="ln932">    for (job = -1; job &gt;= -NUM_OLD_JOBS; job--)</a>
+<a name="ln933">        if (name == _job_name(job))</a>
+<a name="ln934">            return job;</a>
+<a name="ln935"> </a>
+<a name="ln936">    return JOB_UNKNOWN;</a>
+<a name="ln937">}</a>
+<a name="ln938"> </a>
+<a name="ln939">enum old_species_type</a>
+<a name="ln940">{</a>
+<a name="ln941">    OLD_SP_ELF = -1,</a>
+<a name="ln942">    OLD_SP_HILL_DWARF = -2,</a>
+<a name="ln943">    OLD_SP_OGRE_MAGE = -3,</a>
+<a name="ln944">    OLD_SP_GREY_ELF = -4,</a>
+<a name="ln945">    OLD_SP_GNOME = -5,</a>
+<a name="ln946">    OLD_SP_MOUNTAIN_DWARF = -6,</a>
+<a name="ln947">    OLD_SP_SLUDGE_ELF = -7,</a>
+<a name="ln948">    OLD_SP_DJINNI = -8,</a>
+<a name="ln949">    OLD_SP_LAVA_ORC = -9,</a>
+<a name="ln950">    NUM_OLD_SPECIES = -OLD_SP_LAVA_ORC</a>
+<a name="ln951">};</a>
+<a name="ln952"> </a>
+<a name="ln953">static string _species_name(int race)</a>
+<a name="ln954">{</a>
+<a name="ln955">    switch (race)</a>
+<a name="ln956">    {</a>
+<a name="ln957">    case OLD_SP_ELF: return &quot;Elf&quot;;</a>
+<a name="ln958">    case OLD_SP_HILL_DWARF: return &quot;Hill Dwarf&quot;;</a>
+<a name="ln959">    case OLD_SP_OGRE_MAGE: return &quot;Ogre-Mage&quot;;</a>
+<a name="ln960">    case OLD_SP_GREY_ELF: return &quot;Grey Elf&quot;;</a>
+<a name="ln961">    case OLD_SP_GNOME: return &quot;Gnome&quot;;</a>
+<a name="ln962">    case OLD_SP_MOUNTAIN_DWARF: return &quot;Mountain Dwarf&quot;;</a>
+<a name="ln963">    case OLD_SP_SLUDGE_ELF: return &quot;Sludge Elf&quot;;</a>
+<a name="ln964">    case OLD_SP_DJINNI: return &quot;Djinni&quot;;</a>
+<a name="ln965">    case OLD_SP_LAVA_ORC: return &quot;Lava Orc&quot;;</a>
+<a name="ln966">    }</a>
+<a name="ln967"> </a>
+<a name="ln968">    return species_name(static_cast&lt;species_type&gt;(race));</a>
+<a name="ln969">}</a>
+<a name="ln970"> </a>
+<a name="ln971">static const char* _species_abbrev(int race)</a>
+<a name="ln972">{</a>
+<a name="ln973">    switch (race)</a>
+<a name="ln974">    {</a>
+<a name="ln975">    case OLD_SP_ELF: return &quot;El&quot;;</a>
+<a name="ln976">    case OLD_SP_HILL_DWARF: return &quot;HD&quot;;</a>
+<a name="ln977">    case OLD_SP_OGRE_MAGE: return &quot;OM&quot;;</a>
+<a name="ln978">    case OLD_SP_GREY_ELF: return &quot;GE&quot;;</a>
+<a name="ln979">    case OLD_SP_GNOME: return &quot;Gn&quot;;</a>
+<a name="ln980">    case OLD_SP_MOUNTAIN_DWARF: return &quot;MD&quot;;</a>
+<a name="ln981">    case OLD_SP_SLUDGE_ELF: return &quot;SE&quot;;</a>
+<a name="ln982">    case OLD_SP_DJINNI: return &quot;Dj&quot;;</a>
+<a name="ln983">    case OLD_SP_LAVA_ORC: return &quot;LO&quot;;</a>
+<a name="ln984">    }</a>
+<a name="ln985"> </a>
+<a name="ln986">    return get_species_abbrev(static_cast&lt;species_type&gt;(race));</a>
+<a name="ln987">}</a>
+<a name="ln988"> </a>
+<a name="ln989">static int _species_by_name(const string&amp; name)</a>
+<a name="ln990">{</a>
+<a name="ln991">    int race = str_to_species(name);</a>
+<a name="ln992"> </a>
+<a name="ln993">    if (race != SP_UNKNOWN)</a>
+<a name="ln994">        return race;</a>
+<a name="ln995"> </a>
+<a name="ln996">    for (race = -1; race &gt;= -NUM_OLD_SPECIES; race--)</a>
+<a name="ln997">        if (name == _species_name(race))</a>
+<a name="ln998">            return race;</a>
+<a name="ln999"> </a>
+<a name="ln1000">    return SP_UNKNOWN;</a>
+<a name="ln1001">}</a>
+<a name="ln1002"> </a>
+<a name="ln1003">void scorefile_entry::init_with_fields()</a>
+<a name="ln1004">{</a>
+<a name="ln1005">    version = fields-&gt;str_field(&quot;v&quot;);</a>
+<a name="ln1006">    save_rcs_version = fields-&gt;str_field(&quot;vsavrv&quot;);</a>
+<a name="ln1007">    save_tag_version = fields-&gt;str_field(&quot;vsav&quot;);</a>
+<a name="ln1008"> </a>
+<a name="ln1009">    tiles   = fields-&gt;int_field(&quot;tiles&quot;);</a>
+<a name="ln1010">    points  = fields-&gt;int_field(&quot;sc&quot;);</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    name    = fields-&gt;str_field(&quot;name&quot;);</a>
+<a name="ln1013">    race    = _species_by_name(fields-&gt;str_field(&quot;race&quot;));</a>
+<a name="ln1014">    job     = _job_by_name(fields-&gt;str_field(&quot;cls&quot;));</a>
+<a name="ln1015">    lvl     = fields-&gt;int_field(&quot;xl&quot;);</a>
+<a name="ln1016">    race_class_name = fields-&gt;str_field(&quot;char&quot;);</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    best_skill     = str_to_skill_safe(fields-&gt;str_field(&quot;sk&quot;));</a>
+<a name="ln1019">    best_skill_lvl = fields-&gt;int_field(&quot;sklev&quot;);</a>
+<a name="ln1020">    title          = fields-&gt;str_field(&quot;title&quot;);</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    death_type        = _str_to_kill_method(fields-&gt;str_field(&quot;ktyp&quot;));</a>
+<a name="ln1023">    death_source_name = fields-&gt;str_field(&quot;killer&quot;);</a>
+<a name="ln1024">    const vector&lt;string&gt; kflags =</a>
+<a name="ln1025">        split_string(&quot; &quot;, fields-&gt;str_field(&quot;killer_flags&quot;));</a>
+<a name="ln1026">    death_source_flags = set&lt;string&gt;(kflags.begin(), kflags.end());</a>
+<a name="ln1027"> </a>
+<a name="ln1028">    auxkilldata       = fields-&gt;str_field(&quot;kaux&quot;);</a>
+<a name="ln1029">    indirectkiller    = fields-&gt;str_field(&quot;ikiller&quot;);</a>
+<a name="ln1030">    if (indirectkiller.empty())</a>
+<a name="ln1031">        indirectkiller = death_source_name;</a>
+<a name="ln1032">    killerpath        = fields-&gt;str_field(&quot;kpath&quot;);</a>
+<a name="ln1033">    last_banisher     = fields-&gt;str_field(&quot;banisher&quot;);</a>
+<a name="ln1034"> </a>
+<a name="ln1035">    branch     = branch_by_abbrevname(fields-&gt;str_field(&quot;br&quot;), BRANCH_DUNGEON);</a>
+<a name="ln1036">    dlvl       = fields-&gt;int_field(&quot;lvl&quot;);</a>
+<a name="ln1037">    absdepth   = fields-&gt;int_field(&quot;absdepth&quot;);</a>
+<a name="ln1038"> </a>
+<a name="ln1039">    map        = fields-&gt;str_field(&quot;map&quot;);</a>
+<a name="ln1040">    mapdesc    = fields-&gt;str_field(&quot;mapdesc&quot;);</a>
+<a name="ln1041">    killer_map = fields-&gt;str_field(&quot;killermap&quot;);</a>
+<a name="ln1042"> </a>
+<a name="ln1043">    final_hp         = fields-&gt;int_field(&quot;hp&quot;);</a>
+<a name="ln1044">    final_max_hp     = fields-&gt;int_field(&quot;mhp&quot;);</a>
+<a name="ln1045">    final_max_max_hp = fields-&gt;int_field(&quot;mmhp&quot;);</a>
+<a name="ln1046">    final_mp          = fields-&gt;int_field(&quot;mp&quot;);</a>
+<a name="ln1047">    final_max_mp      = fields-&gt;int_field(&quot;mmp&quot;);</a>
+<a name="ln1048">    final_base_max_mp = fields-&gt;int_field(&quot;bmmp&quot;);</a>
+<a name="ln1049"> </a>
+<a name="ln1050">    damage        = fields-&gt;int_field(&quot;dam&quot;);</a>
+<a name="ln1051">    source_damage = fields-&gt;int_field(&quot;sdam&quot;);</a>
+<a name="ln1052">    turn_damage   = fields-&gt;int_field(&quot;tdam&quot;);</a>
+<a name="ln1053"> </a>
+<a name="ln1054">    str   = fields-&gt;int_field(&quot;str&quot;);</a>
+<a name="ln1055">    intel = fields-&gt;int_field(&quot;int&quot;);</a>
+<a name="ln1056">    dex   = fields-&gt;int_field(&quot;dex&quot;);</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    ac    = fields-&gt;int_field(&quot;ac&quot;);</a>
+<a name="ln1059">    ev    = fields-&gt;int_field(&quot;ev&quot;);</a>
+<a name="ln1060">    sh    = fields-&gt;int_field(&quot;sh&quot;);</a>
+<a name="ln1061"> </a>
+<a name="ln1062">    god          = str_to_god(fields-&gt;str_field(&quot;god&quot;));</a>
+<a name="ln1063">    piety        = fields-&gt;int_field(&quot;piety&quot;);</a>
+<a name="ln1064">    penance      = fields-&gt;int_field(&quot;pen&quot;);</a>
+<a name="ln1065">    wiz_mode     = fields-&gt;int_field(&quot;wiz&quot;);</a>
+<a name="ln1066">    explore_mode = fields-&gt;int_field(&quot;explore&quot;);</a>
+<a name="ln1067"> </a>
+<a name="ln1068">    birth_time = _parse_time(fields-&gt;str_field(&quot;start&quot;));</a>
+<a name="ln1069">    death_time = _parse_time(fields-&gt;str_field(&quot;end&quot;));</a>
+<a name="ln1070">    real_time  = fields-&gt;int_field(&quot;dur&quot;);</a>
+<a name="ln1071">    num_turns  = fields-&gt;int_field(&quot;turn&quot;);</a>
+<a name="ln1072">    num_aut    = fields-&gt;int_field(&quot;aut&quot;);</a>
+<a name="ln1073"> </a>
+<a name="ln1074">    num_diff_runes = fields-&gt;int_field(&quot;urune&quot;);</a>
+<a name="ln1075">    num_runes      = fields-&gt;int_field(&quot;nrune&quot;);</a>
+<a name="ln1076"> </a>
+<a name="ln1077">    kills = fields-&gt;int_field(&quot;kills&quot;);</a>
+<a name="ln1078">    maxed_skills = fields-&gt;str_field(&quot;maxskills&quot;);</a>
+<a name="ln1079">    fifteen_skills = fields-&gt;str_field(&quot;fifteenskills&quot;);</a>
+<a name="ln1080">    status_effects = fields-&gt;str_field(&quot;status&quot;);</a>
+<a name="ln1081"> </a>
+<a name="ln1082">    gold       = fields-&gt;int_field(&quot;gold&quot;);</a>
+<a name="ln1083">    gold_found = fields-&gt;int_field(&quot;goldfound&quot;);</a>
+<a name="ln1084">    gold_spent = fields-&gt;int_field(&quot;goldspent&quot;);</a>
+<a name="ln1085"> </a>
+<a name="ln1086">    zigs       = fields-&gt;int_field(&quot;zigscompleted&quot;);</a>
+<a name="ln1087">    zigmax     = fields-&gt;int_field(&quot;zigdeepest&quot;);</a>
+<a name="ln1088"> </a>
+<a name="ln1089">    scrolls_used = fields-&gt;int_field(&quot;scrollsused&quot;);</a>
+<a name="ln1090">    potions_used = fields-&gt;int_field(&quot;potionsused&quot;);</a>
+<a name="ln1091"> </a>
+<a name="ln1092">    seed = fields-&gt;str_field(&quot;seed&quot;);</a>
+<a name="ln1093"> </a>
+<a name="ln1094">    fixup_char_name();</a>
+<a name="ln1095">}</a>
+<a name="ln1096"> </a>
+<a name="ln1097">void scorefile_entry::set_base_xlog_fields() const</a>
+<a name="ln1098">{</a>
+<a name="ln1099">    if (!fields)</a>
+<a name="ln1100">        fields.reset(new xlog_fields);</a>
+<a name="ln1101"> </a>
+<a name="ln1102">    string score_version = SCORE_VERSION;</a>
+<a name="ln1103">    if (crawl_state.game_is_sprint())</a>
+<a name="ln1104">    {</a>
+<a name="ln1105">        /* XXX: hmmm, something better here? */</a>
+<a name="ln1106">        score_version += &quot;-sprint.1&quot;;</a>
+<a name="ln1107">    }</a>
+<a name="ln1108">    fields-&gt;add_field(&quot;v&quot;, &quot;%s&quot;, Version::Short);</a>
+<a name="ln1109">    fields-&gt;add_field(&quot;vlong&quot;, &quot;%s&quot;, Version::Long);</a>
+<a name="ln1110">    fields-&gt;add_field(&quot;lv&quot;, &quot;%s&quot;, score_version.c_str());</a>
+<a name="ln1111">    if (!save_rcs_version.empty())</a>
+<a name="ln1112">        fields-&gt;add_field(&quot;vsavrv&quot;, &quot;%s&quot;, save_rcs_version.c_str());</a>
+<a name="ln1113">    if (!save_tag_version.empty())</a>
+<a name="ln1114">        fields-&gt;add_field(&quot;vsav&quot;, &quot;%s&quot;, save_tag_version.c_str());</a>
+<a name="ln1115"> </a>
+<a name="ln1116">#ifdef EXPERIMENTAL_BRANCH</a>
+<a name="ln1117">    fields-&gt;add_field(&quot;explbr&quot;, EXPERIMENTAL_BRANCH);</a>
+<a name="ln1118">#endif</a>
+<a name="ln1119">    if (tiles)</a>
+<a name="ln1120">        fields-&gt;add_field(&quot;tiles&quot;, &quot;%d&quot;, tiles);</a>
+<a name="ln1121">    fields-&gt;add_field(&quot;name&quot;, &quot;%s&quot;, name.c_str());</a>
+<a name="ln1122">    fields-&gt;add_field(&quot;race&quot;, &quot;%s&quot;, _species_name(race).c_str());</a>
+<a name="ln1123">    fields-&gt;add_field(&quot;cls&quot;,  &quot;%s&quot;, _job_name(job));</a>
+<a name="ln1124">    fields-&gt;add_field(&quot;char&quot;, &quot;%s&quot;, race_class_name.c_str());</a>
+<a name="ln1125">    fields-&gt;add_field(&quot;xl&quot;,    &quot;%d&quot;, lvl);</a>
+<a name="ln1126">    fields-&gt;add_field(&quot;sk&quot;,    &quot;%s&quot;, skill_name(best_skill));</a>
+<a name="ln1127">    fields-&gt;add_field(&quot;sklev&quot;, &quot;%d&quot;, best_skill_lvl);</a>
+<a name="ln1128">    fields-&gt;add_field(&quot;title&quot;, &quot;%s&quot;, title.c_str());</a>
+<a name="ln1129"> </a>
+<a name="ln1130">    fields-&gt;add_field(&quot;place&quot;, &quot;%s&quot;,</a>
+<a name="ln1131">                      level_id(branch, dlvl).describe().c_str());</a>
+<a name="ln1132"> </a>
+<a name="ln1133">    if (!last_banisher.empty())</a>
+<a name="ln1134">        fields-&gt;add_field(&quot;banisher&quot;, &quot;%s&quot;, last_banisher.c_str());</a>
+<a name="ln1135"> </a>
+<a name="ln1136">    // Note: &quot;br&quot;, &quot;lvl&quot; (and former &quot;ltyp&quot;) are redundant with &quot;place&quot;</a>
+<a name="ln1137">    // but may still be used by DGL logs.</a>
+<a name="ln1138">    fields-&gt;add_field(&quot;br&quot;,   &quot;%s&quot;, _short_branch_name(branch));</a>
+<a name="ln1139">    fields-&gt;add_field(&quot;lvl&quot;,  &quot;%d&quot;, dlvl);</a>
+<a name="ln1140">    fields-&gt;add_field(&quot;absdepth&quot;, &quot;%d&quot;, absdepth);</a>
+<a name="ln1141"> </a>
+<a name="ln1142">    fields-&gt;add_field(&quot;hp&quot;,   &quot;%d&quot;, final_hp);</a>
+<a name="ln1143">    fields-&gt;add_field(&quot;mhp&quot;,  &quot;%d&quot;, final_max_hp);</a>
+<a name="ln1144">    fields-&gt;add_field(&quot;mmhp&quot;, &quot;%d&quot;, final_max_max_hp);</a>
+<a name="ln1145">    fields-&gt;add_field(&quot;mp&quot;,   &quot;%d&quot;, final_mp);</a>
+<a name="ln1146">    fields-&gt;add_field(&quot;mmp&quot;,  &quot;%d&quot;, final_max_mp);</a>
+<a name="ln1147">    fields-&gt;add_field(&quot;bmmp&quot;, &quot;%d&quot;, final_base_max_mp);</a>
+<a name="ln1148">    fields-&gt;add_field(&quot;str&quot;, &quot;%d&quot;, str);</a>
+<a name="ln1149">    fields-&gt;add_field(&quot;int&quot;, &quot;%d&quot;, intel);</a>
+<a name="ln1150">    fields-&gt;add_field(&quot;dex&quot;, &quot;%d&quot;, dex);</a>
+<a name="ln1151">    fields-&gt;add_field(&quot;ac&quot;, &quot;%d&quot;, ac);</a>
+<a name="ln1152">    fields-&gt;add_field(&quot;ev&quot;, &quot;%d&quot;, ev);</a>
+<a name="ln1153">    fields-&gt;add_field(&quot;sh&quot;, &quot;%d&quot;, sh);</a>
+<a name="ln1154"> </a>
+<a name="ln1155">    fields-&gt;add_field(&quot;god&quot;, &quot;%s&quot;, god == GOD_NO_GOD ? &quot;&quot; :</a>
+<a name="ln1156">                      god_name(god).c_str());</a>
+<a name="ln1157"> </a>
+<a name="ln1158">    if (wiz_mode)</a>
+<a name="ln1159">        fields-&gt;add_field(&quot;wiz&quot;, &quot;%d&quot;, wiz_mode);</a>
+<a name="ln1160">    if (explore_mode)</a>
+<a name="ln1161">        fields-&gt;add_field(&quot;explore&quot;, &quot;%d&quot;, explore_mode);</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    fields-&gt;add_field(&quot;start&quot;, &quot;%s&quot;, make_date_string(birth_time).c_str());</a>
+<a name="ln1164">    fields-&gt;add_field(&quot;dur&quot;,   &quot;%d&quot;, (int)real_time);</a>
+<a name="ln1165">    fields-&gt;add_field(&quot;turn&quot;,  &quot;%d&quot;, num_turns);</a>
+<a name="ln1166">    fields-&gt;add_field(&quot;aut&quot;,   &quot;%d&quot;, num_aut);</a>
+<a name="ln1167"> </a>
+<a name="ln1168">    if (num_diff_runes)</a>
+<a name="ln1169">        fields-&gt;add_field(&quot;urune&quot;, &quot;%d&quot;, num_diff_runes);</a>
+<a name="ln1170"> </a>
+<a name="ln1171">    if (num_runes)</a>
+<a name="ln1172">        fields-&gt;add_field(&quot;nrune&quot;, &quot;%d&quot;, num_runes);</a>
+<a name="ln1173"> </a>
+<a name="ln1174">    fields-&gt;add_field(&quot;kills&quot;, &quot;%d&quot;, kills);</a>
+<a name="ln1175">    if (!maxed_skills.empty())</a>
+<a name="ln1176">        fields-&gt;add_field(&quot;maxskills&quot;, &quot;%s&quot;, maxed_skills.c_str());</a>
+<a name="ln1177">    if (!fifteen_skills.empty())</a>
+<a name="ln1178">        fields-&gt;add_field(&quot;fifteenskills&quot;, &quot;%s&quot;, fifteen_skills.c_str());</a>
+<a name="ln1179">    if (!status_effects.empty())</a>
+<a name="ln1180">        fields-&gt;add_field(&quot;status&quot;, &quot;%s&quot;, status_effects.c_str());</a>
+<a name="ln1181"> </a>
+<a name="ln1182">    fields-&gt;add_field(&quot;gold&quot;, &quot;%d&quot;, gold);</a>
+<a name="ln1183">    fields-&gt;add_field(&quot;goldfound&quot;, &quot;%d&quot;, gold_found);</a>
+<a name="ln1184">    fields-&gt;add_field(&quot;goldspent&quot;, &quot;%d&quot;, gold_spent);</a>
+<a name="ln1185">    if (zigs)</a>
+<a name="ln1186">        fields-&gt;add_field(&quot;zigscompleted&quot;, &quot;%d&quot;, zigs);</a>
+<a name="ln1187">    if (zigmax)</a>
+<a name="ln1188">        fields-&gt;add_field(&quot;zigdeepest&quot;, &quot;%d&quot;, zigmax);</a>
+<a name="ln1189">    fields-&gt;add_field(&quot;scrollsused&quot;, &quot;%d&quot;, scrolls_used);</a>
+<a name="ln1190">    fields-&gt;add_field(&quot;potionsused&quot;, &quot;%d&quot;, potions_used);</a>
+<a name="ln1191">}</a>
+<a name="ln1192"> </a>
+<a name="ln1193">void scorefile_entry::set_score_fields() const</a>
+<a name="ln1194">{</a>
+<a name="ln1195">    fields.reset(new xlog_fields);</a>
+<a name="ln1196"> </a>
+<a name="ln1197">    if (!fields)</a>
+<a name="ln1198">        return;</a>
+<a name="ln1199"> </a>
+<a name="ln1200">    set_base_xlog_fields();</a>
+<a name="ln1201"> </a>
+<a name="ln1202">    fields-&gt;add_field(&quot;sc&quot;, &quot;%d&quot;, points);</a>
+<a name="ln1203">    fields-&gt;add_field(&quot;ktyp&quot;, &quot;%s&quot;, _kill_method_name(kill_method_type(death_type)));</a>
+<a name="ln1204"> </a>
+<a name="ln1205">    fields-&gt;add_field(&quot;killer&quot;, &quot;%s&quot;, death_source_desc().c_str());</a>
+<a name="ln1206">    if (!death_source_flags.empty())</a>
+<a name="ln1207">    {</a>
+<a name="ln1208">        const string kflags = comma_separated_line(</a>
+<a name="ln1209">            death_source_flags.begin(),</a>
+<a name="ln1210">            death_source_flags.end(),</a>
+<a name="ln1211">            &quot; &quot;, &quot; &quot;);</a>
+<a name="ln1212">        fields-&gt;add_field(&quot;killer_flags&quot;, &quot;%s&quot;, kflags.c_str());</a>
+<a name="ln1213">    }</a>
+<a name="ln1214">    fields-&gt;add_field(&quot;dam&quot;, &quot;%d&quot;, damage);</a>
+<a name="ln1215">    fields-&gt;add_field(&quot;sdam&quot;, &quot;%d&quot;, source_damage);</a>
+<a name="ln1216">    fields-&gt;add_field(&quot;tdam&quot;, &quot;%d&quot;, turn_damage);</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    fields-&gt;add_field(&quot;kaux&quot;, &quot;%s&quot;, auxkilldata.c_str());</a>
+<a name="ln1219"> </a>
+<a name="ln1220">    if (indirectkiller != death_source_desc())</a>
+<a name="ln1221">        fields-&gt;add_field(&quot;ikiller&quot;, &quot;%s&quot;, indirectkiller.c_str());</a>
+<a name="ln1222"> </a>
+<a name="ln1223">    if (!killerpath.empty())</a>
+<a name="ln1224">        fields-&gt;add_field(&quot;kpath&quot;, &quot;%s&quot;, killerpath.c_str());</a>
+<a name="ln1225"> </a>
+<a name="ln1226">    if (piety &gt; 0)</a>
+<a name="ln1227">        fields-&gt;add_field(&quot;piety&quot;, &quot;%d&quot;, piety);</a>
+<a name="ln1228">    if (penance &gt; 0)</a>
+<a name="ln1229">        fields-&gt;add_field(&quot;pen&quot;, &quot;%d&quot;, penance);</a>
+<a name="ln1230"> </a>
+<a name="ln1231">    fields-&gt;add_field(&quot;end&quot;, &quot;%s&quot;, make_date_string(death_time).c_str());</a>
+<a name="ln1232"> </a>
+<a name="ln1233">    if (!map.empty())</a>
+<a name="ln1234">    {</a>
+<a name="ln1235">        fields-&gt;add_field(&quot;map&quot;, &quot;%s&quot;, map.c_str());</a>
+<a name="ln1236">        if (!mapdesc.empty())</a>
+<a name="ln1237">            fields-&gt;add_field(&quot;mapdesc&quot;, &quot;%s&quot;, mapdesc.c_str());</a>
+<a name="ln1238">    }</a>
+<a name="ln1239"> </a>
+<a name="ln1240">    if (!killer_map.empty())</a>
+<a name="ln1241">        fields-&gt;add_field(&quot;killermap&quot;, &quot;%s&quot;, killer_map.c_str());</a>
+<a name="ln1242"> </a>
+<a name="ln1243">    fields-&gt;add_field(&quot;seed&quot;, &quot;%s&quot;, seed.c_str());</a>
+<a name="ln1244"> </a>
+<a name="ln1245">#ifdef DGL_EXTENDED_LOGFILES</a>
+<a name="ln1246">    const string short_msg = short_kill_message();</a>
+<a name="ln1247">    fields-&gt;add_field(&quot;tmsg&quot;, &quot;%s&quot;, short_msg.c_str());</a>
+<a name="ln1248">    const string long_msg = long_kill_message();</a>
+<a name="ln1249">    if (long_msg != short_msg)</a>
+<a name="ln1250">        fields-&gt;add_field(&quot;vmsg&quot;, &quot;%s&quot;, long_msg.c_str());</a>
+<a name="ln1251">#endif</a>
+<a name="ln1252">}</a>
+<a name="ln1253"> </a>
+<a name="ln1254">string scorefile_entry::make_oneline(const string &amp;ml) const</a>
+<a name="ln1255">{</a>
+<a name="ln1256">    vector&lt;string&gt; lines = split_string(&quot;\n&quot;, ml);</a>
+<a name="ln1257">    for (string &amp;s : lines)</a>
+<a name="ln1258">    {</a>
+<a name="ln1259">        if (starts_with(s, &quot;...&quot;))</a>
+<a name="ln1260">        {</a>
+<a name="ln1261">            s = s.substr(3);</a>
+<a name="ln1262">            trim_string(s);</a>
+<a name="ln1263">        }</a>
+<a name="ln1264">    }</a>
+<a name="ln1265">    return comma_separated_line(lines.begin(), lines.end(), &quot; &quot;, &quot; &quot;);</a>
+<a name="ln1266">}</a>
+<a name="ln1267"> </a>
+<a name="ln1268">string scorefile_entry::long_kill_message() const</a>
+<a name="ln1269">{</a>
+<a name="ln1270">    string msg = death_description(DDV_LOGVERBOSE);</a>
+<a name="ln1271">    msg = make_oneline(msg);</a>
+<a name="ln1272">    msg[0] = tolower_safe(msg[0]);</a>
+<a name="ln1273">    trim_string(msg);</a>
+<a name="ln1274">    return msg;</a>
+<a name="ln1275">}</a>
+<a name="ln1276"> </a>
+<a name="ln1277">string scorefile_entry::short_kill_message() const</a>
+<a name="ln1278">{</a>
+<a name="ln1279">    string msg = death_description(DDV_ONELINE);</a>
+<a name="ln1280">    msg = make_oneline(msg);</a>
+<a name="ln1281">    msg[0] = tolower_safe(msg[0]);</a>
+<a name="ln1282">    trim_string(msg);</a>
+<a name="ln1283">    return msg;</a>
+<a name="ln1284">}</a>
+<a name="ln1285"> </a>
+<a name="ln1286">/**</a>
+<a name="ln1287"> * Remove from a string everything up to and including a given infix.</a>
+<a name="ln1288"> *</a>
+<a name="ln1289"> * @param[in,out] str   The string to modify.</a>
+<a name="ln1290"> * @param[in]     infix The infix to remove.</a>
+<a name="ln1291"> * @post If \c infix occurred as a substring of &lt;tt&gt;str&lt;/tt&gt;, \c str is updated</a>
+<a name="ln1292"> *       by removing all characters up to and including the last character</a>
+<a name="ln1293"> *       of the the first occurrence. Otherwise, \c str is unchanged.</a>
+<a name="ln1294"> * @return \c true if \c str was modified, \c false otherwise.</a>
+<a name="ln1295"> */</a>
+<a name="ln1296">static bool _strip_to(string &amp;str, const char *infix)</a>
+<a name="ln1297">{</a>
+<a name="ln1298">    // Don't treat stripping the empty string as a change.</a>
+<a name="ln1299">    if (*infix == '\0')</a>
+<a name="ln1300">        return false;</a>
+<a name="ln1301"> </a>
+<a name="ln1302">    size_t pos = str.find(infix);</a>
+<a name="ln1303">    if (pos != string::npos)</a>
+<a name="ln1304">    {</a>
+<a name="ln1305">        str.erase(0, pos + strlen(infix));</a>
+<a name="ln1306">        return true;</a>
+<a name="ln1307">    }</a>
+<a name="ln1308">    return false;</a>
+<a name="ln1309">}</a>
+<a name="ln1310"> </a>
+<a name="ln1311">void scorefile_entry::init_death_cause(int dam, mid_t dsrc,</a>
+<a name="ln1312">                                       int dtype, const char *aux,</a>
+<a name="ln1313">                                       const char *dsrc_name)</a>
+<a name="ln1314">{</a>
+<a name="ln1315">    death_source = dsrc;</a>
+<a name="ln1316">    death_type   = dtype;</a>
+<a name="ln1317">    damage       = dam;</a>
+<a name="ln1318"> </a>
+<a name="ln1319">    const monster *source_monster = monster_by_mid(death_source);</a>
+<a name="ln1320">    if (source_monster)</a>
+<a name="ln1321">        killer_map = source_monster-&gt;originating_map();</a>
+<a name="ln1322"> </a>
+<a name="ln1323">    // Set the default aux data value...</a>
+<a name="ln1324">    // If aux is passed in (ie for a trap), we'll default to that.</a>
+<a name="ln1325">    if (aux == nullptr)</a>
+<a name="ln1326">        auxkilldata.clear();</a>
+<a name="ln1327">    else</a>
+<a name="ln1328">        auxkilldata = aux;</a>
+<a name="ln1329"> </a>
+<a name="ln1330">    // for death by monster</a>
+<a name="ln1331">    if ((death_type == KILLED_BY_MONSTER</a>
+<a name="ln1332">            || death_type == KILLED_BY_HEADBUTT</a>
+<a name="ln1333">            || death_type == KILLED_BY_BEAM</a>
+<a name="ln1334">            || death_type == KILLED_BY_DISINT</a>
+<a name="ln1335">            || death_type == KILLED_BY_ACID</a>
+<a name="ln1336">            || death_type == KILLED_BY_DRAINING</a>
+<a name="ln1337">            || death_type == KILLED_BY_BURNING</a>
+<a name="ln1338">            || death_type == KILLED_BY_SPORE</a>
+<a name="ln1339">            || death_type == KILLED_BY_CLOUD</a>
+<a name="ln1340">            || death_type == KILLED_BY_ROTTING</a>
+<a name="ln1341">            || death_type == KILLED_BY_REFLECTION</a>
+<a name="ln1342">            || death_type == KILLED_BY_ROLLING</a>
+<a name="ln1343">            || death_type == KILLED_BY_SPINES</a>
+<a name="ln1344">            || death_type == KILLED_BY_WATER</a>
+<a name="ln1345">            || death_type == KILLED_BY_BEING_THROWN</a>
+<a name="ln1346">            || death_type == KILLED_BY_COLLISION)</a>
+<a name="ln1347">        &amp;&amp; monster_by_mid(death_source))</a>
+<a name="ln1348">    {</a>
+<a name="ln1349">        const monster* mons = monster_by_mid(death_source);</a>
+<a name="ln1350">        ASSERT(mons);</a>
+<a name="ln1351"> </a>
+<a name="ln1352">        // Previously the weapon was only used for dancing weapons,</a>
+<a name="ln1353">        // but now we pass it in as a string through the scorefile</a>
+<a name="ln1354">        // entry to be appended in hiscores_format_single in long or</a>
+<a name="ln1355">        // medium scorefile formats.</a>
+<a name="ln1356">        if (death_type == KILLED_BY_MONSTER</a>
+<a name="ln1357">            &amp;&amp; mons-&gt;inv[MSLOT_WEAPON] != NON_ITEM)</a>
+<a name="ln1358">        {</a>
+<a name="ln1359">            // [ds] The highscore entry may be constructed while the player</a>
+<a name="ln1360">            // is alive (for notes), so make sure we don't reveal info we</a>
+<a name="ln1361">            // shouldn't.</a>
+<a name="ln1362">            if (you.hp &lt;= 0)</a>
+<a name="ln1363">            {</a>
+<a name="ln1364">                set_ident_flags(mitm[mons-&gt;inv[MSLOT_WEAPON]],</a>
+<a name="ln1365">                                 ISFLAG_IDENT_MASK);</a>
+<a name="ln1366">            }</a>
+<a name="ln1367"> </a>
+<a name="ln1368">            // Setting this is redundant for dancing weapons, however</a>
+<a name="ln1369">            // we do care about the above indentification. -- bwr</a>
+<a name="ln1370">            if (mons-&gt;type != MONS_DANCING_WEAPON)</a>
+<a name="ln1371">                auxkilldata = mitm[mons-&gt;inv[MSLOT_WEAPON]].name(DESC_A);</a>
+<a name="ln1372">        }</a>
+<a name="ln1373"> </a>
+<a name="ln1374">        const bool death = (you.hp &lt;= 0 || death_type == KILLED_BY_DRAINING);</a>
+<a name="ln1375"> </a>
+<a name="ln1376">        const description_level_type desc =</a>
+<a name="ln1377">            death_type == KILLED_BY_SPORE ? DESC_PLAIN : DESC_A;</a>
+<a name="ln1378"> </a>
+<a name="ln1379">        death_source_name = mons-&gt;name(desc, death);</a>
+<a name="ln1380"> </a>
+<a name="ln1381">        if (death || you.can_see(*mons))</a>
+<a name="ln1382">            death_source_name = mons-&gt;full_name(desc);</a>
+<a name="ln1383"> </a>
+<a name="ln1384">        // Some shadows have names</a>
+<a name="ln1385">        if (mons_is_player_shadow(*mons) &amp;&amp; mons-&gt;mname.empty())</a>
+<a name="ln1386">            death_source_name = &quot;their own shadow&quot;; // heh</a>
+<a name="ln1387"> </a>
+<a name="ln1388">        if (mons-&gt;mid == MID_YOU_FAULTLESS)</a>
+<a name="ln1389">            death_source_name = &quot;themself&quot;;</a>
+<a name="ln1390"> </a>
+<a name="ln1391">        if (mons-&gt;has_ench(ENCH_SHAPESHIFTER))</a>
+<a name="ln1392">            death_source_name += &quot; (shapeshifter)&quot;;</a>
+<a name="ln1393">        else if (mons-&gt;has_ench(ENCH_GLOWING_SHAPESHIFTER))</a>
+<a name="ln1394">            death_source_name += &quot; (glowing shapeshifter)&quot;;</a>
+<a name="ln1395"> </a>
+<a name="ln1396">        if (mons-&gt;type == MONS_PANDEMONIUM_LORD)</a>
+<a name="ln1397">            death_source_name += &quot; the pandemonium lord&quot;;</a>
+<a name="ln1398"> </a>
+<a name="ln1399">        if (mons-&gt;has_ench(ENCH_PHANTOM_MIRROR))</a>
+<a name="ln1400">            death_source_name += &quot; (illusionary)&quot;;</a>
+<a name="ln1401"> </a>
+<a name="ln1402">        if (mons_is_unique(mons-&gt;type))</a>
+<a name="ln1403">            death_source_flags.insert(&quot;unique&quot;);</a>
+<a name="ln1404"> </a>
+<a name="ln1405">        if (mons-&gt;props.exists(&quot;blame&quot;))</a>
+<a name="ln1406">        {</a>
+<a name="ln1407">            const CrawlVector&amp; blame = mons-&gt;props[&quot;blame&quot;].get_vector();</a>
+<a name="ln1408"> </a>
+<a name="ln1409">            indirectkiller = blame[blame.size() - 1].get_string();</a>
+<a name="ln1410">            _strip_to(indirectkiller, &quot; by &quot;);</a>
+<a name="ln1411">            _strip_to(indirectkiller, &quot;ed to &quot;); // &quot;attached to&quot; and similar</a>
+<a name="ln1412"> </a>
+<a name="ln1413">            killerpath = &quot;&quot;;</a>
+<a name="ln1414"> </a>
+<a name="ln1415">            for (const auto &amp;bl : blame)</a>
+<a name="ln1416">                killerpath = killerpath + &quot;:&quot; + _xlog_escape(bl.get_string());</a>
+<a name="ln1417"> </a>
+<a name="ln1418">            killerpath.erase(killerpath.begin());</a>
+<a name="ln1419">        }</a>
+<a name="ln1420">        else</a>
+<a name="ln1421">        {</a>
+<a name="ln1422">            indirectkiller = death_source_name;</a>
+<a name="ln1423">            killerpath = &quot;&quot;;</a>
+<a name="ln1424">        }</a>
+<a name="ln1425">    }</a>
+<a name="ln1426">    else if (death_type == KILLED_BY_DISINT</a>
+<a name="ln1427">             || death_type == KILLED_BY_CLOUD)</a>
+<a name="ln1428">    {</a>
+<a name="ln1429">        death_source_name = dsrc_name ? dsrc_name :</a>
+<a name="ln1430">                            dsrc == MHITYOU ? &quot;you&quot; :</a>
+<a name="ln1431">                            &quot;&quot;;</a>
+<a name="ln1432">        indirectkiller = killerpath = &quot;&quot;;</a>
+<a name="ln1433">    }</a>
+<a name="ln1434">    else</a>
+<a name="ln1435">    {</a>
+<a name="ln1436">        if (dsrc_name)</a>
+<a name="ln1437">            death_source_name = dsrc_name;</a>
+<a name="ln1438">        else</a>
+<a name="ln1439">            death_source_name.clear();</a>
+<a name="ln1440">        indirectkiller = killerpath = &quot;&quot;;</a>
+<a name="ln1441">    }</a>
+<a name="ln1442"> </a>
+<a name="ln1443">    if (death_type == KILLED_BY_WEAKNESS</a>
+<a name="ln1444">        || death_type == KILLED_BY_STUPIDITY</a>
+<a name="ln1445">        || death_type == KILLED_BY_CLUMSINESS)</a>
+<a name="ln1446">    {</a>
+<a name="ln1447">        if (auxkilldata.empty())</a>
+<a name="ln1448">            auxkilldata = &quot;unknown source&quot;;</a>
+<a name="ln1449">    }</a>
+<a name="ln1450"> </a>
+<a name="ln1451">    if (death_type == KILLED_BY_POISON)</a>
+<a name="ln1452">    {</a>
+<a name="ln1453">        death_source_name = you.props[&quot;poisoner&quot;].get_string();</a>
+<a name="ln1454">        auxkilldata = you.props[&quot;poison_aux&quot;].get_string();</a>
+<a name="ln1455">    }</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    if (death_type == KILLED_BY_BURNING)</a>
+<a name="ln1458">    {</a>
+<a name="ln1459">        death_source_name = you.props[&quot;sticky_flame_source&quot;].get_string();</a>
+<a name="ln1460">        auxkilldata = you.props[&quot;sticky_flame_aux&quot;].get_string();</a>
+<a name="ln1461">    }</a>
+<a name="ln1462">}</a>
+<a name="ln1463"> </a>
+<a name="ln1464">void scorefile_entry::reset()</a>
+<a name="ln1465">{</a>
+<a name="ln1466">    // simple init</a>
+<a name="ln1467">    raw_line.clear();</a>
+<a name="ln1468">    version.clear();</a>
+<a name="ln1469">    save_rcs_version.clear();</a>
+<a name="ln1470">    save_tag_version.clear();</a>
+<a name="ln1471">    tiles                = 0;</a>
+<a name="ln1472">    points               = -1;</a>
+<a name="ln1473">    name.clear();</a>
+<a name="ln1474">    race                 = SP_UNKNOWN;</a>
+<a name="ln1475">    job                  = JOB_UNKNOWN;</a>
+<a name="ln1476">    lvl                  = 0;</a>
+<a name="ln1477">    race_class_name.clear();</a>
+<a name="ln1478">    best_skill           = SK_NONE;</a>
+<a name="ln1479">    best_skill_lvl       = 0;</a>
+<a name="ln1480">    title.clear();</a>
+<a name="ln1481">    death_type           = KILLED_BY_SOMETHING;</a>
+<a name="ln1482">    death_source         = MID_NOBODY;</a>
+<a name="ln1483">    death_source_name.clear();</a>
+<a name="ln1484">    auxkilldata.clear();</a>
+<a name="ln1485">    indirectkiller.clear();</a>
+<a name="ln1486">    killerpath.clear();</a>
+<a name="ln1487">    last_banisher.clear();</a>
+<a name="ln1488">    dlvl                 = 0;</a>
+<a name="ln1489">    absdepth             = 1;</a>
+<a name="ln1490">    branch               = BRANCH_DUNGEON;</a>
+<a name="ln1491">    map.clear();</a>
+<a name="ln1492">    mapdesc.clear();</a>
+<a name="ln1493">    final_hp             = -1;</a>
+<a name="ln1494">    final_max_hp         = -1;</a>
+<a name="ln1495">    final_max_max_hp     = -1;</a>
+<a name="ln1496">    final_mp             = -1;</a>
+<a name="ln1497">    final_max_mp         = -1;</a>
+<a name="ln1498">    final_base_max_mp    = -1;</a>
+<a name="ln1499">    str                  = -1;</a>
+<a name="ln1500">    intel                = -1;</a>
+<a name="ln1501">    dex                  = -1;</a>
+<a name="ln1502">    ac                   = -1;</a>
+<a name="ln1503">    ev                   = -1;</a>
+<a name="ln1504">    sh                   = -1;</a>
+<a name="ln1505">    damage               = -1;</a>
+<a name="ln1506">    source_damage        = -1;</a>
+<a name="ln1507">    turn_damage          = -1;</a>
+<a name="ln1508">    god                  = GOD_NO_GOD;</a>
+<a name="ln1509">    piety                = -1;</a>
+<a name="ln1510">    penance              = -1;</a>
+<a name="ln1511">    wiz_mode             = 0;</a>
+<a name="ln1512">    explore_mode         = 0;</a>
+<a name="ln1513">    birth_time           = 0;</a>
+<a name="ln1514">    death_time           = 0;</a>
+<a name="ln1515">    real_time            = -1;</a>
+<a name="ln1516">    num_turns            = -1;</a>
+<a name="ln1517">    num_aut              = -1;</a>
+<a name="ln1518">    num_diff_runes       = 0;</a>
+<a name="ln1519">    num_runes            = 0;</a>
+<a name="ln1520">    kills                = 0;</a>
+<a name="ln1521">    maxed_skills.clear();</a>
+<a name="ln1522">    fifteen_skills.clear();</a>
+<a name="ln1523">    status_effects.clear();</a>
+<a name="ln1524">    gold                 = 0;</a>
+<a name="ln1525">    gold_found           = 0;</a>
+<a name="ln1526">    gold_spent           = 0;</a>
+<a name="ln1527">    zigs                 = 0;</a>
+<a name="ln1528">    zigmax               = 0;</a>
+<a name="ln1529">    scrolls_used         = 0;</a>
+<a name="ln1530">    potions_used         = 0;</a>
+<a name="ln1531">    seed.clear();</a>
+<a name="ln1532">}</a>
+<a name="ln1533"> </a>
+<a name="ln1534">static int _award_modified_experience()</a>
+<a name="ln1535">{</a>
+<a name="ln1536">    int xp = you.experience;</a>
+<a name="ln1537">    int result = 0;</a>
+<a name="ln1538"> </a>
+<a name="ln1539">    if (xp &lt;= 250000)</a>
+<a name="ln1540">        return xp * 7 / 10;</a>
+<a name="ln1541"> </a>
+<a name="ln1542">    result += 250000 * 7 / 10;</a>
+<a name="ln1543">    xp -= 250000;</a>
+<a name="ln1544"> </a>
+<a name="ln1545">    if (xp &lt;= 750000)</a>
+<a name="ln1546">    {</a>
+<a name="ln1547">        result += xp * 4 / 10;</a>
+<a name="ln1548">        return result;</a>
+<a name="ln1549">    }</a>
+<a name="ln1550"> </a>
+<a name="ln1551">    result += 750000 * 4 / 10;</a>
+<a name="ln1552">    xp -= 750000;</a>
+<a name="ln1553"> </a>
+<a name="ln1554">    if (xp &lt;= 2000000)</a>
+<a name="ln1555">    {</a>
+<a name="ln1556">        result += xp * 2 / 10;</a>
+<a name="ln1557">        return result;</a>
+<a name="ln1558">    }</a>
+<a name="ln1559"> </a>
+<a name="ln1560">    result += 2000000 * 2 / 10;</a>
+<a name="ln1561">    xp -= 2000000;</a>
+<a name="ln1562"> </a>
+<a name="ln1563">    result += xp / 10;</a>
+<a name="ln1564"> </a>
+<a name="ln1565">    return result;</a>
+<a name="ln1566">}</a>
+<a name="ln1567"> </a>
+<a name="ln1568">void scorefile_entry::init(time_t dt)</a>
+<a name="ln1569">{</a>
+<a name="ln1570">    // Score file entry version:</a>
+<a name="ln1571">    //</a>
+<a name="ln1572">    // 4.0      - original versioned entry</a>
+<a name="ln1573">    // 4.1      - added real_time and num_turn fields</a>
+<a name="ln1574">    // 4.2      - stats and god info</a>
+<a name="ln1575"> </a>
+<a name="ln1576">    version = Version::Short;</a>
+<a name="ln1577">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1578">    tiles   = 1;</a>
+<a name="ln1579">#elif defined (USE_TILE_WEB)</a>
+<a name="ln1580">    tiles   = ::tiles.is_controlled_from_web();</a>
+<a name="ln1581">#else</a>
+<a name="ln1582">    tiles   = 0;</a>
+<a name="ln1583">#endif</a>
+<a name="ln1584">    name    = you.your_name;</a>
+<a name="ln1585"> </a>
+<a name="ln1586">    save_rcs_version = crawl_state.save_rcs_version;</a>
+<a name="ln1587">    if (crawl_state.minor_version &gt; 0)</a>
+<a name="ln1588">    {</a>
+<a name="ln1589">        save_tag_version = make_stringf(&quot;%d.%d&quot;, TAG_MAJOR_VERSION,</a>
+<a name="ln1590">                                        crawl_state.minor_version);</a>
+<a name="ln1591">    }</a>
+<a name="ln1592"> </a>
+<a name="ln1593">    /*</a>
+<a name="ln1594">     *  old scoring system (0.1-0.3):</a>
+<a name="ln1595">     *</a>
+<a name="ln1596">     *    Gold</a>
+<a name="ln1597">     *    + 0.7 * Experience</a>
+<a name="ln1598">     *    + (distinct Runes +2)^2 * 1000, winners with distinct runes &gt;= 3 only</a>
+<a name="ln1599">     *    + value of Inventory, for winners only</a>
+<a name="ln1600">     *</a>
+<a name="ln1601">     *</a>
+<a name="ln1602">     *  0.4 scoring system, as suggested by Lemuel:</a>
+<a name="ln1603">     *</a>
+<a name="ln1604">     *    Gold</a>
+<a name="ln1605">     *    + 0.7 * Experience up to 250,000</a>
+<a name="ln1606">     *    + 0.4 * Experience between 250,000 and 1,000,000</a>
+<a name="ln1607">     *    + 0.2 * Experience between 1,000,000 and 3,000,000</a>
+<a name="ln1608">     *    + 0.1 * Experience above 3,000,000</a>
+<a name="ln1609">     *    + (distinct Runes +2)^2 * 1000, winners with distinct runes &gt;= 3 only</a>
+<a name="ln1610">     *    + value of Inventory, for winners only</a>
+<a name="ln1611">     *    + (250,000 * d. runes) * (25,000/(turns/d. runes)), for winners only</a>
+<a name="ln1612">     *</a>
+<a name="ln1613">     *  current scoring system (mostly the same as above):</a>
+<a name="ln1614">     *</a>
+<a name="ln1615">     *    Experience terms as above</a>
+<a name="ln1616">     *    + runes * (runes + 12) * 1000        (for everyone)</a>
+<a name="ln1617">     *    + (250000 + 2 * (runes + 2) * 1000)  (winners only)</a>
+<a name="ln1618">     *    + 250000 * 25000 * runes^2 / turns   (winners only)</a>
+<a name="ln1619">     */</a>
+<a name="ln1620"> </a>
+<a name="ln1621">    // do points first.</a>
+<a name="ln1622">    points = 0;</a>
+<a name="ln1623">    bool base_score = true;</a>
+<a name="ln1624"> </a>
+<a name="ln1625">    dlua.pushglobal(&quot;dgn.persist.calc_score&quot;);</a>
+<a name="ln1626">    lua_pushboolean(dlua, death_type == KILLED_BY_WINNING);</a>
+<a name="ln1627">    if (dlua.callfn(nullptr, 1, 2))</a>
+<a name="ln1628">        dlua.fnreturns(&quot;&gt;db&quot;, &amp;points, &amp;base_score);</a>
+<a name="ln1629"> </a>
+<a name="ln1630">    // If calc_score didn't exist, or returned true as its second value,</a>
+<a name="ln1631">    // use the default formula.</a>
+<a name="ln1632">    if (base_score)</a>
+<a name="ln1633">    {</a>
+<a name="ln1634">        // sprint games could overflow a 32 bit value</a>
+<a name="ln1635">        uint64_t pt = points + _award_modified_experience();</a>
+<a name="ln1636"> </a>
+<a name="ln1637">        num_runes      = runes_in_pack();</a>
+<a name="ln1638">        num_diff_runes = num_runes;</a>
+<a name="ln1639"> </a>
+<a name="ln1640">        // There's no point in rewarding lugging artefacts. Thus, no points</a>
+<a name="ln1641">        // for the value of the inventory. -- 1KB</a>
+<a name="ln1642">        if (death_type == KILLED_BY_WINNING)</a>
+<a name="ln1643">        {</a>
+<a name="ln1644">            pt += 250000; // the Orb</a>
+<a name="ln1645">            pt += num_runes * 2000 + 4000;</a>
+<a name="ln1646">            pt += ((uint64_t)250000) * 25000 * num_runes * num_runes</a>
+<a name="ln1647">                / (1+you.num_turns);</a>
+<a name="ln1648">        }</a>
+<a name="ln1649">        pt += num_runes * 10000;</a>
+<a name="ln1650">        pt += num_runes * (num_runes + 2) * 1000;</a>
+<a name="ln1651"> </a>
+<a name="ln1652">        points = pt;</a>
+<a name="ln1653">    }</a>
+<a name="ln1654">    else</a>
+<a name="ln1655">        ASSERT(crawl_state.game_is_sprint());</a>
+<a name="ln1656">        // only sprint should use custom scores</a>
+<a name="ln1657"> </a>
+<a name="ln1658">    race = you.species;</a>
+<a name="ln1659">    job  = you.char_class;</a>
+<a name="ln1660"> </a>
+<a name="ln1661">    race_class_name.clear();</a>
+<a name="ln1662">    fixup_char_name();</a>
+<a name="ln1663"> </a>
+<a name="ln1664">    lvl            = you.experience_level;</a>
+<a name="ln1665">    best_skill     = ::best_skill(SK_FIRST_SKILL, SK_LAST_SKILL);</a>
+<a name="ln1666">    best_skill_lvl = you.skills[ best_skill ];</a>
+<a name="ln1667">    title          = player_title(false);</a>
+<a name="ln1668"> </a>
+<a name="ln1669">    // Note all skills at level 27, and also all skills at level &gt;= 15.</a>
+<a name="ln1670">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln1671">    {</a>
+<a name="ln1672">        if (you.skills[sk] == 27)</a>
+<a name="ln1673">        {</a>
+<a name="ln1674">            if (!maxed_skills.empty())</a>
+<a name="ln1675">                maxed_skills += &quot;,&quot;;</a>
+<a name="ln1676">            maxed_skills += skill_name(sk);</a>
+<a name="ln1677">        }</a>
+<a name="ln1678">        if (you.skills[sk] &gt;= 15)</a>
+<a name="ln1679">        {</a>
+<a name="ln1680">            if (!fifteen_skills.empty())</a>
+<a name="ln1681">                fifteen_skills += &quot;,&quot;;</a>
+<a name="ln1682">            fifteen_skills += skill_name(sk);</a>
+<a name="ln1683">        }</a>
+<a name="ln1684">    }</a>
+<a name="ln1685"> </a>
+<a name="ln1686">    status_info inf;</a>
+<a name="ln1687">    for (unsigned i = 0; i &lt;= STATUS_LAST_STATUS; ++i)</a>
+<a name="ln1688">    {</a>
+<a name="ln1689">        if (fill_status_info(i, inf) &amp;&amp; !inf.short_text.empty())</a>
+<a name="ln1690">        {</a>
+<a name="ln1691">            if (!status_effects.empty())</a>
+<a name="ln1692">                status_effects += &quot;,&quot;;</a>
+<a name="ln1693">            status_effects += inf.short_text;</a>
+<a name="ln1694">        }</a>
+<a name="ln1695">    }</a>
+<a name="ln1696"> </a>
+<a name="ln1697">    kills            = you.kills.total_kills();</a>
+<a name="ln1698"> </a>
+<a name="ln1699">    final_hp         = you.hp;</a>
+<a name="ln1700">    final_max_hp     = you.hp_max;</a>
+<a name="ln1701">    final_max_max_hp = get_real_hp(true, false);</a>
+<a name="ln1702"> </a>
+<a name="ln1703">    final_mp          = you.magic_points;</a>
+<a name="ln1704">    final_max_mp      = you.max_magic_points;</a>
+<a name="ln1705">    final_base_max_mp = get_real_mp(false);</a>
+<a name="ln1706"> </a>
+<a name="ln1707">    source_damage    = you.source_damage;</a>
+<a name="ln1708">    turn_damage      = you.turn_damage;</a>
+<a name="ln1709"> </a>
+<a name="ln1710">    // Use possibly negative stat values.</a>
+<a name="ln1711">    str   = you.stat(STAT_STR, false);</a>
+<a name="ln1712">    intel = you.stat(STAT_INT, false);</a>
+<a name="ln1713">    dex   = you.stat(STAT_DEX, false);</a>
+<a name="ln1714"> </a>
+<a name="ln1715">    ac    = you.armour_class();</a>
+<a name="ln1716">    ev    = you.evasion();</a>
+<a name="ln1717">    sh    = player_displayed_shield_class();</a>
+<a name="ln1718"> </a>
+<a name="ln1719">    god = you.religion;</a>
+<a name="ln1720">    if (!you_worship(GOD_NO_GOD))</a>
+<a name="ln1721">    {</a>
+<a name="ln1722">        piety   = you.piety;</a>
+<a name="ln1723">        penance = you.penance[you.religion];</a>
+<a name="ln1724">    }</a>
+<a name="ln1725"> </a>
+<a name="ln1726">    branch     = you.where_are_you;  // no adjustments necessary.</a>
+<a name="ln1727">    dlvl       = you.depth;</a>
+<a name="ln1728"> </a>
+<a name="ln1729">    absdepth   = env.absdepth0 + 1;  // 1-based absolute depth.</a>
+<a name="ln1730"> </a>
+<a name="ln1731">    last_banisher = you.banished_by;</a>
+<a name="ln1732"> </a>
+<a name="ln1733">    if (const vault_placement *vp = dgn_vault_at(you.pos()))</a>
+<a name="ln1734">    {</a>
+<a name="ln1735">        map     = vp-&gt;map_name_at(you.pos());</a>
+<a name="ln1736">        mapdesc = vp-&gt;map.description;</a>
+<a name="ln1737">    }</a>
+<a name="ln1738"> </a>
+<a name="ln1739">    birth_time = you.birth_time;     // start time of game</a>
+<a name="ln1740">    death_time = (dt != 0 ? dt : time(nullptr)); // end time of game</a>
+<a name="ln1741"> </a>
+<a name="ln1742">    handle_real_time(chrono::system_clock::from_time_t(death_time));</a>
+<a name="ln1743">    real_time = you.real_time();</a>
+<a name="ln1744"> </a>
+<a name="ln1745">    num_turns = you.num_turns;</a>
+<a name="ln1746">    num_aut = you.elapsed_time;</a>
+<a name="ln1747"> </a>
+<a name="ln1748">    gold       = you.gold;</a>
+<a name="ln1749">    gold_found = you.attribute[ATTR_GOLD_FOUND];</a>
+<a name="ln1750">    gold_spent = you.attribute[ATTR_PURCHASES];</a>
+<a name="ln1751"> </a>
+<a name="ln1752">    zigs       = you.zigs_completed;</a>
+<a name="ln1753">    zigmax     = you.zig_max;</a>
+<a name="ln1754"> </a>
+<a name="ln1755">    scrolls_used = 0;</a>
+<a name="ln1756">    pair&lt;caction_type, int&gt; p(CACT_USE, caction_compound(OBJ_SCROLLS));</a>
+<a name="ln1757"> </a>
+<a name="ln1758">    const int maxlev = min&lt;int&gt;(you.max_level, 27);</a>
+<a name="ln1759">    if (you.action_count.count(p))</a>
+<a name="ln1760">        for (int i = 0; i &lt; maxlev; i++)</a>
+<a name="ln1761">            scrolls_used += you.action_count[p][i];</a>
+<a name="ln1762"> </a>
+<a name="ln1763">    potions_used = 0;</a>
+<a name="ln1764">    p = make_pair(CACT_USE, caction_compound(OBJ_POTIONS));</a>
+<a name="ln1765">    if (you.action_count.count(p))</a>
+<a name="ln1766">        for (int i = 0; i &lt; maxlev; i++)</a>
+<a name="ln1767">            potions_used += you.action_count[p][i];</a>
+<a name="ln1768"> </a>
+<a name="ln1769">    wiz_mode = (you.wizard || you.suppress_wizard ? 1 : 0);</a>
+<a name="ln1770">    explore_mode = (you.explore ? 1 : 0);</a>
+<a name="ln1771">    seed = make_stringf(&quot;%&quot; PRIu64, crawl_state.seed);</a>
+<a name="ln1772">}</a>
+<a name="ln1773"> </a>
+<a name="ln1774">string scorefile_entry::hiscore_line(death_desc_verbosity verbosity) const</a>
+<a name="ln1775">{</a>
+<a name="ln1776">    string line = character_description(verbosity);</a>
+<a name="ln1777">    line += death_description(verbosity);</a>
+<a name="ln1778">    line += death_place(verbosity);</a>
+<a name="ln1779">    line += game_time(verbosity);</a>
+<a name="ln1780"> </a>
+<a name="ln1781">    return line;</a>
+<a name="ln1782">}</a>
+<a name="ln1783"> </a>
+<a name="ln1784">string scorefile_entry::game_time(death_desc_verbosity verbosity) const</a>
+<a name="ln1785">{</a>
+<a name="ln1786">    string line;</a>
+<a name="ln1787"> </a>
+<a name="ln1788">    if (verbosity == DDV_VERBOSE)</a>
+<a name="ln1789">    {</a>
+<a name="ln1790">        line += make_stringf(&quot;The game lasted %s (%d turns).&quot;,</a>
+<a name="ln1791">                             make_time_string(real_time).c_str(), num_turns);</a>
+<a name="ln1792"> </a>
+<a name="ln1793">        line += _hiscore_newline_string();</a>
+<a name="ln1794">    }</a>
+<a name="ln1795"> </a>
+<a name="ln1796">    return line;</a>
+<a name="ln1797">}</a>
+<a name="ln1798"> </a>
+<a name="ln1799">const char *scorefile_entry::damage_verb() const</a>
+<a name="ln1800">{</a>
+<a name="ln1801">    // GDL: here's an example of using final_hp. Verbiage could be better.</a>
+<a name="ln1802">    // bwr: changed &quot;blasted&quot; since this is for melee</a>
+<a name="ln1803">    return (final_hp &gt; -6)  ? &quot;Slain&quot;   :</a>
+<a name="ln1804">           (final_hp &gt; -14) ? &quot;Mangled&quot; :</a>
+<a name="ln1805">           (final_hp &gt; -22) ? &quot;Demolished&quot;</a>
+<a name="ln1806">                            : &quot;Annihilated&quot;;</a>
+<a name="ln1807">}</a>
+<a name="ln1808"> </a>
+<a name="ln1809">string scorefile_entry::death_source_desc() const</a>
+<a name="ln1810">{</a>
+<a name="ln1811">    return death_source_name;</a>
+<a name="ln1812">}</a>
+<a name="ln1813"> </a>
+<a name="ln1814">string scorefile_entry::damage_string(bool terse) const</a>
+<a name="ln1815">{</a>
+<a name="ln1816">    return make_stringf(&quot;(%d%s)&quot;, damage,</a>
+<a name="ln1817">                        terse? &quot;&quot; : &quot; damage&quot;);</a>
+<a name="ln1818">}</a>
+<a name="ln1819"> </a>
+<a name="ln1820">string scorefile_entry::strip_article_a(const string &amp;s) const</a>
+<a name="ln1821">{</a>
+<a name="ln1822">    if (starts_with(s, &quot;a &quot;))</a>
+<a name="ln1823">        return s.substr(2);</a>
+<a name="ln1824">    else if (starts_with(s, &quot;an &quot;))</a>
+<a name="ln1825">        return s.substr(3);</a>
+<a name="ln1826">    return s;</a>
+<a name="ln1827">}</a>
+<a name="ln1828"> </a>
+<a name="ln1829">string scorefile_entry::terse_missile_name() const</a>
+<a name="ln1830">{</a>
+<a name="ln1831">    const string pre_post[][2] =</a>
+<a name="ln1832">    {</a>
+<a name="ln1833">        { &quot;Shot with &quot;, &quot; by &quot; },</a>
+<a name="ln1834">        { &quot;Hit by &quot;,     &quot; thrown by &quot; }</a>
+<a name="ln1835">    };</a>
+<a name="ln1836">    const string &amp;aux = auxkilldata;</a>
+<a name="ln1837">    string missile;</a>
+<a name="ln1838"> </a>
+<a name="ln1839">    for (const string (&amp;affixes)[2] : pre_post)</a>
+<a name="ln1840">    {</a>
+<a name="ln1841">        if (!starts_with(aux, affixes[0]))</a>
+<a name="ln1842">            continue;</a>
+<a name="ln1843"> </a>
+<a name="ln1844">        string::size_type end = aux.rfind(affixes[1]);</a>
+<a name="ln1845">        if (end == string::npos)</a>
+<a name="ln1846">            continue;</a>
+<a name="ln1847"> </a>
+<a name="ln1848">        int istart = affixes[0].length();</a>
+<a name="ln1849">        int nchars = end - istart;</a>
+<a name="ln1850">        missile = aux.substr(istart, nchars);</a>
+<a name="ln1851"> </a>
+<a name="ln1852">        // Was this prefixed by &quot;a&quot; or &quot;an&quot;?</a>
+<a name="ln1853">        // (This should only ever not be the case with Robin and Ijyb.)</a>
+<a name="ln1854">        missile = strip_article_a(missile);</a>
+<a name="ln1855">    }</a>
+<a name="ln1856">    return missile;</a>
+<a name="ln1857">}</a>
+<a name="ln1858"> </a>
+<a name="ln1859">string scorefile_entry::terse_missile_cause() const</a>
+<a name="ln1860">{</a>
+<a name="ln1861">    const string &amp;aux = auxkilldata;</a>
+<a name="ln1862"> </a>
+<a name="ln1863">    string monster_prefix = &quot; by &quot;;</a>
+<a name="ln1864">    // We're looking for Shot with a%s %s by %s/ Hit by a%s %s thrown by %s</a>
+<a name="ln1865">    string::size_type by = aux.rfind(monster_prefix);</a>
+<a name="ln1866">    if (by == string::npos)</a>
+<a name="ln1867">        return &quot;???&quot;;</a>
+<a name="ln1868"> </a>
+<a name="ln1869">    string mcause = aux.substr(by + monster_prefix.length());</a>
+<a name="ln1870">    mcause = strip_article_a(mcause);</a>
+<a name="ln1871"> </a>
+<a name="ln1872">    string missile = terse_missile_name();</a>
+<a name="ln1873"> </a>
+<a name="ln1874">    if (!missile.empty())</a>
+<a name="ln1875">        mcause += &quot;/&quot; + missile;</a>
+<a name="ln1876"> </a>
+<a name="ln1877">    return mcause;</a>
+<a name="ln1878">}</a>
+<a name="ln1879"> </a>
+<a name="ln1880">string scorefile_entry::terse_beam_cause() const</a>
+<a name="ln1881">{</a>
+<a name="ln1882">    string cause = auxkilldata;</a>
+<a name="ln1883">    if (starts_with(cause, &quot;by &quot;) || starts_with(cause, &quot;By &quot;))</a>
+<a name="ln1884">        cause = cause.substr(3);</a>
+<a name="ln1885">    return cause;</a>
+<a name="ln1886">}</a>
+<a name="ln1887"> </a>
+<a name="ln1888">string scorefile_entry::terse_wild_magic() const</a>
+<a name="ln1889">{</a>
+<a name="ln1890">    return terse_beam_cause();</a>
+<a name="ln1891">}</a>
+<a name="ln1892"> </a>
+<a name="ln1893">void scorefile_entry::fixup_char_name()</a>
+<a name="ln1894">{</a>
+<a name="ln1895">    if (race_class_name.empty())</a>
+<a name="ln1896">    {</a>
+<a name="ln1897">        race_class_name = make_stringf(&quot;%s%s&quot;,</a>
+<a name="ln1898">                                       _species_abbrev(race),</a>
+<a name="ln1899">                                       _job_abbrev(job));</a>
+<a name="ln1900">    }</a>
+<a name="ln1901">}</a>
+<a name="ln1902"> </a>
+<a name="ln1903">string scorefile_entry::single_cdesc() const</a>
+<a name="ln1904">{</a>
+<a name="ln1905">    string scname;</a>
+<a name="ln1906">    scname = chop_string(name, 10);</a>
+<a name="ln1907"> </a>
+<a name="ln1908">    return make_stringf(&quot;%8d %s %s-%02d%s&quot;, points, scname.c_str(),</a>
+<a name="ln1909">                        race_class_name.c_str(), lvl,</a>
+<a name="ln1910">                        (wiz_mode == 1) ? &quot;W&quot; : (explore_mode == 1) ? &quot;E&quot; : &quot;&quot;);</a>
+<a name="ln1911">}</a>
+<a name="ln1912"> </a>
+<a name="ln1913">static string _append_sentence_delimiter(const string &amp;sentence,</a>
+<a name="ln1914">                                         const string &amp;delimiter)</a>
+<a name="ln1915">{</a>
+<a name="ln1916">    if (sentence.empty())</a>
+<a name="ln1917">        return sentence;</a>
+<a name="ln1918"> </a>
+<a name="ln1919">    const char lastch = sentence[sentence.length() - 1];</a>
+<a name="ln1920">    if (lastch == '!' || lastch == '.')</a>
+<a name="ln1921">        return sentence;</a>
+<a name="ln1922"> </a>
+<a name="ln1923">    return sentence + delimiter;</a>
+<a name="ln1924">}</a>
+<a name="ln1925"> </a>
+<a name="ln1926">string</a>
+<a name="ln1927">scorefile_entry::character_description(death_desc_verbosity verbosity) const</a>
+<a name="ln1928">{</a>
+<a name="ln1929">    bool single  = verbosity == DDV_TERSE || verbosity == DDV_ONELINE;</a>
+<a name="ln1930"> </a>
+<a name="ln1931">    if (single)</a>
+<a name="ln1932">        return single_cdesc();</a>
+<a name="ln1933"> </a>
+<a name="ln1934">    bool verbose = verbosity == DDV_VERBOSE;</a>
+<a name="ln1935"> </a>
+<a name="ln1936">    string desc;</a>
+<a name="ln1937">    // Please excuse the following bit of mess in the name of flavour ;)</a>
+<a name="ln1938">    if (verbose)</a>
+<a name="ln1939">    {</a>
+<a name="ln1940">        desc = make_stringf(&quot;%8d %s the %s (level %d&quot;,</a>
+<a name="ln1941">                  points, name.c_str(), title.c_str(), lvl);</a>
+<a name="ln1942">    }</a>
+<a name="ln1943">    else</a>
+<a name="ln1944">    {</a>
+<a name="ln1945">        desc = make_stringf(&quot;%8d %s the %s %s (level %d&quot;,</a>
+<a name="ln1946">                  points, name.c_str(),</a>
+<a name="ln1947">                  _species_name(race).c_str(),</a>
+<a name="ln1948">                  _job_name(job), lvl);</a>
+<a name="ln1949">    }</a>
+<a name="ln1950"> </a>
+<a name="ln1951">    if (final_max_max_hp &gt; 0)  // as the other two may be negative</a>
+<a name="ln1952">    {</a>
+<a name="ln1953">        desc += make_stringf(&quot;, %d/%d&quot;, final_hp, final_max_hp);</a>
+<a name="ln1954"> </a>
+<a name="ln1955">        if (final_max_hp &lt; final_max_max_hp)</a>
+<a name="ln1956">            desc += make_stringf(&quot; (%d)&quot;, final_max_max_hp);</a>
+<a name="ln1957"> </a>
+<a name="ln1958">        desc += &quot; HPs&quot;;</a>
+<a name="ln1959">    }</a>
+<a name="ln1960"> </a>
+<a name="ln1961">    desc += wiz_mode ? &quot;) *WIZ*&quot; : explore_mode ? &quot;) *EXPLORE*&quot; : &quot;)&quot;;</a>
+<a name="ln1962">    desc += _hiscore_newline_string();</a>
+<a name="ln1963"> </a>
+<a name="ln1964">    if (verbose)</a>
+<a name="ln1965">    {</a>
+<a name="ln1966">        string srace = _species_name(race);</a>
+<a name="ln1967">        desc += make_stringf(&quot;Began as a%s %s %s&quot;,</a>
+<a name="ln1968">                 is_vowel(srace[0]) ? &quot;n&quot; : &quot;&quot;,</a>
+<a name="ln1969">                 srace.c_str(),</a>
+<a name="ln1970">                 _job_name(job));</a>
+<a name="ln1971"> </a>
+<a name="ln1972">        ASSERT(birth_time);</a>
+<a name="ln1973">        desc += &quot; on &quot;;</a>
+<a name="ln1974">        desc += _hiscore_date_string(birth_time);</a>
+<a name="ln1975">        // TODO: show seed here?</a>
+<a name="ln1976"> </a>
+<a name="ln1977">        desc = _append_sentence_delimiter(desc, &quot;.&quot;);</a>
+<a name="ln1978">        desc += _hiscore_newline_string();</a>
+<a name="ln1979"> </a>
+<a name="ln1980">        if (race != SP_DEMIGOD &amp;&amp; god != GOD_NO_GOD)</a>
+<a name="ln1981">        {</a>
+<a name="ln1982">            if (god == GOD_XOM)</a>
+<a name="ln1983">            {</a>
+<a name="ln1984">                desc += make_stringf(&quot;Was a %sPlaything of Xom.&quot;,</a>
+<a name="ln1985">                                    (lvl &gt;= 20) ? &quot;Favourite &quot; : &quot;&quot;);</a>
+<a name="ln1986"> </a>
+<a name="ln1987">                desc += _hiscore_newline_string();</a>
+<a name="ln1988">            }</a>
+<a name="ln1989">            else</a>
+<a name="ln1990">            {</a>
+<a name="ln1991">                // Not exactly the same as the religion screen, but</a>
+<a name="ln1992">                // good enough to fill this slot for now.</a>
+<a name="ln1993">                desc += make_stringf(&quot;Was %s of %s%s&quot;,</a>
+<a name="ln1994">                             (piety &gt;= piety_breakpoint(5)) ? &quot;the Champion&quot; :</a>
+<a name="ln1995">                             (piety &gt;= piety_breakpoint(4)) ? &quot;a High Priest&quot; :</a>
+<a name="ln1996">                             (piety &gt;= piety_breakpoint(3)) ? &quot;an Elder&quot; :</a>
+<a name="ln1997">                             (piety &gt;= piety_breakpoint(2)) ? &quot;a Priest&quot; :</a>
+<a name="ln1998">                             (piety &gt;= piety_breakpoint(1)) ? &quot;a Believer&quot; :</a>
+<a name="ln1999">                             (piety &gt;= piety_breakpoint(0)) ? &quot;a Follower&quot;</a>
+<a name="ln2000">                                                            : &quot;an Initiate&quot;,</a>
+<a name="ln2001">                          god_name(god).c_str(),</a>
+<a name="ln2002">                             (penance &gt; 0) ? &quot; (penitent).&quot; : &quot;.&quot;);</a>
+<a name="ln2003"> </a>
+<a name="ln2004">                desc += _hiscore_newline_string();</a>
+<a name="ln2005">            }</a>
+<a name="ln2006">        }</a>
+<a name="ln2007">    }</a>
+<a name="ln2008"> </a>
+<a name="ln2009">    return desc;</a>
+<a name="ln2010">}</a>
+<a name="ln2011"> </a>
+<a name="ln2012">string scorefile_entry::death_place(death_desc_verbosity verbosity) const</a>
+<a name="ln2013">{</a>
+<a name="ln2014">    bool verbose = (verbosity == DDV_VERBOSE);</a>
+<a name="ln2015">    string place;</a>
+<a name="ln2016"> </a>
+<a name="ln2017">    if (death_type == KILLED_BY_LEAVING || death_type == KILLED_BY_WINNING)</a>
+<a name="ln2018">        return &quot;&quot;;</a>
+<a name="ln2019"> </a>
+<a name="ln2020">    if (verbosity == DDV_ONELINE || verbosity == DDV_TERSE)</a>
+<a name="ln2021">        return &quot; (&quot; + level_id(branch, dlvl).describe() + &quot;)&quot;;</a>
+<a name="ln2022"> </a>
+<a name="ln2023">    if (verbose &amp;&amp; death_type != KILLED_BY_QUITTING &amp;&amp; death_type != KILLED_BY_WIZMODE)</a>
+<a name="ln2024">        place += &quot;...&quot;;</a>
+<a name="ln2025"> </a>
+<a name="ln2026">    // where did we die?</a>
+<a name="ln2027">    place += &quot; &quot; + prep_branch_level_name(level_id(branch, dlvl));</a>
+<a name="ln2028"> </a>
+<a name="ln2029">    if (!mapdesc.empty())</a>
+<a name="ln2030">        place += make_stringf(&quot; (%s)&quot;, mapdesc.c_str());</a>
+<a name="ln2031"> </a>
+<a name="ln2032">    if (verbose &amp;&amp; death_time</a>
+<a name="ln2033">        &amp;&amp; !_hiscore_same_day(birth_time, death_time))</a>
+<a name="ln2034">    {</a>
+<a name="ln2035">        place += &quot; on &quot;;</a>
+<a name="ln2036">        place += _hiscore_date_string(death_time);</a>
+<a name="ln2037">    }</a>
+<a name="ln2038"> </a>
+<a name="ln2039">    place = _append_sentence_delimiter(place, &quot;.&quot;);</a>
+<a name="ln2040">    place += _hiscore_newline_string();</a>
+<a name="ln2041"> </a>
+<a name="ln2042">    return place;</a>
+<a name="ln2043">}</a>
+<a name="ln2044"> </a>
+<a name="ln2045">/**</a>
+<a name="ln2046"> * Describes the cause of the player's death.</a>
+<a name="ln2047"> *</a>
+<a name="ln2048"> * @param verbosity     The verbosity of the description.</a>
+<a name="ln2049"> * @return              A description of the cause of death.</a>
+<a name="ln2050"> */</a>
+<a name="ln2051">string scorefile_entry::death_description(death_desc_verbosity verbosity) const</a>
+<a name="ln2052">{</a>
+<a name="ln2053">    bool needs_beam_cause_line = false;</a>
+<a name="ln2054">    bool needs_called_by_monster_line = false;</a>
+<a name="ln2055">    bool needs_damage = false;</a>
+<a name="ln2056"> </a>
+<a name="ln2057">    const bool terse   = (verbosity == DDV_TERSE);</a>
+<a name="ln2058">    const bool semiverbose = (verbosity == DDV_LOGVERBOSE);</a>
+<a name="ln2059">    const bool verbose = (verbosity == DDV_VERBOSE || semiverbose);</a>
+<a name="ln2060">    const bool oneline = (verbosity == DDV_ONELINE);</a>
+<a name="ln2061"> </a>
+<a name="ln2062">    string desc;</a>
+<a name="ln2063"> </a>
+<a name="ln2064">    if (oneline)</a>
+<a name="ln2065">        desc = &quot; &quot;;</a>
+<a name="ln2066"> </a>
+<a name="ln2067">    switch (death_type)</a>
+<a name="ln2068">    {</a>
+<a name="ln2069">    case KILLED_BY_MONSTER:</a>
+<a name="ln2070">        if (terse)</a>
+<a name="ln2071">            desc += death_source_desc();</a>
+<a name="ln2072">        else if (oneline)</a>
+<a name="ln2073">            desc += &quot;slain by &quot; + death_source_desc();</a>
+<a name="ln2074">        else</a>
+<a name="ln2075">        {</a>
+<a name="ln2076">            desc += damage_verb();</a>
+<a name="ln2077">            desc += &quot; by &quot;;</a>
+<a name="ln2078">            desc += death_source_desc();</a>
+<a name="ln2079">        }</a>
+<a name="ln2080"> </a>
+<a name="ln2081">        // put the damage on the weapon line if there is one</a>
+<a name="ln2082">        if (auxkilldata.empty())</a>
+<a name="ln2083">            needs_damage = true;</a>
+<a name="ln2084">        break;</a>
+<a name="ln2085"> </a>
+<a name="ln2086">    case KILLED_BY_HEADBUTT:</a>
+<a name="ln2087">        if (terse)</a>
+<a name="ln2088">            desc += apostrophise(death_source_desc()) + &quot; headbutt&quot;;</a>
+<a name="ln2089">        else</a>
+<a name="ln2090">            desc += &quot;Headbutted by &quot; + death_source_desc();</a>
+<a name="ln2091">        needs_damage = true;</a>
+<a name="ln2092">        break;</a>
+<a name="ln2093"> </a>
+<a name="ln2094">    case KILLED_BY_ROLLING:</a>
+<a name="ln2095">        if (terse)</a>
+<a name="ln2096">            desc += &quot;squashed by &quot; + death_source_desc();</a>
+<a name="ln2097">        else</a>
+<a name="ln2098">            desc += &quot;Rolled over by &quot; + death_source_desc();</a>
+<a name="ln2099">        needs_damage = true;</a>
+<a name="ln2100">        break;</a>
+<a name="ln2101"> </a>
+<a name="ln2102">    case KILLED_BY_SPINES:</a>
+<a name="ln2103">        if (terse)</a>
+<a name="ln2104">            desc += apostrophise(death_source_desc()) + &quot; spines&quot;;</a>
+<a name="ln2105">        else</a>
+<a name="ln2106">            desc += &quot;Impaled on &quot; + apostrophise(death_source_desc()) + &quot; spines&quot; ;</a>
+<a name="ln2107">        needs_damage = true;</a>
+<a name="ln2108">        break;</a>
+<a name="ln2109"> </a>
+<a name="ln2110">    case KILLED_BY_POISON:</a>
+<a name="ln2111">        if (death_source_name.empty() || terse)</a>
+<a name="ln2112">        {</a>
+<a name="ln2113">            if (!terse)</a>
+<a name="ln2114">                desc += &quot;Succumbed to poison&quot;;</a>
+<a name="ln2115">            else if (!death_source_name.empty())</a>
+<a name="ln2116">                desc += &quot;poisoned by &quot; + death_source_name;</a>
+<a name="ln2117">            else</a>
+<a name="ln2118">                desc += &quot;poison&quot;;</a>
+<a name="ln2119">            if (!auxkilldata.empty())</a>
+<a name="ln2120">                desc += &quot; (&quot; + auxkilldata + &quot;)&quot;;</a>
+<a name="ln2121">        }</a>
+<a name="ln2122">        else if (auxkilldata.empty()</a>
+<a name="ln2123">                 &amp;&amp; death_source_name.find(&quot;poison&quot;) != string::npos)</a>
+<a name="ln2124">        {</a>
+<a name="ln2125">            desc += &quot;Succumbed to &quot; + death_source_name;</a>
+<a name="ln2126">        }</a>
+<a name="ln2127">        else</a>
+<a name="ln2128">        {</a>
+<a name="ln2129">            desc += &quot;Succumbed to &quot; + ((death_source_name == &quot;you&quot;)</a>
+<a name="ln2130">                      ? &quot;their own&quot; : apostrophise(death_source_name)) + &quot; &quot;</a>
+<a name="ln2131">                    + (auxkilldata.empty()? &quot;poison&quot; : auxkilldata);</a>
+<a name="ln2132">        }</a>
+<a name="ln2133">        break;</a>
+<a name="ln2134"> </a>
+<a name="ln2135">    case KILLED_BY_CLOUD:</a>
+<a name="ln2136">        ASSERT(!auxkilldata.empty()); // there are no nameless clouds</a>
+<a name="ln2137">        if (terse)</a>
+<a name="ln2138">            if (death_source_name.empty())</a>
+<a name="ln2139">                desc += &quot;cloud of &quot; + auxkilldata;</a>
+<a name="ln2140">            else</a>
+<a name="ln2141">                desc += &quot;cloud of &quot; +auxkilldata + &quot; [&quot; +</a>
+<a name="ln2142">                        death_source_name == &quot;you&quot; ? &quot;self&quot; : death_source_name</a>
+<a name="ln2143">                        + &quot;]&quot;;</a>
+<a name="ln2144">        else</a>
+<a name="ln2145">        {</a>
+<a name="ln2146">            desc += make_stringf(&quot;Engulfed by %s%s %s&quot;,</a>
+<a name="ln2147">                death_source_name.empty() ? &quot;a&quot; :</a>
+<a name="ln2148">                  death_source_name == &quot;you&quot; ? &quot;their own&quot; :</a>
+<a name="ln2149">                  apostrophise(death_source_name).c_str(),</a>
+<a name="ln2150">                death_source_name.empty() ? &quot; cloud of&quot; : &quot;&quot;,</a>
+<a name="ln2151">                auxkilldata.c_str());</a>
+<a name="ln2152">        }</a>
+<a name="ln2153">        needs_damage = true;</a>
+<a name="ln2154">        break;</a>
+<a name="ln2155"> </a>
+<a name="ln2156">    case KILLED_BY_BEAM:</a>
+<a name="ln2157">        if (oneline || semiverbose)</a>
+<a name="ln2158">        {</a>
+<a name="ln2159">            // keeping this short to leave room for the deep elf spellcasters:</a>
+<a name="ln2160">            desc += make_stringf(&quot;%s by &quot;,</a>
+<a name="ln2161">                      _range_type_verb(auxkilldata.c_str()));</a>
+<a name="ln2162">            desc += (death_source_name == &quot;you&quot;) ? &quot;themself&quot;</a>
+<a name="ln2163">                                                 : death_source_desc();</a>
+<a name="ln2164"> </a>
+<a name="ln2165">            if (semiverbose)</a>
+<a name="ln2166">            {</a>
+<a name="ln2167">                string beam = terse_missile_name();</a>
+<a name="ln2168">                if (beam.empty())</a>
+<a name="ln2169">                    beam = terse_beam_cause();</a>
+<a name="ln2170">                trim_string(beam);</a>
+<a name="ln2171">                if (!beam.empty())</a>
+<a name="ln2172">                    desc += make_stringf(&quot; (%s)&quot;, beam.c_str());</a>
+<a name="ln2173">            }</a>
+<a name="ln2174">        }</a>
+<a name="ln2175">        else if (isupper(auxkilldata[0]))  // already made (ie shot arrows)</a>
+<a name="ln2176">        {</a>
+<a name="ln2177">            // If terse we have to parse the information from the string.</a>
+<a name="ln2178">            // Darn it to heck.</a>
+<a name="ln2179">            desc += terse? terse_missile_cause() : auxkilldata;</a>
+<a name="ln2180">            needs_damage = true;</a>
+<a name="ln2181">        }</a>
+<a name="ln2182">        else if (verbose &amp;&amp; starts_with(auxkilldata, &quot;by &quot;))</a>
+<a name="ln2183">        {</a>
+<a name="ln2184">            // &quot;by&quot; is used for priest attacks where the effect is indirect</a>
+<a name="ln2185">            // in verbose format we have another line for the monster</a>
+<a name="ln2186">            if (death_source_name == &quot;you&quot;)</a>
+<a name="ln2187">            {</a>
+<a name="ln2188">                needs_damage = true;</a>
+<a name="ln2189">                desc += make_stringf(&quot;Killed by their own %s&quot;,</a>
+<a name="ln2190">                         auxkilldata.substr(3).c_str());</a>
+<a name="ln2191">            }</a>
+<a name="ln2192">            else</a>
+<a name="ln2193">            {</a>
+<a name="ln2194">                needs_called_by_monster_line = true;</a>
+<a name="ln2195">                desc += make_stringf(&quot;Killed %s&quot;,</a>
+<a name="ln2196">                          auxkilldata.c_str());</a>
+<a name="ln2197">            }</a>
+<a name="ln2198">        }</a>
+<a name="ln2199">        else</a>
+<a name="ln2200">        {</a>
+<a name="ln2201">            // Note: This is also used for the &quot;by&quot; cases in non-verbose</a>
+<a name="ln2202">            //       mode since listing the monster is more imporatant.</a>
+<a name="ln2203">            if (semiverbose)</a>
+<a name="ln2204">                desc += &quot;Killed by &quot;;</a>
+<a name="ln2205">            else if (!terse)</a>
+<a name="ln2206">                desc += &quot;Killed from afar by &quot;;</a>
+<a name="ln2207"> </a>
+<a name="ln2208">            if (death_source_name == &quot;you&quot;)</a>
+<a name="ln2209">                desc += &quot;themself&quot;;</a>
+<a name="ln2210">            else</a>
+<a name="ln2211">                desc += death_source_desc();</a>
+<a name="ln2212"> </a>
+<a name="ln2213">            if (!auxkilldata.empty())</a>
+<a name="ln2214">                needs_beam_cause_line = true;</a>
+<a name="ln2215"> </a>
+<a name="ln2216">            needs_damage = true;</a>
+<a name="ln2217">        }</a>
+<a name="ln2218">        break;</a>
+<a name="ln2219"> </a>
+<a name="ln2220">    case KILLED_BY_LAVA:</a>
+<a name="ln2221">        if (terse)</a>
+<a name="ln2222">            desc += &quot;lava&quot;;</a>
+<a name="ln2223">        else</a>
+<a name="ln2224">        {</a>
+<a name="ln2225">            if (race == SP_MUMMY)</a>
+<a name="ln2226">                desc += &quot;Turned to ash by lava&quot;;</a>
+<a name="ln2227">            else</a>
+<a name="ln2228">                desc += &quot;Took a swim in molten lava&quot;;</a>
+<a name="ln2229">        }</a>
+<a name="ln2230">        break;</a>
+<a name="ln2231"> </a>
+<a name="ln2232">    case KILLED_BY_WATER:</a>
+<a name="ln2233">        if (you.undead_state())</a>
+<a name="ln2234">        {</a>
+<a name="ln2235">            if (terse)</a>
+<a name="ln2236">                desc = &quot;fell apart&quot;;</a>
+<a name="ln2237">            else if (race == SP_MUMMY)</a>
+<a name="ln2238">                desc = &quot;Soaked and fell apart&quot;;</a>
+<a name="ln2239">            else</a>
+<a name="ln2240">                desc = &quot;Sank and fell apart&quot;;</a>
+<a name="ln2241">        }</a>
+<a name="ln2242">        else</a>
+<a name="ln2243">        {</a>
+<a name="ln2244">            if (!death_source_name.empty())</a>
+<a name="ln2245">            {</a>
+<a name="ln2246">                desc += terse? &quot;drowned by &quot; : &quot;Drowned by &quot;;</a>
+<a name="ln2247">                desc += death_source_name;</a>
+<a name="ln2248">                needs_damage = true;</a>
+<a name="ln2249">            }</a>
+<a name="ln2250">            else</a>
+<a name="ln2251">                desc += terse? &quot;drowned&quot; : &quot;Drowned&quot;;</a>
+<a name="ln2252">        }</a>
+<a name="ln2253">        break;</a>
+<a name="ln2254"> </a>
+<a name="ln2255">    case KILLED_BY_STUPIDITY:</a>
+<a name="ln2256">        if (terse)</a>
+<a name="ln2257">            desc += &quot;stupidity&quot;;</a>
+<a name="ln2258">        else if (race &gt;= 0 &amp;&amp; // not a removed race</a>
+<a name="ln2259">                 species_is_unbreathing(static_cast&lt;species_type&gt;(race)))</a>
+<a name="ln2260">        {</a>
+<a name="ln2261">            desc += &quot;Forgot to exist&quot;;</a>
+<a name="ln2262">        }</a>
+<a name="ln2263">        else</a>
+<a name="ln2264">            desc += &quot;Forgot to breathe&quot;;</a>
+<a name="ln2265">        break;</a>
+<a name="ln2266"> </a>
+<a name="ln2267">    case KILLED_BY_WEAKNESS:</a>
+<a name="ln2268">        desc += terse? &quot;collapsed&quot; : &quot;Collapsed under their own weight&quot;;</a>
+<a name="ln2269">        break;</a>
+<a name="ln2270"> </a>
+<a name="ln2271">    case KILLED_BY_CLUMSINESS:</a>
+<a name="ln2272">        desc += terse? &quot;clumsiness&quot; : &quot;Slipped on a banana peel&quot;;</a>
+<a name="ln2273">        break;</a>
+<a name="ln2274"> </a>
+<a name="ln2275">    case KILLED_BY_TRAP:</a>
+<a name="ln2276">        if (terse)</a>
+<a name="ln2277">            desc += auxkilldata.c_str();</a>
+<a name="ln2278">        else</a>
+<a name="ln2279">        {</a>
+<a name="ln2280">            desc += make_stringf(&quot;Killed by triggering %s&quot;,</a>
+<a name="ln2281">                                 auxkilldata.c_str());</a>
+<a name="ln2282">        }</a>
+<a name="ln2283">        needs_damage = true;</a>
+<a name="ln2284">        break;</a>
+<a name="ln2285"> </a>
+<a name="ln2286">    case KILLED_BY_LEAVING:</a>
+<a name="ln2287">        if (terse)</a>
+<a name="ln2288">            desc += &quot;left&quot;;</a>
+<a name="ln2289">        else</a>
+<a name="ln2290">        {</a>
+<a name="ln2291">            if (num_runes &gt; 0)</a>
+<a name="ln2292">                desc += &quot;Got out of the dungeon&quot;;</a>
+<a name="ln2293">            else if (species_is_undead(static_cast&lt;species_type&gt;(race)))</a>
+<a name="ln2294">                desc += &quot;Safely got out of the dungeon&quot;;</a>
+<a name="ln2295">            else</a>
+<a name="ln2296">                desc += &quot;Got out of the dungeon alive&quot;;</a>
+<a name="ln2297">        }</a>
+<a name="ln2298">        break;</a>
+<a name="ln2299"> </a>
+<a name="ln2300">    case KILLED_BY_WINNING:</a>
+<a name="ln2301">        desc += terse? &quot;escaped&quot; : &quot;Escaped with the Orb&quot;;</a>
+<a name="ln2302">        if (num_runes &lt; 1)</a>
+<a name="ln2303">            desc += &quot;!&quot;;</a>
+<a name="ln2304">        break;</a>
+<a name="ln2305"> </a>
+<a name="ln2306">    case KILLED_BY_QUITTING:</a>
+<a name="ln2307">        desc += terse? &quot;quit&quot; : &quot;Quit the game&quot;;</a>
+<a name="ln2308">        break;</a>
+<a name="ln2309"> </a>
+<a name="ln2310">    case KILLED_BY_WIZMODE:</a>
+<a name="ln2311">        desc += terse? &quot;wizmode&quot; : &quot;Entered wizard mode&quot;;</a>
+<a name="ln2312">        break;</a>
+<a name="ln2313"> </a>
+<a name="ln2314">    case KILLED_BY_DRAINING:</a>
+<a name="ln2315">        if (terse)</a>
+<a name="ln2316">            desc += &quot;drained&quot;;</a>
+<a name="ln2317">        else</a>
+<a name="ln2318">        {</a>
+<a name="ln2319">            desc += &quot;Drained of all life&quot;;</a>
+<a name="ln2320">            if (!death_source_desc().empty())</a>
+<a name="ln2321">            {</a>
+<a name="ln2322">                desc += &quot; by &quot; + death_source_desc();</a>
+<a name="ln2323"> </a>
+<a name="ln2324">                if (!auxkilldata.empty())</a>
+<a name="ln2325">                    needs_beam_cause_line = true;</a>
+<a name="ln2326">            }</a>
+<a name="ln2327">            else if (!auxkilldata.empty())</a>
+<a name="ln2328">                desc += &quot; by &quot; + auxkilldata;</a>
+<a name="ln2329">        }</a>
+<a name="ln2330">        break;</a>
+<a name="ln2331"> </a>
+<a name="ln2332">    case KILLED_BY_STARVATION:</a>
+<a name="ln2333">        desc += terse? &quot;starvation&quot; : &quot;Starved to death&quot;;</a>
+<a name="ln2334">        break;</a>
+<a name="ln2335"> </a>
+<a name="ln2336">    case KILLED_BY_FREEZING:    // refrigeration spell</a>
+<a name="ln2337">        desc += terse? &quot;frozen&quot; : &quot;Froze to death&quot;;</a>
+<a name="ln2338">        needs_damage = true;</a>
+<a name="ln2339">        break;</a>
+<a name="ln2340"> </a>
+<a name="ln2341">    case KILLED_BY_BURNING:     // sticky flame</a>
+<a name="ln2342">        if (terse)</a>
+<a name="ln2343">            desc += &quot;burnt&quot;;</a>
+<a name="ln2344">        else if (!death_source_desc().empty())</a>
+<a name="ln2345">        {</a>
+<a name="ln2346">            desc += &quot;Incinerated by &quot; + death_source_desc();</a>
+<a name="ln2347"> </a>
+<a name="ln2348">            if (!auxkilldata.empty())</a>
+<a name="ln2349">                needs_beam_cause_line = true;</a>
+<a name="ln2350">        }</a>
+<a name="ln2351">        else</a>
+<a name="ln2352">            desc += &quot;Burnt to a crisp&quot;;</a>
+<a name="ln2353"> </a>
+<a name="ln2354">        needs_damage = true;</a>
+<a name="ln2355">        break;</a>
+<a name="ln2356"> </a>
+<a name="ln2357">    case KILLED_BY_WILD_MAGIC:</a>
+<a name="ln2358">        if (auxkilldata.empty())</a>
+<a name="ln2359">            desc += terse? &quot;wild magic&quot; : &quot;Killed by wild magic&quot;;</a>
+<a name="ln2360">        else</a>
+<a name="ln2361">        {</a>
+<a name="ln2362">            if (terse)</a>
+<a name="ln2363">                desc += terse_wild_magic();</a>
+<a name="ln2364">            else</a>
+<a name="ln2365">            {</a>
+<a name="ln2366">                // A lot of sources for this case... some have &quot;by&quot; already.</a>
+<a name="ln2367">                desc += make_stringf(&quot;Killed %s%s&quot;,</a>
+<a name="ln2368">                          (auxkilldata.find(&quot;by &quot;) != 0) ? &quot;by &quot; : &quot;&quot;,</a>
+<a name="ln2369">                          auxkilldata.c_str());</a>
+<a name="ln2370">            }</a>
+<a name="ln2371">        }</a>
+<a name="ln2372"> </a>
+<a name="ln2373">        needs_damage = true;</a>
+<a name="ln2374">        break;</a>
+<a name="ln2375"> </a>
+<a name="ln2376">    case KILLED_BY_XOM:</a>
+<a name="ln2377">        if (terse)</a>
+<a name="ln2378">            desc += &quot;xom&quot;;</a>
+<a name="ln2379">        else</a>
+<a name="ln2380">            desc += auxkilldata.empty() ? &quot;Killed for Xom's enjoyment&quot;</a>
+<a name="ln2381">                                        : &quot;Killed by &quot; + auxkilldata;</a>
+<a name="ln2382">        needs_damage = true;</a>
+<a name="ln2383">        break;</a>
+<a name="ln2384"> </a>
+<a name="ln2385">    case KILLED_BY_ROTTING:</a>
+<a name="ln2386">        desc += terse? &quot;rotting&quot; : &quot;Rotted away&quot;;</a>
+<a name="ln2387">        if (!auxkilldata.empty())</a>
+<a name="ln2388">            desc += &quot; (&quot; + auxkilldata + &quot;)&quot;;</a>
+<a name="ln2389">        if (!death_source_desc().empty())</a>
+<a name="ln2390">            desc += &quot; (&quot; + death_source_desc() + &quot;)&quot;;</a>
+<a name="ln2391">        break;</a>
+<a name="ln2392"> </a>
+<a name="ln2393">    case KILLED_BY_TARGETING:</a>
+<a name="ln2394">        if (terse)</a>
+<a name="ln2395">            desc += &quot;shot self&quot;;</a>
+<a name="ln2396">        else</a>
+<a name="ln2397">        {</a>
+<a name="ln2398">            desc += &quot;Killed themself with &quot;;</a>
+<a name="ln2399">            if (auxkilldata.empty())</a>
+<a name="ln2400">                desc += &quot;bad targeting&quot;;</a>
+<a name="ln2401">            else</a>
+<a name="ln2402">                desc += &quot;a badly aimed &quot; + auxkilldata;</a>
+<a name="ln2403">        }</a>
+<a name="ln2404">        needs_damage = true;</a>
+<a name="ln2405">        break;</a>
+<a name="ln2406"> </a>
+<a name="ln2407">    case KILLED_BY_REFLECTION:</a>
+<a name="ln2408">        needs_damage = true;</a>
+<a name="ln2409">        if (terse)</a>
+<a name="ln2410">            desc += &quot;reflected bolt&quot;;</a>
+<a name="ln2411">        else</a>
+<a name="ln2412">        {</a>
+<a name="ln2413">            desc += &quot;Killed by a reflected &quot;;</a>
+<a name="ln2414">            if (auxkilldata.empty())</a>
+<a name="ln2415">                desc += &quot;bolt&quot;;</a>
+<a name="ln2416">            else</a>
+<a name="ln2417">                desc += auxkilldata;</a>
+<a name="ln2418"> </a>
+<a name="ln2419">            if (!death_source_name.empty() &amp;&amp; !oneline &amp;&amp; !semiverbose)</a>
+<a name="ln2420">            {</a>
+<a name="ln2421">                desc += &quot;\n&quot;;</a>
+<a name="ln2422">                desc += &quot;             &quot;;</a>
+<a name="ln2423">                desc += &quot;... reflected by &quot;;</a>
+<a name="ln2424">                desc += death_source_name;</a>
+<a name="ln2425">                needs_damage = false;</a>
+<a name="ln2426">            }</a>
+<a name="ln2427">        }</a>
+<a name="ln2428">        break;</a>
+<a name="ln2429"> </a>
+<a name="ln2430">    case KILLED_BY_BOUNCE:</a>
+<a name="ln2431">        if (terse)</a>
+<a name="ln2432">            desc += &quot;bounced beam&quot;;</a>
+<a name="ln2433">        else</a>
+<a name="ln2434">        {</a>
+<a name="ln2435">            desc += &quot;Killed themself with a bounced &quot;;</a>
+<a name="ln2436">            if (auxkilldata.empty())</a>
+<a name="ln2437">                desc += &quot;beam&quot;;</a>
+<a name="ln2438">            else</a>
+<a name="ln2439">                desc += auxkilldata;</a>
+<a name="ln2440">        }</a>
+<a name="ln2441">        needs_damage = true;</a>
+<a name="ln2442">        break;</a>
+<a name="ln2443"> </a>
+<a name="ln2444">    case KILLED_BY_SELF_AIMED:</a>
+<a name="ln2445">        if (terse)</a>
+<a name="ln2446">            desc += &quot;suicidal targeting&quot;;</a>
+<a name="ln2447">        else</a>
+<a name="ln2448">        {</a>
+<a name="ln2449">            desc += &quot;Shot themself with &quot;;</a>
+<a name="ln2450">            if (auxkilldata.empty())</a>
+<a name="ln2451">                desc += &quot;a beam&quot;;</a>
+<a name="ln2452">            else</a>
+<a name="ln2453">                desc += article_a(auxkilldata, true);</a>
+<a name="ln2454">        }</a>
+<a name="ln2455">        needs_damage = true;</a>
+<a name="ln2456">        break;</a>
+<a name="ln2457"> </a>
+<a name="ln2458">    case KILLED_BY_SPORE:</a>
+<a name="ln2459">        if (terse)</a>
+<a name="ln2460">        {</a>
+<a name="ln2461">            if (death_source_name.empty())</a>
+<a name="ln2462">                desc += &quot;spore&quot;;</a>
+<a name="ln2463">            else</a>
+<a name="ln2464">                desc += death_source_name;</a>
+<a name="ln2465">        }</a>
+<a name="ln2466">        else</a>
+<a name="ln2467">        {</a>
+<a name="ln2468">            desc += &quot;Killed by an exploding &quot;;</a>
+<a name="ln2469">            if (death_source_name.empty())</a>
+<a name="ln2470">                desc += &quot;spore&quot;;</a>
+<a name="ln2471">            else</a>
+<a name="ln2472">                desc += death_source_name;</a>
+<a name="ln2473">        }</a>
+<a name="ln2474">        needs_damage = true;</a>
+<a name="ln2475">        break;</a>
+<a name="ln2476"> </a>
+<a name="ln2477">    case KILLED_BY_TSO_SMITING:</a>
+<a name="ln2478">        desc += terse? &quot;smitten by Shining One&quot; : &quot;Smitten by the Shining One&quot;;</a>
+<a name="ln2479">        needs_damage = true;</a>
+<a name="ln2480">        break;</a>
+<a name="ln2481"> </a>
+<a name="ln2482">    case KILLED_BY_BEOGH_SMITING:</a>
+<a name="ln2483">        desc += terse? &quot;smitten by Beogh&quot; : &quot;Smitten by Beogh&quot;;</a>
+<a name="ln2484">        needs_damage = true;</a>
+<a name="ln2485">        break;</a>
+<a name="ln2486"> </a>
+<a name="ln2487">    case KILLED_BY_PETRIFICATION:</a>
+<a name="ln2488">        desc += terse? &quot;petrified&quot; : &quot;Turned to stone&quot;;</a>
+<a name="ln2489">        break;</a>
+<a name="ln2490"> </a>
+<a name="ln2491">    case KILLED_BY_SOMETHING:</a>
+<a name="ln2492">        if (!auxkilldata.empty())</a>
+<a name="ln2493">            desc += (terse ? &quot;&quot; : &quot;Killed by &quot;) + auxkilldata;</a>
+<a name="ln2494">        else</a>
+<a name="ln2495">            desc += terse? &quot;died&quot; : &quot;Died&quot;;</a>
+<a name="ln2496">        needs_damage = true;</a>
+<a name="ln2497">        break;</a>
+<a name="ln2498"> </a>
+<a name="ln2499">    case KILLED_BY_FALLING_DOWN_STAIRS:</a>
+<a name="ln2500">        desc += terse? &quot;fell downstairs&quot; : &quot;Fell down a flight of stairs&quot;;</a>
+<a name="ln2501">        needs_damage = true;</a>
+<a name="ln2502">        break;</a>
+<a name="ln2503"> </a>
+<a name="ln2504">    case KILLED_BY_FALLING_THROUGH_GATE:</a>
+<a name="ln2505">        desc += terse? &quot;fell through a gate&quot; : &quot;Fell down through a gate&quot;;</a>
+<a name="ln2506">        needs_damage = true;</a>
+<a name="ln2507">        break;</a>
+<a name="ln2508"> </a>
+<a name="ln2509">    case KILLED_BY_ACID:</a>
+<a name="ln2510">        if (terse)</a>
+<a name="ln2511">            desc += &quot;acid&quot;;</a>
+<a name="ln2512">        else if (!death_source_desc().empty())</a>
+<a name="ln2513">        {</a>
+<a name="ln2514">            desc += &quot;Splashed by &quot;</a>
+<a name="ln2515">                    + apostrophise(death_source_desc())</a>
+<a name="ln2516">                    + &quot; acid&quot;;</a>
+<a name="ln2517">        }</a>
+<a name="ln2518">        else</a>
+<a name="ln2519">            desc += &quot;Splashed with acid&quot;;</a>
+<a name="ln2520">        needs_damage = true;</a>
+<a name="ln2521">        break;</a>
+<a name="ln2522"> </a>
+<a name="ln2523">    case KILLED_BY_CURARE:</a>
+<a name="ln2524">        desc += terse? &quot;asphyx&quot; : &quot;Asphyxiated&quot;;</a>
+<a name="ln2525">        break;</a>
+<a name="ln2526"> </a>
+<a name="ln2527">    case KILLED_BY_DIVINE_WRATH:</a>
+<a name="ln2528">        if (terse)</a>
+<a name="ln2529">            desc += &quot;divine wrath&quot;;</a>
+<a name="ln2530">        else</a>
+<a name="ln2531">        {</a>
+<a name="ln2532">            desc += &quot;Killed by &quot;;</a>
+<a name="ln2533">            if (auxkilldata.empty())</a>
+<a name="ln2534">                desc += &quot;divine wrath&quot;;</a>
+<a name="ln2535">            else</a>
+<a name="ln2536">            {</a>
+<a name="ln2537">                // Lugonu's touch or &quot;the &lt;retribution&gt; of &lt;deity&gt;&quot;;</a>
+<a name="ln2538">                // otherwise it's a beam</a>
+<a name="ln2539">                if (!isupper(auxkilldata[0])</a>
+<a name="ln2540">                    &amp;&amp; !starts_with(auxkilldata, &quot;the &quot;))</a>
+<a name="ln2541">                {</a>
+<a name="ln2542">                    desc += is_vowel(auxkilldata[0]) ? &quot;an &quot; : &quot;a &quot;;</a>
+<a name="ln2543">                }</a>
+<a name="ln2544"> </a>
+<a name="ln2545">                desc += auxkilldata;</a>
+<a name="ln2546">            }</a>
+<a name="ln2547">        }</a>
+<a name="ln2548">        needs_damage = true;</a>
+<a name="ln2549">        if (!death_source_name.empty())</a>
+<a name="ln2550">            needs_called_by_monster_line = true;</a>
+<a name="ln2551">        break;</a>
+<a name="ln2552"> </a>
+<a name="ln2553">    case KILLED_BY_DISINT:</a>
+<a name="ln2554">        if (terse)</a>
+<a name="ln2555">            desc += &quot;disintegration&quot;;</a>
+<a name="ln2556">        else</a>
+<a name="ln2557">        {</a>
+<a name="ln2558">            if (death_source_name == &quot;you&quot;)</a>
+<a name="ln2559">                desc += &quot;Blew themself up&quot;;</a>
+<a name="ln2560">            else</a>
+<a name="ln2561">                desc += &quot;Blown up by &quot; + death_source_desc();</a>
+<a name="ln2562">            needs_beam_cause_line = true;</a>
+<a name="ln2563">        }</a>
+<a name="ln2564"> </a>
+<a name="ln2565">        needs_damage = true;</a>
+<a name="ln2566">        break;</a>
+<a name="ln2567"> </a>
+<a name="ln2568">    case KILLED_BY_MIRROR_DAMAGE:</a>
+<a name="ln2569">        desc += terse ? &quot;mirror damage&quot; : &quot;Killed by mirror damage&quot;;</a>
+<a name="ln2570">        needs_damage = true;</a>
+<a name="ln2571">        break;</a>
+<a name="ln2572"> </a>
+<a name="ln2573">    case KILLED_BY_FRAILTY:</a>
+<a name="ln2574">        desc += terse ? &quot;frailty&quot; : &quot;Became unviable by &quot; + auxkilldata;</a>
+<a name="ln2575">        break;</a>
+<a name="ln2576"> </a>
+<a name="ln2577">    case KILLED_BY_BARBS:</a>
+<a name="ln2578">        desc += terse ? &quot;barbs&quot; : &quot;Succumbed to barbed spike wounds&quot;;</a>
+<a name="ln2579">        break;</a>
+<a name="ln2580"> </a>
+<a name="ln2581">    case KILLED_BY_BEING_THROWN:</a>
+<a name="ln2582">        if (terse)</a>
+<a name="ln2583">            desc += apostrophise(death_source_desc()) + &quot; throw&quot;;</a>
+<a name="ln2584">        else</a>
+<a name="ln2585">            desc += &quot;Thrown by &quot; + death_source_desc();</a>
+<a name="ln2586">        needs_damage = true;</a>
+<a name="ln2587">        break;</a>
+<a name="ln2588"> </a>
+<a name="ln2589">    case KILLED_BY_COLLISION:</a>
+<a name="ln2590">        if (terse)</a>
+<a name="ln2591">            desc += auxkilldata + &quot; collision&quot;;</a>
+<a name="ln2592">        else</a>
+<a name="ln2593">        {</a>
+<a name="ln2594">            desc += &quot;Collided with &quot; + auxkilldata;</a>
+<a name="ln2595">            needs_called_by_monster_line = true;</a>
+<a name="ln2596">        }</a>
+<a name="ln2597">        needs_damage = true;</a>
+<a name="ln2598">        break;</a>
+<a name="ln2599"> </a>
+<a name="ln2600">    default:</a>
+<a name="ln2601">        desc += terse? &quot;program bug&quot; : &quot;Nibbled to death by software bugs&quot;;</a>
+<a name="ln2602">        break;</a>
+<a name="ln2603">    }                           // end switch</a>
+<a name="ln2604"> </a>
+<a name="ln2605">    switch (death_type)</a>
+<a name="ln2606">    {</a>
+<a name="ln2607">    case KILLED_BY_STUPIDITY:</a>
+<a name="ln2608">    case KILLED_BY_WEAKNESS:</a>
+<a name="ln2609">    case KILLED_BY_CLUMSINESS:</a>
+<a name="ln2610">        if (terse || oneline)</a>
+<a name="ln2611">        {</a>
+<a name="ln2612">            desc += &quot; (&quot;;</a>
+<a name="ln2613">            desc += auxkilldata;</a>
+<a name="ln2614">            desc += &quot;)&quot;;</a>
+<a name="ln2615">        }</a>
+<a name="ln2616">        else</a>
+<a name="ln2617">        {</a>
+<a name="ln2618">            desc += &quot;\n&quot;;</a>
+<a name="ln2619">            desc += &quot;             &quot;;</a>
+<a name="ln2620">            desc += &quot;... caused by &quot;;</a>
+<a name="ln2621">            desc += auxkilldata;</a>
+<a name="ln2622">        }</a>
+<a name="ln2623">        break;</a>
+<a name="ln2624"> </a>
+<a name="ln2625">    default:</a>
+<a name="ln2626">        break;</a>
+<a name="ln2627">    }</a>
+<a name="ln2628"> </a>
+<a name="ln2629">    if (oneline &amp;&amp; desc.length() &gt; 2)</a>
+<a name="ln2630">        desc[1] = tolower_safe(desc[1]);</a>
+<a name="ln2631"> </a>
+<a name="ln2632">    // TODO: Eventually, get rid of &quot;...&quot; for cases where the text fits.</a>
+<a name="ln2633">    if (terse)</a>
+<a name="ln2634">    {</a>
+<a name="ln2635">        if (death_type == KILLED_BY_MONSTER &amp;&amp; !auxkilldata.empty())</a>
+<a name="ln2636">        {</a>
+<a name="ln2637">            desc += &quot;/&quot;;</a>
+<a name="ln2638">            desc += strip_article_a(auxkilldata);</a>
+<a name="ln2639">            needs_damage = true;</a>
+<a name="ln2640">        }</a>
+<a name="ln2641">        else if (needs_beam_cause_line)</a>
+<a name="ln2642">            desc += &quot;/&quot; + terse_beam_cause();</a>
+<a name="ln2643">        else if (needs_called_by_monster_line)</a>
+<a name="ln2644">            desc += death_source_name;</a>
+<a name="ln2645"> </a>
+<a name="ln2646">        if (!killerpath.empty())</a>
+<a name="ln2647">            desc += &quot;[&quot; + indirectkiller + &quot;]&quot;;</a>
+<a name="ln2648"> </a>
+<a name="ln2649">        if (needs_damage &amp;&amp; damage &gt; 0)</a>
+<a name="ln2650">            desc += &quot; &quot; + damage_string(true);</a>
+<a name="ln2651">    }</a>
+<a name="ln2652">    else if (verbose)</a>
+<a name="ln2653">    {</a>
+<a name="ln2654">        bool done_damage = false;  // paranoia</a>
+<a name="ln2655"> </a>
+<a name="ln2656">        if (!semiverbose &amp;&amp; needs_damage &amp;&amp; damage &gt; 0)</a>
+<a name="ln2657">        {</a>
+<a name="ln2658">            desc += &quot; &quot; + damage_string();</a>
+<a name="ln2659">            needs_damage = false;</a>
+<a name="ln2660">            done_damage = true;</a>
+<a name="ln2661">        }</a>
+<a name="ln2662"> </a>
+<a name="ln2663">        if (death_type == KILLED_BY_LEAVING</a>
+<a name="ln2664">            || death_type == KILLED_BY_WINNING)</a>
+<a name="ln2665">        {</a>
+<a name="ln2666">            if (num_runes &gt; 0)</a>
+<a name="ln2667">            {</a>
+<a name="ln2668">                desc += _hiscore_newline_string();</a>
+<a name="ln2669"> </a>
+<a name="ln2670">                desc += make_stringf(&quot;... %s %d rune%s&quot;,</a>
+<a name="ln2671">                         (death_type == KILLED_BY_WINNING) ? &quot;and&quot; : &quot;with&quot;,</a>
+<a name="ln2672">                          num_runes, (num_runes &gt; 1) ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln2673"> </a>
+<a name="ln2674">                if (!semiverbose</a>
+<a name="ln2675">                    &amp;&amp; death_time &gt; 0</a>
+<a name="ln2676">                    &amp;&amp; !_hiscore_same_day(birth_time, death_time))</a>
+<a name="ln2677">                {</a>
+<a name="ln2678">                    desc += &quot; on &quot;;</a>
+<a name="ln2679">                    desc += _hiscore_date_string(death_time);</a>
+<a name="ln2680">                }</a>
+<a name="ln2681"> </a>
+<a name="ln2682">                desc = _append_sentence_delimiter(desc, &quot;!&quot;);</a>
+<a name="ln2683">                desc += _hiscore_newline_string();</a>
+<a name="ln2684">            }</a>
+<a name="ln2685">            else</a>
+<a name="ln2686">                desc = _append_sentence_delimiter(desc, &quot;.&quot;);</a>
+<a name="ln2687">        }</a>
+<a name="ln2688">        else if (death_type != KILLED_BY_QUITTING</a>
+<a name="ln2689">                 &amp;&amp; death_type != KILLED_BY_WIZMODE)</a>
+<a name="ln2690">        {</a>
+<a name="ln2691">            desc += _hiscore_newline_string();</a>
+<a name="ln2692"> </a>
+<a name="ln2693">            if (death_type == KILLED_BY_MONSTER &amp;&amp; !auxkilldata.empty())</a>
+<a name="ln2694">            {</a>
+<a name="ln2695">                if (!semiverbose)</a>
+<a name="ln2696">                {</a>
+<a name="ln2697">                    desc += make_stringf(&quot;... wielding %s&quot;,</a>
+<a name="ln2698">                             auxkilldata.c_str());</a>
+<a name="ln2699">                    needs_damage = true;</a>
+<a name="ln2700">                    desc += _hiscore_newline_string();</a>
+<a name="ln2701">                }</a>
+<a name="ln2702">                else</a>
+<a name="ln2703">                    desc += make_stringf(&quot; (%s)&quot;, auxkilldata.c_str());</a>
+<a name="ln2704">            }</a>
+<a name="ln2705">            else if (needs_beam_cause_line)</a>
+<a name="ln2706">            {</a>
+<a name="ln2707">                if (!semiverbose)</a>
+<a name="ln2708">                {</a>
+<a name="ln2709">                    desc += auxkilldata == &quot;damnation&quot; ? &quot;... with &quot; :</a>
+<a name="ln2710">                            (is_vowel(auxkilldata[0])) ? &quot;... with an &quot;</a>
+<a name="ln2711">                                                       : &quot;... with a &quot;;</a>
+<a name="ln2712">                    desc += auxkilldata;</a>
+<a name="ln2713">                    desc += _hiscore_newline_string();</a>
+<a name="ln2714">                    needs_damage = true;</a>
+<a name="ln2715">                }</a>
+<a name="ln2716">                else if (death_type == KILLED_BY_DRAINING</a>
+<a name="ln2717">                         || death_type == KILLED_BY_BURNING)</a>
+<a name="ln2718">                {</a>
+<a name="ln2719">                    desc += make_stringf(&quot; (%s)&quot;, auxkilldata.c_str());</a>
+<a name="ln2720">                }</a>
+<a name="ln2721">            }</a>
+<a name="ln2722">            else if (needs_called_by_monster_line)</a>
+<a name="ln2723">            {</a>
+<a name="ln2724">                desc += make_stringf(&quot;... %s by %s&quot;,</a>
+<a name="ln2725">                         death_type == KILLED_BY_COLLISION ? &quot;caused&quot; :</a>
+<a name="ln2726">                         auxkilldata == &quot;by angry trees&quot;   ? &quot;awakened&quot;</a>
+<a name="ln2727">                                                           : &quot;invoked&quot;,</a>
+<a name="ln2728">                         death_source_name.c_str());</a>
+<a name="ln2729">                desc += _hiscore_newline_string();</a>
+<a name="ln2730">                needs_damage = true;</a>
+<a name="ln2731">            }</a>
+<a name="ln2732"> </a>
+<a name="ln2733">            if (!killerpath.empty())</a>
+<a name="ln2734">            {</a>
+<a name="ln2735">                vector&lt;string&gt; summoners = _xlog_split_fields(killerpath);</a>
+<a name="ln2736"> </a>
+<a name="ln2737">                for (const auto &amp;sumname : summoners)</a>
+<a name="ln2738">                {</a>
+<a name="ln2739">                    if (!semiverbose)</a>
+<a name="ln2740">                    {</a>
+<a name="ln2741">                        desc += &quot;... &quot; + sumname;</a>
+<a name="ln2742">                        desc += _hiscore_newline_string();</a>
+<a name="ln2743">                    }</a>
+<a name="ln2744">                    else</a>
+<a name="ln2745">                        desc += &quot; (&quot; + sumname;</a>
+<a name="ln2746">                }</a>
+<a name="ln2747"> </a>
+<a name="ln2748">                if (semiverbose)</a>
+<a name="ln2749">                    desc += string(summoners.size(), ')');</a>
+<a name="ln2750">            }</a>
+<a name="ln2751"> </a>
+<a name="ln2752">            if (!semiverbose)</a>
+<a name="ln2753">            {</a>
+<a name="ln2754">                if (needs_damage &amp;&amp; !done_damage &amp;&amp; damage &gt; 0)</a>
+<a name="ln2755">                    desc += &quot; &quot; + damage_string();</a>
+<a name="ln2756"> </a>
+<a name="ln2757">                if (needs_damage &amp;&amp; !done_damage)</a>
+<a name="ln2758">                    desc += _hiscore_newline_string();</a>
+<a name="ln2759"> </a>
+<a name="ln2760">                if (you.duration[DUR_PARALYSIS])</a>
+<a name="ln2761">                {</a>
+<a name="ln2762">                    desc += &quot;... while paralysed&quot;;</a>
+<a name="ln2763">                    if (you.props.exists(PARALYSED_BY_KEY))</a>
+<a name="ln2764">                    {</a>
+<a name="ln2765">                        desc += &quot; by &quot;</a>
+<a name="ln2766">                                + you.props[PARALYSED_BY_KEY].get_string();</a>
+<a name="ln2767">                    }</a>
+<a name="ln2768">                    desc += _hiscore_newline_string();</a>
+<a name="ln2769">                }</a>
+<a name="ln2770">                else if (you.duration[DUR_PETRIFIED])</a>
+<a name="ln2771">                {</a>
+<a name="ln2772">                    desc += &quot;... while petrified&quot;;</a>
+<a name="ln2773">                    if (you.props.exists(PETRIFIED_BY_KEY))</a>
+<a name="ln2774">                    {</a>
+<a name="ln2775">                        desc += &quot; by &quot;</a>
+<a name="ln2776">                                + you.props[PETRIFIED_BY_KEY].get_string();</a>
+<a name="ln2777">                    }</a>
+<a name="ln2778">                    desc += _hiscore_newline_string();</a>
+<a name="ln2779">                }</a>
+<a name="ln2780"> </a>
+<a name="ln2781">            }</a>
+<a name="ln2782">        }</a>
+<a name="ln2783">    }</a>
+<a name="ln2784"> </a>
+<a name="ln2785">    if (!oneline)</a>
+<a name="ln2786">    {</a>
+<a name="ln2787">        if (death_type == KILLED_BY_LEAVING</a>
+<a name="ln2788">            || death_type == KILLED_BY_WINNING)</a>
+<a name="ln2789">        {</a>
+<a name="ln2790">            // TODO: strcat &quot;after reaching level %d&quot;; for LEAVING</a>
+<a name="ln2791">            if (verbosity == DDV_NORMAL)</a>
+<a name="ln2792">            {</a>
+<a name="ln2793">                desc = _append_sentence_delimiter(desc,</a>
+<a name="ln2794">                                                  num_runes &gt; 0? &quot;!&quot; : &quot;.&quot;);</a>
+<a name="ln2795">            }</a>
+<a name="ln2796">            desc += _hiscore_newline_string();</a>
+<a name="ln2797">        }</a>
+<a name="ln2798">    }</a>
+<a name="ln2799"> </a>
+<a name="ln2800">    if (death_type == KILLED_BY_SPORE &amp;&amp; !terse &amp;&amp; !auxkilldata.empty())</a>
+<a name="ln2801">    {</a>
+<a name="ln2802">        desc += &quot;... &quot;;</a>
+<a name="ln2803">        desc += auxkilldata;</a>
+<a name="ln2804">        desc += &quot;\n&quot;;</a>
+<a name="ln2805">        desc += &quot;             &quot;;</a>
+<a name="ln2806">    }</a>
+<a name="ln2807"> </a>
+<a name="ln2808">    if (terse)</a>
+<a name="ln2809">    {</a>
+<a name="ln2810">        trim_string(desc);</a>
+<a name="ln2811">        desc = strip_article_a(desc);</a>
+<a name="ln2812">    }</a>
+<a name="ln2813"> </a>
+<a name="ln2814">    return desc;</a>
+<a name="ln2815">}</a>
+<a name="ln2816"> </a>
+<a name="ln2817">//////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln2818">// xlog_fields</a>
+<a name="ln2819"> </a>
+<a name="ln2820">xlog_fields::xlog_fields() : fields(), fieldmap()</a>
+<a name="ln2821">{</a>
+<a name="ln2822">}</a>
+<a name="ln2823"> </a>
+<a name="ln2824">xlog_fields::xlog_fields(const string &amp;line) : fields(), fieldmap()</a>
+<a name="ln2825">{</a>
+<a name="ln2826">    init(line);</a>
+<a name="ln2827">}</a>
+<a name="ln2828"> </a>
+<a name="ln2829">// xlogfile escape: s/:/::/g</a>
+<a name="ln2830">static string _xlog_escape(const string &amp;s)</a>
+<a name="ln2831">{</a>
+<a name="ln2832">    return replace_all(s, &quot;:&quot;, &quot;::&quot;);</a>
+<a name="ln2833">}</a>
+<a name="ln2834"> </a>
+<a name="ln2835">// xlogfile unescape: s/::/:/g</a>
+<a name="ln2836">static string _xlog_unescape(const string &amp;s)</a>
+<a name="ln2837">{</a>
+<a name="ln2838">    return replace_all(s, &quot;::&quot;, &quot;:&quot;);</a>
+<a name="ln2839">}</a>
+<a name="ln2840"> </a>
+<a name="ln2841">static string::size_type _xlog_next_separator(const string &amp;s,</a>
+<a name="ln2842">                                              string::size_type start)</a>
+<a name="ln2843">{</a>
+<a name="ln2844">    string::size_type p = s.find(':', start);</a>
+<a name="ln2845">    if (p != string::npos &amp;&amp; p &lt; s.length() - 1 &amp;&amp; s[p + 1] == ':')</a>
+<a name="ln2846">        return _xlog_next_separator(s, p + 2);</a>
+<a name="ln2847"> </a>
+<a name="ln2848">    return p;</a>
+<a name="ln2849">}</a>
+<a name="ln2850"> </a>
+<a name="ln2851">static vector&lt;string&gt; _xlog_split_fields(const string &amp;s)</a>
+<a name="ln2852">{</a>
+<a name="ln2853">    string::size_type start = 0, end = 0;</a>
+<a name="ln2854">    vector&lt;string&gt; fs;</a>
+<a name="ln2855"> </a>
+<a name="ln2856">    for (; (end = _xlog_next_separator(s, start)) != string::npos;</a>
+<a name="ln2857">          start = end + 1)</a>
+<a name="ln2858">    {</a>
+<a name="ln2859">        fs.push_back(s.substr(start, end - start));</a>
+<a name="ln2860">    }</a>
+<a name="ln2861"> </a>
+<a name="ln2862">    if (start &lt; s.length())</a>
+<a name="ln2863">        fs.push_back(s.substr(start));</a>
+<a name="ln2864"> </a>
+<a name="ln2865">    return fs;</a>
+<a name="ln2866">}</a>
+<a name="ln2867"> </a>
+<a name="ln2868">void xlog_fields::init(const string &amp;line)</a>
+<a name="ln2869">{</a>
+<a name="ln2870">    for (const string &amp;field : _xlog_split_fields(line))</a>
+<a name="ln2871">    {</a>
+<a name="ln2872">        string::size_type st = field.find('=');</a>
+<a name="ln2873">        if (st == string::npos)</a>
+<a name="ln2874">            continue;</a>
+<a name="ln2875"> </a>
+<a name="ln2876">        fields.emplace_back(field.substr(0, st),</a>
+<a name="ln2877">                            _xlog_unescape(field.substr(st + 1)));</a>
+<a name="ln2878">    }</a>
+<a name="ln2879"> </a>
+<a name="ln2880">    map_fields();</a>
+<a name="ln2881">}</a>
+<a name="ln2882"> </a>
+<a name="ln2883">void xlog_fields::add_field(const string &amp;key, const char *format, ...)</a>
+<a name="ln2884">{</a>
+<a name="ln2885">    va_list args;</a>
+<a name="ln2886">    va_start(args, format);</a>
+<a name="ln2887">    string buf = vmake_stringf(format, args);</a>
+<a name="ln2888">    va_end(args);</a>
+<a name="ln2889"> </a>
+<a name="ln2890">    fields.emplace_back(key, buf);</a>
+<a name="ln2891">    fieldmap[key] = buf;</a>
+<a name="ln2892">}</a>
+<a name="ln2893"> </a>
+<a name="ln2894">string xlog_fields::str_field(const string &amp;s) const</a>
+<a name="ln2895">{</a>
+<a name="ln2896">    return lookup(fieldmap, s, &quot;&quot;);</a>
+<a name="ln2897">}</a>
+<a name="ln2898"> </a>
+<a name="ln2899">int xlog_fields::int_field(const string &amp;s) const</a>
+<a name="ln2900">{</a>
+<a name="ln2901">    string field = str_field(s);</a>
+<a name="ln2902">    return atoi(field.c_str());</a>
+<a name="ln2903">}</a>
+<a name="ln2904"> </a>
+<a name="ln2905">void xlog_fields::map_fields() const</a>
+<a name="ln2906">{</a>
+<a name="ln2907">    fieldmap.clear();</a>
+<a name="ln2908">    for (const pair&lt;string, string&gt; &amp;f : fields)</a>
+<a name="ln2909">        fieldmap[f.first] = f.second;</a>
+<a name="ln2910">}</a>
+<a name="ln2911"> </a>
+<a name="ln2912">string xlog_fields::xlog_line() const</a>
+<a name="ln2913">{</a>
+<a name="ln2914">    string line;</a>
+<a name="ln2915">    for (const pair&lt;string, string&gt; &amp;f : fields)</a>
+<a name="ln2916">    {</a>
+<a name="ln2917">        // Don't write empty fields.</a>
+<a name="ln2918">        if (f.second.empty())</a>
+<a name="ln2919">            continue;</a>
+<a name="ln2920"> </a>
+<a name="ln2921">        if (!line.empty())</a>
+<a name="ln2922">            line += &quot;:&quot;;</a>
+<a name="ln2923"> </a>
+<a name="ln2924">        line += f.first;</a>
+<a name="ln2925">        line += &quot;=&quot;;</a>
+<a name="ln2926">        line += _xlog_escape(f.second);</a>
+<a name="ln2927">    }</a>
+<a name="ln2928"> </a>
+<a name="ln2929">    return line;</a>
+<a name="ln2930">}</a>
+<a name="ln2931"> </a>
+<a name="ln2932">///////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln2933">// Milestones</a>
+<a name="ln2934"> </a>
+<a name="ln2935">/**</a>
+<a name="ln2936"> * @brief Record the player reaching a milestone, if ::DGL_MILESTONES is defined.</a>
+<a name="ln2937"> * @callergraph</a>
+<a name="ln2938"> */</a>
+<a name="ln2939">void mark_milestone(const string &amp;type, const string &amp;milestone,</a>
+<a name="ln2940">                    const string &amp;origin_level, time_t milestone_time)</a>
+<a name="ln2941">{</a>
+<a name="ln2942">#ifdef DGL_MILESTONES</a>
+<a name="ln2943">    static string lasttype, lastmilestone;</a>
+<a name="ln2944">    static long lastturn = -1;</a>
+<a name="ln2945"> </a>
+<a name="ln2946">    if (crawl_state.game_is_arena()</a>
+<a name="ln2947">        || !crawl_state.need_save</a>
+<a name="ln2948">        // Suppress duplicate milestones on the same turn.</a>
+<a name="ln2949">        || (lastturn == you.num_turns</a>
+<a name="ln2950">            &amp;&amp; lasttype == type</a>
+<a name="ln2951">            &amp;&amp; lastmilestone == milestone)</a>
+<a name="ln2952">#ifndef SCORE_WIZARD_CHARACTERS</a>
+<a name="ln2953">        // Don't mark normal milestones in wizmode or explore mode</a>
+<a name="ln2954">        || (type != &quot;crash&quot; &amp;&amp; (you.wizard || you.suppress_wizard || you.explore))</a>
+<a name="ln2955">#endif</a>
+<a name="ln2956">        )</a>
+<a name="ln2957">    {</a>
+<a name="ln2958">        return;</a>
+<a name="ln2959">    }</a>
+<a name="ln2960"> </a>
+<a name="ln2961">    lasttype      = type;</a>
+<a name="ln2962">    lastmilestone = milestone;</a>
+<a name="ln2963">    lastturn      = you.num_turns;</a>
+<a name="ln2964"> </a>
+<a name="ln2965">    const string milestone_file =</a>
+<a name="ln2966">        (Options.save_dir + &quot;milestones&quot; + crawl_state.game_type_qualifier());</a>
+<a name="ln2967">    const scorefile_entry se(0, MID_NOBODY, KILL_MISC, nullptr);</a>
+<a name="ln2968">    se.set_base_xlog_fields();</a>
+<a name="ln2969">    xlog_fields xl = se.get_fields();</a>
+<a name="ln2970">    if (!origin_level.empty())</a>
+<a name="ln2971">    {</a>
+<a name="ln2972">        xl.add_field(&quot;oplace&quot;, &quot;%s&quot;,</a>
+<a name="ln2973">                     ((origin_level == &quot;parent&quot;) ?</a>
+<a name="ln2974">                      current_level_parent().describe() :</a>
+<a name="ln2975">                      origin_level).c_str());</a>
+<a name="ln2976">    }</a>
+<a name="ln2977">    xl.add_field(&quot;time&quot;, &quot;%s&quot;,</a>
+<a name="ln2978">                 make_date_string(</a>
+<a name="ln2979">                     milestone_time ? milestone_time</a>
+<a name="ln2980">                                    : se.get_death_time()).c_str());</a>
+<a name="ln2981">    xl.add_field(&quot;type&quot;, &quot;%s&quot;, type.c_str());</a>
+<a name="ln2982">    xl.add_field(&quot;milestone&quot;, &quot;%s&quot;, milestone.c_str());</a>
+<a name="ln2983">    const string xlog_line = xl.xlog_line();</a>
+<a name="ln2984">    if (FILE *fp = lk_open(&quot;a&quot;, milestone_file))</a>
+<a name="ln2985">    {</a>
+<a name="ln2986">        fprintf(fp, &quot;%s\n&quot;, xlog_line.c_str());</a>
+<a name="ln2987">        lk_close(fp);</a>
+<a name="ln2988">    }</a>
+<a name="ln2989">#else</a>
+<a name="ln2990">    UNUSED(type, milestone, origin_level, milestone_time);</a>
+<a name="ln2991">#endif // DGL_MILESTONES</a>
+<a name="ln2992">}</a>
+<a name="ln2993"> </a>
+<a name="ln2994">#ifdef DGL_WHEREIS</a>
+<a name="ln2995">string xlog_status_line()</a>
+<a name="ln2996">{</a>
+<a name="ln2997">    const scorefile_entry se(0, MID_NOBODY, KILL_MISC, nullptr);</a>
+<a name="ln2998">    se.set_base_xlog_fields();</a>
+<a name="ln2999">    xlog_fields xl = se.get_fields();</a>
+<a name="ln3000">    xl.add_field(&quot;time&quot;, &quot;%s&quot;, make_date_string(time(nullptr)).c_str());</a>
+<a name="ln3001">    return xl.xlog_line();</a>
+<a name="ln3002">}</a>
+<a name="ln3003">#endif // DGL_WHEREIS</a>
+
+</code></pre>
+<div class="balloon" rel="1197"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v668/" target="_blank">V668</a> There is no sense in testing the 'fields' pointer against null, as the memory was allocated using the 'new' operator. The exception will be generated in the case of memory allocation error.</p></div>
+<div class="balloon" rel="2233"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'you.undead_state()' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

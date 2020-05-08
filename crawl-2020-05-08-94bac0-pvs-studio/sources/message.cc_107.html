@@ -1,0 +1,2302 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>message.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions used to print messages.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;message.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;sstream&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;areas.h&quot;</a>
+<a name="ln13">#include &quot;colour.h&quot;</a>
+<a name="ln14">#include &quot;delay.h&quot;</a>
+<a name="ln15">#include &quot;hints.h&quot;</a>
+<a name="ln16">#include &quot;initfile.h&quot;</a>
+<a name="ln17">#include &quot;libutil.h&quot;</a>
+<a name="ln18">#ifdef WIZARD</a>
+<a name="ln19"> #include &quot;luaterp.h&quot;</a>
+<a name="ln20">#endif</a>
+<a name="ln21">#include &quot;menu.h&quot;</a>
+<a name="ln22">#include &quot;monster.h&quot;</a>
+<a name="ln23">#include &quot;mon-util.h&quot;</a>
+<a name="ln24">#include &quot;notes.h&quot;</a>
+<a name="ln25">#include &quot;output.h&quot;</a>
+<a name="ln26">#include &quot;religion.h&quot;</a>
+<a name="ln27">#include &quot;scroller.h&quot;</a>
+<a name="ln28">#include &quot;sound.h&quot;</a>
+<a name="ln29">#include &quot;state.h&quot;</a>
+<a name="ln30">#include &quot;stringutil.h&quot;</a>
+<a name="ln31">#include &quot;tiles-build-specific.h&quot;</a>
+<a name="ln32">#include &quot;unwind.h&quot;</a>
+<a name="ln33">#include &quot;view.h&quot;</a>
+<a name="ln34"> </a>
+<a name="ln35">static bool _msgs_to_stderr = false;</a>
+<a name="ln36"> </a>
+<a name="ln37">void set_log_emergency_stderr(bool b)</a>
+<a name="ln38">{</a>
+<a name="ln39">    _msgs_to_stderr = b;</a>
+<a name="ln40">}</a>
+<a name="ln41"> </a>
+<a name="ln42">static void _mpr(string text, msg_channel_type channel=MSGCH_PLAIN, int param=0,</a>
+<a name="ln43">                 bool nojoin=false, bool cap=true);</a>
+<a name="ln44"> </a>
+<a name="ln45">void mpr(const string &amp;text)</a>
+<a name="ln46">{</a>
+<a name="ln47">    _mpr(text);</a>
+<a name="ln48">}</a>
+<a name="ln49"> </a>
+<a name="ln50">void mpr_nojoin(msg_channel_type channel, string text)</a>
+<a name="ln51">{</a>
+<a name="ln52">    _mpr(text, channel, 0, true);</a>
+<a name="ln53">}</a>
+<a name="ln54"> </a>
+<a name="ln55">static bool _ends_in_punctuation(const string&amp; text)</a>
+<a name="ln56">{</a>
+<a name="ln57">    if (text.size() == 0)</a>
+<a name="ln58">        return false;</a>
+<a name="ln59">    switch (text[text.size() - 1])</a>
+<a name="ln60">    {</a>
+<a name="ln61">    case '.':</a>
+<a name="ln62">    case '!':</a>
+<a name="ln63">    case '?':</a>
+<a name="ln64">    case ',':</a>
+<a name="ln65">    case ';':</a>
+<a name="ln66">    case ':':</a>
+<a name="ln67">        return true;</a>
+<a name="ln68">    default:</a>
+<a name="ln69">        return false;</a>
+<a name="ln70">    }</a>
+<a name="ln71">}</a>
+<a name="ln72"> </a>
+<a name="ln73">struct message_particle</a>
+<a name="ln74">{</a>
+<a name="ln75">    string text;        /// text of message (tagged string...)</a>
+<a name="ln76">    int repeats;        /// Number of times the message is in succession (x2)</a>
+<a name="ln77"> </a>
+<a name="ln78">    string pure_text() const</a>
+<a name="ln79">    {</a>
+<a name="ln80">        return formatted_string::parse_string(text).tostring();</a>
+<a name="ln81">    }</a>
+<a name="ln82"> </a>
+<a name="ln83">    string with_repeats() const</a>
+<a name="ln84">    {</a>
+<a name="ln85">        // TODO: colour the repeats indicator?</a>
+<a name="ln86">        string rep = &quot;&quot;;</a>
+<a name="ln87">        if (repeats &gt; 1)</a>
+<a name="ln88">            rep = make_stringf(&quot; x%d&quot;, repeats);</a>
+<a name="ln89">        return text + rep;</a>
+<a name="ln90">    }</a>
+<a name="ln91"> </a>
+<a name="ln92">    string pure_text_with_repeats() const</a>
+<a name="ln93">    {</a>
+<a name="ln94">        string rep = &quot;&quot;;</a>
+<a name="ln95">        if (repeats &gt; 1)</a>
+<a name="ln96">            rep = make_stringf(&quot; x%d&quot;, repeats);</a>
+<a name="ln97">        return pure_text() + rep;</a>
+<a name="ln98">    }</a>
+<a name="ln99"> </a>
+<a name="ln100">    /**</a>
+<a name="ln101">     * If this is followed by another message particle on the same line,</a>
+<a name="ln102">     * should there be a semicolon between them?</a>
+<a name="ln103">     */</a>
+<a name="ln104">    bool needs_semicolon() const</a>
+<a name="ln105">    {</a>
+<a name="ln106">        return repeats &gt; 1 || !_ends_in_punctuation(pure_text());</a>
+<a name="ln107">    }</a>
+<a name="ln108">};</a>
+<a name="ln109"> </a>
+<a name="ln110">struct message_line</a>
+<a name="ln111">{</a>
+<a name="ln112">    msg_channel_type    channel;        // message channel</a>
+<a name="ln113">    int                 param;          // param for channel (god, enchantment)</a>
+<a name="ln114">    vector&lt;message_particle&gt; messages;  // a set of possibly-repeated messages</a>
+<a name="ln115">    int                 turn;</a>
+<a name="ln116">    bool                join;          /// may we merge this message w/others?</a>
+<a name="ln117"> </a>
+<a name="ln118">    message_line() : channel(NUM_MESSAGE_CHANNELS), param(0), turn(-1),</a>
+<a name="ln119">                     join(true)</a>
+<a name="ln120">    {</a>
+<a name="ln121">    }</a>
+<a name="ln122"> </a>
+<a name="ln123">    message_line(string msg, msg_channel_type chan, int par, bool jn)</a>
+<a name="ln124">     : channel(chan), param(par), turn(you.num_turns)</a>
+<a name="ln125">    {</a>
+<a name="ln126">        messages = { { msg, 1 } };</a>
+<a name="ln127">        // Don't join long messages.</a>
+<a name="ln128">        join = jn &amp;&amp; strwidth(last_msg().pure_text()) &lt; 40;</a>
+<a name="ln129">    }</a>
+<a name="ln130"> </a>
+<a name="ln131">    // Constructor for restored messages.</a>
+<a name="ln132">    message_line(string text, msg_channel_type chan, int par, int trn)</a>
+<a name="ln133">     : channel(chan), param(par), messages({{ text, 1 }}), turn(trn),</a>
+<a name="ln134">       join(false)</a>
+<a name="ln135">    {</a>
+<a name="ln136">    }</a>
+<a name="ln137"> </a>
+<a name="ln138">    operator bool() const</a>
+<a name="ln139">    {</a>
+<a name="ln140">        return !messages.empty();</a>
+<a name="ln141">    }</a>
+<a name="ln142"> </a>
+<a name="ln143">    const message_particle&amp; last_msg() const</a>
+<a name="ln144">    {</a>
+<a name="ln145">        return messages.back();</a>
+<a name="ln146">    }</a>
+<a name="ln147"> </a>
+<a name="ln148">    // Tries to condense the argument into this message.</a>
+<a name="ln149">    // Either *this needs to be an empty item, or it must be the</a>
+<a name="ln150">    // same as the argument.</a>
+<a name="ln151">    bool merge(const message_line&amp; other)</a>
+<a name="ln152">    {</a>
+<a name="ln153">        if (! *this)</a>
+<a name="ln154">        {</a>
+<a name="ln155">            *this = other;</a>
+<a name="ln156">            return true;</a>
+<a name="ln157">        }</a>
+<a name="ln158">        if (!other)</a>
+<a name="ln159">            return true;</a>
+<a name="ln160"> </a>
+<a name="ln161"> </a>
+<a name="ln162">        if (crawl_state.game_is_arena())</a>
+<a name="ln163">            return false; // dangerous for hacky code (looks at EOL for '!'...)</a>
+<a name="ln164">        if (!Options.msg_condense_repeats)</a>
+<a name="ln165">            return false;</a>
+<a name="ln166">        if (other.channel != channel || other.param != param)</a>
+<a name="ln167">            return false;</a>
+<a name="ln168">        if (other.messages.size() &gt; 1)</a>
+<a name="ln169">        {</a>
+<a name="ln170">            return false; // not gonna try to handle this complexity</a>
+<a name="ln171">                          // shouldn't come up...</a>
+<a name="ln172">        }</a>
+<a name="ln173"> </a>
+<a name="ln174">        if (Options.msg_condense_repeats</a>
+<a name="ln175">            &amp;&amp; other.last_msg().text == last_msg().text)</a>
+<a name="ln176">        {</a>
+<a name="ln177">            messages.back().repeats += other.last_msg().repeats;</a>
+<a name="ln178">            return true;</a>
+<a name="ln179">        }</a>
+<a name="ln180">        else if (Options.msg_condense_short</a>
+<a name="ln181">                 &amp;&amp; turn == other.turn</a>
+<a name="ln182">                 &amp;&amp; join &amp;&amp; other.join</a>
+<a name="ln183">                 &amp;&amp; _ends_in_punctuation(last_msg().pure_text())</a>
+<a name="ln184">                  == _ends_in_punctuation(other.last_msg().pure_text()))</a>
+<a name="ln185">            // punct check is a hack to avoid pickup messages merging with</a>
+<a name="ln186">            // combat on the same turn - should find a nicer heuristic</a>
+<a name="ln187">        {</a>
+<a name="ln188">            // &quot;; &quot; or &quot; &quot;?</a>
+<a name="ln189">            const int seplen = last_msg().needs_semicolon() ? 2 : 1;</a>
+<a name="ln190">            const int total_len = pure_len() + seplen + other.pure_len();</a>
+<a name="ln191">            if (total_len &gt; (int)msgwin_line_length())</a>
+<a name="ln192">                return false;</a>
+<a name="ln193"> </a>
+<a name="ln194">            // merge in other's messages; they'll be delimited when printing.</a>
+<a name="ln195">            messages.insert(messages.end(),</a>
+<a name="ln196">                            other.messages.begin(), other.messages.end());</a>
+<a name="ln197">            return true;</a>
+<a name="ln198">        }</a>
+<a name="ln199"> </a>
+<a name="ln200">        return false;</a>
+<a name="ln201">    }</a>
+<a name="ln202"> </a>
+<a name="ln203">    /// What's the length of the actual combined text of the particles, not</a>
+<a name="ln204">    /// including non-rendering text (&lt;red&gt; etc)?</a>
+<a name="ln205">    int pure_len() const</a>
+<a name="ln206">    {</a>
+<a name="ln207">        // could we do this more functionally?</a>
+<a name="ln208">        int len = 0;</a>
+<a name="ln209">        for (auto &amp;msg : messages)</a>
+<a name="ln210">        {</a>
+<a name="ln211">            if (len &gt; 0) // not first msg</a>
+<a name="ln212">                len += msg.needs_semicolon() ? 2 : 1; // &quot; &quot; vs &quot;; &quot;</a>
+<a name="ln213">            len += strwidth(msg.pure_text_with_repeats());</a>
+<a name="ln214">        }</a>
+<a name="ln215">        return len;</a>
+<a name="ln216">    }</a>
+<a name="ln217"> </a>
+<a name="ln218">    /// The full string, with elements joined as appropriate.</a>
+<a name="ln219">    string full_text() const</a>
+<a name="ln220">    {</a>
+<a name="ln221">        string text = &quot;&quot;;</a>
+<a name="ln222">        bool needs_semicolon = false;</a>
+<a name="ln223">        for (auto &amp;msg : messages)</a>
+<a name="ln224">        {</a>
+<a name="ln225">            if (!text.empty())</a>
+<a name="ln226">            {</a>
+<a name="ln227">                text += make_stringf(&quot;&lt;lightgrey&gt;%s &lt;/lightgrey&gt;&quot;,</a>
+<a name="ln228">                                     needs_semicolon ? &quot;;&quot; : &quot;&quot;);</a>
+<a name="ln229">            }</a>
+<a name="ln230">            text += msg.with_repeats();</a>
+<a name="ln231">            needs_semicolon = msg.needs_semicolon();</a>
+<a name="ln232">        }</a>
+<a name="ln233">        return text;</a>
+<a name="ln234">    }</a>
+<a name="ln235"> </a>
+<a name="ln236">    string pure_text_with_repeats() const</a>
+<a name="ln237">    {</a>
+<a name="ln238">        return formatted_string::parse_string(full_text()).tostring();</a>
+<a name="ln239">    }</a>
+<a name="ln240">};</a>
+<a name="ln241"> </a>
+<a name="ln242">static int _mod(int num, int denom)</a>
+<a name="ln243">{</a>
+<a name="ln244">    ASSERT(denom &gt; 0);</a>
+<a name="ln245">    div_t res = div(num, denom);</a>
+<a name="ln246">    return res.rem &gt;= 0 ? res.rem : res.rem + denom;</a>
+<a name="ln247">}</a>
+<a name="ln248"> </a>
+<a name="ln249">template &lt;typename T, int SIZE&gt;</a>
+<a name="ln250">class circ_vec</a>
+<a name="ln251">{</a>
+<a name="ln252">    T data[SIZE];</a>
+<a name="ln253"> </a>
+<a name="ln254">    int end;   // first unfilled index</a>
+<a name="ln255">    bool has_circled;</a>
+<a name="ln256">    // TODO: properly track the tail, and make this into a real data</a>
+<a name="ln257">    // structure with an iterator and whatnot</a>
+<a name="ln258"> </a>
+<a name="ln259">    static void inc(int* index)</a>
+<a name="ln260">    {</a>
+<a name="ln261">        ASSERT_RANGE(*index, 0, SIZE);</a>
+<a name="ln262">        *index = _mod(*index + 1, SIZE);</a>
+<a name="ln263">    }</a>
+<a name="ln264"> </a>
+<a name="ln265">    static void dec(int* index)</a>
+<a name="ln266">    {</a>
+<a name="ln267">        ASSERT_RANGE(*index, 0, SIZE);</a>
+<a name="ln268">        *index = _mod(*index - 1, SIZE);</a>
+<a name="ln269">    }</a>
+<a name="ln270"> </a>
+<a name="ln271">public:</a>
+<a name="ln272">    circ_vec() : end(0), has_circled(false) {}</a>
+<a name="ln273"> </a>
+<a name="ln274">    void clear()</a>
+<a name="ln275">    {</a>
+<a name="ln276">        end = 0;</a>
+<a name="ln277">        has_circled = false;</a>
+<a name="ln278">        for (int i = 0; i &lt; SIZE; ++i)</a>
+<a name="ln279">            data[i] = T();</a>
+<a name="ln280">    }</a>
+<a name="ln281"> </a>
+<a name="ln282">    int size() const</a>
+<a name="ln283">    {</a>
+<a name="ln284">        return SIZE;</a>
+<a name="ln285">    }</a>
+<a name="ln286"> </a>
+<a name="ln287">    int filled_size() const</a>
+<a name="ln288">    {</a>
+<a name="ln289">        if (has_circled)</a>
+<a name="ln290">            return SIZE;</a>
+<a name="ln291">        else</a>
+<a name="ln292">            return end;</a>
+<a name="ln293">    }</a>
+<a name="ln294"> </a>
+<a name="ln295">    T&amp; operator[](int i)</a>
+<a name="ln296">    {</a>
+<a name="ln297">        ASSERT(_mod(i, SIZE) &lt; size());</a>
+<a name="ln298">        return data[_mod(end + i, SIZE)];</a>
+<a name="ln299">    }</a>
+<a name="ln300"> </a>
+<a name="ln301">    const T&amp; operator[](int i) const</a>
+<a name="ln302">    {</a>
+<a name="ln303">        ASSERT(_mod(i, SIZE) &lt; size());</a>
+<a name="ln304">        return data[_mod(end + i, SIZE)];</a>
+<a name="ln305">    }</a>
+<a name="ln306"> </a>
+<a name="ln307">    void push_back(const T&amp; item)</a>
+<a name="ln308">    {</a>
+<a name="ln309">        data[end] = item;</a>
+<a name="ln310">        inc(&amp;end);</a>
+<a name="ln311">        if (end == 0)</a>
+<a name="ln312">            has_circled = true;</a>
+<a name="ln313">    }</a>
+<a name="ln314"> </a>
+<a name="ln315">    void roll_back(int n)</a>
+<a name="ln316">    {</a>
+<a name="ln317">        for (int i = 0; i &lt; n; ++i)</a>
+<a name="ln318">        {</a>
+<a name="ln319">            dec(&amp;end);</a>
+<a name="ln320">            data[end] = T();</a>
+<a name="ln321">        }</a>
+<a name="ln322">        // don't bother to worry about has_circled in this case</a>
+<a name="ln323">        // TODO: properly track the tail</a>
+<a name="ln324">    }</a>
+<a name="ln325"> </a>
+<a name="ln326">    /**</a>
+<a name="ln327">     * Append the contents of `buf` to the current buffer.</a>
+<a name="ln328">     * If `buf` has cycled, this will overwrite the entire contents of `this`.</a>
+<a name="ln329">     */</a>
+<a name="ln330">    void append(const circ_vec&lt;T, SIZE&gt; buf)</a>
+<a name="ln331">    {</a>
+<a name="ln332">        const int buf_size = buf.filled_size();</a>
+<a name="ln333">        for (int i = 0; i &lt; buf_size; i++)</a>
+<a name="ln334">            push_back(buf[i - buf_size]);</a>
+<a name="ln335">    }</a>
+<a name="ln336">};</a>
+<a name="ln337"> </a>
+<a name="ln338">static void readkey_more(bool user_forced=false);</a>
+<a name="ln339"> </a>
+<a name="ln340">// Types of message prefixes.</a>
+<a name="ln341">// Higher values override lower.</a>
+<a name="ln342">enum class prefix_type</a>
+<a name="ln343">{</a>
+<a name="ln344">    none,</a>
+<a name="ln345">    turn_start,</a>
+<a name="ln346">    turn_end,</a>
+<a name="ln347">    new_cmd, // new command, but no new turn</a>
+<a name="ln348">    new_turn,</a>
+<a name="ln349">    full_more,   // single-character more prompt (full window)</a>
+<a name="ln350">    other_more,  // the other type of --more-- prompt</a>
+<a name="ln351">};</a>
+<a name="ln352"> </a>
+<a name="ln353">// Could also go with coloured glyphs.</a>
+<a name="ln354">static cglyph_t _prefix_glyph(prefix_type p)</a>
+<a name="ln355">{</a>
+<a name="ln356">    cglyph_t g;</a>
+<a name="ln357">    switch (p)</a>
+<a name="ln358">    {</a>
+<a name="ln359">    case prefix_type::turn_start:</a>
+<a name="ln360">        g.ch = Options.show_newturn_mark ? '-' : ' ';</a>
+<a name="ln361">        g.col = LIGHTGRAY;</a>
+<a name="ln362">        break;</a>
+<a name="ln363">    case prefix_type::turn_end:</a>
+<a name="ln364">    case prefix_type::new_turn:</a>
+<a name="ln365">        g.ch = Options.show_newturn_mark ? '_' : ' ';</a>
+<a name="ln366">        g.col = LIGHTGRAY;</a>
+<a name="ln367">        break;</a>
+<a name="ln368">    case prefix_type::new_cmd:</a>
+<a name="ln369">        g.ch = Options.show_newturn_mark ? '_' : ' ';</a>
+<a name="ln370">        g.col = DARKGRAY;</a>
+<a name="ln371">        break;</a>
+<a name="ln372">    case prefix_type::full_more:</a>
+<a name="ln373">        g.ch = '+';</a>
+<a name="ln374">        g.col = channel_to_colour(MSGCH_PROMPT);</a>
+<a name="ln375">        break;</a>
+<a name="ln376">    case prefix_type::other_more:</a>
+<a name="ln377">        g.ch = '+';</a>
+<a name="ln378">        g.col = LIGHTRED;</a>
+<a name="ln379">        break;</a>
+<a name="ln380">    default:</a>
+<a name="ln381">        g.ch = ' ';</a>
+<a name="ln382">        g.col = LIGHTGRAY;</a>
+<a name="ln383">        break;</a>
+<a name="ln384">    }</a>
+<a name="ln385">    return g;</a>
+<a name="ln386">}</a>
+<a name="ln387"> </a>
+<a name="ln388">static bool _pre_more();</a>
+<a name="ln389"> </a>
+<a name="ln390">static bool _temporary = false;</a>
+<a name="ln391"> </a>
+<a name="ln392">class message_window</a>
+<a name="ln393">{</a>
+<a name="ln394">    int next_line;</a>
+<a name="ln395">    int temp_line;     // starting point of temporary messages</a>
+<a name="ln396">    int input_line;    // last line-after-input</a>
+<a name="ln397">    vector&lt;formatted_string&gt; lines;</a>
+<a name="ln398">    prefix_type prompt; // current prefix prompt</a>
+<a name="ln399"> </a>
+<a name="ln400">    int height() const</a>
+<a name="ln401">    {</a>
+<a name="ln402">        return crawl_view.msgsz.y;</a>
+<a name="ln403">    }</a>
+<a name="ln404"> </a>
+<a name="ln405">    int use_last_line() const</a>
+<a name="ln406">    {</a>
+<a name="ln407">        return first_col_more();</a>
+<a name="ln408">    }</a>
+<a name="ln409"> </a>
+<a name="ln410">    int width() const</a>
+<a name="ln411">    {</a>
+<a name="ln412">        return crawl_view.msgsz.x;</a>
+<a name="ln413">    }</a>
+<a name="ln414"> </a>
+<a name="ln415">    void out_line(const formatted_string&amp; line, int n) const</a>
+<a name="ln416">    {</a>
+<a name="ln417">        cgotoxy(1, n + 1, GOTO_MSG);</a>
+<a name="ln418">        line.display();</a>
+<a name="ln419">        cprintf(&quot;%*s&quot;, width() - line.width(), &quot;&quot;);</a>
+<a name="ln420">    }</a>
+<a name="ln421"> </a>
+<a name="ln422">    // Place cursor at end of last non-empty line to handle prompts.</a>
+<a name="ln423">    // TODO: might get rid of this by clearing the whole window when writing,</a>
+<a name="ln424">    //       and then just writing the actual non-empty lines.</a>
+<a name="ln425">    void place_cursor()</a>
+<a name="ln426">    {</a>
+<a name="ln427">        // XXX: the screen may have resized since the last time we</a>
+<a name="ln428">        //  called lines.resize(). Consider only the last height()</a>
+<a name="ln429">        //  lines if this has happened.</a>
+<a name="ln430">        const int diff = max(int(lines.size()) - height(), 0);</a>
+<a name="ln431"> </a>
+<a name="ln432">        int i;</a>
+<a name="ln433">        for (i = lines.size() - 1; i &gt;= diff &amp;&amp; lines[i].width() == 0; --i)</a>
+<a name="ln434">            ;</a>
+<a name="ln435">        if (i &gt;= diff)</a>
+<a name="ln436">        {</a>
+<a name="ln437">            // If there was room, put the cursor at the end of that line.</a>
+<a name="ln438">            // Otherwise, put it at the beginning of the next line.</a>
+<a name="ln439">            if ((int) lines[i].width() &lt; crawl_view.msgsz.x)</a>
+<a name="ln440">                cgotoxy(lines[i].width() + 1, i - diff + 1, GOTO_MSG);</a>
+<a name="ln441">            else if (i - diff + 2 &lt;= height())</a>
+<a name="ln442">                cgotoxy(1, i - diff + 2, GOTO_MSG);</a>
+<a name="ln443">            else</a>
+<a name="ln444">            {</a>
+<a name="ln445">                // Scroll to make room for the next line, then redraw.</a>
+<a name="ln446">                scroll(1);</a>
+<a name="ln447">                // Results in a recursive call to place_cursor!  But scroll()</a>
+<a name="ln448">                // made lines[height()] empty, so that recursive call shouldn't</a>
+<a name="ln449">                // hit this case again.</a>
+<a name="ln450">                show();</a>
+<a name="ln451">                return;</a>
+<a name="ln452">            }</a>
+<a name="ln453">        }</a>
+<a name="ln454">        else</a>
+<a name="ln455">        {</a>
+<a name="ln456">            // If there were no lines, put the cursor at the upper left.</a>
+<a name="ln457">            cgotoxy(1, 1, GOTO_MSG);</a>
+<a name="ln458">        }</a>
+<a name="ln459">    }</a>
+<a name="ln460"> </a>
+<a name="ln461">    // Whether to show msgwin-full more prompts.</a>
+<a name="ln462">    bool more_enabled() const</a>
+<a name="ln463">    {</a>
+<a name="ln464">        return crawl_state.show_more_prompt</a>
+<a name="ln465">               &amp;&amp; (Options.clear_messages || Options.show_more);</a>
+<a name="ln466">    }</a>
+<a name="ln467"> </a>
+<a name="ln468">    int make_space(int n)</a>
+<a name="ln469">    {</a>
+<a name="ln470">        int space = out_height() - next_line;</a>
+<a name="ln471"> </a>
+<a name="ln472">        if (space &gt;= n)</a>
+<a name="ln473">            return 0;</a>
+<a name="ln474"> </a>
+<a name="ln475">        int s = 0;</a>
+<a name="ln476">        if (input_line &gt; 0)</a>
+<a name="ln477">        {</a>
+<a name="ln478">            s = min(input_line, n - space);</a>
+<a name="ln479">            scroll(s);</a>
+<a name="ln480">            space += s;</a>
+<a name="ln481">        }</a>
+<a name="ln482"> </a>
+<a name="ln483">        if (space &gt;= n)</a>
+<a name="ln484">            return s;</a>
+<a name="ln485"> </a>
+<a name="ln486">        if (more_enabled())</a>
+<a name="ln487">            more(true);</a>
+<a name="ln488"> </a>
+<a name="ln489">        // We could consider just scrolling off after --more--;</a>
+<a name="ln490">        // that would require marking the last message before</a>
+<a name="ln491">        // the prompt.</a>
+<a name="ln492">        if (!Options.clear_messages &amp;&amp; !more_enabled())</a>
+<a name="ln493">        {</a>
+<a name="ln494">            scroll(n - space);</a>
+<a name="ln495">            return s + n - space;</a>
+<a name="ln496">        }</a>
+<a name="ln497">        else</a>
+<a name="ln498">        {</a>
+<a name="ln499">            clear();</a>
+<a name="ln500">            return height();</a>
+<a name="ln501">        }</a>
+<a name="ln502">    }</a>
+<a name="ln503"> </a>
+<a name="ln504">    void add_line(const formatted_string&amp; line)</a>
+<a name="ln505">    {</a>
+<a name="ln506">        resize(); // TODO: get rid of this</a>
+<a name="ln507">        lines[next_line] = line;</a>
+<a name="ln508">        next_line++;</a>
+<a name="ln509">    }</a>
+<a name="ln510"> </a>
+<a name="ln511">    void output_prefix(prefix_type p)</a>
+<a name="ln512">    {</a>
+<a name="ln513">        if (!use_first_col())</a>
+<a name="ln514">            return;</a>
+<a name="ln515">        if (p &lt;= prompt)</a>
+<a name="ln516">            return;</a>
+<a name="ln517">        prompt = p;</a>
+<a name="ln518">        if (next_line &gt; 0)</a>
+<a name="ln519">        {</a>
+<a name="ln520">            formatted_string line;</a>
+<a name="ln521">            line.add_glyph(_prefix_glyph(prompt));</a>
+<a name="ln522">            lines[next_line-1].del_char();</a>
+<a name="ln523">            line += lines[next_line-1];</a>
+<a name="ln524">            lines[next_line-1] = line;</a>
+<a name="ln525">        }</a>
+<a name="ln526">        show();</a>
+<a name="ln527">    }</a>
+<a name="ln528"> </a>
+<a name="ln529">public:</a>
+<a name="ln530">    message_window()</a>
+<a name="ln531">        : next_line(0), temp_line(0), input_line(0), prompt(prefix_type::none)</a>
+<a name="ln532">    {</a>
+<a name="ln533">        clear_lines(); // initialize this-&gt;lines</a>
+<a name="ln534">    }</a>
+<a name="ln535"> </a>
+<a name="ln536">    void resize()</a>
+<a name="ln537">    {</a>
+<a name="ln538">        // XXX: broken (why?)</a>
+<a name="ln539">        lines.resize(height());</a>
+<a name="ln540">    }</a>
+<a name="ln541"> </a>
+<a name="ln542">    unsigned int out_width() const</a>
+<a name="ln543">    {</a>
+<a name="ln544">        return width() - (use_first_col() ? 1 : 0);</a>
+<a name="ln545">    }</a>
+<a name="ln546"> </a>
+<a name="ln547">    unsigned int out_height() const</a>
+<a name="ln548">    {</a>
+<a name="ln549">        return height() - (use_last_line() ? 0 : 1);</a>
+<a name="ln550">    }</a>
+<a name="ln551"> </a>
+<a name="ln552">    void clear_lines()</a>
+<a name="ln553">    {</a>
+<a name="ln554">        lines.clear();</a>
+<a name="ln555">        lines.resize(height());</a>
+<a name="ln556">    }</a>
+<a name="ln557"> </a>
+<a name="ln558">    bool first_col_more() const</a>
+<a name="ln559">    {</a>
+<a name="ln560">        return Options.small_more;</a>
+<a name="ln561">    }</a>
+<a name="ln562"> </a>
+<a name="ln563">    bool use_first_col() const</a>
+<a name="ln564">    {</a>
+<a name="ln565">        return !Options.clear_messages;</a>
+<a name="ln566">    }</a>
+<a name="ln567"> </a>
+<a name="ln568">    void set_starting_line()</a>
+<a name="ln569">    {</a>
+<a name="ln570">        // TODO: start at end (sometimes?)</a>
+<a name="ln571">        next_line = 0;</a>
+<a name="ln572">        input_line = 0;</a>
+<a name="ln573">        temp_line = 0;</a>
+<a name="ln574">    }</a>
+<a name="ln575"> </a>
+<a name="ln576">    void clear()</a>
+<a name="ln577">    {</a>
+<a name="ln578">        clear_lines();</a>
+<a name="ln579">        set_starting_line();</a>
+<a name="ln580">        show();</a>
+<a name="ln581">    }</a>
+<a name="ln582"> </a>
+<a name="ln583">    void scroll(int n)</a>
+<a name="ln584">    {</a>
+<a name="ln585">        // We might be asked to scroll off everything by the line reader.</a>
+<a name="ln586">        if (next_line &lt; n)</a>
+<a name="ln587">            n = next_line;</a>
+<a name="ln588"> </a>
+<a name="ln589">        int i;</a>
+<a name="ln590">        for (i = 0; i &lt; height() - n; ++i)</a>
+<a name="ln591">            lines[i] = lines[i + n];</a>
+<a name="ln592">        for (; i &lt; height(); ++i)</a>
+<a name="ln593">            lines[i].clear();</a>
+<a name="ln594">        next_line -= n;</a>
+<a name="ln595">        temp_line -= n;</a>
+<a name="ln596">        input_line -= n;</a>
+<a name="ln597">    }</a>
+<a name="ln598"> </a>
+<a name="ln599">    // write to screen (without refresh)</a>
+<a name="ln600">    void show()</a>
+<a name="ln601">    {</a>
+<a name="ln602">        // XXX: this should not be necessary as formatted_string should</a>
+<a name="ln603">        //      already do it</a>
+<a name="ln604">        textcolour(LIGHTGREY);</a>
+<a name="ln605"> </a>
+<a name="ln606">        // XXX: the screen may have resized since the last time we</a>
+<a name="ln607">        //  called lines.resize(). Consider only the last height()</a>
+<a name="ln608">        //  lines if this has happened.</a>
+<a name="ln609">        const int diff = max(int(lines.size()) - height(), 0);</a>
+<a name="ln610"> </a>
+<a name="ln611">        for (size_t i = diff; i &lt; lines.size(); ++i)</a>
+<a name="ln612">            out_line(lines[i], i - diff);</a>
+<a name="ln613">        place_cursor();</a>
+<a name="ln614">#ifdef USE_TILE</a>
+<a name="ln615">        tiles.set_need_redraw();</a>
+<a name="ln616">#endif</a>
+<a name="ln617">    }</a>
+<a name="ln618"> </a>
+<a name="ln619">    // temporary: to be overwritten with next item, e.g. new turn</a>
+<a name="ln620">    //            leading dash or prompt without response</a>
+<a name="ln621">    void add_item(string text, prefix_type first_col = prefix_type::none,</a>
+<a name="ln622">                  bool temporary = false)</a>
+<a name="ln623">    {</a>
+<a name="ln624">        prompt = prefix_type::none; // reset prompt</a>
+<a name="ln625"> </a>
+<a name="ln626">        vector&lt;formatted_string&gt; newlines;</a>
+<a name="ln627">        linebreak_string(text, out_width());</a>
+<a name="ln628">        formatted_string::parse_string_to_multiple(text, newlines);</a>
+<a name="ln629"> </a>
+<a name="ln630">        for (const formatted_string &amp;nl : newlines)</a>
+<a name="ln631">        {</a>
+<a name="ln632">            make_space(1);</a>
+<a name="ln633">            formatted_string line;</a>
+<a name="ln634">            if (use_first_col())</a>
+<a name="ln635">                line.add_glyph(_prefix_glyph(first_col));</a>
+<a name="ln636">            line += nl;</a>
+<a name="ln637">            add_line(line);</a>
+<a name="ln638">        }</a>
+<a name="ln639"> </a>
+<a name="ln640">        if (!temporary)</a>
+<a name="ln641">            reset_temp();</a>
+<a name="ln642"> </a>
+<a name="ln643">        show();</a>
+<a name="ln644">    }</a>
+<a name="ln645"> </a>
+<a name="ln646">    void roll_back()</a>
+<a name="ln647">    {</a>
+<a name="ln648">        temp_line = max(temp_line, 0);</a>
+<a name="ln649">        for (int i = temp_line; i &lt; next_line; ++i)</a>
+<a name="ln650">            lines[i].clear();</a>
+<a name="ln651">        next_line = temp_line;</a>
+<a name="ln652">    }</a>
+<a name="ln653"> </a>
+<a name="ln654">    /**</a>
+<a name="ln655">     * Consider any formerly-temporary messages permanent.</a>
+<a name="ln656">     */</a>
+<a name="ln657">    void reset_temp()</a>
+<a name="ln658">    {</a>
+<a name="ln659">        temp_line = next_line;</a>
+<a name="ln660">    }</a>
+<a name="ln661"> </a>
+<a name="ln662">    void got_input()</a>
+<a name="ln663">    {</a>
+<a name="ln664">        input_line = next_line;</a>
+<a name="ln665">    }</a>
+<a name="ln666"> </a>
+<a name="ln667">    void new_cmdturn(bool new_turn)</a>
+<a name="ln668">    {</a>
+<a name="ln669">        output_prefix(new_turn ? prefix_type::new_turn : prefix_type::new_cmd);</a>
+<a name="ln670">    }</a>
+<a name="ln671"> </a>
+<a name="ln672">    bool any_messages()</a>
+<a name="ln673">    {</a>
+<a name="ln674">        return next_line &gt; input_line;</a>
+<a name="ln675">    }</a>
+<a name="ln676"> </a>
+<a name="ln677">    /*</a>
+<a name="ln678">     * Handling of more prompts (both types).</a>
+<a name="ln679">     */</a>
+<a name="ln680">    void more(bool full, bool user=false)</a>
+<a name="ln681">    {</a>
+<a name="ln682">        rng::generator rng(rng::UI);</a>
+<a name="ln683"> </a>
+<a name="ln684">        if (_pre_more())</a>
+<a name="ln685">            return;</a>
+<a name="ln686"> </a>
+<a name="ln687">        if (you.running)</a>
+<a name="ln688">        {</a>
+<a name="ln689">            mouse_control mc(MOUSE_MODE_MORE);</a>
+<a name="ln690">            redraw_screen();</a>
+<a name="ln691">        }</a>
+<a name="ln692">        else</a>
+<a name="ln693">        {</a>
+<a name="ln694">            print_stats();</a>
+<a name="ln695">            show();</a>
+<a name="ln696">        }</a>
+<a name="ln697"> </a>
+<a name="ln698">        int last_row = crawl_view.msgsz.y;</a>
+<a name="ln699">        if (first_col_more())</a>
+<a name="ln700">        {</a>
+<a name="ln701">            cgotoxy(1, last_row, GOTO_MSG);</a>
+<a name="ln702">            cglyph_t g = _prefix_glyph(full ? prefix_type::full_more : prefix_type::other_more);</a>
+<a name="ln703">            formatted_string f;</a>
+<a name="ln704">            f.add_glyph(g);</a>
+<a name="ln705">            f.display();</a>
+<a name="ln706">            // Move cursor back for nicer display.</a>
+<a name="ln707">            cgotoxy(1, last_row, GOTO_MSG);</a>
+<a name="ln708">            // Need to read_key while cursor_control in scope.</a>
+<a name="ln709">            cursor_control con(true);</a>
+<a name="ln710">            readkey_more();</a>
+<a name="ln711">        }</a>
+<a name="ln712">        else</a>
+<a name="ln713">        {</a>
+<a name="ln714">            cgotoxy(use_first_col() ? 2 : 1, last_row, GOTO_MSG);</a>
+<a name="ln715">            textcolour(channel_to_colour(MSGCH_PROMPT));</a>
+<a name="ln716">            if (crawl_state.game_is_hints())</a>
+<a name="ln717">            {</a>
+<a name="ln718">                string more_str = &quot;--more-- Press Space &quot;;</a>
+<a name="ln719">                if (is_tiles())</a>
+<a name="ln720">                    more_str += &quot;or click &quot;;</a>
+<a name="ln721">                more_str += &quot;to continue. You can later reread messages with &quot;</a>
+<a name="ln722">                            &quot;Ctrl-P.&quot;;</a>
+<a name="ln723">                cprintf(more_str.c_str());</a>
+<a name="ln724">            }</a>
+<a name="ln725">            else</a>
+<a name="ln726">                cprintf(&quot;--more--&quot;);</a>
+<a name="ln727"> </a>
+<a name="ln728">            readkey_more(user);</a>
+<a name="ln729">        }</a>
+<a name="ln730">    }</a>
+<a name="ln731">};</a>
+<a name="ln732"> </a>
+<a name="ln733">message_window msgwin;</a>
+<a name="ln734"> </a>
+<a name="ln735">void display_message_window()</a>
+<a name="ln736">{</a>
+<a name="ln737">    msgwin.show();</a>
+<a name="ln738">}</a>
+<a name="ln739"> </a>
+<a name="ln740">void clear_message_window()</a>
+<a name="ln741">{</a>
+<a name="ln742">    msgwin = message_window();</a>
+<a name="ln743">}</a>
+<a name="ln744"> </a>
+<a name="ln745">void scroll_message_window(int n)</a>
+<a name="ln746">{</a>
+<a name="ln747">    msgwin.scroll(n);</a>
+<a name="ln748">    msgwin.show();</a>
+<a name="ln749">}</a>
+<a name="ln750"> </a>
+<a name="ln751">bool any_messages()</a>
+<a name="ln752">{</a>
+<a name="ln753">    return msgwin.any_messages();</a>
+<a name="ln754">}</a>
+<a name="ln755"> </a>
+<a name="ln756">typedef circ_vec&lt;message_line, NUM_STORED_MESSAGES&gt; store_t;</a>
+<a name="ln757"> </a>
+<a name="ln758">class message_store</a>
+<a name="ln759">{</a>
+<a name="ln760">    store_t msgs;</a>
+<a name="ln761">    message_line prev_msg;</a>
+<a name="ln762">    bool last_of_turn;</a>
+<a name="ln763">    int temp; // number of temporary messages</a>
+<a name="ln764"> </a>
+<a name="ln765">#ifdef USE_TILE_WEB</a>
+<a name="ln766">    int unsent; // number of messages not yet sent to the webtiles client</a>
+<a name="ln767">    int client_rollback;</a>
+<a name="ln768">    bool send_ignore_one;</a>
+<a name="ln769">#endif</a>
+<a name="ln770"> </a>
+<a name="ln771">public:</a>
+<a name="ln772">    message_store() : last_of_turn(false), temp(0)</a>
+<a name="ln773">#ifdef USE_TILE_WEB</a>
+<a name="ln774">                      , unsent(0), client_rollback(0), send_ignore_one(false)</a>
+<a name="ln775">#endif</a>
+<a name="ln776">    {}</a>
+<a name="ln777"> </a>
+<a name="ln778">    void add(const message_line&amp; msg)</a>
+<a name="ln779">    {</a>
+<a name="ln780">        string orig_full_text = msg.full_text();</a>
+<a name="ln781"> </a>
+<a name="ln782">        if (!(msg.channel != MSGCH_PROMPT &amp;&amp; prev_msg.merge(msg)))</a>
+<a name="ln783">        {</a>
+<a name="ln784">            flush_prev();</a>
+<a name="ln785">            prev_msg = msg;</a>
+<a name="ln786">            if (msg.channel == MSGCH_PROMPT || _temporary)</a>
+<a name="ln787">                flush_prev();</a>
+<a name="ln788">            }</a>
+<a name="ln789"> </a>
+<a name="ln790">            // If we play sound, wait until the corresponding message is printed</a>
+<a name="ln791">            // in case we intend on holding up output that comes after.</a>
+<a name="ln792">            //</a>
+<a name="ln793">            // FIXME This doesn't work yet, and causes the game to play the sound,</a>
+<a name="ln794">            // THEN display the text. This appears to only be solvable by reworking</a>
+<a name="ln795">            // the way the game outputs messages, as the game it prints messages</a>
+<a name="ln796">            // one line at a time, not one message at a time.</a>
+<a name="ln797">            //</a>
+<a name="ln798">            // However, it should only print one message at a time when it really</a>
+<a name="ln799">            // needs to, i.e. an sound that interrupts the game. Otherwise it is</a>
+<a name="ln800">            // more efficent to print text together.</a>
+<a name="ln801">#ifdef USE_SOUND</a>
+<a name="ln802">            play_sound(check_sound_patterns(orig_full_text));</a>
+<a name="ln803">#endif</a>
+<a name="ln804">    }</a>
+<a name="ln805"> </a>
+<a name="ln806">    void store_msg(const message_line&amp; msg)</a>
+<a name="ln807">    {</a>
+<a name="ln808">        prefix_type p = prefix_type::none;</a>
+<a name="ln809">        msgs.push_back(msg);</a>
+<a name="ln810">        if (_temporary)</a>
+<a name="ln811">            temp++;</a>
+<a name="ln812">        else</a>
+<a name="ln813">            reset_temp();</a>
+<a name="ln814">#ifdef USE_TILE_WEB</a>
+<a name="ln815">        // ignore this message until it's actually displayed in case we run out</a>
+<a name="ln816">        // of space and have to display --more-- instead</a>
+<a name="ln817">        unwind_bool dontsend(send_ignore_one, true);</a>
+<a name="ln818">#endif</a>
+<a name="ln819">        if (crawl_state.io_inited &amp;&amp; crawl_state.game_started)</a>
+<a name="ln820">            msgwin.add_item(msg.full_text(), p, _temporary);</a>
+<a name="ln821">    }</a>
+<a name="ln822"> </a>
+<a name="ln823">    void roll_back()</a>
+<a name="ln824">    {</a>
+<a name="ln825">#ifdef USE_TILE_WEB</a>
+<a name="ln826">        client_rollback = max(0, temp - unsent);</a>
+<a name="ln827">        unsent = max(0, unsent - temp);</a>
+<a name="ln828">#endif</a>
+<a name="ln829">        msgs.roll_back(temp);</a>
+<a name="ln830">        temp = 0;</a>
+<a name="ln831">    }</a>
+<a name="ln832"> </a>
+<a name="ln833">    void reset_temp()</a>
+<a name="ln834">    {</a>
+<a name="ln835">        temp = 0;</a>
+<a name="ln836">    }</a>
+<a name="ln837"> </a>
+<a name="ln838">    void flush_prev()</a>
+<a name="ln839">    {</a>
+<a name="ln840">        if (!prev_msg)</a>
+<a name="ln841">            return;</a>
+<a name="ln842">        message_line msg = prev_msg;</a>
+<a name="ln843">        // Clear prev_msg before storing it, since</a>
+<a name="ln844">        // writing out to the message window might</a>
+<a name="ln845">        // in turn result in a recursive flush_prev.</a>
+<a name="ln846">        prev_msg = message_line();</a>
+<a name="ln847">#ifdef USE_TILE_WEB</a>
+<a name="ln848">        unsent++;</a>
+<a name="ln849">#endif</a>
+<a name="ln850">        store_msg(msg);</a>
+<a name="ln851">        if (last_of_turn)</a>
+<a name="ln852">        {</a>
+<a name="ln853">            msgwin.new_cmdturn(true);</a>
+<a name="ln854">            last_of_turn = false;</a>
+<a name="ln855">        }</a>
+<a name="ln856">    }</a>
+<a name="ln857"> </a>
+<a name="ln858">    void new_turn()</a>
+<a name="ln859">    {</a>
+<a name="ln860">        if (prev_msg)</a>
+<a name="ln861">            last_of_turn = true;</a>
+<a name="ln862">        else</a>
+<a name="ln863">            msgwin.new_cmdturn(true);</a>
+<a name="ln864">    }</a>
+<a name="ln865"> </a>
+<a name="ln866">    // XXX: this should not need to exist</a>
+<a name="ln867">    const store_t&amp; get_store()</a>
+<a name="ln868">    {</a>
+<a name="ln869">        return msgs;</a>
+<a name="ln870">    }</a>
+<a name="ln871"> </a>
+<a name="ln872">    void append_store(store_t store)</a>
+<a name="ln873">    {</a>
+<a name="ln874">        msgs.append(store);</a>
+<a name="ln875">        const int msgs_to_print = store.filled_size();</a>
+<a name="ln876">#ifdef USE_TILE_WEB</a>
+<a name="ln877">        unwind_bool dontsend(send_ignore_one, true);</a>
+<a name="ln878">#endif</a>
+<a name="ln879">        for (int i = 0; i &lt; msgs_to_print; i++)</a>
+<a name="ln880">            msgwin.add_item(msgs[i - msgs_to_print].full_text(), prefix_type::none, false);</a>
+<a name="ln881">    }</a>
+<a name="ln882"> </a>
+<a name="ln883">    void clear()</a>
+<a name="ln884">    {</a>
+<a name="ln885">        msgs.clear();</a>
+<a name="ln886">        prev_msg = message_line();</a>
+<a name="ln887">        last_of_turn = false;</a>
+<a name="ln888">        temp = 0;</a>
+<a name="ln889">#ifdef USE_TILE_WEB</a>
+<a name="ln890">        unsent = 0;</a>
+<a name="ln891">#endif</a>
+<a name="ln892">    }</a>
+<a name="ln893"> </a>
+<a name="ln894">#ifdef USE_TILE_WEB</a>
+<a name="ln895">    void send()</a>
+<a name="ln896">    {</a>
+<a name="ln897">        if (unsent == 0 || (send_ignore_one &amp;&amp; unsent == 1)) return;</a>
+<a name="ln898"> </a>
+<a name="ln899">        if (client_rollback &gt; 0)</a>
+<a name="ln900">        {</a>
+<a name="ln901">            tiles.json_write_int(&quot;rollback&quot;, client_rollback);</a>
+<a name="ln902">            client_rollback = 0;</a>
+<a name="ln903">        }</a>
+<a name="ln904">        tiles.json_open_array(&quot;messages&quot;);</a>
+<a name="ln905">        for (int i = -unsent; i &lt; (send_ignore_one ? -1 : 0); ++i)</a>
+<a name="ln906">        {</a>
+<a name="ln907">            message_line&amp; msg = msgs[i];</a>
+<a name="ln908">            tiles.json_open_object();</a>
+<a name="ln909">            tiles.json_write_string(&quot;text&quot;, msg.full_text());</a>
+<a name="ln910">            tiles.json_write_int(&quot;turn&quot;, msg.turn);</a>
+<a name="ln911">            tiles.json_write_int(&quot;channel&quot;, msg.channel);</a>
+<a name="ln912">            tiles.json_close_object();</a>
+<a name="ln913">        }</a>
+<a name="ln914">        tiles.json_close_array();</a>
+<a name="ln915">        unsent = send_ignore_one ? 1 : 0;</a>
+<a name="ln916">    }</a>
+<a name="ln917">#endif</a>
+<a name="ln918">};</a>
+<a name="ln919"> </a>
+<a name="ln920">// Circular buffer for keeping past messages.</a>
+<a name="ln921">message_store buffer;</a>
+<a name="ln922"> </a>
+<a name="ln923">#ifdef USE_TILE_WEB</a>
+<a name="ln924">bool _more = false, _last_more = false;</a>
+<a name="ln925"> </a>
+<a name="ln926">void webtiles_send_messages()</a>
+<a name="ln927">{</a>
+<a name="ln928">    // defer sending any messages to client in this form until a game is</a>
+<a name="ln929">    // started up. It's still possible to send them as a popup. When this is</a>
+<a name="ln930">    // eventually called, it'll send any queued messages.</a>
+<a name="ln931">    if (!crawl_state.io_inited || !crawl_state.game_started)</a>
+<a name="ln932">        return;</a>
+<a name="ln933">    tiles.json_open_object();</a>
+<a name="ln934">    tiles.json_write_string(&quot;msg&quot;, &quot;msgs&quot;);</a>
+<a name="ln935">    tiles.json_treat_as_empty();</a>
+<a name="ln936">    if (_more != _last_more)</a>
+<a name="ln937">    {</a>
+<a name="ln938">        tiles.json_write_bool(&quot;more&quot;, _more);</a>
+<a name="ln939">        _last_more = _more;</a>
+<a name="ln940">    }</a>
+<a name="ln941">    buffer.send();</a>
+<a name="ln942">    tiles.json_close_object(true);</a>
+<a name="ln943">    tiles.finish_message();</a>
+<a name="ln944">}</a>
+<a name="ln945">#else</a>
+<a name="ln946">void webtiles_send_messages() { }</a>
+<a name="ln947">#endif</a>
+<a name="ln948"> </a>
+<a name="ln949">static FILE* _msg_dump_file = nullptr;</a>
+<a name="ln950"> </a>
+<a name="ln951">static bool suppress_messages = false;</a>
+<a name="ln952">static msg_colour_type prepare_message(const string&amp; imsg,</a>
+<a name="ln953">                                       msg_channel_type channel,</a>
+<a name="ln954">                                       int param,</a>
+<a name="ln955">                                       bool allow_suppress=true);</a>
+<a name="ln956"> </a>
+<a name="ln957">static unordered_set&lt;message_tee *&gt; current_message_tees;</a>
+<a name="ln958"> </a>
+<a name="ln959">message_tee::message_tee()</a>
+<a name="ln960">    : target(nullptr)</a>
+<a name="ln961">{</a>
+<a name="ln962">    current_message_tees.insert(this);</a>
+<a name="ln963">}</a>
+<a name="ln964"> </a>
+<a name="ln965">message_tee::message_tee(string &amp;_target)</a>
+<a name="ln966">    : target(&amp;_target)</a>
+<a name="ln967">{</a>
+<a name="ln968">    current_message_tees.insert(this);</a>
+<a name="ln969">}</a>
+<a name="ln970"> </a>
+<a name="ln971">message_tee::~message_tee()</a>
+<a name="ln972">{</a>
+<a name="ln973">    if (target)</a>
+<a name="ln974">        *target += get_store();</a>
+<a name="ln975">    current_message_tees.erase(this);</a>
+<a name="ln976">}</a>
+<a name="ln977"> </a>
+<a name="ln978">void message_tee::append(const string &amp;s, msg_channel_type /*ch*/)</a>
+<a name="ln979">{</a>
+<a name="ln980">    // could use a more c++y external interface -- but that just complicates things</a>
+<a name="ln981">    store &lt;&lt; s;</a>
+<a name="ln982">}</a>
+<a name="ln983"> </a>
+<a name="ln984">void message_tee::append_line(const string &amp;s, msg_channel_type ch)</a>
+<a name="ln985">{</a>
+<a name="ln986">    append(s + &quot;\n&quot;, ch);</a>
+<a name="ln987">}</a>
+<a name="ln988"> </a>
+<a name="ln989">string message_tee::get_store() const</a>
+<a name="ln990">{</a>
+<a name="ln991">    return store.str();</a>
+<a name="ln992">}</a>
+<a name="ln993"> </a>
+<a name="ln994">static void _append_to_tees(const string &amp;s, msg_channel_type ch)</a>
+<a name="ln995">{</a>
+<a name="ln996">    for (auto tee : current_message_tees)</a>
+<a name="ln997">        tee-&gt;append(s, ch);</a>
+<a name="ln998">}</a>
+<a name="ln999"> </a>
+<a name="ln1000">no_messages::no_messages()</a>
+<a name="ln1001">    : msuppressed(suppress_messages),</a>
+<a name="ln1002">      channel(NUM_MESSAGE_CHANNELS),</a>
+<a name="ln1003">      prev_colour(MSGCOL_NONE)</a>
+<a name="ln1004">{</a>
+<a name="ln1005">    suppress_messages = true;</a>
+<a name="ln1006">}</a>
+<a name="ln1007"> </a>
+<a name="ln1008">// Push useful RAII conditional logic into a constructor</a>
+<a name="ln1009">// Won't override an outer suppressing no_messages</a>
+<a name="ln1010">no_messages::no_messages(bool really_suppress)</a>
+<a name="ln1011">    : msuppressed(suppress_messages),</a>
+<a name="ln1012">      channel(NUM_MESSAGE_CHANNELS),</a>
+<a name="ln1013">      prev_colour(MSGCOL_NONE)</a>
+<a name="ln1014">{</a>
+<a name="ln1015">    suppress_messages = suppress_messages || really_suppress;</a>
+<a name="ln1016">}</a>
+<a name="ln1017"> </a>
+<a name="ln1018">// Mute just one channel. Mainly useful for hiding debug spam in various</a>
+<a name="ln1019">// circumstances.</a>
+<a name="ln1020">no_messages::no_messages(msg_channel_type _channel)</a>
+<a name="ln1021">    : msuppressed(suppress_messages),</a>
+<a name="ln1022">      channel(_channel),</a>
+<a name="ln1023">      prev_colour(Options.channels[channel])</a>
+<a name="ln1024">{</a>
+<a name="ln1025">    // don't change global suppress_messages for this case</a>
+<a name="ln1026">    ASSERT(channel &lt; NUM_MESSAGE_CHANNELS);</a>
+<a name="ln1027">    Options.channels[channel] = MSGCOL_MUTED;</a>
+<a name="ln1028">}</a>
+<a name="ln1029"> </a>
+<a name="ln1030">no_messages::~no_messages()</a>
+<a name="ln1031">{</a>
+<a name="ln1032">    suppress_messages = msuppressed;</a>
+<a name="ln1033">    if (channel &lt; NUM_MESSAGE_CHANNELS)</a>
+<a name="ln1034">        Options.channels[channel] = prev_colour;</a>
+<a name="ln1035">}</a>
+<a name="ln1036"> </a>
+<a name="ln1037">msg_colour_type msg_colour(int col)</a>
+<a name="ln1038">{</a>
+<a name="ln1039">    return static_cast&lt;msg_colour_type&gt;(col);</a>
+<a name="ln1040">}</a>
+<a name="ln1041"> </a>
+<a name="ln1042">static int colour_msg(msg_colour_type col)</a>
+<a name="ln1043">{</a>
+<a name="ln1044">    if (col == MSGCOL_MUTED)</a>
+<a name="ln1045">        return DARKGREY;</a>
+<a name="ln1046">    else</a>
+<a name="ln1047">        return static_cast&lt;int&gt;(col);</a>
+<a name="ln1048">}</a>
+<a name="ln1049"> </a>
+<a name="ln1050">// Returns a colour or MSGCOL_MUTED.</a>
+<a name="ln1051">static msg_colour_type channel_to_msgcol(msg_channel_type channel, int param)</a>
+<a name="ln1052">{</a>
+<a name="ln1053">    msg_colour_type ret;</a>
+<a name="ln1054"> </a>
+<a name="ln1055">    switch (Options.channels[channel])</a>
+<a name="ln1056">    {</a>
+<a name="ln1057">    case MSGCOL_PLAIN:</a>
+<a name="ln1058">        // Note that if the plain channel is muted, then we're protecting</a>
+<a name="ln1059">        // the player from having that spread to other channels here.</a>
+<a name="ln1060">        // The intent of plain is to give non-coloured messages, not to</a>
+<a name="ln1061">        // suppress them.</a>
+<a name="ln1062">        if (Options.channels[MSGCH_PLAIN] &gt;= MSGCOL_DEFAULT)</a>
+<a name="ln1063">            ret = MSGCOL_LIGHTGREY;</a>
+<a name="ln1064">        else</a>
+<a name="ln1065">            ret = Options.channels[MSGCH_PLAIN];</a>
+<a name="ln1066">        break;</a>
+<a name="ln1067"> </a>
+<a name="ln1068">    case MSGCOL_DEFAULT:</a>
+<a name="ln1069">    case MSGCOL_ALTERNATE:</a>
+<a name="ln1070">        switch (channel)</a>
+<a name="ln1071">        {</a>
+<a name="ln1072">        case MSGCH_GOD:</a>
+<a name="ln1073">            ret = (Options.channels[channel] == MSGCOL_DEFAULT)</a>
+<a name="ln1074">                   ? msg_colour(god_colour(static_cast&lt;god_type&gt;(param)))</a>
+<a name="ln1075">                   : msg_colour(god_message_altar_colour(static_cast&lt;god_type&gt;(param)));</a>
+<a name="ln1076">            break;</a>
+<a name="ln1077"> </a>
+<a name="ln1078">        case MSGCH_DURATION:</a>
+<a name="ln1079">            ret = MSGCOL_LIGHTBLUE;</a>
+<a name="ln1080">            break;</a>
+<a name="ln1081"> </a>
+<a name="ln1082">        case MSGCH_DANGER:</a>
+<a name="ln1083">            ret = MSGCOL_RED;</a>
+<a name="ln1084">            break;</a>
+<a name="ln1085"> </a>
+<a name="ln1086">        case MSGCH_WARN:</a>
+<a name="ln1087">        case MSGCH_ERROR:</a>
+<a name="ln1088">            ret = MSGCOL_LIGHTRED;</a>
+<a name="ln1089">            break;</a>
+<a name="ln1090"> </a>
+<a name="ln1091">        case MSGCH_FOOD:</a>
+<a name="ln1092">            if (param) // positive change</a>
+<a name="ln1093">                ret = MSGCOL_GREEN;</a>
+<a name="ln1094">            else</a>
+<a name="ln1095">                ret = MSGCOL_YELLOW;</a>
+<a name="ln1096">            break;</a>
+<a name="ln1097"> </a>
+<a name="ln1098">        case MSGCH_INTRINSIC_GAIN:</a>
+<a name="ln1099">            ret = MSGCOL_GREEN;</a>
+<a name="ln1100">            break;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">        case MSGCH_RECOVERY:</a>
+<a name="ln1103">            ret = MSGCOL_LIGHTGREEN;</a>
+<a name="ln1104">            break;</a>
+<a name="ln1105"> </a>
+<a name="ln1106">        case MSGCH_TALK:</a>
+<a name="ln1107">        case MSGCH_TALK_VISUAL:</a>
+<a name="ln1108">        case MSGCH_HELL_EFFECT:</a>
+<a name="ln1109">            ret = MSGCOL_WHITE;</a>
+<a name="ln1110">            break;</a>
+<a name="ln1111"> </a>
+<a name="ln1112">        case MSGCH_MUTATION:</a>
+<a name="ln1113">        case MSGCH_MONSTER_WARNING:</a>
+<a name="ln1114">            ret = MSGCOL_LIGHTRED;</a>
+<a name="ln1115">            break;</a>
+<a name="ln1116"> </a>
+<a name="ln1117">        case MSGCH_MONSTER_SPELL:</a>
+<a name="ln1118">        case MSGCH_MONSTER_ENCHANT:</a>
+<a name="ln1119">        case MSGCH_FRIEND_SPELL:</a>
+<a name="ln1120">        case MSGCH_FRIEND_ENCHANT:</a>
+<a name="ln1121">            ret = MSGCOL_LIGHTMAGENTA;</a>
+<a name="ln1122">            break;</a>
+<a name="ln1123"> </a>
+<a name="ln1124">        case MSGCH_TUTORIAL:</a>
+<a name="ln1125">        case MSGCH_ORB:</a>
+<a name="ln1126">        case MSGCH_BANISHMENT:</a>
+<a name="ln1127">            ret = MSGCOL_MAGENTA;</a>
+<a name="ln1128">            break;</a>
+<a name="ln1129"> </a>
+<a name="ln1130">        case MSGCH_MONSTER_DAMAGE:</a>
+<a name="ln1131">            ret =  ((param == MDAM_DEAD)               ? MSGCOL_RED :</a>
+<a name="ln1132">                    (param &gt;= MDAM_SEVERELY_DAMAGED)   ? MSGCOL_LIGHTRED :</a>
+<a name="ln1133">                    (param &gt;= MDAM_MODERATELY_DAMAGED) ? MSGCOL_YELLOW</a>
+<a name="ln1134">                                                       : MSGCOL_LIGHTGREY);</a>
+<a name="ln1135">            break;</a>
+<a name="ln1136"> </a>
+<a name="ln1137">        case MSGCH_PROMPT:</a>
+<a name="ln1138">            ret = MSGCOL_CYAN;</a>
+<a name="ln1139">            break;</a>
+<a name="ln1140"> </a>
+<a name="ln1141">        case MSGCH_DIAGNOSTICS:</a>
+<a name="ln1142">        case MSGCH_MULTITURN_ACTION:</a>
+<a name="ln1143">            ret = MSGCOL_DARKGREY; // makes it easier to ignore at times -- bwr</a>
+<a name="ln1144">            break;</a>
+<a name="ln1145"> </a>
+<a name="ln1146">        case MSGCH_PLAIN:</a>
+<a name="ln1147">        case MSGCH_FRIEND_ACTION:</a>
+<a name="ln1148">        case MSGCH_ROTTEN_MEAT:</a>
+<a name="ln1149">        case MSGCH_EQUIPMENT:</a>
+<a name="ln1150">        case MSGCH_EXAMINE:</a>
+<a name="ln1151">        case MSGCH_EXAMINE_FILTER:</a>
+<a name="ln1152">        case MSGCH_DGL_MESSAGE:</a>
+<a name="ln1153">        default:</a>
+<a name="ln1154">            ret = param &gt; 0 ? msg_colour(param) : MSGCOL_LIGHTGREY;</a>
+<a name="ln1155">            break;</a>
+<a name="ln1156">        }</a>
+<a name="ln1157">        break;</a>
+<a name="ln1158"> </a>
+<a name="ln1159">    case MSGCOL_MUTED:</a>
+<a name="ln1160">        ret = MSGCOL_MUTED;</a>
+<a name="ln1161">        break;</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    default:</a>
+<a name="ln1164">        // Setting to a specific colour is handled here, special</a>
+<a name="ln1165">        // cases should be handled above.</a>
+<a name="ln1166">        if (channel == MSGCH_MONSTER_DAMAGE)</a>
+<a name="ln1167">        {</a>
+<a name="ln1168">            // A special case right now for monster damage (at least until</a>
+<a name="ln1169">            // the init system is improved)... selecting a specific</a>
+<a name="ln1170">            // colour here will result in only the death messages coloured.</a>
+<a name="ln1171">            if (param == MDAM_DEAD)</a>
+<a name="ln1172">                ret = Options.channels[channel];</a>
+<a name="ln1173">            else if (Options.channels[MSGCH_PLAIN] &gt;= MSGCOL_DEFAULT)</a>
+<a name="ln1174">                ret = MSGCOL_LIGHTGREY;</a>
+<a name="ln1175">            else</a>
+<a name="ln1176">                ret = Options.channels[MSGCH_PLAIN];</a>
+<a name="ln1177">        }</a>
+<a name="ln1178">        else</a>
+<a name="ln1179">            ret = Options.channels[channel];</a>
+<a name="ln1180">        break;</a>
+<a name="ln1181">    }</a>
+<a name="ln1182"> </a>
+<a name="ln1183">    return ret;</a>
+<a name="ln1184">}</a>
+<a name="ln1185"> </a>
+<a name="ln1186">int channel_to_colour(msg_channel_type channel, int param)</a>
+<a name="ln1187">{</a>
+<a name="ln1188">    return colour_msg(channel_to_msgcol(channel, param));</a>
+<a name="ln1189">}</a>
+<a name="ln1190"> </a>
+<a name="ln1191">void do_message_print(msg_channel_type channel, int param, bool cap,</a>
+<a name="ln1192">                             bool nojoin, const char *format, va_list argp)</a>
+<a name="ln1193">{</a>
+<a name="ln1194">    va_list ap;</a>
+<a name="ln1195">    va_copy(ap, argp);</a>
+<a name="ln1196">    char buff[200];</a>
+<a name="ln1197">    size_t len = vsnprintf(buff, sizeof(buff), format, argp);</a>
+<a name="ln1198">    if (len &lt; sizeof(buff))</a>
+<a name="ln1199">        _mpr(buff, channel, param, nojoin, cap);</a>
+<a name="ln1200">    else</a>
+<a name="ln1201">    {</a>
+<a name="ln1202">        char *heapbuf = (char*)malloc(len + 1);</a>
+<a name="ln1203">        vsnprintf(heapbuf, len + 1, format, ap);</a>
+<a name="ln1204">        _mpr(heapbuf, channel, param, nojoin, cap);</a>
+<a name="ln1205">        free(heapbuf);</a>
+<a name="ln1206">    }</a>
+<a name="ln1207">    va_end(ap);</a>
+<a name="ln1208">}</a>
+<a name="ln1209"> </a>
+<a name="ln1210">void mprf_nocap(msg_channel_type channel, int param, const char *format, ...)</a>
+<a name="ln1211">{</a>
+<a name="ln1212">    va_list argp;</a>
+<a name="ln1213">    va_start(argp, format);</a>
+<a name="ln1214">    do_message_print(channel, param, false, false, format, argp);</a>
+<a name="ln1215">    va_end(argp);</a>
+<a name="ln1216">}</a>
+<a name="ln1217"> </a>
+<a name="ln1218">void mprf_nocap(msg_channel_type channel, const char *format, ...)</a>
+<a name="ln1219">{</a>
+<a name="ln1220">    va_list argp;</a>
+<a name="ln1221">    va_start(argp, format);</a>
+<a name="ln1222">    do_message_print(channel, channel == MSGCH_GOD ? you.religion : 0,</a>
+<a name="ln1223">                     false, false, format, argp);</a>
+<a name="ln1224">    va_end(argp);</a>
+<a name="ln1225">}</a>
+<a name="ln1226"> </a>
+<a name="ln1227">void mprf_nocap(const char *format, ...)</a>
+<a name="ln1228">{</a>
+<a name="ln1229">    va_list argp;</a>
+<a name="ln1230">    va_start(argp, format);</a>
+<a name="ln1231">    do_message_print(MSGCH_PLAIN, 0, false, false, format, argp);</a>
+<a name="ln1232">    va_end(argp);</a>
+<a name="ln1233">}</a>
+<a name="ln1234"> </a>
+<a name="ln1235">void mprf(msg_channel_type channel, int param, const char *format, ...)</a>
+<a name="ln1236">{</a>
+<a name="ln1237">    va_list argp;</a>
+<a name="ln1238">    va_start(argp, format);</a>
+<a name="ln1239">    do_message_print(channel, param, true, false, format, argp);</a>
+<a name="ln1240">    va_end(argp);</a>
+<a name="ln1241">}</a>
+<a name="ln1242"> </a>
+<a name="ln1243">void mprf(msg_channel_type channel, const char *format, ...)</a>
+<a name="ln1244">{</a>
+<a name="ln1245">    va_list argp;</a>
+<a name="ln1246">    va_start(argp, format);</a>
+<a name="ln1247">    do_message_print(channel, channel == MSGCH_GOD ? you.religion : 0,</a>
+<a name="ln1248">                     true, false, format, argp);</a>
+<a name="ln1249">    va_end(argp);</a>
+<a name="ln1250">}</a>
+<a name="ln1251"> </a>
+<a name="ln1252">void mprf(const char *format, ...)</a>
+<a name="ln1253">{</a>
+<a name="ln1254">    va_list argp;</a>
+<a name="ln1255">    va_start(argp, format);</a>
+<a name="ln1256">    do_message_print(MSGCH_PLAIN, 0, true, false, format, argp);</a>
+<a name="ln1257">    va_end(argp);</a>
+<a name="ln1258">}</a>
+<a name="ln1259"> </a>
+<a name="ln1260">void mprf_nojoin(msg_channel_type channel, const char *format, ...)</a>
+<a name="ln1261">{</a>
+<a name="ln1262">    va_list argp;</a>
+<a name="ln1263">    va_start(argp, format);</a>
+<a name="ln1264">    do_message_print(channel, channel == MSGCH_GOD ? you.religion : 0,</a>
+<a name="ln1265">                     true, true, format, argp);</a>
+<a name="ln1266">    va_end(argp);</a>
+<a name="ln1267">}</a>
+<a name="ln1268"> </a>
+<a name="ln1269">void mprf_nojoin(const char *format, ...)</a>
+<a name="ln1270">{</a>
+<a name="ln1271">    va_list argp;</a>
+<a name="ln1272">    va_start(argp, format);</a>
+<a name="ln1273">    do_message_print(MSGCH_PLAIN, 0, true, true, format, argp);</a>
+<a name="ln1274">    va_end(argp);</a>
+<a name="ln1275">}</a>
+<a name="ln1276"> </a>
+<a name="ln1277">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1278">void dprf(const char *format, ...)</a>
+<a name="ln1279">{</a>
+<a name="ln1280">    if (Options.quiet_debug_messages[DIAG_NORMAL] || you.suppress_wizard)</a>
+<a name="ln1281">        return;</a>
+<a name="ln1282"> </a>
+<a name="ln1283">    va_list argp;</a>
+<a name="ln1284">    va_start(argp, format);</a>
+<a name="ln1285">    do_message_print(MSGCH_DIAGNOSTICS, 0, false, false, format, argp);</a>
+<a name="ln1286">    va_end(argp);</a>
+<a name="ln1287">}</a>
+<a name="ln1288"> </a>
+<a name="ln1289">void dprf(diag_type param, const char *format, ...)</a>
+<a name="ln1290">{</a>
+<a name="ln1291">    if (Options.quiet_debug_messages[param] || you.suppress_wizard)</a>
+<a name="ln1292">        return;</a>
+<a name="ln1293"> </a>
+<a name="ln1294">    va_list argp;</a>
+<a name="ln1295">    va_start(argp, format);</a>
+<a name="ln1296">    do_message_print(MSGCH_DIAGNOSTICS, param, false, false, format, argp);</a>
+<a name="ln1297">    va_end(argp);</a>
+<a name="ln1298">}</a>
+<a name="ln1299">#endif</a>
+<a name="ln1300"> </a>
+<a name="ln1301">static bool _updating_view = false;</a>
+<a name="ln1302"> </a>
+<a name="ln1303">static bool _check_option(const string&amp; line, msg_channel_type channel,</a>
+<a name="ln1304">                          const vector&lt;message_filter&gt;&amp; option)</a>
+<a name="ln1305">{</a>
+<a name="ln1306">    if (crawl_state.generating_level)</a>
+<a name="ln1307">        return false;</a>
+<a name="ln1308">    return any_of(begin(option),</a>
+<a name="ln1309">                  end(option),</a>
+<a name="ln1310">                  bind(mem_fn(&amp;message_filter::is_filtered),</a>
+<a name="ln1311">                       placeholders::_1, channel, line));</a>
+<a name="ln1312">}</a>
+<a name="ln1313"> </a>
+<a name="ln1314">static bool _check_more(const string&amp; line, msg_channel_type channel)</a>
+<a name="ln1315">{</a>
+<a name="ln1316">    return _check_option(line, channel, Options.force_more_message);</a>
+<a name="ln1317">}</a>
+<a name="ln1318"> </a>
+<a name="ln1319">static bool _check_flash_screen(const string&amp; line, msg_channel_type channel)</a>
+<a name="ln1320">{</a>
+<a name="ln1321">    return _check_option(line, channel, Options.flash_screen_message);</a>
+<a name="ln1322">}</a>
+<a name="ln1323"> </a>
+<a name="ln1324">static bool _check_join(const string&amp; /*line*/, msg_channel_type channel)</a>
+<a name="ln1325">{</a>
+<a name="ln1326">    switch (channel)</a>
+<a name="ln1327">    {</a>
+<a name="ln1328">    case MSGCH_EQUIPMENT:</a>
+<a name="ln1329">        return false;</a>
+<a name="ln1330">    default:</a>
+<a name="ln1331">        break;</a>
+<a name="ln1332">    }</a>
+<a name="ln1333">    return true;</a>
+<a name="ln1334">}</a>
+<a name="ln1335"> </a>
+<a name="ln1336">static void _debug_channel_arena(msg_channel_type channel)</a>
+<a name="ln1337">{</a>
+<a name="ln1338">    switch (channel)</a>
+<a name="ln1339">    {</a>
+<a name="ln1340">    case MSGCH_PROMPT:</a>
+<a name="ln1341">    case MSGCH_GOD:</a>
+<a name="ln1342">    case MSGCH_DURATION:</a>
+<a name="ln1343">    case MSGCH_FOOD:</a>
+<a name="ln1344">    case MSGCH_RECOVERY:</a>
+<a name="ln1345">    case MSGCH_INTRINSIC_GAIN:</a>
+<a name="ln1346">    case MSGCH_MUTATION:</a>
+<a name="ln1347">    case MSGCH_ROTTEN_MEAT:</a>
+<a name="ln1348">    case MSGCH_EQUIPMENT:</a>
+<a name="ln1349">    case MSGCH_FLOOR_ITEMS:</a>
+<a name="ln1350">    case MSGCH_MULTITURN_ACTION:</a>
+<a name="ln1351">    case MSGCH_EXAMINE:</a>
+<a name="ln1352">    case MSGCH_EXAMINE_FILTER:</a>
+<a name="ln1353">    case MSGCH_ORB:</a>
+<a name="ln1354">    case MSGCH_TUTORIAL:</a>
+<a name="ln1355">        die(&quot;Invalid channel '%s' in arena mode&quot;,</a>
+<a name="ln1356">                 channel_to_str(channel).c_str());</a>
+<a name="ln1357">        break;</a>
+<a name="ln1358">    default:</a>
+<a name="ln1359">        break;</a>
+<a name="ln1360">    }</a>
+<a name="ln1361">}</a>
+<a name="ln1362"> </a>
+<a name="ln1363">bool strip_channel_prefix(string &amp;text, msg_channel_type &amp;channel, bool silence)</a>
+<a name="ln1364">{</a>
+<a name="ln1365">    string::size_type pos = text.find(&quot;:&quot;);</a>
+<a name="ln1366">    if (pos == string::npos)</a>
+<a name="ln1367">        return false;</a>
+<a name="ln1368"> </a>
+<a name="ln1369">    string param = text.substr(0, pos);</a>
+<a name="ln1370">    bool sound = false;</a>
+<a name="ln1371"> </a>
+<a name="ln1372">    if (param == &quot;WARN&quot;)</a>
+<a name="ln1373">        channel = MSGCH_WARN, sound = true;</a>
+<a name="ln1374">    else if (param == &quot;VISUAL WARN&quot;)</a>
+<a name="ln1375">        channel = MSGCH_WARN;</a>
+<a name="ln1376">    else if (param == &quot;SOUND&quot;)</a>
+<a name="ln1377">        channel = MSGCH_SOUND, sound = true;</a>
+<a name="ln1378">    else if (param == &quot;VISUAL&quot;)</a>
+<a name="ln1379">        channel = MSGCH_TALK_VISUAL;</a>
+<a name="ln1380">    else if (param == &quot;SPELL&quot;)</a>
+<a name="ln1381">        channel = MSGCH_MONSTER_SPELL, sound = true;</a>
+<a name="ln1382">    else if (param == &quot;VISUAL SPELL&quot;)</a>
+<a name="ln1383">        channel = MSGCH_MONSTER_SPELL;</a>
+<a name="ln1384">    else if (param == &quot;ENCHANT&quot;)</a>
+<a name="ln1385">        channel = MSGCH_MONSTER_ENCHANT, sound = true;</a>
+<a name="ln1386">    else if (param == &quot;VISUAL ENCHANT&quot;)</a>
+<a name="ln1387">        channel = MSGCH_MONSTER_ENCHANT;</a>
+<a name="ln1388">    else</a>
+<a name="ln1389">    {</a>
+<a name="ln1390">        param = replace_all(param, &quot; &quot;, &quot;_&quot;);</a>
+<a name="ln1391">        lowercase(param);</a>
+<a name="ln1392">        int ch = str_to_channel(param);</a>
+<a name="ln1393">        if (ch == -1)</a>
+<a name="ln1394">            return false;</a>
+<a name="ln1395">        channel = static_cast&lt;msg_channel_type&gt;(ch);</a>
+<a name="ln1396">    }</a>
+<a name="ln1397"> </a>
+<a name="ln1398">    if (sound &amp;&amp; silence)</a>
+<a name="ln1399">        text = &quot;&quot;;</a>
+<a name="ln1400">    else</a>
+<a name="ln1401">        text = text.substr(pos + 1);</a>
+<a name="ln1402">    return true;</a>
+<a name="ln1403">}</a>
+<a name="ln1404"> </a>
+<a name="ln1405">void msgwin_set_temporary(bool temp)</a>
+<a name="ln1406">{</a>
+<a name="ln1407">    flush_prev_message();</a>
+<a name="ln1408">    _temporary = temp;</a>
+<a name="ln1409">    if (!temp)</a>
+<a name="ln1410">    {</a>
+<a name="ln1411">        buffer.reset_temp();</a>
+<a name="ln1412">        msgwin.reset_temp();</a>
+<a name="ln1413">    }</a>
+<a name="ln1414">}</a>
+<a name="ln1415"> </a>
+<a name="ln1416">bool msgwin_errors_to_stderr()</a>
+<a name="ln1417">{</a>
+<a name="ln1418">    return crawl_state.test || crawl_state.script</a>
+<a name="ln1419">            || crawl_state.build_db</a>
+<a name="ln1420">            || crawl_state.map_stat_gen || crawl_state.obj_stat_gen;</a>
+<a name="ln1421">}</a>
+<a name="ln1422"> </a>
+<a name="ln1423">void msgwin_clear_temporary()</a>
+<a name="ln1424">{</a>
+<a name="ln1425">    buffer.roll_back();</a>
+<a name="ln1426">    msgwin.roll_back();</a>
+<a name="ln1427">}</a>
+<a name="ln1428"> </a>
+<a name="ln1429">static int _last_msg_turn = -1; // Turn of last message.</a>
+<a name="ln1430"> </a>
+<a name="ln1431">static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,</a>
+<a name="ln1432">                 bool cap)</a>
+<a name="ln1433">{</a>
+<a name="ln1434">    rng::generator rng(rng::UI);</a>
+<a name="ln1435"> </a>
+<a name="ln1436">    if (_msg_dump_file != nullptr)</a>
+<a name="ln1437">        fprintf(_msg_dump_file, &quot;%s\n&quot;, text.c_str());</a>
+<a name="ln1438"> </a>
+<a name="ln1439">    if (crawl_state.game_crashed)</a>
+<a name="ln1440">        return;</a>
+<a name="ln1441"> </a>
+<a name="ln1442">    if (crawl_state.game_is_valid_type() &amp;&amp; crawl_state.game_is_arena())</a>
+<a name="ln1443">        _debug_channel_arena(channel);</a>
+<a name="ln1444"> </a>
+<a name="ln1445">#ifdef DEBUG_FATAL</a>
+<a name="ln1446">    if (channel == MSGCH_ERROR)</a>
+<a name="ln1447">        die_noline(&quot;%s&quot;, text.c_str());</a>
+<a name="ln1448">#endif</a>
+<a name="ln1449"> </a>
+<a name="ln1450">    if (channel == MSGCH_ERROR &amp;&amp;</a>
+<a name="ln1451">        (!crawl_state.io_inited || msgwin_errors_to_stderr())</a>
+<a name="ln1452">        || _msgs_to_stderr)</a>
+<a name="ln1453">    {</a>
+<a name="ln1454">        fprintf(stderr, &quot;%s\n&quot;, text.c_str());</a>
+<a name="ln1455">    }</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    // Flush out any &quot;comes into view&quot; monster announcements before the</a>
+<a name="ln1458">    // monster has a chance to give any other messages.</a>
+<a name="ln1459">    if (!_updating_view &amp;&amp; crawl_state.io_inited)</a>
+<a name="ln1460">    {</a>
+<a name="ln1461">        _updating_view = true;</a>
+<a name="ln1462">        flush_comes_into_view();</a>
+<a name="ln1463">        _updating_view = false;</a>
+<a name="ln1464">    }</a>
+<a name="ln1465"> </a>
+<a name="ln1466">    if (channel == MSGCH_GOD &amp;&amp; param == 0)</a>
+<a name="ln1467">        param = you.religion;</a>
+<a name="ln1468"> </a>
+<a name="ln1469">    // Ugly hack.</a>
+<a name="ln1470">    if (channel == MSGCH_DIAGNOSTICS || channel == MSGCH_ERROR)</a>
+<a name="ln1471">        cap = false;</a>
+<a name="ln1472"> </a>
+<a name="ln1473">    // if the message would be muted, handle any tees before bailing. The</a>
+<a name="ln1474">    // actual color for MSGCOL_MUTED ends up as darkgrey in any tees.</a>
+<a name="ln1475">    msg_colour_type colour = prepare_message(text, channel, param);</a>
+<a name="ln1476"> </a>
+<a name="ln1477">    string col = colour_to_str(colour_msg(colour));</a>
+<a name="ln1478">    text = &quot;&lt;&quot; + col + &quot;&gt;&quot; + text + &quot;&lt;/&quot; + col + &quot;&gt;&quot;; // XXX</a>
+<a name="ln1479"> </a>
+<a name="ln1480">    if (current_message_tees.size())</a>
+<a name="ln1481">        _append_to_tees(text + &quot;\n&quot;, channel);</a>
+<a name="ln1482"> </a>
+<a name="ln1483">    if (colour == MSGCOL_MUTED &amp;&amp; crawl_state.io_inited)</a>
+<a name="ln1484">    {</a>
+<a name="ln1485">        if (channel == MSGCH_PROMPT)</a>
+<a name="ln1486">            msgwin.show();</a>
+<a name="ln1487">        return;</a>
+<a name="ln1488">    }</a>
+<a name="ln1489"> </a>
+<a name="ln1490">    bool domore = _check_more(text, channel);</a>
+<a name="ln1491">    bool do_flash_screen = _check_flash_screen(text, channel);</a>
+<a name="ln1492">    bool join = !domore &amp;&amp; !nojoin &amp;&amp; _check_join(text, channel);</a>
+<a name="ln1493"> </a>
+<a name="ln1494">    // Must do this before converting to formatted string and back;</a>
+<a name="ln1495">    // that doesn't preserve close tags!</a>
+<a name="ln1496"> </a>
+<a name="ln1497">    formatted_string fs = formatted_string::parse_string(text);</a>
+<a name="ln1498"> </a>
+<a name="ln1499">    // TODO: this kind of check doesn't really belong in logging code...</a>
+<a name="ln1500">    if (you.duration[DUR_QUAD_DAMAGE])</a>
+<a name="ln1501">        fs.all_caps(); // No sound, so we simulate the reverb with all caps.</a>
+<a name="ln1502">    else if (cap)</a>
+<a name="ln1503">        fs.capitalise();</a>
+<a name="ln1504">    if (channel != MSGCH_ERROR &amp;&amp; channel != MSGCH_DIAGNOSTICS)</a>
+<a name="ln1505">        fs.filter_lang();</a>
+<a name="ln1506">    text = fs.to_colour_string();</a>
+<a name="ln1507"> </a>
+<a name="ln1508">    message_line msg = message_line(text, channel, param, join);</a>
+<a name="ln1509">    buffer.add(msg);</a>
+<a name="ln1510"> </a>
+<a name="ln1511">    if (!crawl_state.io_inited)</a>
+<a name="ln1512">        return;</a>
+<a name="ln1513"> </a>
+<a name="ln1514">    _last_msg_turn = msg.turn;</a>
+<a name="ln1515"> </a>
+<a name="ln1516">    if (channel == MSGCH_ERROR)</a>
+<a name="ln1517">        interrupt_activity(activity_interrupt::force);</a>
+<a name="ln1518"> </a>
+<a name="ln1519">    if (channel == MSGCH_PROMPT || channel == MSGCH_ERROR)</a>
+<a name="ln1520">        set_more_autoclear(false);</a>
+<a name="ln1521"> </a>
+<a name="ln1522">    if (domore)</a>
+<a name="ln1523">        more(true);</a>
+<a name="ln1524"> </a>
+<a name="ln1525">    if (do_flash_screen)</a>
+<a name="ln1526">        flash_view_delay(UA_ALWAYS_ON, YELLOW, 50);</a>
+<a name="ln1527"> </a>
+<a name="ln1528">}</a>
+<a name="ln1529"> </a>
+<a name="ln1530">static string show_prompt(string prompt)</a>
+<a name="ln1531">{</a>
+<a name="ln1532">    mprf(MSGCH_PROMPT, &quot;%s&quot;, prompt.c_str());</a>
+<a name="ln1533"> </a>
+<a name="ln1534">    // FIXME: duplicating mpr code.</a>
+<a name="ln1535">    msg_colour_type colour = prepare_message(prompt, MSGCH_PROMPT, 0);</a>
+<a name="ln1536">    return colour_string(prompt, colour_msg(colour));</a>
+<a name="ln1537">}</a>
+<a name="ln1538"> </a>
+<a name="ln1539">static string _prompt;</a>
+<a name="ln1540">void msgwin_prompt(string prompt)</a>
+<a name="ln1541">{</a>
+<a name="ln1542">    msgwin_set_temporary(true);</a>
+<a name="ln1543">    _prompt = show_prompt(prompt);</a>
+<a name="ln1544">}</a>
+<a name="ln1545"> </a>
+<a name="ln1546">void msgwin_reply(string reply)</a>
+<a name="ln1547">{</a>
+<a name="ln1548">    msgwin_clear_temporary();</a>
+<a name="ln1549">    msgwin_set_temporary(false);</a>
+<a name="ln1550">    reply = replace_all(reply, &quot;&lt;&quot;, &quot;&lt;&lt;&quot;);</a>
+<a name="ln1551">    mprf(MSGCH_PROMPT, &quot;%s&lt;lightgrey&gt;%s&lt;/lightgrey&gt;&quot;, _prompt.c_str(), reply.c_str());</a>
+<a name="ln1552">    msgwin.got_input();</a>
+<a name="ln1553">}</a>
+<a name="ln1554"> </a>
+<a name="ln1555">void msgwin_got_input()</a>
+<a name="ln1556">{</a>
+<a name="ln1557">    msgwin.got_input();</a>
+<a name="ln1558">}</a>
+<a name="ln1559"> </a>
+<a name="ln1560">int msgwin_get_line(string prompt, char *buf, int len,</a>
+<a name="ln1561">                    input_history *mh, const string &amp;fill)</a>
+<a name="ln1562">{</a>
+<a name="ln1563">#ifdef TOUCH_UI</a>
+<a name="ln1564">    bool use_popup = true;</a>
+<a name="ln1565">#else</a>
+<a name="ln1566">    bool use_popup = !crawl_state.need_save || ui::has_layout();</a>
+<a name="ln1567">#endif</a>
+<a name="ln1568"> </a>
+<a name="ln1569">    int ret;</a>
+<a name="ln1570">    if (use_popup)</a>
+<a name="ln1571">    {</a>
+<a name="ln1572">        mouse_control mc(MOUSE_MODE_PROMPT);</a>
+<a name="ln1573"> </a>
+<a name="ln1574">        linebreak_string(prompt, 79);</a>
+<a name="ln1575">        msg_colour_type colour = prepare_message(prompt, MSGCH_PROMPT, 0);</a>
+<a name="ln1576">        const auto colour_prompt = formatted_string(prompt, colour_msg(colour));</a>
+<a name="ln1577"> </a>
+<a name="ln1578">        bool done = false;</a>
+<a name="ln1579">        auto vbox = make_shared&lt;ui::Box&gt;(ui::Widget::VERT);</a>
+<a name="ln1580">        auto popup = make_shared&lt;ui::Popup&gt;(vbox);</a>
+<a name="ln1581"> </a>
+<a name="ln1582">        vbox-&gt;add_child(make_shared&lt;ui::Text&gt;(colour_prompt + &quot;\n&quot;));</a>
+<a name="ln1583"> </a>
+<a name="ln1584">        auto input = make_shared&lt;ui::TextEntry&gt;();</a>
+<a name="ln1585">        input-&gt;set_sync_id(&quot;input&quot;);</a>
+<a name="ln1586">        input-&gt;set_text(fill);</a>
+<a name="ln1587">        input-&gt;set_input_history(mh);</a>
+<a name="ln1588">#ifndef USE_TILE_LOCAL</a>
+<a name="ln1589">        input-&gt;max_size().width = 20;</a>
+<a name="ln1590">#endif</a>
+<a name="ln1591">        vbox-&gt;add_child(input);</a>
+<a name="ln1592"> </a>
+<a name="ln1593">        popup-&gt;on_hotkey_event([&amp;](const ui::KeyEvent&amp; ev) {</a>
+<a name="ln1594">            switch (ev.key())</a>
+<a name="ln1595">            {</a>
+<a name="ln1596">            CASE_ESCAPE</a>
+<a name="ln1597">                ret = CK_ESCAPE;</a>
+<a name="ln1598">                return done = true;</a>
+<a name="ln1599">            case CK_ENTER:</a>
+<a name="ln1600">                ret = 0;</a>
+<a name="ln1601">                return done = true;</a>
+<a name="ln1602">            default:</a>
+<a name="ln1603">                return done = false;</a>
+<a name="ln1604">            }</a>
+<a name="ln1605">        });</a>
+<a name="ln1606"> </a>
+<a name="ln1607">#ifdef USE_TILE_WEB</a>
+<a name="ln1608">        tiles.json_open_object();</a>
+<a name="ln1609">        tiles.json_write_string(&quot;prompt&quot;, colour_prompt.to_colour_string());</a>
+<a name="ln1610">        tiles.push_ui_layout(&quot;msgwin-get-line&quot;, 0);</a>
+<a name="ln1611">        popup-&gt;on_layout_pop([](){ tiles.pop_ui_layout(); });</a>
+<a name="ln1612">#endif</a>
+<a name="ln1613">        ui::run_layout(move(popup), done, input);</a>
+<a name="ln1614"> </a>
+<a name="ln1615">        strncpy(buf, input-&gt;get_text().c_str(), len - 1);</a>
+<a name="ln1616">        buf[len - 1] = '\0';</a>
+<a name="ln1617">    }</a>
+<a name="ln1618">    else</a>
+<a name="ln1619">    {</a>
+<a name="ln1620">        if (!prompt.empty())</a>
+<a name="ln1621">            msgwin_prompt(prompt);</a>
+<a name="ln1622">        ret = cancellable_get_line(buf, len, mh, nullptr, fill);</a>
+<a name="ln1623">        msgwin_reply(buf);</a>
+<a name="ln1624">    }</a>
+<a name="ln1625"> </a>
+<a name="ln1626">    return ret;</a>
+<a name="ln1627">}</a>
+<a name="ln1628"> </a>
+<a name="ln1629">void msgwin_new_turn()</a>
+<a name="ln1630">{</a>
+<a name="ln1631">    buffer.new_turn();</a>
+<a name="ln1632">}</a>
+<a name="ln1633"> </a>
+<a name="ln1634">void msgwin_new_cmd()</a>
+<a name="ln1635">{</a>
+<a name="ln1636">    flush_prev_message();</a>
+<a name="ln1637">    bool new_turn = (you.num_turns &gt; _last_msg_turn);</a>
+<a name="ln1638">    msgwin.new_cmdturn(new_turn);</a>
+<a name="ln1639">}</a>
+<a name="ln1640"> </a>
+<a name="ln1641">unsigned int msgwin_line_length()</a>
+<a name="ln1642">{</a>
+<a name="ln1643">    return msgwin.out_width();</a>
+<a name="ln1644">}</a>
+<a name="ln1645"> </a>
+<a name="ln1646">unsigned int msgwin_lines()</a>
+<a name="ln1647">{</a>
+<a name="ln1648">    return msgwin.out_height();</a>
+<a name="ln1649">}</a>
+<a name="ln1650"> </a>
+<a name="ln1651">// mpr() an arbitrarily long list of strings without truncation or risk</a>
+<a name="ln1652">// of overflow.</a>
+<a name="ln1653">void mpr_comma_separated_list(const string &amp;prefix,</a>
+<a name="ln1654">                              const vector&lt;string&gt; &amp;list,</a>
+<a name="ln1655">                              const string &amp;andc,</a>
+<a name="ln1656">                              const string &amp;comma,</a>
+<a name="ln1657">                              const msg_channel_type channel,</a>
+<a name="ln1658">                              const int param)</a>
+<a name="ln1659">{</a>
+<a name="ln1660">    string out = prefix;</a>
+<a name="ln1661"> </a>
+<a name="ln1662">    for (int i = 0, size = list.size(); i &lt; size; i++)</a>
+<a name="ln1663">    {</a>
+<a name="ln1664">        out += list[i];</a>
+<a name="ln1665"> </a>
+<a name="ln1666">        if (size &gt; 0 &amp;&amp; i &lt; (size - 2))</a>
+<a name="ln1667">            out += comma;</a>
+<a name="ln1668">        else if (i == (size - 2))</a>
+<a name="ln1669">            out += andc;</a>
+<a name="ln1670">        else if (i == (size - 1))</a>
+<a name="ln1671">            out += &quot;.&quot;;</a>
+<a name="ln1672">    }</a>
+<a name="ln1673">    _mpr(out, channel, param);</a>
+<a name="ln1674">}</a>
+<a name="ln1675"> </a>
+<a name="ln1676">// Checks whether a given message contains patterns relevant for</a>
+<a name="ln1677">// notes, stop_running or sounds and handles these cases.</a>
+<a name="ln1678">static void mpr_check_patterns(const string&amp; message,</a>
+<a name="ln1679">                               msg_channel_type channel,</a>
+<a name="ln1680">                               int param)</a>
+<a name="ln1681">{</a>
+<a name="ln1682">    if (crawl_state.generating_level)</a>
+<a name="ln1683">        return;</a>
+<a name="ln1684">    for (const text_pattern &amp;pat : Options.note_messages)</a>
+<a name="ln1685">    {</a>
+<a name="ln1686">        if (channel == MSGCH_EQUIPMENT || channel == MSGCH_FLOOR_ITEMS</a>
+<a name="ln1687">            || channel == MSGCH_MULTITURN_ACTION</a>
+<a name="ln1688">            || channel == MSGCH_EXAMINE || channel == MSGCH_EXAMINE_FILTER</a>
+<a name="ln1689">            || channel == MSGCH_TUTORIAL || channel == MSGCH_DGL_MESSAGE)</a>
+<a name="ln1690">        {</a>
+<a name="ln1691">            continue;</a>
+<a name="ln1692">        }</a>
+<a name="ln1693"> </a>
+<a name="ln1694">        if (pat.matches(message))</a>
+<a name="ln1695">        {</a>
+<a name="ln1696">            take_note(Note(NOTE_MESSAGE, channel, param, message));</a>
+<a name="ln1697">            break;</a>
+<a name="ln1698">        }</a>
+<a name="ln1699">    }</a>
+<a name="ln1700"> </a>
+<a name="ln1701">    if (channel != MSGCH_DIAGNOSTICS &amp;&amp; channel != MSGCH_EQUIPMENT)</a>
+<a name="ln1702">    {</a>
+<a name="ln1703">        interrupt_activity(activity_interrupt::message,</a>
+<a name="ln1704">                           channel_to_str(channel) + &quot;:&quot; + message);</a>
+<a name="ln1705">    }</a>
+<a name="ln1706">}</a>
+<a name="ln1707"> </a>
+<a name="ln1708">static bool channel_message_history(msg_channel_type channel)</a>
+<a name="ln1709">{</a>
+<a name="ln1710">    switch (channel)</a>
+<a name="ln1711">    {</a>
+<a name="ln1712">    case MSGCH_PROMPT:</a>
+<a name="ln1713">    case MSGCH_EQUIPMENT:</a>
+<a name="ln1714">    case MSGCH_EXAMINE_FILTER:</a>
+<a name="ln1715">        return false;</a>
+<a name="ln1716">    default:</a>
+<a name="ln1717">        return true;</a>
+<a name="ln1718">    }</a>
+<a name="ln1719">}</a>
+<a name="ln1720"> </a>
+<a name="ln1721">// Returns the default colour of the message, or MSGCOL_MUTED if</a>
+<a name="ln1722">// the message should be suppressed.</a>
+<a name="ln1723">static msg_colour_type prepare_message(const string&amp; imsg,</a>
+<a name="ln1724">                                       msg_channel_type channel,</a>
+<a name="ln1725">                                       int param,</a>
+<a name="ln1726">                                       bool allow_suppress)</a>
+<a name="ln1727">{</a>
+<a name="ln1728">    if (allow_suppress &amp;&amp; suppress_messages)</a>
+<a name="ln1729">        return MSGCOL_MUTED;</a>
+<a name="ln1730"> </a>
+<a name="ln1731">    if (you.num_turns &gt; 0 &amp;&amp; silenced(you.pos())</a>
+<a name="ln1732">        &amp;&amp; (channel == MSGCH_SOUND || channel == MSGCH_TALK))</a>
+<a name="ln1733">    {</a>
+<a name="ln1734">        return MSGCOL_MUTED;</a>
+<a name="ln1735">    }</a>
+<a name="ln1736"> </a>
+<a name="ln1737">    msg_colour_type colour = channel_to_msgcol(channel, param);</a>
+<a name="ln1738"> </a>
+<a name="ln1739">    if (colour != MSGCOL_MUTED)</a>
+<a name="ln1740">        mpr_check_patterns(imsg, channel, param);</a>
+<a name="ln1741"> </a>
+<a name="ln1742">    if (!crawl_state.generating_level)</a>
+<a name="ln1743">    {</a>
+<a name="ln1744">        for (const message_colour_mapping &amp;mcm : Options.message_colour_mappings)</a>
+<a name="ln1745">        {</a>
+<a name="ln1746">            if (mcm.message.is_filtered(channel, imsg))</a>
+<a name="ln1747">            {</a>
+<a name="ln1748">                colour = mcm.colour;</a>
+<a name="ln1749">                break;</a>
+<a name="ln1750">            }</a>
+<a name="ln1751">        }</a>
+<a name="ln1752">    }</a>
+<a name="ln1753"> </a>
+<a name="ln1754">    return colour;</a>
+<a name="ln1755">}</a>
+<a name="ln1756"> </a>
+<a name="ln1757">void flush_prev_message()</a>
+<a name="ln1758">{</a>
+<a name="ln1759">    buffer.flush_prev();</a>
+<a name="ln1760">}</a>
+<a name="ln1761"> </a>
+<a name="ln1762">void clear_messages(bool force)</a>
+<a name="ln1763">{</a>
+<a name="ln1764">    if (!crawl_state.io_inited)</a>
+<a name="ln1765">        return;</a>
+<a name="ln1766">    // Unflushed message will be lost with clear_messages,</a>
+<a name="ln1767">    // so they shouldn't really exist, but some of the delay</a>
+<a name="ln1768">    // code appears to do this intentionally.</a>
+<a name="ln1769">    // ASSERT(!buffer.have_prev());</a>
+<a name="ln1770">    flush_prev_message();</a>
+<a name="ln1771"> </a>
+<a name="ln1772">    msgwin.got_input(); // Consider old messages as read.</a>
+<a name="ln1773"> </a>
+<a name="ln1774">    if (Options.clear_messages || force)</a>
+<a name="ln1775">        msgwin.clear();</a>
+<a name="ln1776"> </a>
+<a name="ln1777">    // TODO: we could indicate indicate clear_messages with a different</a>
+<a name="ln1778">    //       leading character than '-'.</a>
+<a name="ln1779">}</a>
+<a name="ln1780"> </a>
+<a name="ln1781">static bool autoclear_more = false;</a>
+<a name="ln1782"> </a>
+<a name="ln1783">void set_more_autoclear(bool on)</a>
+<a name="ln1784">{</a>
+<a name="ln1785">    autoclear_more = on;</a>
+<a name="ln1786">}</a>
+<a name="ln1787"> </a>
+<a name="ln1788">static void readkey_more(bool user_forced)</a>
+<a name="ln1789">{</a>
+<a name="ln1790">    if (autoclear_more)</a>
+<a name="ln1791">        return;</a>
+<a name="ln1792">    int keypress = 0;</a>
+<a name="ln1793">#ifdef USE_TILE_WEB</a>
+<a name="ln1794">    unwind_bool unwind_more(_more, true);</a>
+<a name="ln1795">#endif</a>
+<a name="ln1796">    mouse_control mc(MOUSE_MODE_MORE);</a>
+<a name="ln1797"> </a>
+<a name="ln1798">    do</a>
+<a name="ln1799">    {</a>
+<a name="ln1800">        keypress = getch_ck();</a>
+<a name="ln1801">        if (keypress == CK_REDRAW)</a>
+<a name="ln1802">        {</a>
+<a name="ln1803">            redraw_screen();</a>
+<a name="ln1804">            continue;</a>
+<a name="ln1805">        }</a>
+<a name="ln1806">    }</a>
+<a name="ln1807">    while (keypress != ' ' &amp;&amp; keypress != '\r' &amp;&amp; keypress != '\n'</a>
+<a name="ln1808">           &amp;&amp; !key_is_escape(keypress)</a>
+<a name="ln1809">#ifdef TOUCH_UI</a>
+<a name="ln1810">           &amp;&amp; keypress != CK_MOUSE_CLICK);</a>
+<a name="ln1811">#else</a>
+<a name="ln1812">           &amp;&amp; (user_forced || keypress != CK_MOUSE_CLICK));</a>
+<a name="ln1813">#endif</a>
+<a name="ln1814"> </a>
+<a name="ln1815">    if (key_is_escape(keypress))</a>
+<a name="ln1816">        set_more_autoclear(true);</a>
+<a name="ln1817">}</a>
+<a name="ln1818"> </a>
+<a name="ln1819">/**</a>
+<a name="ln1820"> * more() preprocessing.</a>
+<a name="ln1821"> *</a>
+<a name="ln1822"> * @return Whether the more prompt should be skipped.</a>
+<a name="ln1823"> */</a>
+<a name="ln1824">static bool _pre_more()</a>
+<a name="ln1825">{</a>
+<a name="ln1826">    if (crawl_state.game_crashed || crawl_state.seen_hups)</a>
+<a name="ln1827">        return true;</a>
+<a name="ln1828"> </a>
+<a name="ln1829">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1830">    if (you.running)</a>
+<a name="ln1831">        return true;</a>
+<a name="ln1832">#endif</a>
+<a name="ln1833"> </a>
+<a name="ln1834">    if (crawl_state.game_is_arena())</a>
+<a name="ln1835">    {</a>
+<a name="ln1836">        delay(Options.view_delay);</a>
+<a name="ln1837">        return true;</a>
+<a name="ln1838">    }</a>
+<a name="ln1839"> </a>
+<a name="ln1840">    if (crawl_state.is_replaying_keys())</a>
+<a name="ln1841">        return true;</a>
+<a name="ln1842"> </a>
+<a name="ln1843">#ifdef WIZARD</a>
+<a name="ln1844">    if (luaterp_running())</a>
+<a name="ln1845">        return true;</a>
+<a name="ln1846">#endif</a>
+<a name="ln1847"> </a>
+<a name="ln1848">    if (!crawl_state.show_more_prompt || suppress_messages)</a>
+<a name="ln1849">        return true;</a>
+<a name="ln1850"> </a>
+<a name="ln1851">    return false;</a>
+<a name="ln1852">}</a>
+<a name="ln1853"> </a>
+<a name="ln1854">void more(bool user_forced)</a>
+<a name="ln1855">{</a>
+<a name="ln1856">    rng::generator rng(rng::UI);</a>
+<a name="ln1857"> </a>
+<a name="ln1858">    if (!crawl_state.io_inited)</a>
+<a name="ln1859">        return;</a>
+<a name="ln1860">    flush_prev_message();</a>
+<a name="ln1861">    msgwin.more(false, user_forced);</a>
+<a name="ln1862">    clear_messages();</a>
+<a name="ln1863">}</a>
+<a name="ln1864"> </a>
+<a name="ln1865">void canned_msg(canned_message_type which_message)</a>
+<a name="ln1866">{</a>
+<a name="ln1867">    switch (which_message)</a>
+<a name="ln1868">    {</a>
+<a name="ln1869">        case MSG_SOMETHING_APPEARS:</a>
+<a name="ln1870">            mprf(&quot;Something appears %s!&quot;,</a>
+<a name="ln1871">                 player_has_feet() ? &quot;at your feet&quot; : &quot;before you&quot;);</a>
+<a name="ln1872">            break;</a>
+<a name="ln1873">        case MSG_NOTHING_HAPPENS:</a>
+<a name="ln1874">            mpr(&quot;Nothing appears to happen.&quot;);</a>
+<a name="ln1875">            break;</a>
+<a name="ln1876">        case MSG_YOU_UNAFFECTED:</a>
+<a name="ln1877">            mpr(&quot;You are unaffected.&quot;);</a>
+<a name="ln1878">            break;</a>
+<a name="ln1879">        case MSG_YOU_RESIST:</a>
+<a name="ln1880">            mpr(&quot;You resist.&quot;);</a>
+<a name="ln1881">            learned_something_new(HINT_YOU_RESIST);</a>
+<a name="ln1882">            break;</a>
+<a name="ln1883">        case MSG_YOU_PARTIALLY_RESIST:</a>
+<a name="ln1884">            mpr(&quot;You partially resist.&quot;);</a>
+<a name="ln1885">            break;</a>
+<a name="ln1886">        case MSG_TOO_BERSERK:</a>
+<a name="ln1887">            mpr(&quot;You are too berserk!&quot;);</a>
+<a name="ln1888">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1889">            break;</a>
+<a name="ln1890">        case MSG_TOO_CONFUSED:</a>
+<a name="ln1891">            mpr(&quot;You're too confused!&quot;);</a>
+<a name="ln1892">            break;</a>
+<a name="ln1893">        case MSG_PRESENT_FORM:</a>
+<a name="ln1894">            mpr(&quot;You can't do that in your present form.&quot;);</a>
+<a name="ln1895">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1896">            break;</a>
+<a name="ln1897">        case MSG_NOTHING_CARRIED:</a>
+<a name="ln1898">            mpr(&quot;You aren't carrying anything.&quot;);</a>
+<a name="ln1899">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1900">            break;</a>
+<a name="ln1901">        case MSG_CANNOT_DO_YET:</a>
+<a name="ln1902">            mpr(&quot;You can't do that yet.&quot;);</a>
+<a name="ln1903">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1904">            break;</a>
+<a name="ln1905">        case MSG_OK:</a>
+<a name="ln1906">            mprf(MSGCH_PROMPT, &quot;Okay, then.&quot;);</a>
+<a name="ln1907">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1908">            break;</a>
+<a name="ln1909">        case MSG_UNTHINKING_ACT:</a>
+<a name="ln1910">            mpr(&quot;Why would you want to do that?&quot;);</a>
+<a name="ln1911">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1912">            break;</a>
+<a name="ln1913">        case MSG_NOTHING_THERE:</a>
+<a name="ln1914">            mpr(&quot;There's nothing there!&quot;);</a>
+<a name="ln1915">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1916">            break;</a>
+<a name="ln1917">        case MSG_NOTHING_CLOSE_ENOUGH:</a>
+<a name="ln1918">            mpr(&quot;There's nothing close enough!&quot;);</a>
+<a name="ln1919">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1920">            break;</a>
+<a name="ln1921">        case MSG_NO_ENERGY:</a>
+<a name="ln1922">            mpr(&quot;You don't have the energy to cast that spell.&quot;);</a>
+<a name="ln1923">            // included in default force_more_message</a>
+<a name="ln1924">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1925">            break;</a>
+<a name="ln1926">        case MSG_SPELL_FIZZLES:</a>
+<a name="ln1927">            mpr(&quot;The spell fizzles.&quot;);</a>
+<a name="ln1928">            break;</a>
+<a name="ln1929">        case MSG_HUH:</a>
+<a name="ln1930">            mprf(MSGCH_EXAMINE_FILTER, &quot;Huh?&quot;);</a>
+<a name="ln1931">            crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1932">            break;</a>
+<a name="ln1933">        case MSG_EMPTY_HANDED_ALREADY:</a>
+<a name="ln1934">        case MSG_EMPTY_HANDED_NOW:</a>
+<a name="ln1935">        {</a>
+<a name="ln1936">            const char* when =</a>
+<a name="ln1937">            (which_message == MSG_EMPTY_HANDED_ALREADY ? &quot;already&quot; : &quot;now&quot;);</a>
+<a name="ln1938">            if (you.species == SP_FELID)</a>
+<a name="ln1939">                mprf(&quot;Your mouth is %s empty.&quot;, when);</a>
+<a name="ln1940">            else if (you.has_usable_claws(true))</a>
+<a name="ln1941">                mprf(&quot;You are %s empty-clawed.&quot;, when);</a>
+<a name="ln1942">            else if (you.has_usable_tentacles(true))</a>
+<a name="ln1943">                mprf(&quot;You are %s empty-tentacled.&quot;, when);</a>
+<a name="ln1944">            else</a>
+<a name="ln1945">                mprf(&quot;You are %s empty-handed.&quot;, when);</a>
+<a name="ln1946">            break;</a>
+<a name="ln1947">        }</a>
+<a name="ln1948">        case MSG_YOU_BLINK:</a>
+<a name="ln1949">            mpr(&quot;You blink.&quot;);</a>
+<a name="ln1950">            break;</a>
+<a name="ln1951">        case MSG_STRANGE_STASIS:</a>
+<a name="ln1952">            mpr(&quot;You feel a strange sense of stasis.&quot;);</a>
+<a name="ln1953">            break;</a>
+<a name="ln1954">        case MSG_NO_SPELLS:</a>
+<a name="ln1955">            mpr(&quot;You don't know any spells.&quot;);</a>
+<a name="ln1956">            break;</a>
+<a name="ln1957">        case MSG_MANA_INCREASE:</a>
+<a name="ln1958">            mpr(&quot;You feel your magic capacity increase.&quot;);</a>
+<a name="ln1959">            break;</a>
+<a name="ln1960">        case MSG_MANA_DECREASE:</a>
+<a name="ln1961">            mpr(&quot;You feel your magic capacity decrease.&quot;);</a>
+<a name="ln1962">            break;</a>
+<a name="ln1963">        case MSG_DISORIENTED:</a>
+<a name="ln1964">            mpr(&quot;You feel momentarily disoriented.&quot;);</a>
+<a name="ln1965">            break;</a>
+<a name="ln1966">        case MSG_TOO_HUNGRY:</a>
+<a name="ln1967">            mpr(&quot;You're too hungry.&quot;);</a>
+<a name="ln1968">            break;</a>
+<a name="ln1969">        case MSG_DETECT_NOTHING:</a>
+<a name="ln1970">            mpr(&quot;You detect nothing.&quot;);</a>
+<a name="ln1971">            break;</a>
+<a name="ln1972">        case MSG_CALL_DEAD:</a>
+<a name="ln1973">            mpr(&quot;You call on the dead to rise...&quot;);</a>
+<a name="ln1974">            break;</a>
+<a name="ln1975">        case MSG_ANIMATE_REMAINS:</a>
+<a name="ln1976">            mpr(&quot;You attempt to give life to the dead...&quot;);</a>
+<a name="ln1977">            break;</a>
+<a name="ln1978">        case MSG_CANNOT_MOVE:</a>
+<a name="ln1979">            mpr(&quot;You cannot move.&quot;);</a>
+<a name="ln1980">            break;</a>
+<a name="ln1981">        case MSG_YOU_DIE:</a>
+<a name="ln1982">            mpr_nojoin(MSGCH_PLAIN, &quot;You die...&quot;);</a>
+<a name="ln1983">            break;</a>
+<a name="ln1984">        case MSG_GHOSTLY_OUTLINE:</a>
+<a name="ln1985">            mpr(&quot;You see a ghostly outline there, and the spell fizzles.&quot;);</a>
+<a name="ln1986">            break;</a>
+<a name="ln1987">        case MSG_FULL_HEALTH:</a>
+<a name="ln1988">            mpr(&quot;Your health is already full.&quot;);</a>
+<a name="ln1989">            break;</a>
+<a name="ln1990">        case MSG_FULL_MAGIC:</a>
+<a name="ln1991">            mpr(&quot;Your reserves of magic are already full.&quot;);</a>
+<a name="ln1992">            break;</a>
+<a name="ln1993">        case MSG_GAIN_HEALTH:</a>
+<a name="ln1994">            mpr(&quot;You feel better.&quot;);</a>
+<a name="ln1995">            break;</a>
+<a name="ln1996">        case MSG_GAIN_MAGIC:</a>
+<a name="ln1997">            mpr(&quot;You feel your power returning.&quot;);</a>
+<a name="ln1998">            break;</a>
+<a name="ln1999">        case MSG_MAGIC_DRAIN:</a>
+<a name="ln2000">            mprf(MSGCH_WARN, &quot;You suddenly feel drained of magical energy!&quot;);</a>
+<a name="ln2001">            break;</a>
+<a name="ln2002">        case MSG_SOMETHING_IN_WAY:</a>
+<a name="ln2003">            mpr(&quot;There's something in the way.&quot;);</a>
+<a name="ln2004">            break;</a>
+<a name="ln2005">        case MSG_CANNOT_SEE:</a>
+<a name="ln2006">            mpr(&quot;You can't see that place.&quot;);</a>
+<a name="ln2007">            break;</a>
+<a name="ln2008">        case MSG_GOD_DECLINES:</a>
+<a name="ln2009">            mpr(&quot;Your god isn't willing to do this for you now.&quot;);</a>
+<a name="ln2010">            break;</a>
+<a name="ln2011">    }</a>
+<a name="ln2012">}</a>
+<a name="ln2013"> </a>
+<a name="ln2014">// Note that this function *completely* blocks messaging for monsters</a>
+<a name="ln2015">// distant or invisible to the player ... look elsewhere for a function</a>
+<a name="ln2016">// permitting output of &quot;It&quot; messages for the invisible {dlb}</a>
+<a name="ln2017">// Intentionally avoids info and str_pass now. - bwr</a>
+<a name="ln2018">bool simple_monster_message(const monster&amp; mons, const char *event,</a>
+<a name="ln2019">                            msg_channel_type channel,</a>
+<a name="ln2020">                            int param,</a>
+<a name="ln2021">                            description_level_type descrip)</a>
+<a name="ln2022">{</a>
+<a name="ln2023">    if (you.see_cell(mons.pos())</a>
+<a name="ln2024">        &amp;&amp; (channel == MSGCH_MONSTER_SPELL || channel == MSGCH_FRIEND_SPELL</a>
+<a name="ln2025">            || mons.visible_to(&amp;you)))</a>
+<a name="ln2026">    {</a>
+<a name="ln2027">        string msg = mons.name(descrip);</a>
+<a name="ln2028">        msg += event;</a>
+<a name="ln2029"> </a>
+<a name="ln2030">        if (channel == MSGCH_PLAIN &amp;&amp; mons.wont_attack())</a>
+<a name="ln2031">            channel = MSGCH_FRIEND_ACTION;</a>
+<a name="ln2032"> </a>
+<a name="ln2033">        mprf(channel, param, &quot;%s&quot;, msg.c_str());</a>
+<a name="ln2034">        return true;</a>
+<a name="ln2035">    }</a>
+<a name="ln2036"> </a>
+<a name="ln2037">    return false;</a>
+<a name="ln2038">}</a>
+<a name="ln2039"> </a>
+<a name="ln2040">string god_speaker(god_type which_deity)</a>
+<a name="ln2041">{</a>
+<a name="ln2042">    if (which_deity == GOD_WU_JIAN)</a>
+<a name="ln2043">       return &quot;The Council&quot;;</a>
+<a name="ln2044">    else</a>
+<a name="ln2045">       return uppercase_first(god_name(which_deity));</a>
+<a name="ln2046">}</a>
+<a name="ln2047"> </a>
+<a name="ln2048">// yet another wrapper for mpr() {dlb}:</a>
+<a name="ln2049">void simple_god_message(const char *event, god_type which_deity)</a>
+<a name="ln2050">{</a>
+<a name="ln2051">    string msg = god_speaker(which_deity) + event;</a>
+<a name="ln2052"> </a>
+<a name="ln2053">    god_speaks(which_deity, msg.c_str());</a>
+<a name="ln2054">}</a>
+<a name="ln2055"> </a>
+<a name="ln2056">void wu_jian_sifu_message(const char *event)</a>
+<a name="ln2057">{</a>
+<a name="ln2058">    string msg;</a>
+<a name="ln2059">    msg = uppercase_first(string(&quot;Sifu &quot;) + wu_jian_random_sifu_name() + event);</a>
+<a name="ln2060">    god_speaks(GOD_WU_JIAN, msg.c_str());</a>
+<a name="ln2061">}</a>
+<a name="ln2062"> </a>
+<a name="ln2063">static bool is_channel_dumpworthy(msg_channel_type channel)</a>
+<a name="ln2064">{</a>
+<a name="ln2065">    return channel != MSGCH_EQUIPMENT</a>
+<a name="ln2066">           &amp;&amp; channel != MSGCH_DIAGNOSTICS</a>
+<a name="ln2067">           &amp;&amp; channel != MSGCH_TUTORIAL;</a>
+<a name="ln2068">}</a>
+<a name="ln2069"> </a>
+<a name="ln2070">void clear_message_store()</a>
+<a name="ln2071">{</a>
+<a name="ln2072">    buffer.clear();</a>
+<a name="ln2073">}</a>
+<a name="ln2074"> </a>
+<a name="ln2075">string get_last_messages(int mcount, bool full)</a>
+<a name="ln2076">{</a>
+<a name="ln2077">    flush_prev_message();</a>
+<a name="ln2078"> </a>
+<a name="ln2079">    string text;</a>
+<a name="ln2080">    // XXX: should use some message_history iterator here</a>
+<a name="ln2081">    const store_t&amp; msgs = buffer.get_store();</a>
+<a name="ln2082">    // XXX: loop wraps around otherwise. This could be done better.</a>
+<a name="ln2083">    mcount = min(mcount, NUM_STORED_MESSAGES);</a>
+<a name="ln2084">    for (int i = -1; mcount &gt; 0; --i)</a>
+<a name="ln2085">    {</a>
+<a name="ln2086">        const message_line msg = msgs[i];</a>
+<a name="ln2087">        if (!msg)</a>
+<a name="ln2088">            break;</a>
+<a name="ln2089">        if (full || is_channel_dumpworthy(msg.channel))</a>
+<a name="ln2090">        {</a>
+<a name="ln2091">            string line = msg.pure_text_with_repeats();</a>
+<a name="ln2092">            string wrapped;</a>
+<a name="ln2093">            while (!line.empty())</a>
+<a name="ln2094">                wrapped += wordwrap_line(line, 79, false, true) + &quot;\n&quot;;</a>
+<a name="ln2095">            text = wrapped + text;</a>
+<a name="ln2096">        }</a>
+<a name="ln2097">        mcount--;</a>
+<a name="ln2098">    }</a>
+<a name="ln2099"> </a>
+<a name="ln2100">    // An extra line of clearance.</a>
+<a name="ln2101">    if (!text.empty())</a>
+<a name="ln2102">        text += &quot;\n&quot;;</a>
+<a name="ln2103">    return text;</a>
+<a name="ln2104">}</a>
+<a name="ln2105"> </a>
+<a name="ln2106">void get_recent_messages(vector&lt;string&gt; &amp;mess,</a>
+<a name="ln2107">                         vector&lt;msg_channel_type&gt; &amp;chan)</a>
+<a name="ln2108">{</a>
+<a name="ln2109">    flush_prev_message();</a>
+<a name="ln2110"> </a>
+<a name="ln2111">    const store_t&amp; msgs = buffer.get_store();</a>
+<a name="ln2112">    int mcount = NUM_STORED_MESSAGES;</a>
+<a name="ln2113">    for (int i = -1; mcount &gt; 0; --i, --mcount)</a>
+<a name="ln2114">    {</a>
+<a name="ln2115">        const message_line msg = msgs[i];</a>
+<a name="ln2116">        if (!msg)</a>
+<a name="ln2117">            break;</a>
+<a name="ln2118">        mess.push_back(msg.pure_text_with_repeats());</a>
+<a name="ln2119">        chan.push_back(msg.channel);</a>
+<a name="ln2120">    }</a>
+<a name="ln2121">}</a>
+<a name="ln2122"> </a>
+<a name="ln2123">bool recent_error_messages()</a>
+<a name="ln2124">{</a>
+<a name="ln2125">    // TODO: track whether player has seen error messages so this can be</a>
+<a name="ln2126">    // more generally useful?</a>
+<a name="ln2127">    flush_prev_message();</a>
+<a name="ln2128"> </a>
+<a name="ln2129">    const store_t&amp; msgs = buffer.get_store();</a>
+<a name="ln2130">    int mcount = NUM_STORED_MESSAGES;</a>
+<a name="ln2131">    for (int i = -1; mcount &gt; 0; --i, --mcount)</a>
+<a name="ln2132">    {</a>
+<a name="ln2133">        const message_line msg = msgs[i];</a>
+<a name="ln2134">        if (!msg)</a>
+<a name="ln2135">            break;</a>
+<a name="ln2136">        if (msg.channel == MSGCH_ERROR)</a>
+<a name="ln2137">            return true;</a>
+<a name="ln2138">    }</a>
+<a name="ln2139">    return false;</a>
+<a name="ln2140">}</a>
+<a name="ln2141"> </a>
+<a name="ln2142">// We just write out the whole message store including empty/unused</a>
+<a name="ln2143">// messages. They'll be ignored when restoring.</a>
+<a name="ln2144">void save_messages(writer&amp; outf)</a>
+<a name="ln2145">{</a>
+<a name="ln2146">    store_t msgs = buffer.get_store();</a>
+<a name="ln2147">    marshallInt(outf, msgs.size());</a>
+<a name="ln2148">    for (int i = 0; i &lt; msgs.size(); ++i)</a>
+<a name="ln2149">    {</a>
+<a name="ln2150">        marshallString4(outf, msgs[i].full_text());</a>
+<a name="ln2151">        marshallInt(outf, msgs[i].channel);</a>
+<a name="ln2152">        marshallInt(outf, msgs[i].param);</a>
+<a name="ln2153">        marshallInt(outf, msgs[i].turn);</a>
+<a name="ln2154">    }</a>
+<a name="ln2155">}</a>
+<a name="ln2156"> </a>
+<a name="ln2157">void load_messages(reader&amp; inf)</a>
+<a name="ln2158">{</a>
+<a name="ln2159">    unwind_bool save_more(crawl_state.show_more_prompt, false);</a>
+<a name="ln2160"> </a>
+<a name="ln2161">    // assumes that the store was cleared at the beginning of _restore_game!</a>
+<a name="ln2162">    flush_prev_message();</a>
+<a name="ln2163">    store_t load_msgs = buffer.get_store(); // copy of messages during loading</a>
+<a name="ln2164">    clear_message_store();</a>
+<a name="ln2165"> </a>
+<a name="ln2166">    int num = unmarshallInt(inf);</a>
+<a name="ln2167">    for (int i = 0; i &lt; num; ++i)</a>
+<a name="ln2168">    {</a>
+<a name="ln2169">        string text;</a>
+<a name="ln2170">        unmarshallString4(inf, text);</a>
+<a name="ln2171"> </a>
+<a name="ln2172">        msg_channel_type channel = (msg_channel_type) unmarshallInt(inf);</a>
+<a name="ln2173">        int           param      = unmarshallInt(inf);</a>
+<a name="ln2174">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2175">        if (inf.getMinorVersion() &lt; TAG_MINOR_MESSAGE_REPEATS)</a>
+<a name="ln2176">                                   unmarshallInt(inf); // was 'repeats'</a>
+<a name="ln2177">#endif</a>
+<a name="ln2178">        int           turn       = unmarshallInt(inf);</a>
+<a name="ln2179"> </a>
+<a name="ln2180">        message_line msg(message_line(text, channel, param, turn));</a>
+<a name="ln2181">        if (msg)</a>
+<a name="ln2182">            buffer.store_msg(msg);</a>
+<a name="ln2183">    }</a>
+<a name="ln2184">    flush_prev_message();</a>
+<a name="ln2185">    buffer.append_store(load_msgs);</a>
+<a name="ln2186">    clear_messages(); // check for Options.message_clear</a>
+<a name="ln2187">}</a>
+<a name="ln2188"> </a>
+<a name="ln2189">static void _replay_messages_core(formatted_scroller &amp;hist)</a>
+<a name="ln2190">{</a>
+<a name="ln2191">    flush_prev_message();</a>
+<a name="ln2192"> </a>
+<a name="ln2193">    const store_t msgs = buffer.get_store();</a>
+<a name="ln2194">    formatted_string lines;</a>
+<a name="ln2195">    for (int i = 0; i &lt; msgs.size(); ++i)</a>
+<a name="ln2196">        if (channel_message_history(msgs[i].channel))</a>
+<a name="ln2197">        {</a>
+<a name="ln2198">            string text = msgs[i].full_text();</a>
+<a name="ln2199">            if (!text.size())</a>
+<a name="ln2200">                continue;</a>
+<a name="ln2201">            linebreak_string(text, cgetsize(GOTO_CRT).x - 1);</a>
+<a name="ln2202">            vector&lt;formatted_string&gt; parts;</a>
+<a name="ln2203">            formatted_string::parse_string_to_multiple(text, parts, 80);</a>
+<a name="ln2204">            for (unsigned int j = 0; j &lt; parts.size(); ++j)</a>
+<a name="ln2205">            {</a>
+<a name="ln2206">                prefix_type p = prefix_type::none;</a>
+<a name="ln2207">                if (j == parts.size() - 1 &amp;&amp; i + 1 &lt; msgs.size()</a>
+<a name="ln2208">                    &amp;&amp; msgs[i+1].turn &gt; msgs[i].turn)</a>
+<a name="ln2209">                {</a>
+<a name="ln2210">                    p = prefix_type::turn_end;</a>
+<a name="ln2211">                }</a>
+<a name="ln2212">                if (!lines.empty())</a>
+<a name="ln2213">                    lines.add_glyph('\n');</a>
+<a name="ln2214">                lines.add_glyph(_prefix_glyph(p));</a>
+<a name="ln2215">                lines += parts[j];</a>
+<a name="ln2216">            }</a>
+<a name="ln2217">        }</a>
+<a name="ln2218"> </a>
+<a name="ln2219">    hist.add_formatted_string(lines);</a>
+<a name="ln2220">    hist.show();</a>
+<a name="ln2221">}</a>
+<a name="ln2222"> </a>
+<a name="ln2223">void replay_messages()</a>
+<a name="ln2224">{</a>
+<a name="ln2225">    formatted_scroller hist(FS_START_AT_END | FS_PREWRAPPED_TEXT);</a>
+<a name="ln2226">    hist.set_more();</a>
+<a name="ln2227"> </a>
+<a name="ln2228">    _replay_messages_core(hist);</a>
+<a name="ln2229">}</a>
+<a name="ln2230"> </a>
+<a name="ln2231">void replay_messages_during_startup()</a>
+<a name="ln2232">{</a>
+<a name="ln2233">    formatted_scroller hist(FS_PREWRAPPED_TEXT);</a>
+<a name="ln2234">    hist.set_more();</a>
+<a name="ln2235">    hist.set_more(formatted_string::parse_string(</a>
+<a name="ln2236">            &quot;&lt;cyan&gt;Press Esc to close, arrows/pgup/pgdn to scroll.&lt;/cyan&gt;&quot;));</a>
+<a name="ln2237">    hist.set_title(formatted_string::parse_string(recent_error_messages()</a>
+<a name="ln2238">        ? &quot;&lt;yellow&gt;Crawl encountered errors during initialization:&lt;/yellow&gt;&quot;</a>
+<a name="ln2239">        : &quot;&lt;yellow&gt;Initialization log:&lt;/yellow&gt;&quot;));</a>
+<a name="ln2240">    _replay_messages_core(hist);</a>
+<a name="ln2241">}</a>
+<a name="ln2242"> </a>
+<a name="ln2243">void set_msg_dump_file(FILE* file)</a>
+<a name="ln2244">{</a>
+<a name="ln2245">    _msg_dump_file = file;</a>
+<a name="ln2246">}</a>
+<a name="ln2247"> </a>
+<a name="ln2248">void formatted_mpr(const formatted_string&amp; fs,</a>
+<a name="ln2249">                   msg_channel_type channel, int param)</a>
+<a name="ln2250">{</a>
+<a name="ln2251">    _mpr(fs.to_colour_string(), channel, param);</a>
+<a name="ln2252">}</a>
+
+</code></pre>
+<div class="balloon" rel="174"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: Options.msg_condense_repeats.</p></div>
+<div class="balloon" rel="723"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v618/" target="_blank">V618</a> It's dangerous to call the 'cprintf' function in such a manner, as the line being passed could contain format specification. The example of the safe code: printf("%s", str);</p></div>
+<div class="balloon" rel="1088"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1088, 1114</p></div>
+<div class="balloon" rel="1204"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'heapbuf'.</p></div>
+<div class="balloon" rel="1666"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: size > 0.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

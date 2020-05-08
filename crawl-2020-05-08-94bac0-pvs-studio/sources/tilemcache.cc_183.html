@@ -1,0 +1,1647 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>tilemcache.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#ifdef USE_TILE</a>
+<a name="ln4">#include &quot;tilemcache.h&quot;</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;colour.h&quot;</a>
+<a name="ln7">#include &quot;env.h&quot;</a>
+<a name="ln8">#include &quot;libutil.h&quot;</a>
+<a name="ln9">#include &quot;misc.h&quot;</a>
+<a name="ln10">#include &quot;mon-info.h&quot;</a>
+<a name="ln11">#include &quot;mon-util.h&quot;</a>
+<a name="ln12">#include &quot;mutant-beast.h&quot;</a>
+<a name="ln13">#include &quot;options.h&quot;</a>
+<a name="ln14">#include &quot;tile-flags.h&quot;</a>
+<a name="ln15">#include &quot;rltiles/tiledef-player.h&quot;</a>
+<a name="ln16">#include &quot;tiledoll.h&quot;</a>
+<a name="ln17">#include &quot;tilepick.h&quot;</a>
+<a name="ln18">#include &quot;tilepick-p.h&quot;</a>
+<a name="ln19"> </a>
+<a name="ln20">mcache_manager mcache;</a>
+<a name="ln21"> </a>
+<a name="ln22">struct demon_data</a>
+<a name="ln23">{</a>
+<a name="ln24">    demon_data() { head = body = wings = 0; }</a>
+<a name="ln25"> </a>
+<a name="ln26">    tileidx_t head;</a>
+<a name="ln27">    tileidx_t body;</a>
+<a name="ln28">    tileidx_t wings;</a>
+<a name="ln29">};</a>
+<a name="ln30"> </a>
+<a name="ln31">// Internal mcache classes. The mcache_manager creates these internally.</a>
+<a name="ln32">// The only access external clients need is through the virtual</a>
+<a name="ln33">// info function.</a>
+<a name="ln34"> </a>
+<a name="ln35">class mcache_monster : public mcache_entry</a>
+<a name="ln36">{</a>
+<a name="ln37">public:</a>
+<a name="ln38">    mcache_monster(const monster_info&amp; mon);</a>
+<a name="ln39"> </a>
+<a name="ln40">    virtual int info(tile_draw_info *dinfo) const override;</a>
+<a name="ln41"> </a>
+<a name="ln42">    static bool valid(const monster_info&amp; mon);</a>
+<a name="ln43"> </a>
+<a name="ln44">    static bool get_weapon_offset(tileidx_t mon_tile, int *ofs_x, int *ofs_y);</a>
+<a name="ln45">    static bool get_shield_offset(tileidx_t mon_tile, int *ofs_x, int *ofs_y);</a>
+<a name="ln46"> </a>
+<a name="ln47">protected:</a>
+<a name="ln48">    monster_type mtype;</a>
+<a name="ln49">    tileidx_t m_mon_tile;</a>
+<a name="ln50">    tileidx_t m_equ_tile;</a>
+<a name="ln51">    tileidx_t m_shd_tile;</a>
+<a name="ln52">};</a>
+<a name="ln53"> </a>
+<a name="ln54">class mcache_draco : public mcache_entry</a>
+<a name="ln55">{</a>
+<a name="ln56">public:</a>
+<a name="ln57">    mcache_draco(const monster_info&amp; mon);</a>
+<a name="ln58"> </a>
+<a name="ln59">    virtual int info(tile_draw_info *dinfo) const override;</a>
+<a name="ln60"> </a>
+<a name="ln61">    static bool valid(const monster_info&amp; mon);</a>
+<a name="ln62"> </a>
+<a name="ln63">protected:</a>
+<a name="ln64">    tileidx_t m_mon_tile;</a>
+<a name="ln65">    tileidx_t m_job_tile;</a>
+<a name="ln66">    tileidx_t m_equ_tile;</a>
+<a name="ln67">    tileidx_t m_shd_tile;</a>
+<a name="ln68">    bool draco;</a>
+<a name="ln69">};</a>
+<a name="ln70"> </a>
+<a name="ln71">class mcache_mbeast : public mcache_entry</a>
+<a name="ln72">{</a>
+<a name="ln73">public:</a>
+<a name="ln74">    mcache_mbeast(const monster_info&amp; mon);</a>
+<a name="ln75"> </a>
+<a name="ln76">    virtual int info(tile_draw_info *dinfo) const override;</a>
+<a name="ln77"> </a>
+<a name="ln78">    static bool valid(const monster_info&amp; mon);</a>
+<a name="ln79"> </a>
+<a name="ln80">protected:</a>
+<a name="ln81">    vector&lt;tileidx_t&gt; layers;</a>
+<a name="ln82">};</a>
+<a name="ln83"> </a>
+<a name="ln84">class mcache_ghost : public mcache_entry</a>
+<a name="ln85">{</a>
+<a name="ln86">public:</a>
+<a name="ln87">    mcache_ghost(const monster_info&amp; mon);</a>
+<a name="ln88"> </a>
+<a name="ln89">    virtual const dolls_data *doll() const override;</a>
+<a name="ln90"> </a>
+<a name="ln91">    static bool valid(const monster_info&amp; mon);</a>
+<a name="ln92"> </a>
+<a name="ln93">    virtual bool transparent() const override;</a>
+<a name="ln94"> </a>
+<a name="ln95">protected:</a>
+<a name="ln96">    dolls_data m_doll;</a>
+<a name="ln97">};</a>
+<a name="ln98"> </a>
+<a name="ln99">class mcache_demon : public mcache_entry</a>
+<a name="ln100">{</a>
+<a name="ln101">public:</a>
+<a name="ln102">    mcache_demon(const monster_info&amp; minf);</a>
+<a name="ln103"> </a>
+<a name="ln104">    virtual int info(tile_draw_info *dinfo) const override;</a>
+<a name="ln105"> </a>
+<a name="ln106">    static bool valid(const monster_info&amp; mon);</a>
+<a name="ln107"> </a>
+<a name="ln108">protected:</a>
+<a name="ln109">    demon_data m_demon;</a>
+<a name="ln110">};</a>
+<a name="ln111"> </a>
+<a name="ln112">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln113">// tile_fg_store</a>
+<a name="ln114"> </a>
+<a name="ln115">tileidx_t tile_fg_store::operator=(tileidx_t tile)</a>
+<a name="ln116">{</a>
+<a name="ln117">    if ((tile &amp; TILE_FLAG_MASK) == (m_tile &amp; TILE_FLAG_MASK))</a>
+<a name="ln118">    {</a>
+<a name="ln119">        // Update, as flags may have changed.</a>
+<a name="ln120">        m_tile = tile;</a>
+<a name="ln121">        return m_tile;</a>
+<a name="ln122">    }</a>
+<a name="ln123"> </a>
+<a name="ln124">    mcache_entry *old_entry = mcache.get(m_tile);</a>
+<a name="ln125">    if (old_entry)</a>
+<a name="ln126">        old_entry-&gt;dec_ref();</a>
+<a name="ln127"> </a>
+<a name="ln128">    m_tile = tile;</a>
+<a name="ln129"> </a>
+<a name="ln130">    mcache_entry *new_entry = mcache.get(m_tile);</a>
+<a name="ln131">    if (new_entry)</a>
+<a name="ln132">        new_entry-&gt;inc_ref();</a>
+<a name="ln133"> </a>
+<a name="ln134">    return m_tile;</a>
+<a name="ln135">}</a>
+<a name="ln136"> </a>
+<a name="ln137">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln138">// mcache_manager</a>
+<a name="ln139"> </a>
+<a name="ln140">mcache_manager::~mcache_manager()</a>
+<a name="ln141">{</a>
+<a name="ln142">    clear_all();</a>
+<a name="ln143">}</a>
+<a name="ln144"> </a>
+<a name="ln145">unsigned int mcache_manager::register_monster(const monster_info&amp; minf)</a>
+<a name="ln146">{</a>
+<a name="ln147">    // TODO enne - is it worth it to search against all mcache entries?</a>
+<a name="ln148">    // TODO enne - pool mcache types to avoid too much alloc/dealloc?</a>
+<a name="ln149"> </a>
+<a name="ln150">    mcache_entry *entry;</a>
+<a name="ln151"> </a>
+<a name="ln152">    if (minf.props.exists(&quot;monster_tile&quot;))</a>
+<a name="ln153">    {</a>
+<a name="ln154">        if (mcache_monster::valid(minf))</a>
+<a name="ln155">            entry = new mcache_monster(minf);</a>
+<a name="ln156">        else</a>
+<a name="ln157">            return 0;</a>
+<a name="ln158">    }</a>
+<a name="ln159">    else if (mcache_demon::valid(minf))</a>
+<a name="ln160">        entry = new mcache_demon(minf);</a>
+<a name="ln161">    else if (mcache_mbeast::valid(minf))</a>
+<a name="ln162">        entry = new mcache_mbeast(minf);</a>
+<a name="ln163">    else if (mcache_ghost::valid(minf))</a>
+<a name="ln164">        entry = new mcache_ghost(minf);</a>
+<a name="ln165">    else if (mcache_draco::valid(minf))</a>
+<a name="ln166">        entry = new mcache_draco(minf);</a>
+<a name="ln167">    else if (mcache_monster::valid(minf))</a>
+<a name="ln168">        entry = new mcache_monster(minf);</a>
+<a name="ln169">    else</a>
+<a name="ln170">        return 0;</a>
+<a name="ln171"> </a>
+<a name="ln172">    tileidx_t idx = ~0;</a>
+<a name="ln173"> </a>
+<a name="ln174">    for (unsigned int i = 0; i &lt; m_entries.size(); i++)</a>
+<a name="ln175">    {</a>
+<a name="ln176">        if (!m_entries[i])</a>
+<a name="ln177">        {</a>
+<a name="ln178">            m_entries[i] = entry;</a>
+<a name="ln179">            idx = i;</a>
+<a name="ln180">            break;</a>
+<a name="ln181">        }</a>
+<a name="ln182">    }</a>
+<a name="ln183"> </a>
+<a name="ln184">    if (idx &gt; m_entries.size())</a>
+<a name="ln185">    {</a>
+<a name="ln186">        idx = m_entries.size();</a>
+<a name="ln187">        m_entries.push_back(entry);</a>
+<a name="ln188">    }</a>
+<a name="ln189"> </a>
+<a name="ln190">    return TILEP_MCACHE_START + idx;</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">void mcache_manager::clear_nonref()</a>
+<a name="ln194">{</a>
+<a name="ln195">    for (mcache_entry *&amp;entry : m_entries)</a>
+<a name="ln196">    {</a>
+<a name="ln197">        if (!entry || entry-&gt;ref_count() &gt; 0)</a>
+<a name="ln198">            continue;</a>
+<a name="ln199"> </a>
+<a name="ln200">        delete entry;</a>
+<a name="ln201">        entry = nullptr;</a>
+<a name="ln202">    }</a>
+<a name="ln203">}</a>
+<a name="ln204"> </a>
+<a name="ln205">void mcache_manager::clear_all()</a>
+<a name="ln206">{</a>
+<a name="ln207">    deleteAll(m_entries);</a>
+<a name="ln208">}</a>
+<a name="ln209"> </a>
+<a name="ln210">mcache_entry *mcache_manager::get(tileidx_t tile)</a>
+<a name="ln211">{</a>
+<a name="ln212">    tileidx_t idx = tile &amp; TILE_FLAG_MASK;</a>
+<a name="ln213">    if (idx &lt; TILEP_MCACHE_START)</a>
+<a name="ln214">        return nullptr;</a>
+<a name="ln215"> </a>
+<a name="ln216">    if (idx &gt;= TILEP_MCACHE_START + m_entries.size())</a>
+<a name="ln217">        return nullptr;</a>
+<a name="ln218"> </a>
+<a name="ln219">    mcache_entry *entry = m_entries[idx - TILEP_MCACHE_START];</a>
+<a name="ln220">    return entry;</a>
+<a name="ln221">}</a>
+<a name="ln222"> </a>
+<a name="ln223">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln224">// mcache_monster</a>
+<a name="ln225"> </a>
+<a name="ln226">mcache_monster::mcache_monster(const monster_info&amp; mon)</a>
+<a name="ln227">{</a>
+<a name="ln228">    ASSERT(mcache_monster::valid(mon));</a>
+<a name="ln229"> </a>
+<a name="ln230">    mtype = mon.type;</a>
+<a name="ln231">    m_mon_tile = tileidx_monster(mon) &amp; TILE_FLAG_MASK;</a>
+<a name="ln232"> </a>
+<a name="ln233">    const item_info* mon_weapon = mon.inv[MSLOT_WEAPON].get();</a>
+<a name="ln234">    m_equ_tile = (mon_weapon != nullptr) ? tilep_equ_weapon(*mon_weapon) : 0;</a>
+<a name="ln235">    if (mons_class_wields_two_weapons(mon.type))</a>
+<a name="ln236">    {</a>
+<a name="ln237">        const item_info* mon_weapon2 = mon.inv[MSLOT_ALT_WEAPON].get();</a>
+<a name="ln238">        if (mon_weapon2)</a>
+<a name="ln239">        {</a>
+<a name="ln240">            switch (tilep_equ_weapon(*mon_weapon2))</a>
+<a name="ln241">            {</a>
+<a name="ln242">                case TILEP_HAND1_DAGGER:</a>
+<a name="ln243">                    m_shd_tile = TILEP_HAND2_DAGGER;</a>
+<a name="ln244">                    break;</a>
+<a name="ln245">                case TILEP_DAGGER_1:</a>
+<a name="ln246">                    m_shd_tile = TILEP_HAND2_DAGGER_1;</a>
+<a name="ln247">                    break;</a>
+<a name="ln248">                case TILEP_HAND1_RAPIER:</a>
+<a name="ln249">                    m_shd_tile = TILEP_HAND2_RAPIER;</a>
+<a name="ln250">                    break;</a>
+<a name="ln251">                case TILEP_RAPIER_1:</a>
+<a name="ln252">                    m_shd_tile = TILEP_HAND2_RAPIER_1;</a>
+<a name="ln253">                    break;</a>
+<a name="ln254">                default:</a>
+<a name="ln255">                case TILEP_HAND1_SHORT_SWORD_SLANT:</a>
+<a name="ln256">                    m_shd_tile = TILEP_HAND2_SHORT_SWORD_SLANT;</a>
+<a name="ln257">                    break;</a>
+<a name="ln258">                case TILEP_SHORT_SWORD_SLANT_1:</a>
+<a name="ln259">                    m_shd_tile = TILEP_HAND2_SHORT_SWORD_SLANT_1;</a>
+<a name="ln260">                    break;</a>
+<a name="ln261">                case TILEP_HAND1_GREAT_FLAIL:</a>
+<a name="ln262">                    m_shd_tile = TILEP_HAND2_GREAT_FLAIL;</a>
+<a name="ln263">                    break;</a>
+<a name="ln264">                case TILEP_GREAT_FLAIL_1:</a>
+<a name="ln265">                    m_shd_tile = TILEP_HAND2_GREAT_FLAIL_1;</a>
+<a name="ln266">                    break;</a>
+<a name="ln267">                case TILEP_HAND1_GREAT_MACE:</a>
+<a name="ln268">                    m_shd_tile = TILEP_HAND2_GREAT_MACE;</a>
+<a name="ln269">                    break;</a>
+<a name="ln270">                case TILEP_GREAT_MACE_1:</a>
+<a name="ln271">                    m_shd_tile = TILEP_HAND2_GREAT_MACE_1;</a>
+<a name="ln272">                    break;</a>
+<a name="ln273">                case TILEP_HAND1_GIANT_CLUB:</a>
+<a name="ln274">                    m_shd_tile = TILEP_HAND2_GIANT_CLUB;</a>
+<a name="ln275">                    break;</a>
+<a name="ln276">                case TILEP_HAND1_GIANT_CLUB_SLANT:</a>
+<a name="ln277">                    m_shd_tile = TILEP_HAND2_GIANT_CLUB_SLANT;</a>
+<a name="ln278">                    break;</a>
+<a name="ln279">                case TILEP_HAND1_GIANT_CLUB_SPIKE:</a>
+<a name="ln280">                    m_shd_tile = TILEP_HAND2_GIANT_CLUB_SPIKE;</a>
+<a name="ln281">                    break;</a>
+<a name="ln282">                case TILEP_HAND1_GIANT_CLUB_SPIKE_SLANT:</a>
+<a name="ln283">                    m_shd_tile = TILEP_HAND2_GIANT_CLUB_SPIKE_SLANT;</a>
+<a name="ln284">                    break;</a>
+<a name="ln285">                case TILEP_HAND1_GIANT_CLUB_PLAIN:</a>
+<a name="ln286">                    m_shd_tile = TILEP_HAND2_GIANT_CLUB_PLAIN;</a>
+<a name="ln287">                    break;</a>
+<a name="ln288">            };</a>
+<a name="ln289">        }</a>
+<a name="ln290">        else</a>
+<a name="ln291">            m_shd_tile = 0;</a>
+<a name="ln292">    }</a>
+<a name="ln293">    else</a>
+<a name="ln294">    {</a>
+<a name="ln295">        const item_info* mon_shield = mon.inv[MSLOT_SHIELD].get();</a>
+<a name="ln296">        m_shd_tile = (mon_shield != nullptr) ? tilep_equ_shield(*mon_shield) : 0;</a>
+<a name="ln297">    }</a>
+<a name="ln298">}</a>
+<a name="ln299"> </a>
+<a name="ln300">// Returns the amount of pixels necessary to shift a wielded weapon</a>
+<a name="ln301">// from its default placement. Tiles showing monsters already wielding</a>
+<a name="ln302">// a weapon should not be listed here.</a>
+<a name="ln303">bool mcache_monster::get_weapon_offset(tileidx_t mon_tile,</a>
+<a name="ln304">                                       int *ofs_x, int *ofs_y)</a>
+<a name="ln305">{</a>
+<a name="ln306">    switch (mon_tile)</a>
+<a name="ln307">    {</a>
+<a name="ln308">    // No shift necessary.</a>
+<a name="ln309">    case TILEP_MONS_DEEP_ELF_ARCHER:</a>
+<a name="ln310">    case TILEP_MONS_DEEP_ELF_MASTER_ARCHER:</a>
+<a name="ln311">    case TILEP_MONS_DEEP_ELF_BLADEMASTER:</a>
+<a name="ln312">    case TILEP_MONS_CRIMSON_IMP:</a>
+<a name="ln313">    case TILEP_MONS_IRON_IMP:</a>
+<a name="ln314">    case TILEP_MONS_SHADOW_IMP:</a>
+<a name="ln315">    case TILEP_MONS_HAROLD:</a>
+<a name="ln316">    case TILEP_MONS_JOSEPHINE:</a>
+<a name="ln317">    case TILEP_MONS_JOSEPH:</a>
+<a name="ln318">    case TILEP_MONS_TERENCE:</a>
+<a name="ln319">    case TILEP_MONS_RAKSHASA:</a>
+<a name="ln320">    case TILEP_MONS_VAMPIRE_KNIGHT:</a>
+<a name="ln321">    case TILEP_MONS_CHERUB:</a>
+<a name="ln322">    case TILEP_MONS_MENNAS:</a>
+<a name="ln323">    case TILEP_MONS_PROFANE_SERVITOR:</a>
+<a name="ln324">    case TILEP_MONS_KOBOLD:</a>
+<a name="ln325">    case TILEP_MONS_OCTOPODE:</a>
+<a name="ln326">    case TILEP_MONS_ZOMBIE_OCTOPODE:</a>
+<a name="ln327">    case TILEP_MONS_ANCESTOR:</a>
+<a name="ln328">    case TILEP_MONS_ANCESTOR_KNIGHT:</a>
+<a name="ln329">    case TILEP_MONS_ANCESTOR_BATTLEMAGE:</a>
+<a name="ln330">    case TILEP_MONS_RAGGED_HIEROPHANT:</a>
+<a name="ln331">        *ofs_x = 0;</a>
+<a name="ln332">        *ofs_y = 0;</a>
+<a name="ln333">        break;</a>
+<a name="ln334">    // Shift to the left.</a>
+<a name="ln335">    case TILEP_MONS_GNOLL:</a>
+<a name="ln336">    case TILEP_MONS_GNOLL_SHAMAN:</a>
+<a name="ln337">    case TILEP_MONS_GNOLL_SERGEANT:</a>
+<a name="ln338">    case TILEP_MONS_GRUM:</a>
+<a name="ln339">    case TILEP_MONS_CRAZY_YIUF:</a>
+<a name="ln340">    case TILEP_MONS_DEEP_ELF_DEATH_MAGE:</a>
+<a name="ln341">        *ofs_x = -1;</a>
+<a name="ln342">        *ofs_y = 0;</a>
+<a name="ln343">        break;</a>
+<a name="ln344">    case TILEP_MONS_HOBGOBLIN:</a>
+<a name="ln345">    case TILEP_MONS_ROBIN:</a>
+<a name="ln346">    case TILEP_MONS_TIAMAT:</a>
+<a name="ln347">    case TILEP_MONS_TIAMAT_1:</a>
+<a name="ln348">    case TILEP_MONS_TIAMAT_2:</a>
+<a name="ln349">    case TILEP_MONS_TIAMAT_3:</a>
+<a name="ln350">    case TILEP_MONS_TIAMAT_4:</a>
+<a name="ln351">    case TILEP_MONS_TIAMAT_5:</a>
+<a name="ln352">    case TILEP_MONS_TIAMAT_6:</a>
+<a name="ln353">    case TILEP_MONS_TIAMAT_7:</a>
+<a name="ln354">    case TILEP_MONS_TENGU:</a>
+<a name="ln355">    case TILEP_MONS_TENGU_CONJURER:</a>
+<a name="ln356">    case TILEP_MONS_TENGU_WARRIOR:</a>
+<a name="ln357">    case TILEP_MONS_TENGU_REAVER:</a>
+<a name="ln358">    case TILEP_MONS_SOJOBO:</a>
+<a name="ln359">        *ofs_x = -2;</a>
+<a name="ln360">        *ofs_y = 0;</a>
+<a name="ln361">        break;</a>
+<a name="ln362">    case TILEP_MONS_SKELETON_LARGE:</a>
+<a name="ln363">    case TILEP_MONS_ORC_WARLORD:</a>
+<a name="ln364">    case TILEP_MONS_BIG_KOBOLD:</a>
+<a name="ln365">    case TILEP_MONS_EFREET:</a>
+<a name="ln366">    case TILEP_MONS_VAMPIRE_MAGE:</a>
+<a name="ln367">        *ofs_x = -3;</a>
+<a name="ln368">        *ofs_y = 0;</a>
+<a name="ln369">        break;</a>
+<a name="ln370">    // Shift to the right.</a>
+<a name="ln371">    case TILEP_MONS_VAULT_GUARD:</a>
+<a name="ln372">    case TILEP_MONS_VAULT_WARDEN:</a>
+<a name="ln373">    case TILEP_MONS_VAULT_SENTINEL:</a>
+<a name="ln374">    case TILEP_MONS_IRONBRAND_CONVOKER:</a>
+<a name="ln375">    case TILEP_MONS_IRONHEART_PRESERVER:</a>
+<a name="ln376">    case TILEP_MONS_GARGOYLE:</a>
+<a name="ln377">    case TILEP_MONS_MOLTEN_GARGOYLE:</a>
+<a name="ln378">    case TILEP_MONS_WAR_GARGOYLE:</a>
+<a name="ln379">    case TILEP_MONS_SERVANT_OF_WHISPERS:</a>
+<a name="ln380">        *ofs_x = 1;</a>
+<a name="ln381">        *ofs_y = 0;</a>
+<a name="ln382">        break;</a>
+<a name="ln383">    case TILEP_MONS_YAKTAUR_MELEE:</a>
+<a name="ln384">        *ofs_x = 2;</a>
+<a name="ln385">        *ofs_y = 0;</a>
+<a name="ln386">        break;</a>
+<a name="ln387">    case TILEP_MONS_YAKTAUR_CAPTAIN_MELEE:</a>
+<a name="ln388">        *ofs_x = 4;</a>
+<a name="ln389">        *ofs_y = 0;</a>
+<a name="ln390">        break;</a>
+<a name="ln391">    // Shift upwards.</a>
+<a name="ln392">    case TILEP_MONS_CENTAUR_WARRIOR_MELEE:</a>
+<a name="ln393">    case TILEP_MONS_DEEP_ELF_SORCERER:</a>
+<a name="ln394">    case TILEP_MONS_DEEP_ELF_HIGH_PRIEST:</a>
+<a name="ln395">    case TILEP_MONS_RUPERT:</a>
+<a name="ln396">    case TILEP_MONS_HELL_KNIGHT:</a>
+<a name="ln397">    case TILEP_MONS_DEATH_KNIGHT:</a>
+<a name="ln398">    case TILEP_MONS_MUMMY:</a>
+<a name="ln399">    case TILEP_MONS_MUMMY_PRIEST:</a>
+<a name="ln400">    case TILEP_MONS_GUARDIAN_MUMMY:</a>
+<a name="ln401">    case TILEP_MONS_SKELETON_SMALL:</a>
+<a name="ln402">    case TILEP_MONS_PSYCHE:</a>
+<a name="ln403">    case TILEP_MONS_DUVESSA:</a>
+<a name="ln404">    case TILEP_MONS_DUVESSA_1:</a>
+<a name="ln405">        *ofs_x = 0;</a>
+<a name="ln406">        *ofs_y = -1;</a>
+<a name="ln407">        break;</a>
+<a name="ln408">    case TILEP_MONS_SALAMANDER_MYSTIC:</a>
+<a name="ln409">        *ofs_x = 0;</a>
+<a name="ln410">        *ofs_y = -2;</a>
+<a name="ln411">        break;</a>
+<a name="ln412">    case TILEP_MONS_RED_DEVIL:</a>
+<a name="ln413">        *ofs_x = 0;</a>
+<a name="ln414">        *ofs_y = -3;</a>
+<a name="ln415">        break;</a>
+<a name="ln416">    case TILEP_MONS_NAGA:</a>
+<a name="ln417">    case TILEP_MONS_NAGA_WARRIOR:</a>
+<a name="ln418">    case TILEP_MONS_NAGA_MAGE:</a>
+<a name="ln419">    case TILEP_MONS_NAGA_RITUALIST:</a>
+<a name="ln420">    case TILEP_MONS_NAGA_SHARPSHOOTER:</a>
+<a name="ln421">    case TILEP_MONS_VASHNIA:</a>
+<a name="ln422">        *ofs_x = 0;</a>
+<a name="ln423">        *ofs_y = -4;</a>
+<a name="ln424">        break;</a>
+<a name="ln425">    // Shift downwards.</a>
+<a name="ln426">    case TILEP_MONS_DEEP_ELF_KNIGHT:</a>
+<a name="ln427">    case TILEP_MONS_GUARDIAN_SERPENT:</a>
+<a name="ln428">    case TILEP_MONS_DEEP_DWARF:</a>
+<a name="ln429">    case TILEP_MONS_RUST_DEVIL:</a>
+<a name="ln430">        *ofs_x = 0;</a>
+<a name="ln431">        *ofs_y = 1;</a>
+<a name="ln432">        break;</a>
+<a name="ln433">    case TILEP_MONS_BLORK_THE_ORC:</a>
+<a name="ln434">    case TILEP_MONS_BOGGART:</a>
+<a name="ln435">    case TILEP_MONS_JORGRUN:</a>
+<a name="ln436">    case TILEP_MONS_DIMME:</a>
+<a name="ln437">    case TILEP_MONS_HALFLING:</a>
+<a name="ln438">    case TILEP_MONS_IMPERIAL_MYRMIDON:</a>
+<a name="ln439">        *ofs_x = 0;</a>
+<a name="ln440">        *ofs_y = 2;</a>
+<a name="ln441">        break;</a>
+<a name="ln442">    // Shift upwards and to the left.</a>
+<a name="ln443">    case TILEP_MONS_DEEP_ELF_MAGE:</a>
+<a name="ln444">    case TILEP_MONS_DEEP_ELF_DEMONOLOGIST:</a>
+<a name="ln445">    case TILEP_MONS_DEEP_ELF_ANNIHILATOR:</a>
+<a name="ln446">    case TILEP_MONS_MINOTAUR:</a>
+<a name="ln447">    case TILEP_MONS_VAMPIRE:</a>
+<a name="ln448">        *ofs_x = -1;</a>
+<a name="ln449">        *ofs_y = -2;</a>
+<a name="ln450">        break;</a>
+<a name="ln451">    case TILEP_MONS_CENTAUR_MELEE:</a>
+<a name="ln452">    case TILEP_MONS_EUSTACHIO:</a>
+<a name="ln453">        *ofs_x = -3;</a>
+<a name="ln454">        *ofs_y = -3;</a>
+<a name="ln455">        break;</a>
+<a name="ln456">    case TILEP_MONS_DEMIGOD:</a>
+<a name="ln457">    case TILEP_MONS_KIRKE:</a>
+<a name="ln458">    case TILEP_MONS_FREDERICK:</a>
+<a name="ln459">        *ofs_x = -1;</a>
+<a name="ln460">        *ofs_y = -3;</a>
+<a name="ln461">        break;</a>
+<a name="ln462">    case TILEP_MONS_SONJA:</a>
+<a name="ln463">    case TILEP_MONS_ANCIENT_CHAMPION:</a>
+<a name="ln464">    case TILEP_MONS_SKELETAL_WARRIOR:</a>
+<a name="ln465">    case TILEP_MONS_SALAMANDER:</a>
+<a name="ln466">    case TILEP_MONS_VINE_STALKER:</a>
+<a name="ln467">    case TILEP_MONS_NECROPHAGE:</a>
+<a name="ln468">    case TILEP_MONS_WIGHT:</a>
+<a name="ln469">        *ofs_x = -2;</a>
+<a name="ln470">        *ofs_y = -2;</a>
+<a name="ln471">        break;</a>
+<a name="ln472">    case TILEP_MONS_SPRIGGAN_BERSERKER:</a>
+<a name="ln473">        *ofs_x = -3;</a>
+<a name="ln474">        *ofs_y = -2;</a>
+<a name="ln475">        break;</a>
+<a name="ln476">    case TILEP_MONS_SPRIGGAN_AIR_MAGE:</a>
+<a name="ln477">        *ofs_x = -3;</a>
+<a name="ln478">        *ofs_y = -5;</a>
+<a name="ln479">        break;</a>
+<a name="ln480">    case TILEP_MONS_DEEP_ELF_ELEMENTALIST:</a>
+<a name="ln481">    case TILEP_MONS_DEEP_ELF_ELEMENTALIST_1:</a>
+<a name="ln482">    case TILEP_MONS_DEEP_ELF_ELEMENTALIST_2:</a>
+<a name="ln483">    case TILEP_MONS_DEEP_ELF_ELEMENTALIST_3:</a>
+<a name="ln484">    case TILEP_MONS_FORMICID:</a>
+<a name="ln485">        *ofs_x = -2;</a>
+<a name="ln486">        *ofs_y = -1;</a>
+<a name="ln487">        break;</a>
+<a name="ln488">    case TILEP_MONS_FANNAR:</a>
+<a name="ln489">    case TILEP_MONS_DONALD:</a>
+<a name="ln490">        *ofs_x = -2;</a>
+<a name="ln491">        *ofs_y = -4;</a>
+<a name="ln492">        break;</a>
+<a name="ln493">    case TILEP_MONS_NAGARAJA:</a>
+<a name="ln494">        *ofs_x = -2;</a>
+<a name="ln495">        *ofs_y = -5;</a>
+<a name="ln496">        break;</a>
+<a name="ln497">    case TILEP_MONS_NIKOLA:</a>
+<a name="ln498">        *ofs_x = -4;</a>
+<a name="ln499">        *ofs_y = -3;</a>
+<a name="ln500">        break;</a>
+<a name="ln501">    case TILEP_MONS_ARACHNE_STAVELESS:</a>
+<a name="ln502">    case TILEP_MONS_MERFOLK_WATER:</a>
+<a name="ln503">    case TILEP_MONS_MERFOLK_AQUAMANCER_WATER:</a>
+<a name="ln504">    case TILEP_MONS_MERFOLK_IMPALER_WATER:</a>
+<a name="ln505">    case TILEP_MONS_MERFOLK_JAVELINEER_WATER:</a>
+<a name="ln506">    case TILEP_MONS_MERFOLK_SIREN_WATER:</a>
+<a name="ln507">    case TILEP_MONS_MERFOLK_AVATAR_WATER:</a>
+<a name="ln508">    case TILEP_MONS_ILSUIW_WATER:</a>
+<a name="ln509">        *ofs_x = -1;</a>
+<a name="ln510">        *ofs_y = -5;</a>
+<a name="ln511">        break;</a>
+<a name="ln512">    case TILEP_MONS_ASTERION:</a>
+<a name="ln513">        *ofs_x = -3;</a>
+<a name="ln514">        *ofs_y = -1;</a>
+<a name="ln515">        break;</a>
+<a name="ln516">    // Shift upwards and to the right.</a>
+<a name="ln517">    case TILEP_MONS_NECROMANCER:</a>
+<a name="ln518">    case TILEP_MONS_WIZARD:</a>
+<a name="ln519">    case TILEP_MONS_CLOUD_MAGE:</a>
+<a name="ln520">    case TILEP_MONS_MASTER_ELEMENTALIST:</a>
+<a name="ln521">    case TILEP_MONS_JESSICA:</a>
+<a name="ln522">    case TILEP_MONS_ANGEL:</a>
+<a name="ln523">    case TILEP_MONS_DAEVA:</a>
+<a name="ln524">    case TILEP_MONS_ANCESTOR_HEXER:</a>
+<a name="ln525">    case TILEP_MONS_MAGGIE:</a>
+<a name="ln526">        *ofs_x = 1;</a>
+<a name="ln527">        *ofs_y = -1;</a>
+<a name="ln528">        break;</a>
+<a name="ln529">    case TILEP_MONS_AGNES_STAVELESS:</a>
+<a name="ln530">        *ofs_x = 0;</a>
+<a name="ln531">        *ofs_y = 1;</a>
+<a name="ln532">        break;</a>
+<a name="ln533">    case TILEP_MONS_TRAINING_DUMMY:</a>
+<a name="ln534">        *ofs_x = 3;</a>
+<a name="ln535">        *ofs_y = -1;</a>
+<a name="ln536">        break;</a>
+<a name="ln537">    case TILEP_MONS_MARGERY:</a>
+<a name="ln538">    case TILEP_MONS_ERICA_SWORDLESS:</a>
+<a name="ln539">    case TILEP_MONS_FAUN:</a>
+<a name="ln540">        *ofs_x = 1;</a>
+<a name="ln541">        *ofs_y = -3;</a>
+<a name="ln542">        break;</a>
+<a name="ln543">    case TILEP_MONS_LOUISE:</a>
+<a name="ln544">    case TILEP_MONS_SATYR:</a>
+<a name="ln545">        *ofs_x = 1;</a>
+<a name="ln546">        *ofs_y = -4;</a>
+<a name="ln547">        break;</a>
+<a name="ln548">    case TILEP_MONS_HELL_WIZARD:</a>
+<a name="ln549">    case TILEP_MONS_HELL_WIZARD_1:</a>
+<a name="ln550">    case TILEP_MONS_HELL_WIZARD_2:</a>
+<a name="ln551">        *ofs_x = 2;</a>
+<a name="ln552">        *ofs_y = -2;</a>
+<a name="ln553">        break;</a>
+<a name="ln554">    case TILEP_MONS_ELF:</a>
+<a name="ln555">        *ofs_x = 2;</a>
+<a name="ln556">        *ofs_y = -3;</a>
+<a name="ln557">        break;</a>
+<a name="ln558">    case TILEP_MONS_HUMAN:</a>
+<a name="ln559">    case TILEP_MONS_HUMAN_1:</a>
+<a name="ln560">    case TILEP_MONS_HUMAN_2:</a>
+<a name="ln561">        *ofs_x = -1;</a>
+<a name="ln562">        *ofs_y = -2;</a>
+<a name="ln563">        break;</a>
+<a name="ln564">    case TILEP_MONS_GHOST:</a>
+<a name="ln565">        *ofs_x = 3;</a>
+<a name="ln566">        *ofs_y = -4;</a>
+<a name="ln567">        break;</a>
+<a name="ln568">    case TILEP_MONS_MERFOLK:</a>
+<a name="ln569">    case TILEP_MONS_MERFOLK_AQUAMANCER:</a>
+<a name="ln570">    case TILEP_MONS_MERFOLK_IMPALER:</a>
+<a name="ln571">    case TILEP_MONS_MERFOLK_JAVELINEER:</a>
+<a name="ln572">    case TILEP_MONS_MERFOLK_SIREN:</a>
+<a name="ln573">    case TILEP_MONS_MERFOLK_AVATAR:</a>
+<a name="ln574">    case TILEP_MONS_ILSUIW:</a>
+<a name="ln575">        *ofs_x = 1;</a>
+<a name="ln576">        *ofs_y = -5;</a>
+<a name="ln577">        break;</a>
+<a name="ln578">    case TILEP_MONS_FRANCES: // left-handed</a>
+<a name="ln579">        *ofs_x = 20;</a>
+<a name="ln580">        *ofs_y = -1;</a>
+<a name="ln581">        break;</a>
+<a name="ln582">    // Shift downwards and to the left.</a>
+<a name="ln583">    case TILEP_MONS_GOBLIN:</a>
+<a name="ln584">    case TILEP_MONS_IJYB:</a>
+<a name="ln585">        *ofs_x = -2;</a>
+<a name="ln586">        *ofs_y = 4;</a>
+<a name="ln587">        break;</a>
+<a name="ln588">    case TILEP_MONS_ORC:</a>
+<a name="ln589">    case TILEP_MONS_ORC_WARRIOR:</a>
+<a name="ln590">    case TILEP_MONS_URUG:</a>
+<a name="ln591">    case TILEP_MONS_ORC_PRIEST:</a>
+<a name="ln592">    case TILEP_MONS_ORC_HIGH_PRIEST:</a>
+<a name="ln593">    case TILEP_MONS_SPRIGGAN:</a>
+<a name="ln594">    case TILEP_MONS_SPRIGGAN_DEFENDER:</a>
+<a name="ln595">        *ofs_x = -1;</a>
+<a name="ln596">        *ofs_y = 1;</a>
+<a name="ln597">        break;</a>
+<a name="ln598">    case TILEP_MONS_ORC_KNIGHT:</a>
+<a name="ln599">    case TILEP_MONS_ORC_WIZARD:</a>
+<a name="ln600">    case TILEP_MONS_ORC_SORCERER:</a>
+<a name="ln601">    case TILEP_MONS_NERGALLE:</a>
+<a name="ln602">    case TILEP_MONS_ETTIN:</a>
+<a name="ln603">    case TILEP_MONS_FROST_GIANT:</a>
+<a name="ln604">    case TILEP_MONS_FIRE_GIANT:</a>
+<a name="ln605">    case TILEP_MONS_IRON_GIANT:</a>
+<a name="ln606">    case TILEP_MONS_THE_ENCHANTRESS:</a>
+<a name="ln607">        *ofs_x = -2;</a>
+<a name="ln608">        *ofs_y = 1;</a>
+<a name="ln609">        break;</a>
+<a name="ln610">    case TILEP_MONS_SAINT_ROKA:</a>
+<a name="ln611">        *ofs_x = -3;</a>
+<a name="ln612">        *ofs_y = 1;</a>
+<a name="ln613">        break;</a>
+<a name="ln614">    case TILEP_MONS_SERAPH:</a>
+<a name="ln615">        *ofs_x = -1;</a>
+<a name="ln616">        *ofs_y = -10;</a>
+<a name="ln617">        break;</a>
+<a name="ln618">    // Shift downwards and to the right.</a>
+<a name="ln619">    case TILEP_MONS_OGRE:</a>
+<a name="ln620">    case TILEP_MONS_OGRE_MAGE:</a>
+<a name="ln621">        *ofs_x = 1;</a>
+<a name="ln622">        *ofs_y = 1;</a>
+<a name="ln623">        break;</a>
+<a name="ln624">    case TILEP_MONS_TWO_HEADED_OGRE:</a>
+<a name="ln625">        *ofs_x = 1;</a>
+<a name="ln626">        *ofs_y = 2;</a>
+<a name="ln627">        break;</a>
+<a name="ln628">    case TILEP_MONS_ZOMBIE_LARGE:</a>
+<a name="ln629">        *ofs_x = 4;</a>
+<a name="ln630">        *ofs_y = 1;</a>
+<a name="ln631">        break;</a>
+<a name="ln632">    case TILEP_MONS_ZOMBIE_SMALL:</a>
+<a name="ln633">        *ofs_x = 4;</a>
+<a name="ln634">        *ofs_y = 3;</a>
+<a name="ln635">        break;</a>
+<a name="ln636">    case TILEP_MONS_TROLL:</a>
+<a name="ln637">        *ofs_x = -3;</a>
+<a name="ln638">        *ofs_y = 11;</a>
+<a name="ln639">        break;</a>
+<a name="ln640">    case TILEP_MONS_GHOUL:</a>
+<a name="ln641">        *ofs_x = -3;</a>
+<a name="ln642">        *ofs_y = -3;</a>
+<a name="ln643">        break;</a>
+<a name="ln644">    case TILEP_MONS_ORB_OF_FIRE:</a>
+<a name="ln645">        *ofs_x = 0;</a>
+<a name="ln646">        *ofs_y = 2;</a>
+<a name="ln647">        break;</a>
+<a name="ln648">    case TILEP_MONS_TENTACLED_MONSTROSITY:</a>
+<a name="ln649">    case TILEP_MONS_CIGOTUVIS_MONSTER:</a>
+<a name="ln650">        *ofs_x = -4;</a>
+<a name="ln651">        *ofs_y = 2;</a>
+<a name="ln652">        break;</a>
+<a name="ln653">    case TILEP_MONS_SERPENT_OF_HELL_GEHENNA:</a>
+<a name="ln654">    case TILEP_MONS_SERPENT_OF_HELL_COCYTUS:</a>
+<a name="ln655">    case TILEP_MONS_SERPENT_OF_HELL_DIS:</a>
+<a name="ln656">    case TILEP_MONS_SERPENT_OF_HELL_TARTARUS:</a>
+<a name="ln657">        *ofs_x = -4;</a>
+<a name="ln658">        *ofs_y = 3;</a>
+<a name="ln659">        break;</a>
+<a name="ln660">    case TILEP_MONS_UNSEEN_HORROR:</a>
+<a name="ln661">        *ofs_x = -4;</a>
+<a name="ln662">        *ofs_y = -4;</a>
+<a name="ln663">        break;</a>
+<a name="ln664">    case TILEP_MONS_UGLY_THING:</a>
+<a name="ln665">    case TILEP_MONS_UGLY_THING_1:</a>
+<a name="ln666">    case TILEP_MONS_UGLY_THING_2:</a>
+<a name="ln667">    case TILEP_MONS_UGLY_THING_3:</a>
+<a name="ln668">    case TILEP_MONS_UGLY_THING_4:</a>
+<a name="ln669">    case TILEP_MONS_UGLY_THING_5:</a>
+<a name="ln670">        *ofs_x = -4;</a>
+<a name="ln671">        *ofs_y = -7;</a>
+<a name="ln672">        break;</a>
+<a name="ln673">    case TILEP_MONS_VERY_UGLY_THING:</a>
+<a name="ln674">    case TILEP_MONS_VERY_UGLY_THING_1:</a>
+<a name="ln675">    case TILEP_MONS_VERY_UGLY_THING_2:</a>
+<a name="ln676">    case TILEP_MONS_VERY_UGLY_THING_3:</a>
+<a name="ln677">    case TILEP_MONS_VERY_UGLY_THING_4:</a>
+<a name="ln678">    case TILEP_MONS_VERY_UGLY_THING_5:</a>
+<a name="ln679">        *ofs_x = -3;</a>
+<a name="ln680">        *ofs_y = 4;</a>
+<a name="ln681">        break;</a>
+<a name="ln682">    case TILEP_MONS_ORANGE_STATUE:</a>
+<a name="ln683">        *ofs_x = 3;</a>
+<a name="ln684">        *ofs_y = -4;</a>
+<a name="ln685">        break;</a>
+<a name="ln686">    case TILEP_MONS_LOROCYPROCA:</a>
+<a name="ln687">        *ofs_x = -4;</a>
+<a name="ln688">        *ofs_y = 6;</a>
+<a name="ln689">        break;</a>
+<a name="ln690">    case TILEP_MONS_HELLION:</a>
+<a name="ln691">        *ofs_x = -1;</a>
+<a name="ln692">        *ofs_y = 4;</a>
+<a name="ln693">        break;</a>
+<a name="ln694">    case TILEP_MONS_CACODEMON:</a>
+<a name="ln695">        *ofs_x = -3;</a>
+<a name="ln696">        *ofs_y = -13;</a>
+<a name="ln697">        break;</a>
+<a name="ln698">    case TILEP_MONS_STARCURSED_MASS:</a>
+<a name="ln699">    case TILEP_MONS_EXECUTIONER:</a>
+<a name="ln700">        *ofs_x = -4;</a>
+<a name="ln701">        *ofs_y = 4;</a>
+<a name="ln702">        break;</a>
+<a name="ln703">    case TILEP_MONS_WRETCHED_STAR:</a>
+<a name="ln704">        *ofs_x = 1;</a>
+<a name="ln705">        *ofs_y = -4;</a>
+<a name="ln706">        break;</a>
+<a name="ln707">    case TILEP_MONS_ELDRITCH_TENTACLE_PORTAL_9:</a>
+<a name="ln708">        *ofs_x = -2;</a>
+<a name="ln709">        *ofs_y = -3;</a>
+<a name="ln710">        break;</a>
+<a name="ln711">    case TILEP_MONS_ICE_FIEND:</a>
+<a name="ln712">        *ofs_x = 1;</a>
+<a name="ln713">        *ofs_y = 2;</a>
+<a name="ln714">        break;</a>
+<a name="ln715">    case TILEP_MONS_PANDEMONIUM_LORD:</a>
+<a name="ln716">        *ofs_x = -2;</a>
+<a name="ln717">        *ofs_y = 0;</a>
+<a name="ln718">        break;</a>
+<a name="ln719">    case TILEP_MONS_HELL_SENTINEL:</a>
+<a name="ln720">        *ofs_x = -1;</a>
+<a name="ln721">        *ofs_y = 4;</a>
+<a name="ln722">        break;</a>
+<a name="ln723">    case TILEP_MONS_DEMONIC_PLANT:</a>
+<a name="ln724">        *ofs_x = -1;</a>
+<a name="ln725">        *ofs_y = 2;</a>
+<a name="ln726">        break;</a>
+<a name="ln727">    case TILEP_MONS_TENTACLED_STARSPAWN:</a>
+<a name="ln728">        *ofs_x = -1;</a>
+<a name="ln729">        *ofs_y = 1;</a>
+<a name="ln730">        break;</a>
+<a name="ln731">    case TILEP_MONS_ABOMINATION_LARGE_1:</a>
+<a name="ln732">        *ofs_x = -2;</a>
+<a name="ln733">        *ofs_y = -8;</a>
+<a name="ln734">        break;</a>
+<a name="ln735">    case TILEP_MONS_ABOMINATION_LARGE_2:</a>
+<a name="ln736">        *ofs_x = -3;</a>
+<a name="ln737">        *ofs_y = 0;</a>
+<a name="ln738">        break;</a>
+<a name="ln739">    case TILEP_MONS_ABOMINATION_LARGE_3:</a>
+<a name="ln740">        *ofs_x = -4;</a>
+<a name="ln741">        *ofs_y = -5;</a>
+<a name="ln742">        break;</a>
+<a name="ln743">    case TILEP_MONS_ABOMINATION_LARGE_4:</a>
+<a name="ln744">        *ofs_x = -3;</a>
+<a name="ln745">        *ofs_y = -10;</a>
+<a name="ln746">        break;</a>
+<a name="ln747">    case TILEP_MONS_ABOMINATION_LARGE_6:</a>
+<a name="ln748">        *ofs_x = -4;</a>
+<a name="ln749">        *ofs_y = -11;</a>
+<a name="ln750">        break;</a>
+<a name="ln751">    case TILEP_MONS_CHAOS_SPAWN:</a>
+<a name="ln752">        *ofs_x = 0;</a>
+<a name="ln753">        *ofs_y = -5;</a>
+<a name="ln754">        break;</a>
+<a name="ln755">    case TILEP_MONS_CHAOS_SPAWN_2:</a>
+<a name="ln756">        *ofs_x = 2;</a>
+<a name="ln757">        *ofs_y = -3;</a>
+<a name="ln758">        break;</a>
+<a name="ln759">    case TILEP_MONS_CHAOS_SPAWN_3:</a>
+<a name="ln760">        *ofs_x = -2;</a>
+<a name="ln761">        *ofs_y = -1;</a>
+<a name="ln762">        break;</a>
+<a name="ln763">    case TILEP_MONS_GREAT_ORB_OF_EYES:</a>
+<a name="ln764">        *ofs_x = -2;</a>
+<a name="ln765">        *ofs_y = -2;</a>
+<a name="ln766">        break;</a>
+<a name="ln767">    case TILEP_MONS_WRAITH:</a>
+<a name="ln768">        *ofs_x = -4;</a>
+<a name="ln769">        *ofs_y = -4;</a>
+<a name="ln770">        break;</a>
+<a name="ln771">    case TILEP_MONS_ORB_GUARDIAN:</a>
+<a name="ln772">        *ofs_x = -1;</a>
+<a name="ln773">        *ofs_y = 2;</a>
+<a name="ln774">        break;</a>
+<a name="ln775">    case TILEP_MONS_ORB_GUARDIAN_FETUS:</a>
+<a name="ln776">        *ofs_x = 4;</a>
+<a name="ln777">        *ofs_y = -7;</a>
+<a name="ln778">        break;</a>
+<a name="ln779">    case TILEP_MONS_JORMUNGANDR:</a>
+<a name="ln780">        *ofs_x = 9;</a>
+<a name="ln781">        *ofs_y = -4;</a>
+<a name="ln782">        break;</a>
+<a name="ln783">    case TILEP_MONS_GIAGGOSTUONO:</a>
+<a name="ln784">        *ofs_x = -5;</a>
+<a name="ln785">        *ofs_y = 5;</a>
+<a name="ln786">        break;</a>
+<a name="ln787">    case TILEP_MONS_KILLER_KLOWN:</a>
+<a name="ln788">        *ofs_x = 0;</a>
+<a name="ln789">        *ofs_y = 4;</a>
+<a name="ln790">        break;</a>
+<a name="ln791">    case TILEP_MONS_KILLER_KLOWN_1:</a>
+<a name="ln792">        *ofs_x = -4;</a>
+<a name="ln793">        *ofs_y = -1;</a>
+<a name="ln794">        break;</a>
+<a name="ln795">    case TILEP_MONS_KILLER_KLOWN_2:</a>
+<a name="ln796">        *ofs_x = -2;</a>
+<a name="ln797">        *ofs_y = 4;</a>
+<a name="ln798">        break;</a>
+<a name="ln799">    case TILEP_MONS_KILLER_KLOWN_3:</a>
+<a name="ln800">        *ofs_x = -2;</a>
+<a name="ln801">        *ofs_y = -5;</a>
+<a name="ln802">        break;</a>
+<a name="ln803">    case TILEP_MONS_KILLER_KLOWN_4:</a>
+<a name="ln804">        *ofs_x = 20;</a>
+<a name="ln805">        *ofs_y = -10;</a>
+<a name="ln806">        break;</a>
+<a name="ln807"> </a>
+<a name="ln808">    default:</a>
+<a name="ln809">        // This monster cannot be displayed with a weapon.</a>
+<a name="ln810">        return false;</a>
+<a name="ln811">    }</a>
+<a name="ln812"> </a>
+<a name="ln813">    return true;</a>
+<a name="ln814">}</a>
+<a name="ln815"> </a>
+<a name="ln816">// Returns the amount of pixels necessary to shift a worn shield, like</a>
+<a name="ln817">// it's done with weapon. No monster should have a shield hard-drawn</a>
+<a name="ln818">// on the tile.</a>
+<a name="ln819">bool mcache_monster::get_shield_offset(tileidx_t mon_tile,</a>
+<a name="ln820">                                       int *ofs_x, int *ofs_y)</a>
+<a name="ln821">{</a>
+<a name="ln822">    switch (mon_tile)</a>
+<a name="ln823">    {</a>
+<a name="ln824">    case TILEP_MONS_ORC:</a>
+<a name="ln825">    case TILEP_MONS_URUG:</a>
+<a name="ln826">    case TILEP_MONS_BLORK_THE_ORC:</a>
+<a name="ln827">    case TILEP_MONS_ORC_PRIEST:</a>
+<a name="ln828">    case TILEP_MONS_ORC_WARRIOR:</a>
+<a name="ln829">    case TILEP_MONS_ORC_KNIGHT:</a>
+<a name="ln830">    case TILEP_MONS_ORC_WARLORD:</a>
+<a name="ln831">    case TILEP_MONS_DEEP_ELF_KNIGHT:</a>
+<a name="ln832">    case TILEP_MONS_KIRKE:</a>
+<a name="ln833">    case TILEP_MONS_DIMME:</a>
+<a name="ln834">        *ofs_x = 1;</a>
+<a name="ln835">        *ofs_y = 0;</a>
+<a name="ln836">        break;</a>
+<a name="ln837"> </a>
+<a name="ln838">    case TILEP_MONS_SAINT_ROKA:</a>
+<a name="ln839">    case TILEP_MONS_MINOTAUR:</a>
+<a name="ln840">        *ofs_x = 2;</a>
+<a name="ln841">        *ofs_y = 0;</a>
+<a name="ln842">        break;</a>
+<a name="ln843"> </a>
+<a name="ln844">    case TILEP_MONS_ARACHNE_STAVELESS:</a>
+<a name="ln845">        *ofs_x = -6;</a>
+<a name="ln846">        *ofs_y = 1;</a>
+<a name="ln847">        break;</a>
+<a name="ln848"> </a>
+<a name="ln849">    case TILEP_MONS_ZOMBIE_SMALL:</a>
+<a name="ln850">    case TILEP_MONS_SKELETON_SMALL:</a>
+<a name="ln851">    case TILEP_MONS_VAULT_GUARD:</a>
+<a name="ln852">    case TILEP_MONS_IRONBRAND_CONVOKER:</a>
+<a name="ln853">    case TILEP_MONS_IRONHEART_PRESERVER:</a>
+<a name="ln854">    case TILEP_MONS_VAULT_WARDEN:</a>
+<a name="ln855">        *ofs_x = -2;</a>
+<a name="ln856">        *ofs_y = 1;</a>
+<a name="ln857">        break;</a>
+<a name="ln858"> </a>
+<a name="ln859">    case TILEP_MONS_HUMAN:</a>
+<a name="ln860">    case TILEP_MONS_HUMAN_1:</a>
+<a name="ln861">    case TILEP_MONS_HUMAN_2:</a>
+<a name="ln862">    case TILEP_MONS_DEEP_ELF_BLADEMASTER: // second weapon</a>
+<a name="ln863">    case TILEP_MONS_LOUISE:</a>
+<a name="ln864">    case TILEP_MONS_TENGU:</a>
+<a name="ln865">    case TILEP_MONS_TENGU_CONJURER:</a>
+<a name="ln866">    case TILEP_MONS_TENGU_WARRIOR:</a>
+<a name="ln867">    case TILEP_MONS_TENGU_REAVER:</a>
+<a name="ln868">    case TILEP_MONS_SOJOBO:</a>
+<a name="ln869">    case TILEP_MONS_FORMICID:</a>
+<a name="ln870">    case TILEP_MONS_VINE_STALKER:</a>
+<a name="ln871">    case TILEP_MONS_OCTOPODE:</a>
+<a name="ln872">    case TILEP_MONS_CHERUB:</a>
+<a name="ln873">    case TILEP_MONS_MENNAS:</a>
+<a name="ln874">        *ofs_x = 0;</a>
+<a name="ln875">        *ofs_y = 0;</a>
+<a name="ln876">        break;</a>
+<a name="ln877"> </a>
+<a name="ln878">    case TILEP_MONS_DONALD:</a>
+<a name="ln879">    case TILEP_MONS_ANCESTOR_KNIGHT:</a>
+<a name="ln880">        *ofs_x = -1;</a>
+<a name="ln881">        *ofs_y = -1;</a>
+<a name="ln882">        break;</a>
+<a name="ln883"> </a>
+<a name="ln884">    case TILEP_MONS_GNOLL:</a>
+<a name="ln885">        *ofs_x = -1;</a>
+<a name="ln886">        *ofs_y = 1;</a>
+<a name="ln887">        break;</a>
+<a name="ln888"> </a>
+<a name="ln889">    case TILEP_MONS_TWO_HEADED_OGRE: // second weapon</a>
+<a name="ln890">        *ofs_x = 0;</a>
+<a name="ln891">        *ofs_y = 2;</a>
+<a name="ln892">        break;</a>
+<a name="ln893"> </a>
+<a name="ln894">    case TILEP_MONS_NAGA:</a>
+<a name="ln895">    case TILEP_MONS_NAGA_WARRIOR:</a>
+<a name="ln896">    case TILEP_MONS_NAGARAJA:</a>
+<a name="ln897">        *ofs_x = -3;</a>
+<a name="ln898">        *ofs_y = 0;</a>
+<a name="ln899">        break;</a>
+<a name="ln900"> </a>
+<a name="ln901">    case TILEP_MONS_SPRIGGAN:</a>
+<a name="ln902">    case TILEP_MONS_SPRIGGAN_DEFENDER:</a>
+<a name="ln903">    case TILEP_MONS_SPRIGGAN_BERSERKER:</a>
+<a name="ln904">        *ofs_x = 2;</a>
+<a name="ln905">        *ofs_y = 3;</a>
+<a name="ln906">        break;</a>
+<a name="ln907"> </a>
+<a name="ln908">    case TILEP_MONS_SPRIGGAN_DRUID:</a>
+<a name="ln909">        *ofs_x = 2;</a>
+<a name="ln910">        *ofs_y = -4;</a>
+<a name="ln911">        break;</a>
+<a name="ln912"> </a>
+<a name="ln913">    case TILEP_MONS_SPRIGGAN_AIR_MAGE:</a>
+<a name="ln914">        *ofs_x = 2;</a>
+<a name="ln915">        *ofs_y = -9;</a>
+<a name="ln916">        break;</a>
+<a name="ln917"> </a>
+<a name="ln918">    case TILEP_MONS_THE_ENCHANTRESS:</a>
+<a name="ln919">        *ofs_x = 6;</a>
+<a name="ln920">        *ofs_y = 3;</a>
+<a name="ln921">        break;</a>
+<a name="ln922"> </a>
+<a name="ln923">    case TILEP_MONS_ASTERION:</a>
+<a name="ln924">        *ofs_x = 1;</a>
+<a name="ln925">        *ofs_y = 1;</a>
+<a name="ln926">        break;</a>
+<a name="ln927"> </a>
+<a name="ln928">    case TILEP_MONS_SALAMANDER:</a>
+<a name="ln929">        *ofs_x = 0;</a>
+<a name="ln930">        *ofs_y = -1;</a>
+<a name="ln931">        break;</a>
+<a name="ln932"> </a>
+<a name="ln933">    case TILEP_MONS_GNOLL_SERGEANT:</a>
+<a name="ln934">    case TILEP_MONS_FREDERICK:</a>
+<a name="ln935">        *ofs_x = 1;</a>
+<a name="ln936">        *ofs_y = -1;</a>
+<a name="ln937">        break;</a>
+<a name="ln938"> </a>
+<a name="ln939">    case TILEP_MONS_ENTROPY_WEAVER:</a>
+<a name="ln940">    case TILEP_MONS_HELL_KNIGHT:</a>
+<a name="ln941">    case TILEP_MONS_DEATH_KNIGHT:</a>
+<a name="ln942">        *ofs_x = -3;</a>
+<a name="ln943">        *ofs_y = 2;</a>
+<a name="ln944">        break;</a>
+<a name="ln945"> </a>
+<a name="ln946">    case TILEP_MONS_KOBOLD:</a>
+<a name="ln947">        *ofs_x = 0;</a>
+<a name="ln948">        *ofs_y = 3;</a>
+<a name="ln949">        break;</a>
+<a name="ln950"> </a>
+<a name="ln951">    case TILEP_MONS_SONJA:</a>
+<a name="ln952">        *ofs_x = 3;</a>
+<a name="ln953">        *ofs_y = -10;</a>
+<a name="ln954">        break;</a>
+<a name="ln955"> </a>
+<a name="ln956">    case TILEP_MONS_MUMMY:</a>
+<a name="ln957">        *ofs_x = -6;</a>
+<a name="ln958">        *ofs_y = 0;</a>
+<a name="ln959">        break;</a>
+<a name="ln960"> </a>
+<a name="ln961">    case TILEP_MONS_MERFOLK:</a>
+<a name="ln962">    case TILEP_MONS_MERFOLK_AQUAMANCER:</a>
+<a name="ln963">    case TILEP_MONS_MERFOLK_IMPALER:</a>
+<a name="ln964">    case TILEP_MONS_MERFOLK_JAVELINEER:</a>
+<a name="ln965">    case TILEP_MONS_MERFOLK_SIREN:</a>
+<a name="ln966">    case TILEP_MONS_MERFOLK_AVATAR:</a>
+<a name="ln967">    case TILEP_MONS_ILSUIW:</a>
+<a name="ln968">    case TILEP_MONS_WRAITH:</a>
+<a name="ln969">        *ofs_x = -3;</a>
+<a name="ln970">        *ofs_y = -2;</a>
+<a name="ln971">        break;</a>
+<a name="ln972"> </a>
+<a name="ln973">    case TILEP_MONS_MERFOLK_WATER:</a>
+<a name="ln974">    case TILEP_MONS_MERFOLK_AQUAMANCER_WATER:</a>
+<a name="ln975">    case TILEP_MONS_MERFOLK_IMPALER_WATER:</a>
+<a name="ln976">    case TILEP_MONS_MERFOLK_JAVELINEER_WATER:</a>
+<a name="ln977">    case TILEP_MONS_MERFOLK_SIREN_WATER:</a>
+<a name="ln978">    case TILEP_MONS_MERFOLK_AVATAR_WATER:</a>
+<a name="ln979">    case TILEP_MONS_ILSUIW_WATER:</a>
+<a name="ln980">        *ofs_x = -5;</a>
+<a name="ln981">        *ofs_y = -2;</a>
+<a name="ln982">        break;</a>
+<a name="ln983"> </a>
+<a name="ln984">    case TILEP_MONS_TROLL:</a>
+<a name="ln985">        *ofs_x = 2;</a>
+<a name="ln986">        *ofs_y = 7;</a>
+<a name="ln987">        break;</a>
+<a name="ln988"> </a>
+<a name="ln989">    case TILEP_MONS_GHOUL:</a>
+<a name="ln990">    case TILEP_MONS_OGRE:</a>
+<a name="ln991">        *ofs_x = 2;</a>
+<a name="ln992">        *ofs_y = 1;</a>
+<a name="ln993">        break;</a>
+<a name="ln994"> </a>
+<a name="ln995">    case TILEP_MONS_GARGOYLE:</a>
+<a name="ln996">        *ofs_x = -8;</a>
+<a name="ln997">        *ofs_y = 1;</a>
+<a name="ln998">        break;</a>
+<a name="ln999"> </a>
+<a name="ln1000">    case TILEP_MONS_CENTAUR_MELEE:</a>
+<a name="ln1001">        *ofs_x = -8;</a>
+<a name="ln1002">        *ofs_y = -4;</a>
+<a name="ln1003">        break;</a>
+<a name="ln1004"> </a>
+<a name="ln1005">    case TILEP_MONS_HALFLING:</a>
+<a name="ln1006">        *ofs_x = -2;</a>
+<a name="ln1007">        *ofs_y = 5;</a>
+<a name="ln1008">        break;</a>
+<a name="ln1009"> </a>
+<a name="ln1010">    case TILEP_MONS_DEEP_ELF_DEMONOLOGIST:</a>
+<a name="ln1011">    case TILEP_MONS_DEEP_ELF_MAGE:</a>
+<a name="ln1012">        *ofs_x = 3;</a>
+<a name="ln1013">        *ofs_y = -7;</a>
+<a name="ln1014">        break;</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    case TILEP_MONS_ORB_OF_FIRE:</a>
+<a name="ln1017">        *ofs_x = -4;</a>
+<a name="ln1018">        *ofs_y = 2;</a>
+<a name="ln1019">        break;</a>
+<a name="ln1020"> </a>
+<a name="ln1021">    case TILEP_MONS_TENTACLED_MONSTROSITY:</a>
+<a name="ln1022">    case TILEP_MONS_CIGOTUVIS_MONSTER:</a>
+<a name="ln1023">    case TILEP_MONS_SERPENT_OF_HELL_GEHENNA:</a>
+<a name="ln1024">    case TILEP_MONS_SERPENT_OF_HELL_COCYTUS:</a>
+<a name="ln1025">    case TILEP_MONS_SERPENT_OF_HELL_DIS:</a>
+<a name="ln1026">    case TILEP_MONS_SERPENT_OF_HELL_TARTARUS:</a>
+<a name="ln1027">        *ofs_x = 4;</a>
+<a name="ln1028">        *ofs_y = -1;</a>
+<a name="ln1029">        break;</a>
+<a name="ln1030"> </a>
+<a name="ln1031">    case TILEP_MONS_UNSEEN_HORROR:</a>
+<a name="ln1032">        *ofs_x = 5;</a>
+<a name="ln1033">        *ofs_y = -1;</a>
+<a name="ln1034">        break;</a>
+<a name="ln1035"> </a>
+<a name="ln1036">    case TILEP_MONS_UGLY_THING:</a>
+<a name="ln1037">    case TILEP_MONS_UGLY_THING_1:</a>
+<a name="ln1038">    case TILEP_MONS_UGLY_THING_2:</a>
+<a name="ln1039">    case TILEP_MONS_UGLY_THING_3:</a>
+<a name="ln1040">    case TILEP_MONS_UGLY_THING_4:</a>
+<a name="ln1041">    case TILEP_MONS_UGLY_THING_5:</a>
+<a name="ln1042">        *ofs_x = 4;</a>
+<a name="ln1043">        *ofs_y = -1;</a>
+<a name="ln1044">        break;</a>
+<a name="ln1045"> </a>
+<a name="ln1046">    case TILEP_MONS_VERY_UGLY_THING:</a>
+<a name="ln1047">    case TILEP_MONS_VERY_UGLY_THING_1:</a>
+<a name="ln1048">    case TILEP_MONS_VERY_UGLY_THING_2:</a>
+<a name="ln1049">    case TILEP_MONS_VERY_UGLY_THING_3:</a>
+<a name="ln1050">    case TILEP_MONS_VERY_UGLY_THING_4:</a>
+<a name="ln1051">    case TILEP_MONS_VERY_UGLY_THING_5:</a>
+<a name="ln1052">        *ofs_x = 4;</a>
+<a name="ln1053">        *ofs_y = 5;</a>
+<a name="ln1054">        break;</a>
+<a name="ln1055"> </a>
+<a name="ln1056">    case TILEP_MONS_ORANGE_STATUE:</a>
+<a name="ln1057">        *ofs_x = -2;</a>
+<a name="ln1058">        *ofs_y = -3;</a>
+<a name="ln1059">        break;</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    case TILEP_MONS_LOROCYPROCA:</a>
+<a name="ln1062">        *ofs_x = -3;</a>
+<a name="ln1063">        *ofs_y = 0;</a>
+<a name="ln1064">        break;</a>
+<a name="ln1065"> </a>
+<a name="ln1066">    case TILEP_MONS_HELLION:</a>
+<a name="ln1067">        *ofs_x = 0;</a>
+<a name="ln1068">        *ofs_y = 4;</a>
+<a name="ln1069">        break;</a>
+<a name="ln1070"> </a>
+<a name="ln1071">    case TILEP_MONS_CACODEMON:</a>
+<a name="ln1072">        *ofs_x = 4;</a>
+<a name="ln1073">        *ofs_y = -13;</a>
+<a name="ln1074">        break;</a>
+<a name="ln1075"> </a>
+<a name="ln1076">    case TILEP_MONS_STARCURSED_MASS:</a>
+<a name="ln1077">        *ofs_x = -3;</a>
+<a name="ln1078">        *ofs_y = 2;</a>
+<a name="ln1079">        break;</a>
+<a name="ln1080"> </a>
+<a name="ln1081">    case TILEP_MONS_WRETCHED_STAR:</a>
+<a name="ln1082">        *ofs_x = 1;</a>
+<a name="ln1083">        *ofs_y = -4;</a>
+<a name="ln1084">        break;</a>
+<a name="ln1085"> </a>
+<a name="ln1086">    case TILEP_MONS_ELDRITCH_TENTACLE_PORTAL_9:</a>
+<a name="ln1087">        *ofs_x = 3;</a>
+<a name="ln1088">        *ofs_y = 0;</a>
+<a name="ln1089">        break;</a>
+<a name="ln1090"> </a>
+<a name="ln1091">    case TILEP_MONS_EXECUTIONER:</a>
+<a name="ln1092">        *ofs_x = 2;</a>
+<a name="ln1093">        *ofs_y = 4;</a>
+<a name="ln1094">        break;</a>
+<a name="ln1095"> </a>
+<a name="ln1096">    case TILEP_MONS_ICE_FIEND:</a>
+<a name="ln1097">        *ofs_x = -2;</a>
+<a name="ln1098">        *ofs_y = 2;</a>
+<a name="ln1099">        break;</a>
+<a name="ln1100"> </a>
+<a name="ln1101">    case TILEP_MONS_PANDEMONIUM_LORD:</a>
+<a name="ln1102">    case TILEP_MONS_ANGEL:</a>
+<a name="ln1103">    case TILEP_MONS_DAEVA:</a>
+<a name="ln1104">        *ofs_x = 1;</a>
+<a name="ln1105">        *ofs_y = 1;</a>
+<a name="ln1106">        break;</a>
+<a name="ln1107"> </a>
+<a name="ln1108">    case TILEP_MONS_HELL_SENTINEL:</a>
+<a name="ln1109">        *ofs_x = 4;</a>
+<a name="ln1110">        *ofs_y = -5;</a>
+<a name="ln1111">        break;</a>
+<a name="ln1112"> </a>
+<a name="ln1113">    case TILEP_MONS_DEMONIC_PLANT:</a>
+<a name="ln1114">        *ofs_x = 5;</a>
+<a name="ln1115">        *ofs_y = 2;</a>
+<a name="ln1116">        break;</a>
+<a name="ln1117"> </a>
+<a name="ln1118">    case TILEP_MONS_TENTACLED_STARSPAWN:</a>
+<a name="ln1119">        *ofs_x = 1;</a>
+<a name="ln1120">        *ofs_y = 1;</a>
+<a name="ln1121">        break;</a>
+<a name="ln1122"> </a>
+<a name="ln1123">    case TILEP_MONS_GOBLIN:</a>
+<a name="ln1124">    case TILEP_MONS_IJYB:</a>
+<a name="ln1125">        *ofs_x = 1;</a>
+<a name="ln1126">        *ofs_y = 4;</a>
+<a name="ln1127">        break;</a>
+<a name="ln1128"> </a>
+<a name="ln1129">    case TILEP_MONS_ABOMINATION_LARGE_1:</a>
+<a name="ln1130">        *ofs_x = 2;</a>
+<a name="ln1131">        *ofs_y = -8;</a>
+<a name="ln1132">        break;</a>
+<a name="ln1133"> </a>
+<a name="ln1134">    case TILEP_MONS_ABOMINATION_LARGE_2:</a>
+<a name="ln1135">        *ofs_x = 2;</a>
+<a name="ln1136">        *ofs_y = 0;</a>
+<a name="ln1137">        break;</a>
+<a name="ln1138"> </a>
+<a name="ln1139">    case TILEP_MONS_ABOMINATION_LARGE_3:</a>
+<a name="ln1140">        *ofs_x = -2;</a>
+<a name="ln1141">        *ofs_y = -2;</a>
+<a name="ln1142">        break;</a>
+<a name="ln1143"> </a>
+<a name="ln1144">    case TILEP_MONS_ABOMINATION_LARGE_4:</a>
+<a name="ln1145">        *ofs_x = 2;</a>
+<a name="ln1146">        *ofs_y = -7;</a>
+<a name="ln1147">        break;</a>
+<a name="ln1148"> </a>
+<a name="ln1149">    case TILEP_MONS_ABOMINATION_LARGE_6:</a>
+<a name="ln1150">        *ofs_x = 3;</a>
+<a name="ln1151">        *ofs_y = -10;</a>
+<a name="ln1152">        break;</a>
+<a name="ln1153"> </a>
+<a name="ln1154">    case TILEP_MONS_CHAOS_SPAWN:</a>
+<a name="ln1155">        *ofs_x = 0;</a>
+<a name="ln1156">        *ofs_y = -5;</a>
+<a name="ln1157">        break;</a>
+<a name="ln1158"> </a>
+<a name="ln1159">    case TILEP_MONS_CHAOS_SPAWN_2:</a>
+<a name="ln1160">        *ofs_x = 0;</a>
+<a name="ln1161">        *ofs_y = -2;</a>
+<a name="ln1162">        break;</a>
+<a name="ln1163"> </a>
+<a name="ln1164">    case TILEP_MONS_CHAOS_SPAWN_3:</a>
+<a name="ln1165">        *ofs_x = 2;</a>
+<a name="ln1166">        *ofs_y = -1;</a>
+<a name="ln1167">        break;</a>
+<a name="ln1168"> </a>
+<a name="ln1169">    case TILEP_MONS_GREAT_ORB_OF_EYES:</a>
+<a name="ln1170">    case TILEP_MONS_GHOST:</a>
+<a name="ln1171">        *ofs_x = 2;</a>
+<a name="ln1172">        *ofs_y = -2;</a>
+<a name="ln1173">        break;</a>
+<a name="ln1174"> </a>
+<a name="ln1175">    case TILEP_MONS_FRANCES: // left-handed - shield goes in right hand</a>
+<a name="ln1176">        *ofs_x = -20;</a>
+<a name="ln1177">        *ofs_y = -1;</a>
+<a name="ln1178">        break;</a>
+<a name="ln1179"> </a>
+<a name="ln1180">    case TILEP_MONS_ORB_GUARDIAN:</a>
+<a name="ln1181">    case TILEP_MONS_ETTIN: // second weapon</a>
+<a name="ln1182">        *ofs_x = 1;</a>
+<a name="ln1183">        *ofs_y = 0;</a>
+<a name="ln1184">        break;</a>
+<a name="ln1185"> </a>
+<a name="ln1186">    case TILEP_MONS_ORB_GUARDIAN_FETUS:</a>
+<a name="ln1187">        *ofs_x = -8;</a>
+<a name="ln1188">        *ofs_y = 5;</a>
+<a name="ln1189">        break;</a>
+<a name="ln1190"> </a>
+<a name="ln1191">    case TILEP_MONS_JORMUNGANDR:</a>
+<a name="ln1192">        *ofs_x = -2;</a>
+<a name="ln1193">        *ofs_y = 2;</a>
+<a name="ln1194">        break;</a>
+<a name="ln1195">    case TILEP_MONS_SERAPH:</a>
+<a name="ln1196">        *ofs_x = -2;</a>
+<a name="ln1197">        *ofs_y = -7;</a>
+<a name="ln1198">        break;</a>
+<a name="ln1199">    case TILEP_MONS_LAMIA:</a>
+<a name="ln1200">        *ofs_x = -2;</a>
+<a name="ln1201">        *ofs_y = -5;</a>
+<a name="ln1202">        break;</a>
+<a name="ln1203">    case TILEP_MONS_GIAGGOSTUONO:</a>
+<a name="ln1204">        *ofs_x = 2;</a>
+<a name="ln1205">        *ofs_y = -7;</a>
+<a name="ln1206">        break;</a>
+<a name="ln1207"> </a>
+<a name="ln1208">    case TILEP_MONS_SPRIGGAN_RIDER: // shield covered, out of picture</a>
+<a name="ln1209">    default:</a>
+<a name="ln1210">        // This monster cannot be displayed with a shield.</a>
+<a name="ln1211">        return false;</a>
+<a name="ln1212">    }</a>
+<a name="ln1213"> </a>
+<a name="ln1214">    return true;</a>
+<a name="ln1215">}</a>
+<a name="ln1216"> </a>
+<a name="ln1217">int mcache_monster::info(tile_draw_info *dinfo) const</a>
+<a name="ln1218">{</a>
+<a name="ln1219">    int count = 0;</a>
+<a name="ln1220">    dinfo[count++].set(m_mon_tile);</a>
+<a name="ln1221"> </a>
+<a name="ln1222">    int ofs_x, ofs_y;</a>
+<a name="ln1223"> </a>
+<a name="ln1224">    if (m_equ_tile)</a>
+<a name="ln1225">    {</a>
+<a name="ln1226">        bool have_offs = false;</a>
+<a name="ln1227">        // This mcache is for the player using a custom tile.</a>
+<a name="ln1228">        if (mtype == MONS_PLAYER</a>
+<a name="ln1229">            &amp;&amp; Options.tile_weapon_offsets.first != INT_MAX)</a>
+<a name="ln1230">        {</a>
+<a name="ln1231">            ofs_x = Options.tile_weapon_offsets.first;</a>
+<a name="ln1232">            ofs_y = Options.tile_weapon_offsets.second;</a>
+<a name="ln1233">            have_offs = true;</a>
+<a name="ln1234">        }</a>
+<a name="ln1235">        else if (get_weapon_offset(m_mon_tile, &amp;ofs_x, &amp;ofs_y))</a>
+<a name="ln1236">            have_offs = true;</a>
+<a name="ln1237"> </a>
+<a name="ln1238">        if (have_offs)</a>
+<a name="ln1239">            dinfo[count++].set(m_equ_tile, ofs_x, ofs_y);</a>
+<a name="ln1240">    }</a>
+<a name="ln1241">    if (m_shd_tile)</a>
+<a name="ln1242">    {</a>
+<a name="ln1243">        bool have_offs = false;</a>
+<a name="ln1244">        if (mtype == MONS_PLAYER</a>
+<a name="ln1245">            &amp;&amp; Options.tile_shield_offsets.first != INT_MAX)</a>
+<a name="ln1246">        {</a>
+<a name="ln1247">            ofs_x = Options.tile_shield_offsets.first;</a>
+<a name="ln1248">            ofs_y = Options.tile_shield_offsets.second;</a>
+<a name="ln1249">            have_offs = true;</a>
+<a name="ln1250">        }</a>
+<a name="ln1251">        else if (get_shield_offset(m_mon_tile, &amp;ofs_x, &amp;ofs_y))</a>
+<a name="ln1252">            have_offs = true;</a>
+<a name="ln1253"> </a>
+<a name="ln1254">        if (have_offs)</a>
+<a name="ln1255">            dinfo[count++].set(m_shd_tile, ofs_x, ofs_y);</a>
+<a name="ln1256">    }</a>
+<a name="ln1257">    return count;</a>
+<a name="ln1258">}</a>
+<a name="ln1259"> </a>
+<a name="ln1260">bool mcache_monster::valid(const monster_info&amp; mon)</a>
+<a name="ln1261">{</a>
+<a name="ln1262">    tileidx_t mon_tile = tileidx_monster(mon) &amp; TILE_FLAG_MASK;</a>
+<a name="ln1263"> </a>
+<a name="ln1264">    int ox, oy;</a>
+<a name="ln1265">    bool have_weapon_offs = (mon.type == MONS_PLAYER</a>
+<a name="ln1266">                             &amp;&amp; Options.tile_weapon_offsets.first != INT_MAX)</a>
+<a name="ln1267">        || get_weapon_offset(mon_tile, &amp;ox, &amp;oy);</a>
+<a name="ln1268">    bool have_shield_offs = (mon.type == MONS_PLAYER</a>
+<a name="ln1269">                             &amp;&amp; Options.tile_shield_offsets.first != INT_MAX)</a>
+<a name="ln1270">        || get_shield_offset(mon_tile, &amp;ox, &amp;oy);</a>
+<a name="ln1271">    // Return true if the tile has a weapon offset and has a weapon,</a>
+<a name="ln1272">    // a shield offset and a shield, or is a dual-wielder and has a</a>
+<a name="ln1273">    // shield offset and an off-hand weapon (a valid edge case)</a>
+<a name="ln1274">    return have_weapon_offs &amp;&amp; mon.inv[MSLOT_WEAPON]</a>
+<a name="ln1275">           || have_shield_offs</a>
+<a name="ln1276">              &amp;&amp; (mon.inv[MSLOT_SHIELD]</a>
+<a name="ln1277">                  || mon.inv[MSLOT_ALT_WEAPON]</a>
+<a name="ln1278">                     &amp;&amp; mons_class_wields_two_weapons(mon.type));</a>
+<a name="ln1279">}</a>
+<a name="ln1280"> </a>
+<a name="ln1281">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1282">// mcache_draco</a>
+<a name="ln1283"> </a>
+<a name="ln1284">mcache_draco::mcache_draco(const monster_info&amp; mon)</a>
+<a name="ln1285">{</a>
+<a name="ln1286">    ASSERT(mcache_draco::valid(mon));</a>
+<a name="ln1287">    draco = mons_is_draconian(mon.type);</a>
+<a name="ln1288"> </a>
+<a name="ln1289">    m_mon_tile = draco ? tileidx_draco_base(mon)</a>
+<a name="ln1290">                       : tileidx_demonspawn_base(mon);</a>
+<a name="ln1291">    const item_info* mon_wep = mon.inv[MSLOT_WEAPON].get();</a>
+<a name="ln1292">    m_equ_tile = (mon_wep != nullptr) ? tilep_equ_weapon(*mon_wep) : 0;</a>
+<a name="ln1293">    mon_wep = mon.inv[MSLOT_SHIELD].get();</a>
+<a name="ln1294">    m_shd_tile = (mon_wep != nullptr) ? tilep_equ_shield(*mon_wep) : 0;</a>
+<a name="ln1295">    m_job_tile = draco ? tileidx_draco_job(mon)</a>
+<a name="ln1296">                       : tileidx_demonspawn_job(mon);</a>
+<a name="ln1297">}</a>
+<a name="ln1298"> </a>
+<a name="ln1299">int mcache_draco::info(tile_draw_info *dinfo) const</a>
+<a name="ln1300">{</a>
+<a name="ln1301">    int i = 0;</a>
+<a name="ln1302"> </a>
+<a name="ln1303">    dinfo[i++].set(m_mon_tile);</a>
+<a name="ln1304">    if (m_job_tile)</a>
+<a name="ln1305">        dinfo[i++].set(m_job_tile);</a>
+<a name="ln1306">    if (m_equ_tile)</a>
+<a name="ln1307">    {</a>
+<a name="ln1308">        if (draco)</a>
+<a name="ln1309">            dinfo[i++].set(m_equ_tile, -3, -1);</a>
+<a name="ln1310">        else</a>
+<a name="ln1311">            dinfo[i++].set(m_equ_tile, -1, 0);</a>
+<a name="ln1312">    }</a>
+<a name="ln1313">    if (m_shd_tile)</a>
+<a name="ln1314">        dinfo[i++].set(m_shd_tile, 2, 0);</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    return i;</a>
+<a name="ln1317">}</a>
+<a name="ln1318"> </a>
+<a name="ln1319">bool mcache_draco::valid(const monster_info&amp; mon)</a>
+<a name="ln1320">{</a>
+<a name="ln1321">    return mons_is_draconian(mon.type) || mons_is_demonspawn(mon.type);</a>
+<a name="ln1322">}</a>
+<a name="ln1323"> </a>
+<a name="ln1324">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1325">// mcache_ghost</a>
+<a name="ln1326"> </a>
+<a name="ln1327">mcache_ghost::mcache_ghost(const monster_info&amp; mon)</a>
+<a name="ln1328">{</a>
+<a name="ln1329">    ASSERT(mcache_ghost::valid(mon));</a>
+<a name="ln1330"> </a>
+<a name="ln1331">    const uint32_t seed = hash32(&amp;mon.mname[0], mon.mname.size())</a>
+<a name="ln1332">                        ^ hash32(&amp;mon.i_ghost, sizeof(mon.i_ghost));</a>
+<a name="ln1333"> </a>
+<a name="ln1334">    m_doll.parts[TILEP_PART_BASE] = TILEP_SHOW_EQUIP;</a>
+<a name="ln1335">    tilep_race_default(mon.i_ghost.species, 0, &amp;m_doll);</a>
+<a name="ln1336">    tilep_job_default(mon.i_ghost.job, &amp;m_doll);</a>
+<a name="ln1337"> </a>
+<a name="ln1338">    for (int p = TILEP_PART_CLOAK; p &lt; TILEP_PART_MAX; p++)</a>
+<a name="ln1339">    {</a>
+<a name="ln1340">        if (m_doll.parts[p] == TILEP_SHOW_EQUIP)</a>
+<a name="ln1341">        {</a>
+<a name="ln1342">            int part_offset = hash_with_seed(tile_player_part_count[p], seed, p);</a>
+<a name="ln1343">            m_doll.parts[p] = tile_player_part_start[p] + part_offset;</a>
+<a name="ln1344">        }</a>
+<a name="ln1345">    }</a>
+<a name="ln1346"> </a>
+<a name="ln1347">    int ac = mon.i_ghost.ac;</a>
+<a name="ln1348">    ac *= (5 + hash_with_seed(11, seed, 1000));</a>
+<a name="ln1349">    ac /= 10;</a>
+<a name="ln1350"> </a>
+<a name="ln1351">    // Become uncannily spooky!</a>
+<a name="ln1352">    if (today_is_halloween())</a>
+<a name="ln1353">        m_doll.parts[TILEP_PART_HELM] = TILEP_HELM_PUMPKIN;</a>
+<a name="ln1354">    else if (m_doll.parts[TILEP_PART_HELM] == TILEP_HELM_PUMPKIN)</a>
+<a name="ln1355">        m_doll.parts[TILEP_PART_HELM] = TILEP_HELM_FIRST_NORM; // every day is *not* halloween</a>
+<a name="ln1356"> </a>
+<a name="ln1357"> </a>
+<a name="ln1358">    if (ac &gt; 25)</a>
+<a name="ln1359">        m_doll.parts[TILEP_PART_BODY] = TILEP_BODY_PLATE_BLACK;</a>
+<a name="ln1360">    else if (ac &gt; 18)</a>
+<a name="ln1361">        m_doll.parts[TILEP_PART_BODY]= TILEP_BODY_CHAINMAIL;</a>
+<a name="ln1362">    else if (ac &gt; 12)</a>
+<a name="ln1363">        m_doll.parts[TILEP_PART_BODY]= TILEP_BODY_SCALEMAIL;</a>
+<a name="ln1364">    else if (ac &gt; 5)</a>
+<a name="ln1365">        m_doll.parts[TILEP_PART_BODY]= TILEP_BODY_LEATHER_ARMOUR;</a>
+<a name="ln1366">    else</a>
+<a name="ln1367">        m_doll.parts[TILEP_PART_BODY]= TILEP_BODY_ROBE_BLUE;</a>
+<a name="ln1368"> </a>
+<a name="ln1369">    int sk = mon.i_ghost.best_skill;</a>
+<a name="ln1370">    int dam = mon.i_ghost.damage;</a>
+<a name="ln1371">    dam *= (5 + hash_with_seed(11, seed, 1001));</a>
+<a name="ln1372">    dam /= 10;</a>
+<a name="ln1373"> </a>
+<a name="ln1374">    switch (sk)</a>
+<a name="ln1375">    {</a>
+<a name="ln1376">    case SK_MACES_FLAILS:</a>
+<a name="ln1377">        if (dam &gt; 30)</a>
+<a name="ln1378">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_GREAT_FLAIL;</a>
+<a name="ln1379">        else if (dam &gt; 25)</a>
+<a name="ln1380">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_GREAT_MACE;</a>
+<a name="ln1381">        else if (dam &gt; 20)</a>
+<a name="ln1382">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_EVENINGSTAR;</a>
+<a name="ln1383">        else if (dam &gt; 15)</a>
+<a name="ln1384">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_MORNINGSTAR;</a>
+<a name="ln1385">        else if (dam &gt; 10)</a>
+<a name="ln1386">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_FLAIL;</a>
+<a name="ln1387">        else if (dam &gt; 5)</a>
+<a name="ln1388">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_MACE;</a>
+<a name="ln1389">        else</a>
+<a name="ln1390">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_CLUB_SLANT;</a>
+<a name="ln1391">        break;</a>
+<a name="ln1392"> </a>
+<a name="ln1393">    case SK_SHORT_BLADES:</a>
+<a name="ln1394">        if (dam &gt; 20)</a>
+<a name="ln1395">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_RAPIER;</a>
+<a name="ln1396">        else if (dam &gt; 10)</a>
+<a name="ln1397">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_SHORT_SWORD_SLANT;</a>
+<a name="ln1398">        else</a>
+<a name="ln1399">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_DAGGER_SLANT;</a>
+<a name="ln1400">        break;</a>
+<a name="ln1401"> </a>
+<a name="ln1402">    case SK_LONG_BLADES:</a>
+<a name="ln1403">        if (dam &gt; 25)</a>
+<a name="ln1404">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_GREAT_SWORD_SLANT;</a>
+<a name="ln1405">        else if (dam &gt; 20)</a>
+<a name="ln1406">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_KATANA_SLANT;</a>
+<a name="ln1407">        else if (dam &gt; 15)</a>
+<a name="ln1408">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_SCIMITAR;</a>
+<a name="ln1409">        else if (dam &gt; 10)</a>
+<a name="ln1410">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_LONG_SWORD_SLANT;</a>
+<a name="ln1411">        else</a>
+<a name="ln1412">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_FALCHION;</a>
+<a name="ln1413">        break;</a>
+<a name="ln1414"> </a>
+<a name="ln1415">    case SK_AXES:</a>
+<a name="ln1416">        if (dam &gt; 30)</a>
+<a name="ln1417">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_EXECUTIONERS_AXE;</a>
+<a name="ln1418">        else if (dam &gt; 20)</a>
+<a name="ln1419">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_BATTLEAXE;</a>
+<a name="ln1420">        else if (dam &gt; 15)</a>
+<a name="ln1421">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_BROAD_AXE;</a>
+<a name="ln1422">        else if (dam &gt; 10)</a>
+<a name="ln1423">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_WAR_AXE;</a>
+<a name="ln1424">        else</a>
+<a name="ln1425">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_HAND_AXE;</a>
+<a name="ln1426">        break;</a>
+<a name="ln1427"> </a>
+<a name="ln1428">    case SK_POLEARMS:</a>
+<a name="ln1429">        if (dam &gt; 30)</a>
+<a name="ln1430">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_GLAIVE;</a>
+<a name="ln1431">        else if (dam &gt; 20)</a>
+<a name="ln1432">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_SCYTHE;</a>
+<a name="ln1433">        else if (dam &gt; 15)</a>
+<a name="ln1434">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_HALBERD;</a>
+<a name="ln1435">        else if (dam &gt; 10)</a>
+<a name="ln1436">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_TRIDENT2;</a>
+<a name="ln1437">        else</a>
+<a name="ln1438">            m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_SPEAR;</a>
+<a name="ln1439">        break;</a>
+<a name="ln1440"> </a>
+<a name="ln1441">    case SK_BOWS:</a>
+<a name="ln1442">        m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_BOW2;</a>
+<a name="ln1443">        break;</a>
+<a name="ln1444"> </a>
+<a name="ln1445">    case SK_CROSSBOWS:</a>
+<a name="ln1446">        m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_ARBALEST;</a>
+<a name="ln1447">        break;</a>
+<a name="ln1448"> </a>
+<a name="ln1449">    case SK_SLINGS:</a>
+<a name="ln1450">        m_doll.parts[TILEP_PART_HAND1] = TILEP_HAND1_HUNTING_SLING;</a>
+<a name="ln1451">        break;</a>
+<a name="ln1452"> </a>
+<a name="ln1453">    case SK_UNARMED_COMBAT:</a>
+<a name="ln1454">    default:</a>
+<a name="ln1455">        m_doll.parts[TILEP_PART_HAND1] = m_doll.parts[TILEP_PART_HAND2] = 0;</a>
+<a name="ln1456">        break;</a>
+<a name="ln1457">    }</a>
+<a name="ln1458">}</a>
+<a name="ln1459"> </a>
+<a name="ln1460">const dolls_data *mcache_ghost::doll() const</a>
+<a name="ln1461">{</a>
+<a name="ln1462">    return &amp;m_doll;</a>
+<a name="ln1463">}</a>
+<a name="ln1464"> </a>
+<a name="ln1465">bool mcache_ghost::valid(const monster_info&amp; mon)</a>
+<a name="ln1466">{</a>
+<a name="ln1467">    return mons_is_pghost(mon.type);</a>
+<a name="ln1468">}</a>
+<a name="ln1469"> </a>
+<a name="ln1470">bool mcache_ghost::transparent() const</a>
+<a name="ln1471">{</a>
+<a name="ln1472">    return true;</a>
+<a name="ln1473">}</a>
+<a name="ln1474"> </a>
+<a name="ln1475">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1476">// mcache_demon</a>
+<a name="ln1477"> </a>
+<a name="ln1478">mcache_demon::mcache_demon(const monster_info&amp; minf)</a>
+<a name="ln1479">{</a>
+<a name="ln1480">    ASSERT(mcache_demon::valid(minf));</a>
+<a name="ln1481"> </a>
+<a name="ln1482">    const uint32_t seed = hash32(&amp;minf.mname[0], minf.mname.size());</a>
+<a name="ln1483"> </a>
+<a name="ln1484">    m_demon.head = tile_player_coloured(TILEP_DEMON_HEAD,</a>
+<a name="ln1485">                                        element_colour(minf.colour()))</a>
+<a name="ln1486">        + hash_with_seed(tile_player_count(TILEP_DEMON_HEAD), seed, 1);</a>
+<a name="ln1487">    m_demon.body = tile_player_coloured(TILEP_DEMON_BODY,</a>
+<a name="ln1488">                                        element_colour(minf.colour()))</a>
+<a name="ln1489">        + hash_with_seed(tile_player_count(TILEP_DEMON_BODY), seed, 2);</a>
+<a name="ln1490"> </a>
+<a name="ln1491">    if (minf.is(MB_AIRBORNE))</a>
+<a name="ln1492">    {</a>
+<a name="ln1493">        m_demon.wings = tile_player_coloured(TILEP_DEMON_WINGS,</a>
+<a name="ln1494">                                             element_colour(minf.colour()))</a>
+<a name="ln1495">            + hash_with_seed(tile_player_count(TILEP_DEMON_WINGS), seed, 3);</a>
+<a name="ln1496">    }</a>
+<a name="ln1497">    else</a>
+<a name="ln1498">        m_demon.wings = 0;</a>
+<a name="ln1499">}</a>
+<a name="ln1500"> </a>
+<a name="ln1501">int mcache_demon::info(tile_draw_info *dinfo) const</a>
+<a name="ln1502">{</a>
+<a name="ln1503">    if (m_demon.wings)</a>
+<a name="ln1504">    {</a>
+<a name="ln1505">        dinfo[0].set(m_demon.wings);</a>
+<a name="ln1506">        dinfo[1].set(m_demon.body);</a>
+<a name="ln1507">        dinfo[2].set(m_demon.head);</a>
+<a name="ln1508">        return 3;</a>
+<a name="ln1509">    }</a>
+<a name="ln1510">    else</a>
+<a name="ln1511">    {</a>
+<a name="ln1512">        dinfo[0].set(m_demon.body);</a>
+<a name="ln1513">        dinfo[1].set(m_demon.head);</a>
+<a name="ln1514">        return 2;</a>
+<a name="ln1515">    }</a>
+<a name="ln1516">}</a>
+<a name="ln1517"> </a>
+<a name="ln1518">bool mcache_demon::valid(const monster_info&amp; mon)</a>
+<a name="ln1519">{</a>
+<a name="ln1520">    return mon.type == MONS_PANDEMONIUM_LORD;</a>
+<a name="ln1521">}</a>
+<a name="ln1522"> </a>
+<a name="ln1523">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1524">// mcache_mbeast</a>
+<a name="ln1525"> </a>
+<a name="ln1526">mcache_mbeast::mcache_mbeast(const monster_info&amp; minf)</a>
+<a name="ln1527">{</a>
+<a name="ln1528">    ASSERT(mcache_mbeast::valid(minf));</a>
+<a name="ln1529"> </a>
+<a name="ln1530">    // the layer order should be:</a>
+<a name="ln1531">    // base &lt; fire &lt; bwing &lt; ox &lt; weird &lt; sting &lt; twing &lt; shock &lt; horn</a>
+<a name="ln1532">    // (lowest to highest)</a>
+<a name="ln1533"> </a>
+<a name="ln1534">    const int tier</a>
+<a name="ln1535">        = mutant_beast_tier(minf.props[MUTANT_BEAST_TIER].get_short()) - 1;</a>
+<a name="ln1536">    ASSERT(tier &gt;= 0);</a>
+<a name="ln1537">    ASSERT(tier &lt; (short)tile_player_count(TILEP_MUTANT_BEAST_BASE));</a>
+<a name="ln1538">    layers.push_back(TILEP_MUTANT_BEAST_BASE + tier);</a>
+<a name="ln1539"> </a>
+<a name="ln1540">    int facets = 0; // bitfield</a>
+<a name="ln1541">    for (auto facet : minf.props[MUTANT_BEAST_FACETS].get_vector())</a>
+<a name="ln1542">        facets |= (1 &lt;&lt; facet.get_int());</a>
+<a name="ln1543"> </a>
+<a name="ln1544">    // an ordered list of tiers and corresponding tiles to add.</a>
+<a name="ln1545">    // tiers may appear repeatedly, if they have multiple layers.</a>
+<a name="ln1546">    static const vector&lt;pair&lt;beast_facet, tileidx_t&gt;&gt; facet_layers = {</a>
+<a name="ln1547">        { BF_FIRE,  TILEP_MUTANT_BEAST_FIRE },</a>
+<a name="ln1548">        { BF_BAT,   TILEP_MUTANT_BEAST_WING_BASE },</a>
+<a name="ln1549">        { BF_OX,    TILEP_MUTANT_BEAST_OX },</a>
+<a name="ln1550">        { BF_WEIRD, TILEP_MUTANT_BEAST_WEIRD },</a>
+<a name="ln1551">        { BF_STING, TILEP_MUTANT_BEAST_STING },</a>
+<a name="ln1552">        { BF_BAT,   TILEP_MUTANT_BEAST_WING_TOP },</a>
+<a name="ln1553">        { BF_SHOCK, TILEP_MUTANT_BEAST_SHOCK },</a>
+<a name="ln1554">        { BF_OX,    TILEP_MUTANT_BEAST_HORN },</a>
+<a name="ln1555">    };</a>
+<a name="ln1556"> </a>
+<a name="ln1557">    for (auto &amp;facet_layer : facet_layers)</a>
+<a name="ln1558">        if (facets &amp; (1 &lt;&lt; facet_layer.first))</a>
+<a name="ln1559">            layers.emplace_back(facet_layer.second + tier);</a>
+<a name="ln1560">}</a>
+<a name="ln1561"> </a>
+<a name="ln1562">int mcache_mbeast::info(tile_draw_info *dinfo) const</a>
+<a name="ln1563">{</a>
+<a name="ln1564">    for (int i = 0; i &lt; (int)layers.size(); ++i)</a>
+<a name="ln1565">        dinfo[i].set(layers[i]);</a>
+<a name="ln1566">    return layers.size();</a>
+<a name="ln1567">}</a>
+<a name="ln1568"> </a>
+<a name="ln1569">bool mcache_mbeast::valid(const monster_info&amp; mon)</a>
+<a name="ln1570">{</a>
+<a name="ln1571">    return mon.type == MONS_MUTANT_BEAST;</a>
+<a name="ln1572">}</a>
+<a name="ln1573"> </a>
+<a name="ln1574">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="494"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 494, 800</p></div>
+<div class="balloon" rel="585"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 585, 796</p></div>
+<div class="balloon" rel="724"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 724, 772</p></div>
+<div class="balloon" rel="661"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 661, 768</p></div>
+<div class="balloon" rel="469"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 469, 764</p></div>
+<div class="balloon" rel="485"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 485, 760</p></div>
+<div class="balloon" rel="555"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 555, 756</p></div>
+<div class="balloon" rel="367"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 367, 736</p></div>
+<div class="balloon" rel="595"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 595, 728</p></div>
+<div class="balloon" rel="691"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 691, 720</p></div>
+<div class="balloon" rel="359"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 359, 716</p></div>
+<div class="balloon" rel="625"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 625, 712</p></div>
+<div class="balloon" rel="545"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 545, 704</p></div>
+<div class="balloon" rel="565"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 565, 683</p></div>
+<div class="balloon" rel="439"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 439, 645</p></div>
+<div class="balloon" rel="453"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 453, 641</p></div>
+<div class="balloon" rel="448"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 448, 561</p></div>
+<div class="balloon" rel="430"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 430, 530</p></div>
+<div class="balloon" rel="1145"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1145, 1204</p></div>
+<div class="balloon" rel="1097"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1097, 1192</p></div>
+<div class="balloon" rel="834"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 834, 1182</p></div>
+<div class="balloon" rel="952"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 952, 1150</p></div>
+<div class="balloon" rel="840"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 840, 1135</p></div>
+<div class="balloon" rel="924"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 924, 1104, 1119</p></div>
+<div class="balloon" rel="942"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 942, 1077</p></div>
+<div class="balloon" rel="897"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 897, 1062</p></div>
+<div class="balloon" rel="1027"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1027, 1042</p></div>
+<div class="balloon" rel="1277"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

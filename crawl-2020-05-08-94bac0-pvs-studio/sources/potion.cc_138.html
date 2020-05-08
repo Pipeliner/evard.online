@@ -1,0 +1,912 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>potion.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Potion and potion-like effects.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;potion.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cstdio&gt;</a>
+<a name="ln11">#include &lt;cstring&gt;</a>
+<a name="ln12">#include &lt;unordered_map&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;cloud.h&quot;</a>
+<a name="ln15">#include &quot;food.h&quot;</a>
+<a name="ln16">#include &quot;god-conduct.h&quot;</a>
+<a name="ln17">#include &quot;god-passive.h&quot;</a>
+<a name="ln18">#include &quot;god-wrath.h&quot; // reduce_xp_penance</a>
+<a name="ln19">#include &quot;hints.h&quot;</a>
+<a name="ln20">#include &quot;item-name.h&quot;</a>
+<a name="ln21">#include &quot;item-prop.h&quot;</a>
+<a name="ln22">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln23">#include &quot;item-use.h&quot;</a>
+<a name="ln24">#include &quot;message.h&quot;</a>
+<a name="ln25">#include &quot;mutation.h&quot;</a>
+<a name="ln26">#include &quot;nearby-danger.h&quot;</a>
+<a name="ln27">#include &quot;player-stats.h&quot;</a>
+<a name="ln28">#include &quot;potion-type.h&quot;</a>
+<a name="ln29">#include &quot;prompt.h&quot;</a>
+<a name="ln30">#include &quot;religion.h&quot;</a>
+<a name="ln31">#include &quot;skill-menu.h&quot;</a>
+<a name="ln32">#include &quot;spl-goditem.h&quot;</a>
+<a name="ln33">#include &quot;stringutil.h&quot;</a>
+<a name="ln34">#include &quot;transform.h&quot;</a>
+<a name="ln35">#include &quot;xom.h&quot;</a>
+<a name="ln36"> </a>
+<a name="ln37">int _xom_factor(bool was_known);</a>
+<a name="ln38"> </a>
+<a name="ln39">PotionEffect::PotionEffect(const potion_type pot)</a>
+<a name="ln40">    : potion_name(potion_type_name(pot)), kind(pot)</a>
+<a name="ln41">{ }</a>
+<a name="ln42"> </a>
+<a name="ln43">bool PotionEffect::can_quaff(string */*reason*/) const</a>
+<a name="ln44">{</a>
+<a name="ln45">    return true;</a>
+<a name="ln46">}</a>
+<a name="ln47"> </a>
+<a name="ln48">bool PotionEffect::quaff(bool was_known) const</a>
+<a name="ln49">{</a>
+<a name="ln50">    if (was_known &amp;&amp; !check_known_quaff())</a>
+<a name="ln51">        return false;</a>
+<a name="ln52"> </a>
+<a name="ln53">    effect();</a>
+<a name="ln54">    return true;</a>
+<a name="ln55">}</a>
+<a name="ln56"> </a>
+<a name="ln57">bool PotionEffect::check_known_quaff() const</a>
+<a name="ln58">{</a>
+<a name="ln59">    string reason;</a>
+<a name="ln60">    if (!can_quaff(&amp;reason))</a>
+<a name="ln61">    {</a>
+<a name="ln62">        mpr(reason);</a>
+<a name="ln63">        return false;</a>
+<a name="ln64">    }</a>
+<a name="ln65">    return true;</a>
+<a name="ln66">}</a>
+<a name="ln67"> </a>
+<a name="ln68">class PotionCuring : public PotionEffect</a>
+<a name="ln69">{</a>
+<a name="ln70">private:</a>
+<a name="ln71">    PotionCuring() : PotionEffect(POT_CURING) { }</a>
+<a name="ln72">    DISALLOW_COPY_AND_ASSIGN(PotionCuring);</a>
+<a name="ln73">public:</a>
+<a name="ln74">    static const PotionCuring &amp;instance()</a>
+<a name="ln75">    {</a>
+<a name="ln76">        static PotionCuring inst; return inst;</a>
+<a name="ln77">    }</a>
+<a name="ln78"> </a>
+<a name="ln79">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln80">    {</a>
+<a name="ln81">        // cure status effects</a>
+<a name="ln82">        if (you.duration[DUR_CONF]</a>
+<a name="ln83">            || you.duration[DUR_POISONING]</a>
+<a name="ln84">            || you.disease</a>
+<a name="ln85">            || player_rotted())</a>
+<a name="ln86">        {</a>
+<a name="ln87">            return true;</a>
+<a name="ln88">        }</a>
+<a name="ln89">        // heal</a>
+<a name="ln90">        if (you.duration[DUR_DEATHS_DOOR])</a>
+<a name="ln91">        {</a>
+<a name="ln92">            if (reason)</a>
+<a name="ln93">                *reason = &quot;You can't heal while in death's door.&quot;;</a>
+<a name="ln94">            return false;</a>
+<a name="ln95">        }</a>
+<a name="ln96">        if (!you.can_potion_heal()</a>
+<a name="ln97">            || you.hp == you.hp_max &amp;&amp; player_rotted() == 0)</a>
+<a name="ln98">        {</a>
+<a name="ln99">            if (reason)</a>
+<a name="ln100">                *reason = &quot;You have no ailments to cure.&quot;;</a>
+<a name="ln101">            return false;</a>
+<a name="ln102">        }</a>
+<a name="ln103">        return true;</a>
+<a name="ln104">    }</a>
+<a name="ln105"> </a>
+<a name="ln106">    bool effect(bool=true, int=40, bool is_potion = true) const override</a>
+<a name="ln107">    {</a>
+<a name="ln108">        const bool ddoor = you.duration[DUR_DEATHS_DOOR];</a>
+<a name="ln109">        bool unrotted = false;</a>
+<a name="ln110"> </a>
+<a name="ln111">        if ((you.can_potion_heal() || !is_potion) &amp;&amp; !ddoor || player_rotted())</a>
+<a name="ln112">        {</a>
+<a name="ln113">            int amount = 5 + random2(7);</a>
+<a name="ln114">            if (is_potion &amp;&amp; !you.can_potion_heal() &amp;&amp; player_rotted())</a>
+<a name="ln115">            {</a>
+<a name="ln116">                // Treat the effectiveness of rot removal as if the player</a>
+<a name="ln117">                // had two levels of MUT_NO_POTION_HEAL</a>
+<a name="ln118">                unrot_hp(div_rand_round(amount,3));</a>
+<a name="ln119">                unrotted = true;</a>
+<a name="ln120">            }</a>
+<a name="ln121">            else</a>
+<a name="ln122">            {</a>
+<a name="ln123">                if (is_potion)</a>
+<a name="ln124">                    amount = you.scale_potion_healing(amount);</a>
+<a name="ln125">                if (player_rotted())</a>
+<a name="ln126">                    unrotted = true;</a>
+<a name="ln127">                // Pay for rot right off the top.</a>
+<a name="ln128">                amount = unrot_hp(amount);</a>
+<a name="ln129">                inc_hp(amount);</a>
+<a name="ln130">            }</a>
+<a name="ln131">        }</a>
+<a name="ln132"> </a>
+<a name="ln133">        if (ddoor)</a>
+<a name="ln134">            mpr(&quot;You feel queasy.&quot;);</a>
+<a name="ln135">        else if (you.can_potion_heal()</a>
+<a name="ln136">                 || !is_potion</a>
+<a name="ln137">                 || you.duration[DUR_POISONING]</a>
+<a name="ln138">                 || you.duration[DUR_CONF]</a>
+<a name="ln139">                 || unrotted)</a>
+<a name="ln140">        {</a>
+<a name="ln141">            if (is_potion)</a>
+<a name="ln142">                print_potion_heal_message();</a>
+<a name="ln143">            canned_msg(MSG_GAIN_HEALTH);</a>
+<a name="ln144">        }</a>
+<a name="ln145">        else</a>
+<a name="ln146">            mpr(&quot;That felt strangely inert.&quot;);</a>
+<a name="ln147">        // need to redraw from yellow to green even if no hp was gained</a>
+<a name="ln148">        if (you.duration[DUR_POISONING])</a>
+<a name="ln149">            you.redraw_hit_points = true;</a>
+<a name="ln150">        you.duration[DUR_POISONING] = 0;</a>
+<a name="ln151">        you.disease = 0;</a>
+<a name="ln152">        you.duration[DUR_CONF] = 0;</a>
+<a name="ln153">        return true;</a>
+<a name="ln154">    }</a>
+<a name="ln155">};</a>
+<a name="ln156"> </a>
+<a name="ln157">class PotionHealWounds : public PotionEffect</a>
+<a name="ln158">{</a>
+<a name="ln159">private:</a>
+<a name="ln160">    PotionHealWounds() : PotionEffect(POT_HEAL_WOUNDS) { }</a>
+<a name="ln161">    DISALLOW_COPY_AND_ASSIGN(PotionHealWounds);</a>
+<a name="ln162">public:</a>
+<a name="ln163">    static const PotionHealWounds &amp;instance()</a>
+<a name="ln164">    {</a>
+<a name="ln165">        static PotionHealWounds inst; return inst;</a>
+<a name="ln166">    }</a>
+<a name="ln167"> </a>
+<a name="ln168">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln169">    {</a>
+<a name="ln170">        if (!you.can_potion_heal())</a>
+<a name="ln171">        {</a>
+<a name="ln172">            if (reason)</a>
+<a name="ln173">                *reason = &quot;That would not heal you.&quot;;</a>
+<a name="ln174">            return false;</a>
+<a name="ln175">        }</a>
+<a name="ln176">        if (you.duration[DUR_DEATHS_DOOR])</a>
+<a name="ln177">        {</a>
+<a name="ln178">            if (reason)</a>
+<a name="ln179">                *reason = &quot;You cannot heal while in death's door.&quot;;</a>
+<a name="ln180">            return false;</a>
+<a name="ln181">        }</a>
+<a name="ln182">        if (you.hp == you.hp_max &amp;&amp; player_rotted() == 0)</a>
+<a name="ln183">        {</a>
+<a name="ln184">            if (reason)</a>
+<a name="ln185">                *reason = &quot;Your health is already full.&quot;;</a>
+<a name="ln186">            return false;</a>
+<a name="ln187">        }</a>
+<a name="ln188">        return true;</a>
+<a name="ln189">    }</a>
+<a name="ln190"> </a>
+<a name="ln191">    bool effect(bool=true, int=40, bool is_potion = true) const override</a>
+<a name="ln192">    {</a>
+<a name="ln193">        if (you.duration[DUR_DEATHS_DOOR])</a>
+<a name="ln194">        {</a>
+<a name="ln195">            mpr(&quot;You feel queasy.&quot;);</a>
+<a name="ln196">            return false;</a>
+<a name="ln197">        }</a>
+<a name="ln198">        if (!you.can_potion_heal() &amp;&amp; is_potion)</a>
+<a name="ln199">        {</a>
+<a name="ln200">            mpr(&quot;That seemed strangely inert.&quot;);</a>
+<a name="ln201">            return false;</a>
+<a name="ln202">        }</a>
+<a name="ln203"> </a>
+<a name="ln204">        int amount = 10 + random2avg(28, 3);</a>
+<a name="ln205">        if (is_potion)</a>
+<a name="ln206">            amount = you.scale_potion_healing(amount);</a>
+<a name="ln207">        // Pay for rot right off the top.</a>
+<a name="ln208">        amount = unrot_hp(amount);</a>
+<a name="ln209">        inc_hp(amount);</a>
+<a name="ln210">        if (is_potion)</a>
+<a name="ln211">            print_potion_heal_message();</a>
+<a name="ln212">        mpr(&quot;You feel much better.&quot;);</a>
+<a name="ln213">        return true;</a>
+<a name="ln214">    }</a>
+<a name="ln215">};</a>
+<a name="ln216"> </a>
+<a name="ln217">class PotionHaste : public PotionEffect</a>
+<a name="ln218">{</a>
+<a name="ln219">private:</a>
+<a name="ln220">    PotionHaste() : PotionEffect(POT_HASTE) { }</a>
+<a name="ln221">    DISALLOW_COPY_AND_ASSIGN(PotionHaste);</a>
+<a name="ln222">public:</a>
+<a name="ln223">    static const PotionHaste &amp;instance()</a>
+<a name="ln224">    {</a>
+<a name="ln225">        static PotionHaste inst; return inst;</a>
+<a name="ln226">    }</a>
+<a name="ln227"> </a>
+<a name="ln228">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln229">    {</a>
+<a name="ln230">        if (you.stasis())</a>
+<a name="ln231">        {</a>
+<a name="ln232">            if (reason)</a>
+<a name="ln233">                *reason = &quot;Your stasis prevents you from being hasted.&quot;;</a>
+<a name="ln234">            return false;</a>
+<a name="ln235">        }</a>
+<a name="ln236">        return true;</a>
+<a name="ln237">    }</a>
+<a name="ln238"> </a>
+<a name="ln239">    bool effect(bool=true, int pow = 40, bool=true) const override</a>
+<a name="ln240">    {</a>
+<a name="ln241">        return haste_player(40 + random2(pow));</a>
+<a name="ln242">    }</a>
+<a name="ln243"> </a>
+<a name="ln244">    bool quaff(bool was_known) const override</a>
+<a name="ln245">    {</a>
+<a name="ln246">        if (was_known &amp;&amp; !check_known_quaff())</a>
+<a name="ln247">            return false;</a>
+<a name="ln248"> </a>
+<a name="ln249">        if (effect())</a>
+<a name="ln250">            did_god_conduct(DID_HASTY, 10, was_known);</a>
+<a name="ln251">        return true;</a>
+<a name="ln252">    }</a>
+<a name="ln253">};</a>
+<a name="ln254"> </a>
+<a name="ln255">class PotionMight : public PotionEffect</a>
+<a name="ln256">{</a>
+<a name="ln257">private:</a>
+<a name="ln258">    PotionMight() : PotionEffect(POT_MIGHT) { }</a>
+<a name="ln259">    DISALLOW_COPY_AND_ASSIGN(PotionMight);</a>
+<a name="ln260">public:</a>
+<a name="ln261">    static const PotionMight &amp;instance()</a>
+<a name="ln262">    {</a>
+<a name="ln263">        static PotionMight inst; return inst;</a>
+<a name="ln264">    }</a>
+<a name="ln265"> </a>
+<a name="ln266">    bool effect(bool=true, int pow = 40, bool=true) const override</a>
+<a name="ln267">    {</a>
+<a name="ln268">        const bool were_mighty = you.duration[DUR_MIGHT] &gt; 0;</a>
+<a name="ln269"> </a>
+<a name="ln270">        mprf(MSGCH_DURATION, &quot;You feel %s all of a sudden.&quot;,</a>
+<a name="ln271">             were_mighty ? &quot;mightier&quot; : &quot;very mighty&quot;);</a>
+<a name="ln272">        you.increase_duration(DUR_MIGHT, 35 + random2(pow), 80);</a>
+<a name="ln273">        return true;</a>
+<a name="ln274">    }</a>
+<a name="ln275">};</a>
+<a name="ln276"> </a>
+<a name="ln277">class PotionBrilliance : public PotionEffect</a>
+<a name="ln278">{</a>
+<a name="ln279">private:</a>
+<a name="ln280">    PotionBrilliance() : PotionEffect(POT_BRILLIANCE) { }</a>
+<a name="ln281">    DISALLOW_COPY_AND_ASSIGN(PotionBrilliance);</a>
+<a name="ln282">public:</a>
+<a name="ln283">    static const PotionBrilliance &amp;instance()</a>
+<a name="ln284">    {</a>
+<a name="ln285">        static PotionBrilliance inst; return inst;</a>
+<a name="ln286">    }</a>
+<a name="ln287"> </a>
+<a name="ln288">    bool effect(bool=true, int pow = 40, bool=true) const override</a>
+<a name="ln289">    {</a>
+<a name="ln290">        const bool were_brilliant = you.duration[DUR_BRILLIANCE] &gt; 0;</a>
+<a name="ln291"> </a>
+<a name="ln292">        mprf(MSGCH_DURATION, &quot;You feel %sclever all of a sudden.&quot;,</a>
+<a name="ln293">             were_brilliant ? &quot;more &quot; : &quot;&quot;);</a>
+<a name="ln294">        you.increase_duration(DUR_BRILLIANCE, 35 + random2(pow), 80);</a>
+<a name="ln295">        return true;</a>
+<a name="ln296">    }</a>
+<a name="ln297">};</a>
+<a name="ln298"> </a>
+<a name="ln299">class PotionStabbing : public PotionEffect</a>
+<a name="ln300">{</a>
+<a name="ln301">private:</a>
+<a name="ln302">    PotionStabbing() : PotionEffect(POT_STABBING) { }</a>
+<a name="ln303">    DISALLOW_COPY_AND_ASSIGN(PotionStabbing);</a>
+<a name="ln304">public:</a>
+<a name="ln305">    static const PotionStabbing &amp;instance()</a>
+<a name="ln306">    {</a>
+<a name="ln307">        static PotionStabbing inst; return inst;</a>
+<a name="ln308">    }</a>
+<a name="ln309"> </a>
+<a name="ln310">    bool effect(bool=true, int pow = 40, bool=true) const override</a>
+<a name="ln311">    {</a>
+<a name="ln312">        const bool was_stabbing = you.duration[DUR_STABBING] &gt; 0;</a>
+<a name="ln313"> </a>
+<a name="ln314">        mprf(MSGCH_DURATION, &quot;You feel %sready to backstab.&quot;,</a>
+<a name="ln315">             was_stabbing ? &quot;more &quot; : &quot;&quot;);</a>
+<a name="ln316"> </a>
+<a name="ln317">        you.increase_duration(DUR_STABBING, 35 + random2(pow), 80);</a>
+<a name="ln318">        return true;</a>
+<a name="ln319">    }</a>
+<a name="ln320">};</a>
+<a name="ln321"> </a>
+<a name="ln322"> </a>
+<a name="ln323">class PotionFlight : public PotionEffect</a>
+<a name="ln324">{</a>
+<a name="ln325">private:</a>
+<a name="ln326">    PotionFlight() : PotionEffect(POT_FLIGHT) { }</a>
+<a name="ln327">    DISALLOW_COPY_AND_ASSIGN(PotionFlight);</a>
+<a name="ln328">public:</a>
+<a name="ln329">    static const PotionFlight &amp;instance()</a>
+<a name="ln330">    {</a>
+<a name="ln331">        static PotionFlight inst; return inst;</a>
+<a name="ln332">    }</a>
+<a name="ln333"> </a>
+<a name="ln334">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln335">    {</a>
+<a name="ln336">        if (!flight_allowed(true, reason))</a>
+<a name="ln337">        {</a>
+<a name="ln338">            if (reason)</a>
+<a name="ln339">                *reason = &quot;You cannot fly right now.&quot;;</a>
+<a name="ln340">            return false;</a>
+<a name="ln341">        }</a>
+<a name="ln342">        return true;</a>
+<a name="ln343">    }</a>
+<a name="ln344"> </a>
+<a name="ln345">    bool effect(bool=true, int pow = 40, bool=true) const override</a>
+<a name="ln346">    {</a>
+<a name="ln347">        you.attribute[ATTR_FLIGHT_UNCANCELLABLE] = 1;</a>
+<a name="ln348">        fly_player(pow);</a>
+<a name="ln349">        return you.airborne();</a>
+<a name="ln350">    }</a>
+<a name="ln351">};</a>
+<a name="ln352"> </a>
+<a name="ln353">class PotionCancellation : public PotionEffect</a>
+<a name="ln354">{</a>
+<a name="ln355">private:</a>
+<a name="ln356">    PotionCancellation() : PotionEffect(POT_CANCELLATION) { }</a>
+<a name="ln357">    DISALLOW_COPY_AND_ASSIGN(PotionCancellation);</a>
+<a name="ln358">public:</a>
+<a name="ln359">    static const PotionCancellation &amp;instance()</a>
+<a name="ln360">    {</a>
+<a name="ln361">        static PotionCancellation inst; return inst;</a>
+<a name="ln362">    }</a>
+<a name="ln363"> </a>
+<a name="ln364">    bool effect(bool=true, int=40, bool=true) const override</a>
+<a name="ln365">    {</a>
+<a name="ln366">        debuff_player();</a>
+<a name="ln367">        mpr(&quot;You feel magically purged.&quot;);</a>
+<a name="ln368">        const int old_contam_level = get_contamination_level();</a>
+<a name="ln369">        contaminate_player(-1 * (1000 + random2(4000)));</a>
+<a name="ln370">        if (old_contam_level &amp;&amp; old_contam_level == get_contamination_level())</a>
+<a name="ln371">            mpr(&quot;You feel slightly less contaminated with magical energies.&quot;);</a>
+<a name="ln372">        return true;</a>
+<a name="ln373">    }</a>
+<a name="ln374">};</a>
+<a name="ln375"> </a>
+<a name="ln376">class PotionAmbrosia : public PotionEffect</a>
+<a name="ln377">{</a>
+<a name="ln378">private:</a>
+<a name="ln379">    PotionAmbrosia() : PotionEffect(POT_AMBROSIA) { }</a>
+<a name="ln380">    DISALLOW_COPY_AND_ASSIGN(PotionAmbrosia);</a>
+<a name="ln381">public:</a>
+<a name="ln382">    static const PotionAmbrosia &amp;instance()</a>
+<a name="ln383">    {</a>
+<a name="ln384">        static PotionAmbrosia inst; return inst;</a>
+<a name="ln385">    }</a>
+<a name="ln386"> </a>
+<a name="ln387">    bool effect(bool=true, int=40, bool=true) const override</a>
+<a name="ln388">    {</a>
+<a name="ln389">        const int ambrosia_turns = 3 + random2(8);</a>
+<a name="ln390">        if (confuse_player(ambrosia_turns, false, true))</a>
+<a name="ln391">        {</a>
+<a name="ln392">            print_potion_heal_message();</a>
+<a name="ln393">            mprf(&quot;You feel%s invigorated.&quot;,</a>
+<a name="ln394">                 you.duration[DUR_AMBROSIA] ? &quot; more&quot; : &quot;&quot;);</a>
+<a name="ln395">            you.increase_duration(DUR_AMBROSIA, ambrosia_turns);</a>
+<a name="ln396">            return true;</a>
+<a name="ln397">        }</a>
+<a name="ln398"> </a>
+<a name="ln399">        mpr(&quot;You feel briefly invigorated.&quot;);</a>
+<a name="ln400">        return false;</a>
+<a name="ln401">    }</a>
+<a name="ln402">};</a>
+<a name="ln403"> </a>
+<a name="ln404">class PotionInvisibility : public PotionEffect</a>
+<a name="ln405">{</a>
+<a name="ln406">private:</a>
+<a name="ln407">    PotionInvisibility() : PotionEffect(POT_INVISIBILITY) { }</a>
+<a name="ln408">    DISALLOW_COPY_AND_ASSIGN(PotionInvisibility);</a>
+<a name="ln409">public:</a>
+<a name="ln410">    static const PotionInvisibility &amp;instance()</a>
+<a name="ln411">    {</a>
+<a name="ln412">        static PotionInvisibility inst; return inst;</a>
+<a name="ln413">    }</a>
+<a name="ln414"> </a>
+<a name="ln415">    bool effect(bool=true, int pow = 40, bool=true) const override</a>
+<a name="ln416">    {</a>
+<a name="ln417">        if (you.backlit())</a>
+<a name="ln418">        {</a>
+<a name="ln419">            vector&lt;const char *&gt; afflictions;</a>
+<a name="ln420">            if (you.haloed() &amp;&amp; !you.umbraed())</a>
+<a name="ln421">                afflictions.push_back(&quot;halo&quot;);</a>
+<a name="ln422">            if (player_severe_contamination())</a>
+<a name="ln423">                afflictions.push_back(&quot;magical contamination&quot;);</a>
+<a name="ln424">            if (you.duration[DUR_CORONA])</a>
+<a name="ln425">                afflictions.push_back(&quot;corona&quot;);</a>
+<a name="ln426">            if (you.duration[DUR_LIQUID_FLAMES])</a>
+<a name="ln427">                afflictions.push_back(&quot;liquid flames&quot;);</a>
+<a name="ln428">            if (you.duration[DUR_QUAD_DAMAGE])</a>
+<a name="ln429">                afflictions.push_back(&quot;!!!QUAD DAMAGE!!!&quot;);</a>
+<a name="ln430">            mprf(MSGCH_DURATION,</a>
+<a name="ln431">                 &quot;You become %stransparent, but the glow from %s &quot;</a>
+<a name="ln432">                 &quot;%s prevents you from becoming completely invisible.&quot;,</a>
+<a name="ln433">                 you.duration[DUR_INVIS] ? &quot;more &quot; : &quot;&quot;,</a>
+<a name="ln434">                 you.haloed() &amp;&amp; you.halo_radius() == -1 ? &quot;the&quot; : &quot;your&quot;,</a>
+<a name="ln435">                 comma_separated_line(afflictions.begin(),</a>
+<a name="ln436">                                      afflictions.end()).c_str());</a>
+<a name="ln437">        }</a>
+<a name="ln438">        else</a>
+<a name="ln439">        {</a>
+<a name="ln440">            mprf(MSGCH_DURATION, !you.duration[DUR_INVIS]</a>
+<a name="ln441">                 ? &quot;You fade into invisibility!&quot;</a>
+<a name="ln442">                 : &quot;You fade further into invisibility.&quot;);</a>
+<a name="ln443">        }</a>
+<a name="ln444"> </a>
+<a name="ln445">        // Now multiple invisiblity casts aren't as good. -- bwr</a>
+<a name="ln446">        if (!you.duration[DUR_INVIS])</a>
+<a name="ln447">            you.set_duration(DUR_INVIS, 15 + random2(pow), 100);</a>
+<a name="ln448">        else</a>
+<a name="ln449">            you.increase_duration(DUR_INVIS, random2(pow), 100);</a>
+<a name="ln450">        return true;</a>
+<a name="ln451">    }</a>
+<a name="ln452"> </a>
+<a name="ln453">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln454">    {</a>
+<a name="ln455">        return invis_allowed(true, reason);</a>
+<a name="ln456">    }</a>
+<a name="ln457"> </a>
+<a name="ln458">    bool quaff(bool was_known) const override</a>
+<a name="ln459">    {</a>
+<a name="ln460">        // Let invis_allowed print the messages and possibly do a prompt.</a>
+<a name="ln461">        if (was_known &amp;&amp; !invis_allowed())</a>
+<a name="ln462">            return false;</a>
+<a name="ln463"> </a>
+<a name="ln464">        effect();</a>
+<a name="ln465">        you.attribute[ATTR_INVIS_UNCANCELLABLE] = 1;</a>
+<a name="ln466">        return true;</a>
+<a name="ln467">    }</a>
+<a name="ln468">};</a>
+<a name="ln469"> </a>
+<a name="ln470">class PotionExperience : public PotionEffect</a>
+<a name="ln471">{</a>
+<a name="ln472">private:</a>
+<a name="ln473">    PotionExperience() : PotionEffect(POT_EXPERIENCE) { }</a>
+<a name="ln474">    DISALLOW_COPY_AND_ASSIGN(PotionExperience);</a>
+<a name="ln475">public:</a>
+<a name="ln476">    static const PotionExperience &amp;instance()</a>
+<a name="ln477">    {</a>
+<a name="ln478">        static PotionExperience inst; return inst;</a>
+<a name="ln479">    }</a>
+<a name="ln480"> </a>
+<a name="ln481">    bool effect(bool=true, int=40, bool=true) const override</a>
+<a name="ln482">    {</a>
+<a name="ln483">        if (player_under_penance(GOD_HEPLIAKLQANA))</a>
+<a name="ln484">        {</a>
+<a name="ln485">            simple_god_message(&quot; appreciates the memories.&quot;,</a>
+<a name="ln486">                               GOD_HEPLIAKLQANA);</a>
+<a name="ln487">            reduce_xp_penance(GOD_HEPLIAKLQANA, 750 * you.experience_level);</a>
+<a name="ln488">            return true;</a>
+<a name="ln489">        }</a>
+<a name="ln490"> </a>
+<a name="ln491">        if (you.experience_level &lt; you.get_max_xl())</a>
+<a name="ln492">        {</a>
+<a name="ln493">            mpr(&quot;You feel more experienced!&quot;);</a>
+<a name="ln494">            // Defer calling level_change() until later in drink() to prevent</a>
+<a name="ln495">            // SIGHUP abuse.</a>
+<a name="ln496">            adjust_level(1, true);</a>
+<a name="ln497">        }</a>
+<a name="ln498">        else</a>
+<a name="ln499">            mpr(&quot;A flood of memories washes over you.&quot;);</a>
+<a name="ln500"> </a>
+<a name="ln501">        // these are included in default force_more_message</a>
+<a name="ln502">        const int exp = 7500 * you.experience_level;</a>
+<a name="ln503">        if (you.species == SP_GNOLL)</a>
+<a name="ln504">        {</a>
+<a name="ln505">            you.exp_available += exp;</a>
+<a name="ln506">            train_skills();</a>
+<a name="ln507">        }</a>
+<a name="ln508">        else</a>
+<a name="ln509">            skill_menu(SKMF_EXPERIENCE, exp);</a>
+<a name="ln510"> </a>
+<a name="ln511">        // the player might meet training targets and need to choose</a>
+<a name="ln512">        // skills</a>
+<a name="ln513">        check_selected_skills();</a>
+<a name="ln514"> </a>
+<a name="ln515">        return true;</a>
+<a name="ln516">    }</a>
+<a name="ln517">};</a>
+<a name="ln518"> </a>
+<a name="ln519">class PotionMagic : public PotionEffect</a>
+<a name="ln520">{</a>
+<a name="ln521">private:</a>
+<a name="ln522">    PotionMagic() : PotionEffect(POT_MAGIC) { }</a>
+<a name="ln523">    DISALLOW_COPY_AND_ASSIGN(PotionMagic);</a>
+<a name="ln524">public:</a>
+<a name="ln525">    static const PotionMagic &amp;instance()</a>
+<a name="ln526">    {</a>
+<a name="ln527">        static PotionMagic inst; return inst;</a>
+<a name="ln528">    }</a>
+<a name="ln529"> </a>
+<a name="ln530">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln531">    {</a>
+<a name="ln532">        if (you.magic_points == you.max_magic_points)</a>
+<a name="ln533">        {</a>
+<a name="ln534">            if (reason)</a>
+<a name="ln535">                *reason = &quot;Your magic is already full.&quot;;</a>
+<a name="ln536">            return false;</a>
+<a name="ln537">        }</a>
+<a name="ln538">        return true;</a>
+<a name="ln539">    }</a>
+<a name="ln540"> </a>
+<a name="ln541">    bool effect(bool=true, int = 40, bool=true) const override</a>
+<a name="ln542">    {</a>
+<a name="ln543">        inc_mp(POT_MAGIC_MP);</a>
+<a name="ln544">        mpr(&quot;Magic courses through your body.&quot;);</a>
+<a name="ln545">        return true;</a>
+<a name="ln546">    }</a>
+<a name="ln547">};</a>
+<a name="ln548"> </a>
+<a name="ln549">class PotionBerserk : public PotionEffect</a>
+<a name="ln550">{</a>
+<a name="ln551">private:</a>
+<a name="ln552">    PotionBerserk() : PotionEffect(POT_BERSERK_RAGE) { }</a>
+<a name="ln553">    DISALLOW_COPY_AND_ASSIGN(PotionBerserk);</a>
+<a name="ln554">public:</a>
+<a name="ln555">    static const PotionBerserk &amp;instance()</a>
+<a name="ln556">    {</a>
+<a name="ln557">        static PotionBerserk inst; return inst;</a>
+<a name="ln558">    }</a>
+<a name="ln559"> </a>
+<a name="ln560">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln561">    {</a>
+<a name="ln562">        return you.can_go_berserk(true, true, true, reason);</a>
+<a name="ln563">    }</a>
+<a name="ln564"> </a>
+<a name="ln565">    bool effect(bool was_known = true, int = 40, bool=true) const override</a>
+<a name="ln566">    {</a>
+<a name="ln567">        if (you.species == SP_VAMPIRE &amp;&amp; !you.vampire_alive)</a>
+<a name="ln568">        {</a>
+<a name="ln569">            mpr(&quot;You feel slightly irritated.&quot;);</a>
+<a name="ln570">            return false;</a>
+<a name="ln571">        }</a>
+<a name="ln572"> </a>
+<a name="ln573">        you.go_berserk(was_known, true);</a>
+<a name="ln574">        return true;</a>
+<a name="ln575">    }</a>
+<a name="ln576"> </a>
+<a name="ln577">    bool quaff(bool was_known) const override</a>
+<a name="ln578">    {</a>
+<a name="ln579">        if (was_known</a>
+<a name="ln580">            &amp;&amp; (!check_known_quaff() || !berserk_check_wielded_weapon()))</a>
+<a name="ln581">        {</a>
+<a name="ln582">            return false;</a>
+<a name="ln583">        }</a>
+<a name="ln584"> </a>
+<a name="ln585">        if (effect(was_known))</a>
+<a name="ln586">            xom_is_stimulated(50);</a>
+<a name="ln587">        return true;</a>
+<a name="ln588">    }</a>
+<a name="ln589">};</a>
+<a name="ln590"> </a>
+<a name="ln591">/**</a>
+<a name="ln592"> * Is the player able to mutate (temporarily or permanently) &amp; thus unable</a>
+<a name="ln593"> * to drink a mutation-causing potion?  This is a wrapper on `you.can_safely_mutate`.</a>
+<a name="ln594"> *</a>
+<a name="ln595"> * @param reason Pointer to a string where the reason will be stored if unable</a>
+<a name="ln596"> *               to mutate</a>
+<a name="ln597"> * @returns true if the player is able to mutate right now, otherwise false.</a>
+<a name="ln598"> */</a>
+<a name="ln599">static bool _can_mutate(string *reason)</a>
+<a name="ln600">{</a>
+<a name="ln601">    if (you.can_safely_mutate())</a>
+<a name="ln602">        return true;</a>
+<a name="ln603"> </a>
+<a name="ln604">    if (reason)</a>
+<a name="ln605">    {</a>
+<a name="ln606">        *reason = make_stringf(&quot;You cannot mutate%s.&quot;,</a>
+<a name="ln607">                               you.can_safely_mutate(false) ? &quot; at present&quot; : &quot;&quot;);</a>
+<a name="ln608">    }</a>
+<a name="ln609">    return false;</a>
+<a name="ln610">}</a>
+<a name="ln611"> </a>
+<a name="ln612">class PotionResistance : public PotionEffect</a>
+<a name="ln613">{</a>
+<a name="ln614">private:</a>
+<a name="ln615">    PotionResistance() : PotionEffect(POT_RESISTANCE) { }</a>
+<a name="ln616">    DISALLOW_COPY_AND_ASSIGN(PotionResistance);</a>
+<a name="ln617">public:</a>
+<a name="ln618">    static const PotionResistance &amp;instance()</a>
+<a name="ln619">    {</a>
+<a name="ln620">        static PotionResistance inst; return inst;</a>
+<a name="ln621">    }</a>
+<a name="ln622"> </a>
+<a name="ln623">    bool effect(bool=true, int pow = 40, bool=true) const override</a>
+<a name="ln624">    {</a>
+<a name="ln625">        mprf(MSGCH_DURATION, &quot;You feel protected.&quot;);</a>
+<a name="ln626">        you.increase_duration(DUR_RESISTANCE, random2(pow) + 35);</a>
+<a name="ln627">        return true;</a>
+<a name="ln628">    }</a>
+<a name="ln629">};</a>
+<a name="ln630"> </a>
+<a name="ln631">class PotionLignify : public PotionEffect</a>
+<a name="ln632">{</a>
+<a name="ln633">private:</a>
+<a name="ln634">    PotionLignify() : PotionEffect(POT_LIGNIFY) { }</a>
+<a name="ln635">    DISALLOW_COPY_AND_ASSIGN(PotionLignify);</a>
+<a name="ln636">public:</a>
+<a name="ln637">    static const PotionLignify &amp;instance()</a>
+<a name="ln638">    {</a>
+<a name="ln639">        static PotionLignify inst; return inst;</a>
+<a name="ln640">    }</a>
+<a name="ln641"> </a>
+<a name="ln642">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln643">    {</a>
+<a name="ln644">        return transform(0, transformation::tree, false, true, reason);</a>
+<a name="ln645">    }</a>
+<a name="ln646"> </a>
+<a name="ln647">    bool effect(bool was_known = true, int=40, bool=true) const override</a>
+<a name="ln648">    {</a>
+<a name="ln649">        return transform(30, transformation::tree, !was_known);</a>
+<a name="ln650">    }</a>
+<a name="ln651"> </a>
+<a name="ln652">    bool quaff(bool was_known) const override</a>
+<a name="ln653">    {</a>
+<a name="ln654">        if (was_known)</a>
+<a name="ln655">        {</a>
+<a name="ln656">            if (!check_known_quaff()</a>
+<a name="ln657">                || !check_form_stat_safety(transformation::tree))</a>
+<a name="ln658">            {</a>
+<a name="ln659">                return false;</a>
+<a name="ln660">            }</a>
+<a name="ln661"> </a>
+<a name="ln662">            const cloud_type cloud = cloud_type_at(you.pos());</a>
+<a name="ln663">            if (is_damaging_cloud(cloud, false)</a>
+<a name="ln664">                // Tree form is immune to these two.</a>
+<a name="ln665">                &amp;&amp; cloud != CLOUD_MEPHITIC &amp;&amp; cloud != CLOUD_POISON</a>
+<a name="ln666">                &amp;&amp; !yesno(make_stringf(&quot;Really become a tree while standing in &quot;</a>
+<a name="ln667">                                       &quot;a cloud of %s?&quot;,</a>
+<a name="ln668">                                       cloud_type_name(cloud).c_str()).c_str(),</a>
+<a name="ln669">                          false, 'n'))</a>
+<a name="ln670">            {</a>
+<a name="ln671">                canned_msg(MSG_OK);</a>
+<a name="ln672">                return false;</a>
+<a name="ln673">            }</a>
+<a name="ln674">        }</a>
+<a name="ln675"> </a>
+<a name="ln676">        if (effect(was_known))</a>
+<a name="ln677">        {</a>
+<a name="ln678">            you.transform_uncancellable = true;</a>
+<a name="ln679">            did_god_conduct(DID_CHAOS, 10, was_known);</a>
+<a name="ln680">        }</a>
+<a name="ln681">        else</a>
+<a name="ln682">            mpr(&quot;You feel woody for a moment.&quot;);</a>
+<a name="ln683">        return true;</a>
+<a name="ln684">    }</a>
+<a name="ln685">};</a>
+<a name="ln686"> </a>
+<a name="ln687">const int MIN_REMOVED = 2;</a>
+<a name="ln688">const int MAX_REMOVED = 4;</a>
+<a name="ln689">const int MIN_ADDED = 1;</a>
+<a name="ln690">const int MAX_ADDED = 3;</a>
+<a name="ln691"> </a>
+<a name="ln692">class PotionMutation : public PotionEffect</a>
+<a name="ln693">{</a>
+<a name="ln694">private:</a>
+<a name="ln695">    PotionMutation() : PotionEffect(POT_MUTATION) { }</a>
+<a name="ln696">    DISALLOW_COPY_AND_ASSIGN(PotionMutation);</a>
+<a name="ln697">public:</a>
+<a name="ln698">    static const PotionMutation &amp;instance()</a>
+<a name="ln699">    {</a>
+<a name="ln700">        static PotionMutation inst; return inst;</a>
+<a name="ln701">    }</a>
+<a name="ln702"> </a>
+<a name="ln703">    bool can_quaff(string *reason = nullptr) const override</a>
+<a name="ln704">    {</a>
+<a name="ln705">        if (!_can_mutate(reason))</a>
+<a name="ln706">            return false;</a>
+<a name="ln707"> </a>
+<a name="ln708">        return true;</a>
+<a name="ln709">    }</a>
+<a name="ln710"> </a>
+<a name="ln711">    bool effect(bool = true, int = 40, bool = true) const override</a>
+<a name="ln712">    {</a>
+<a name="ln713">        if (have_passive(passive_t::cleanse_mut_potions))</a>
+<a name="ln714">            simple_god_message(&quot; cleanses your potion of mutation!&quot;);</a>
+<a name="ln715">        else</a>
+<a name="ln716">            mpr(&quot;You feel extremely strange.&quot;);</a>
+<a name="ln717">        bool mutated = false;</a>
+<a name="ln718">        int remove_mutations = random_range(MIN_REMOVED, MAX_REMOVED);</a>
+<a name="ln719">        int add_mutations = random_range(MIN_ADDED, MAX_ADDED);</a>
+<a name="ln720"> </a>
+<a name="ln721">        // Remove mutations.</a>
+<a name="ln722">        for (int i = 0; i &lt; remove_mutations; i++)</a>
+<a name="ln723">            mutated |= delete_mutation(RANDOM_MUTATION, &quot;potion of mutation&quot;, false);</a>
+<a name="ln724">        if (have_passive(passive_t::cleanse_mut_potions))</a>
+<a name="ln725">            return mutated;</a>
+<a name="ln726">        // Add mutations.</a>
+<a name="ln727">        for (int i = 0; i &lt; add_mutations; i++)</a>
+<a name="ln728">            mutated |= mutate(RANDOM_MUTATION, &quot;potion of mutation&quot;, false);</a>
+<a name="ln729">        // Always one good mutation.</a>
+<a name="ln730">        mutated |= mutate(RANDOM_GOOD_MUTATION, &quot;potion of mutation&quot;, false);</a>
+<a name="ln731"> </a>
+<a name="ln732">        learned_something_new(HINT_YOU_MUTATED);</a>
+<a name="ln733">        return mutated;</a>
+<a name="ln734">    }</a>
+<a name="ln735"> </a>
+<a name="ln736"> </a>
+<a name="ln737">    bool quaff(bool was_known) const override</a>
+<a name="ln738">    {</a>
+<a name="ln739">        if (was_known &amp;&amp; !check_known_quaff())</a>
+<a name="ln740">            return false;</a>
+<a name="ln741"> </a>
+<a name="ln742">        string msg = &quot;Really drink that potion of mutation&quot;;</a>
+<a name="ln743">        msg += you.rmut_from_item() ? &quot; while resistant to mutation?&quot; : &quot;?&quot;;</a>
+<a name="ln744">        const bool zin_check = you_worship(GOD_ZIN)</a>
+<a name="ln745">                            &amp;&amp; !have_passive(passive_t::cleanse_mut_potions);</a>
+<a name="ln746">        if (zin_check)</a>
+<a name="ln747">            msg += &quot; Zin will disapprove.&quot;;</a>
+<a name="ln748">        if (was_known &amp;&amp; (zin_check || you.rmut_from_item())</a>
+<a name="ln749">                      &amp;&amp; !yesno(msg.c_str(), false, 'n'))</a>
+<a name="ln750">        {</a>
+<a name="ln751">            canned_msg(MSG_OK);</a>
+<a name="ln752">            return false;</a>
+<a name="ln753">        }</a>
+<a name="ln754"> </a>
+<a name="ln755">        effect();</a>
+<a name="ln756">        if (zin_check)</a>
+<a name="ln757">            did_god_conduct(DID_DELIBERATE_MUTATING, 15, was_known);</a>
+<a name="ln758">        return true;</a>
+<a name="ln759">    }</a>
+<a name="ln760">};</a>
+<a name="ln761"> </a>
+<a name="ln762">class PotionDegeneration : public PotionEffect</a>
+<a name="ln763">{</a>
+<a name="ln764">private:</a>
+<a name="ln765">    PotionDegeneration() : PotionEffect(POT_DEGENERATION) { }</a>
+<a name="ln766">    DISALLOW_COPY_AND_ASSIGN(PotionDegeneration);</a>
+<a name="ln767">public:</a>
+<a name="ln768">    static const PotionDegeneration &amp;instance()</a>
+<a name="ln769">    {</a>
+<a name="ln770">        static PotionDegeneration inst; return inst;</a>
+<a name="ln771">    }</a>
+<a name="ln772"> </a>
+<a name="ln773">    bool effect(bool=true, int=40, bool=true) const override</a>
+<a name="ln774">    {</a>
+<a name="ln775">        mpr(&quot;There was something very wrong with that liquid.&quot;);</a>
+<a name="ln776">        bool success = false;</a>
+<a name="ln777">        for (int i = 0; i &lt; NUM_STATS; ++i)</a>
+<a name="ln778">            if (lose_stat(static_cast&lt;stat_type&gt;(i), 1 + random2(3)))</a>
+<a name="ln779">                success = true;</a>
+<a name="ln780">        return success;</a>
+<a name="ln781">    }</a>
+<a name="ln782"> </a>
+<a name="ln783">    bool quaff(bool was_known) const override</a>
+<a name="ln784">    {</a>
+<a name="ln785">        if (effect())</a>
+<a name="ln786">            xom_is_stimulated( 50 / _xom_factor(was_known));</a>
+<a name="ln787">        return true;</a>
+<a name="ln788">    }</a>
+<a name="ln789">};</a>
+<a name="ln790"> </a>
+<a name="ln791">static const unordered_map&lt;potion_type, const PotionEffect*, std::hash&lt;int&gt;&gt; potion_effects = {</a>
+<a name="ln792">    { POT_CURING, &amp;PotionCuring::instance(), },</a>
+<a name="ln793">    { POT_HEAL_WOUNDS, &amp;PotionHealWounds::instance(), },</a>
+<a name="ln794">    { POT_HASTE, &amp;PotionHaste::instance(), },</a>
+<a name="ln795">    { POT_MIGHT, &amp;PotionMight::instance(), },</a>
+<a name="ln796">    { POT_BRILLIANCE, &amp;PotionBrilliance::instance(), },</a>
+<a name="ln797">    { POT_STABBING, &amp;PotionStabbing::instance(), },</a>
+<a name="ln798">    { POT_FLIGHT, &amp;PotionFlight::instance(), },</a>
+<a name="ln799">    { POT_CANCELLATION, &amp;PotionCancellation::instance(), },</a>
+<a name="ln800">    { POT_AMBROSIA, &amp;PotionAmbrosia::instance(), },</a>
+<a name="ln801">    { POT_INVISIBILITY, &amp;PotionInvisibility::instance(), },</a>
+<a name="ln802">    { POT_DEGENERATION, &amp;PotionDegeneration::instance(), },</a>
+<a name="ln803">    { POT_EXPERIENCE, &amp;PotionExperience::instance(), },</a>
+<a name="ln804">    { POT_MAGIC, &amp;PotionMagic::instance(), },</a>
+<a name="ln805">    { POT_BERSERK_RAGE, &amp;PotionBerserk::instance(), },</a>
+<a name="ln806">    { POT_MUTATION, &amp;PotionMutation::instance(), },</a>
+<a name="ln807">    { POT_RESISTANCE, &amp;PotionResistance::instance(), },</a>
+<a name="ln808">    { POT_LIGNIFY, &amp;PotionLignify::instance(), },</a>
+<a name="ln809">};</a>
+<a name="ln810"> </a>
+<a name="ln811">const PotionEffect* get_potion_effect(potion_type pot)</a>
+<a name="ln812">{</a>
+<a name="ln813">    switch (pot)</a>
+<a name="ln814">    {</a>
+<a name="ln815">    default:</a>
+<a name="ln816">        return potion_effects.at(pot);</a>
+<a name="ln817">    CASE_REMOVED_POTIONS(pot);</a>
+<a name="ln818">    }</a>
+<a name="ln819">}</a>
+<a name="ln820"> </a>
+<a name="ln821">/**</a>
+<a name="ln822"> * Quaff a potion, identifying it if appropriate &amp; triggering its effects on</a>
+<a name="ln823"> * the player. Does not handle decrementing item quantities.</a>
+<a name="ln824"> *</a>
+<a name="ln825"> * @param potion    The potion (stack) being quaffed.</a>
+<a name="ln826"> * @return          true if the potion was used; false if the player aborted.</a>
+<a name="ln827"> */</a>
+<a name="ln828">bool quaff_potion(item_def &amp;potion)</a>
+<a name="ln829">{</a>
+<a name="ln830">    const bool was_known = item_type_known(potion);</a>
+<a name="ln831"> </a>
+<a name="ln832">    if (!was_known)</a>
+<a name="ln833">    {</a>
+<a name="ln834">        set_ident_flags(potion, ISFLAG_IDENT_MASK);</a>
+<a name="ln835">        set_ident_type(potion, true);</a>
+<a name="ln836">        mprf(&quot;It was a %s.&quot;, potion.name(DESC_QUALNAME).c_str());</a>
+<a name="ln837">    }</a>
+<a name="ln838"> </a>
+<a name="ln839">    const potion_type ptyp = static_cast&lt;potion_type&gt;(potion.sub_type);</a>
+<a name="ln840">    return get_potion_effect(ptyp)-&gt;quaff(was_known);</a>
+<a name="ln841">}</a>
+<a name="ln842"> </a>
+<a name="ln843">/**</a>
+<a name="ln844"> * Trigger an effect on the player corresponding to the given potion type.</a>
+<a name="ln845"> *</a>
+<a name="ln846"> * @param effect        The type of potion in question.</a>
+<a name="ln847"> * @param pow           The power of the effect. (Only relevant for some pots.)</a>
+<a name="ln848"> * @param was_known     Whether the player should be held responsible.</a>
+<a name="ln849"> */</a>
+<a name="ln850">void potionlike_effect(potion_type effect, int pow, bool was_known)</a>
+<a name="ln851">{</a>
+<a name="ln852">    get_potion_effect(effect)-&gt;effect(was_known, pow, false);</a>
+<a name="ln853">}</a>
+<a name="ln854"> </a>
+<a name="ln855">int _xom_factor(bool was_known)</a>
+<a name="ln856">{</a>
+<a name="ln857">    // Knowingly drinking bad potions is much less amusing.</a>
+<a name="ln858">    int xom_factor = 1;</a>
+<a name="ln859">    if (was_known)</a>
+<a name="ln860">    {</a>
+<a name="ln861">        xom_factor *= 2;</a>
+<a name="ln862">        if (!player_in_a_dangerous_place())</a>
+<a name="ln863">            xom_factor *= 3;</a>
+<a name="ln864">    }</a>
+<a name="ln865">    return xom_factor;</a>
+<a name="ln866">}</a>
+
+</code></pre>
+<div class="balloon" rel="97"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

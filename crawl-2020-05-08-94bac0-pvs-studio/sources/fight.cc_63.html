@@ -1,0 +1,1156 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>fight.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief functions used during combat</a>
+<a name="ln4"> */</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;fight.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cmath&gt;</a>
+<a name="ln12">#include &lt;cstdio&gt;</a>
+<a name="ln13">#include &lt;cstdlib&gt;</a>
+<a name="ln14">#include &lt;cstring&gt;</a>
+<a name="ln15"> </a>
+<a name="ln16">#include &quot;art-enum.h&quot;</a>
+<a name="ln17">#include &quot;coord.h&quot;</a>
+<a name="ln18">#include &quot;coordit.h&quot;</a>
+<a name="ln19">#include &quot;delay.h&quot;</a>
+<a name="ln20">#include &quot;english.h&quot;</a>
+<a name="ln21">#include &quot;env.h&quot;</a>
+<a name="ln22">#include &quot;fineff.h&quot;</a>
+<a name="ln23">#include &quot;fprop.h&quot;</a>
+<a name="ln24">#include &quot;god-passive.h&quot; // passive_t::shadow_attacks</a>
+<a name="ln25">#include &quot;hints.h&quot;</a>
+<a name="ln26">#include &quot;invent.h&quot;</a>
+<a name="ln27">#include &quot;item-prop.h&quot;</a>
+<a name="ln28">#include &quot;item-use.h&quot;</a>
+<a name="ln29">#include &quot;melee-attack.h&quot;</a>
+<a name="ln30">#include &quot;message.h&quot;</a>
+<a name="ln31">#include &quot;misc.h&quot;</a>
+<a name="ln32">#include &quot;mon-behv.h&quot;</a>
+<a name="ln33">#include &quot;mon-cast.h&quot;</a>
+<a name="ln34">#include &quot;mon-place.h&quot;</a>
+<a name="ln35">#include &quot;mon-util.h&quot;</a>
+<a name="ln36">#include &quot;ouch.h&quot;</a>
+<a name="ln37">#include &quot;player.h&quot;</a>
+<a name="ln38">#include &quot;prompt.h&quot;</a>
+<a name="ln39">#include &quot;random-var.h&quot;</a>
+<a name="ln40">#include &quot;religion.h&quot;</a>
+<a name="ln41">#include &quot;shopping.h&quot;</a>
+<a name="ln42">#include &quot;spl-summoning.h&quot;</a>
+<a name="ln43">#include &quot;state.h&quot;</a>
+<a name="ln44">#include &quot;stringutil.h&quot;</a>
+<a name="ln45">#include &quot;target.h&quot;</a>
+<a name="ln46">#include &quot;terrain.h&quot;</a>
+<a name="ln47">#include &quot;transform.h&quot;</a>
+<a name="ln48">#include &quot;traps.h&quot;</a>
+<a name="ln49">#include &quot;travel.h&quot;</a>
+<a name="ln50"> </a>
+<a name="ln51">/**</a>
+<a name="ln52"> * What are the odds of an HD-checking confusion effect (e.g. Confusing Touch,</a>
+<a name="ln53"> * Fungus Form, SPWPN_CHAOS maybe) to confuse a monster of the given HD?</a>
+<a name="ln54"> *</a>
+<a name="ln55"> * @param HD    The current hit dice (level) of the monster to confuse.</a>
+<a name="ln56"> * @return      A percentage chance (0-100) of confusing that monster.</a>
+<a name="ln57"> *              (Except it tops out at 80%.)</a>
+<a name="ln58"> */</a>
+<a name="ln59">int melee_confuse_chance(int HD)</a>
+<a name="ln60">{</a>
+<a name="ln61">    return max(80 * (24 - HD) / 24, 0);</a>
+<a name="ln62">}</a>
+<a name="ln63"> </a>
+<a name="ln64">/**</a>
+<a name="ln65"> * Switch from a bad weapon to melee.</a>
+<a name="ln66"> *</a>
+<a name="ln67"> * This function assumes some weapon is being wielded.</a>
+<a name="ln68"> * @return whether a swap did occur.</a>
+<a name="ln69"> */</a>
+<a name="ln70">static bool _autoswitch_to_melee()</a>
+<a name="ln71">{</a>
+<a name="ln72">    bool penance;</a>
+<a name="ln73">    if (is_melee_weapon(*you.weapon())</a>
+<a name="ln74">        &amp;&amp; !needs_handle_warning(*you.weapon(), OPER_ATTACK, penance))</a>
+<a name="ln75">    {</a>
+<a name="ln76">        return false;</a>
+<a name="ln77">    }</a>
+<a name="ln78"> </a>
+<a name="ln79">    int item_slot;</a>
+<a name="ln80">    if (you.equip[EQ_WEAPON] == letter_to_index('a'))</a>
+<a name="ln81">        item_slot = letter_to_index('b');</a>
+<a name="ln82">    else if (you.equip[EQ_WEAPON] == letter_to_index('b'))</a>
+<a name="ln83">        item_slot = letter_to_index('a');</a>
+<a name="ln84">    else</a>
+<a name="ln85">        return false;</a>
+<a name="ln86"> </a>
+<a name="ln87">    if (!is_melee_weapon(you.inv[item_slot]))</a>
+<a name="ln88">        return false;</a>
+<a name="ln89"> </a>
+<a name="ln90">    return wield_weapon(true, item_slot);</a>
+<a name="ln91">}</a>
+<a name="ln92"> </a>
+<a name="ln93">/**</a>
+<a name="ln94"> * Handle melee combat between attacker and defender.</a>
+<a name="ln95"> *</a>
+<a name="ln96"> * Works using the new fight rewrite. For a monster attacking, this method</a>
+<a name="ln97"> * loops through all their available attacks, instantiating a new melee_attack</a>
+<a name="ln98"> * for each attack. Combat effects should not go here, if at all possible. This</a>
+<a name="ln99"> * is merely a wrapper function which is used to start combat.</a>
+<a name="ln100"> *</a>
+<a name="ln101"> * @param[in] attacker,defender The (non-null) participants in the attack.</a>
+<a name="ln102"> *                              Either may be killed as a result of the attack.</a>
+<a name="ln103"> * @param[out] did_hit If non-null, receives true if the attack hit the</a>
+<a name="ln104"> *                     defender, and false otherwise.</a>
+<a name="ln105"> * @param simu Is this a simulated attack?  Disables a few problematic</a>
+<a name="ln106"> *             effects such as blood spatter and distortion teleports.</a>
+<a name="ln107"> *</a>
+<a name="ln108"> * @return Whether the attack took time (i.e. wasn't cancelled).</a>
+<a name="ln109"> */</a>
+<a name="ln110">bool fight_melee(actor *attacker, actor *defender, bool *did_hit, bool simu)</a>
+<a name="ln111">{</a>
+<a name="ln112">    ASSERT(attacker); // XXX: change to actor &amp;attacker</a>
+<a name="ln113">    ASSERT(defender); // XXX: change to actor &amp;defender</a>
+<a name="ln114"> </a>
+<a name="ln115">    // A dead defender would result in us returning true without actually</a>
+<a name="ln116">    // taking an action.</a>
+<a name="ln117">    ASSERT(defender-&gt;alive());</a>
+<a name="ln118"> </a>
+<a name="ln119">    if (defender-&gt;is_player())</a>
+<a name="ln120">    {</a>
+<a name="ln121">        ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln122">        // Friendly and good neutral monsters won't attack unless confused.</a>
+<a name="ln123">        if (attacker-&gt;as_monster()-&gt;wont_attack()</a>
+<a name="ln124">            &amp;&amp; !mons_is_confused(*attacker-&gt;as_monster())</a>
+<a name="ln125">            &amp;&amp; !attacker-&gt;as_monster()-&gt;has_ench(ENCH_INSANE))</a>
+<a name="ln126">        {</a>
+<a name="ln127">            return false;</a>
+<a name="ln128">        }</a>
+<a name="ln129"> </a>
+<a name="ln130">        // In case the monster hasn't noticed you, bumping into it will</a>
+<a name="ln131">        // change that.</a>
+<a name="ln132">        behaviour_event(attacker-&gt;as_monster(), ME_ALERT, defender);</a>
+<a name="ln133">    }</a>
+<a name="ln134">    else if (attacker-&gt;is_player())</a>
+<a name="ln135">    {</a>
+<a name="ln136">        ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln137">        // Can't damage orbs this way.</a>
+<a name="ln138">        if (mons_is_projectile(defender-&gt;type) &amp;&amp; !you.confused())</a>
+<a name="ln139">        {</a>
+<a name="ln140">            you.turn_is_over = false;</a>
+<a name="ln141">            return false;</a>
+<a name="ln142">        }</a>
+<a name="ln143"> </a>
+<a name="ln144">        if (!simu &amp;&amp; Options.auto_switch</a>
+<a name="ln145">            &amp;&amp; you.weapon()</a>
+<a name="ln146">            &amp;&amp; _autoswitch_to_melee())</a>
+<a name="ln147">        {</a>
+<a name="ln148">            return true; // Is this right? We did take time, but we didn't melee</a>
+<a name="ln149">        }</a>
+<a name="ln150"> </a>
+<a name="ln151">        melee_attack attk(&amp;you, defender);</a>
+<a name="ln152"> </a>
+<a name="ln153">        if (simu)</a>
+<a name="ln154">            attk.simu = true;</a>
+<a name="ln155"> </a>
+<a name="ln156">        // We're trying to hit a monster, break out of travel/explore now.</a>
+<a name="ln157">        interrupt_activity(activity_interrupt::hit_monster,</a>
+<a name="ln158">                           defender-&gt;as_monster());</a>
+<a name="ln159"> </a>
+<a name="ln160">        // Check if the player is fighting with something unsuitable,</a>
+<a name="ln161">        // or someone unsuitable.</a>
+<a name="ln162">        if (you.can_see(*defender) &amp;&amp; !simu</a>
+<a name="ln163">            &amp;&amp; !wielded_weapon_check(attk.weapon))</a>
+<a name="ln164">        {</a>
+<a name="ln165">            you.turn_is_over = false;</a>
+<a name="ln166">            return false;</a>
+<a name="ln167">        }</a>
+<a name="ln168"> </a>
+<a name="ln169">        if (!attk.attack())</a>
+<a name="ln170">        {</a>
+<a name="ln171">            // Attack was cancelled or unsuccessful...</a>
+<a name="ln172">            if (attk.cancel_attack)</a>
+<a name="ln173">                you.turn_is_over = false;</a>
+<a name="ln174">            return !attk.cancel_attack;</a>
+<a name="ln175">        }</a>
+<a name="ln176"> </a>
+<a name="ln177">        if (did_hit)</a>
+<a name="ln178">            *did_hit = attk.did_hit;</a>
+<a name="ln179"> </a>
+<a name="ln180">        // A spectral weapon attacks whenever the player does</a>
+<a name="ln181">        if (!simu &amp;&amp; you.props.exists(&quot;spectral_weapon&quot;))</a>
+<a name="ln182">            trigger_spectral_weapon(&amp;you, defender);</a>
+<a name="ln183"> </a>
+<a name="ln184">        if (!simu &amp;&amp; will_have_passive(passive_t::shadow_attacks))</a>
+<a name="ln185">            dithmenos_shadow_melee(defender);</a>
+<a name="ln186"> </a>
+<a name="ln187">        return true;</a>
+<a name="ln188">    }</a>
+<a name="ln189"> </a>
+<a name="ln190">    // If execution gets here, attacker != Player, so we can safely continue</a>
+<a name="ln191">    // with processing the number of attacks a monster has without worrying</a>
+<a name="ln192">    // about unpredictable or weird results from players.</a>
+<a name="ln193"> </a>
+<a name="ln194">    // If this is a spectral weapon check if it can attack</a>
+<a name="ln195">    if (attacker-&gt;type == MONS_SPECTRAL_WEAPON</a>
+<a name="ln196">        &amp;&amp; !confirm_attack_spectral_weapon(attacker-&gt;as_monster(), defender))</a>
+<a name="ln197">    {</a>
+<a name="ln198">        // Pretend an attack happened,</a>
+<a name="ln199">        // so the weapon doesn't advance unecessarily.</a>
+<a name="ln200">        return true;</a>
+<a name="ln201">    }</a>
+<a name="ln202"> </a>
+<a name="ln203">    const int nrounds = attacker-&gt;as_monster()-&gt;has_hydra_multi_attack()</a>
+<a name="ln204">        ? attacker-&gt;heads() + MAX_NUM_ATTACKS - 1</a>
+<a name="ln205">        : MAX_NUM_ATTACKS;</a>
+<a name="ln206">    coord_def pos = defender-&gt;pos();</a>
+<a name="ln207"> </a>
+<a name="ln208">    // Melee combat, tell attacker to wield its melee weapon.</a>
+<a name="ln209">    attacker-&gt;as_monster()-&gt;wield_melee_weapon();</a>
+<a name="ln210"> </a>
+<a name="ln211">    int effective_attack_number = 0;</a>
+<a name="ln212">    int attack_number;</a>
+<a name="ln213">    for (attack_number = 0; attack_number &lt; nrounds &amp;&amp; attacker-&gt;alive();</a>
+<a name="ln214">         ++attack_number, ++effective_attack_number)</a>
+<a name="ln215">    {</a>
+<a name="ln216">        if (!attacker-&gt;alive())</a>
+<a name="ln217">            return false;</a>
+<a name="ln218"> </a>
+<a name="ln219">        // Monster went away?</a>
+<a name="ln220">        if (!defender-&gt;alive()</a>
+<a name="ln221">            || defender-&gt;pos() != pos</a>
+<a name="ln222">            || defender-&gt;is_banished())</a>
+<a name="ln223">        {</a>
+<a name="ln224">            if (attacker == defender</a>
+<a name="ln225">               || !attacker-&gt;as_monster()-&gt;has_multitargeting())</a>
+<a name="ln226">            {</a>
+<a name="ln227">                break;</a>
+<a name="ln228">            }</a>
+<a name="ln229"> </a>
+<a name="ln230">            // Hydras can try and pick up a new monster to attack to</a>
+<a name="ln231">            // finish out their round. -cao</a>
+<a name="ln232">            bool end = true;</a>
+<a name="ln233">            for (adjacent_iterator i(attacker-&gt;pos()); i; ++i)</a>
+<a name="ln234">            {</a>
+<a name="ln235">                if (*i == you.pos()</a>
+<a name="ln236">                    &amp;&amp; !mons_aligned(attacker, &amp;you))</a>
+<a name="ln237">                {</a>
+<a name="ln238">                    attacker-&gt;as_monster()-&gt;foe = MHITYOU;</a>
+<a name="ln239">                    attacker-&gt;as_monster()-&gt;target = you.pos();</a>
+<a name="ln240">                    defender = &amp;you;</a>
+<a name="ln241">                    end = false;</a>
+<a name="ln242">                    break;</a>
+<a name="ln243">                }</a>
+<a name="ln244"> </a>
+<a name="ln245">                monster* mons = monster_at(*i);</a>
+<a name="ln246">                if (mons &amp;&amp; !mons_aligned(attacker, mons))</a>
+<a name="ln247">                {</a>
+<a name="ln248">                    defender = mons;</a>
+<a name="ln249">                    end = false;</a>
+<a name="ln250">                    pos = mons-&gt;pos();</a>
+<a name="ln251">                    break;</a>
+<a name="ln252">                }</a>
+<a name="ln253">            }</a>
+<a name="ln254"> </a>
+<a name="ln255">            // No adjacent hostiles.</a>
+<a name="ln256">            if (end)</a>
+<a name="ln257">                break;</a>
+<a name="ln258">        }</a>
+<a name="ln259"> </a>
+<a name="ln260">        if (!simu &amp;&amp; attacker-&gt;is_monster()</a>
+<a name="ln261">            &amp;&amp; mons_attack_spec(*attacker-&gt;as_monster(), attack_number, true)</a>
+<a name="ln262">                   .flavour == AF_KITE</a>
+<a name="ln263">            &amp;&amp; attacker-&gt;as_monster()-&gt;foe_distance() == 1</a>
+<a name="ln264">            &amp;&amp; attacker-&gt;reach_range() == REACH_TWO</a>
+<a name="ln265">            &amp;&amp; x_chance_in_y(3, 5))</a>
+<a name="ln266">        {</a>
+<a name="ln267">            monster* mons = attacker-&gt;as_monster();</a>
+<a name="ln268">            coord_def foepos = mons-&gt;get_foe()-&gt;pos();</a>
+<a name="ln269">            coord_def hopspot = mons-&gt;pos() - (foepos - mons-&gt;pos()).sgn();</a>
+<a name="ln270"> </a>
+<a name="ln271">            bool found = false;</a>
+<a name="ln272">            if (!monster_habitable_grid(mons, grd(hopspot)) ||</a>
+<a name="ln273">                actor_at(hopspot))</a>
+<a name="ln274">            {</a>
+<a name="ln275">                for (adjacent_iterator ai(mons-&gt;pos()); ai; ++ai)</a>
+<a name="ln276">                {</a>
+<a name="ln277">                    if (ai-&gt;distance_from(foepos) != 2)</a>
+<a name="ln278">                        continue;</a>
+<a name="ln279">                    else</a>
+<a name="ln280">                    {</a>
+<a name="ln281">                        if (monster_habitable_grid(mons, grd(*ai))</a>
+<a name="ln282">                            &amp;&amp; !actor_at(*ai))</a>
+<a name="ln283">                        {</a>
+<a name="ln284">                            hopspot = *ai;</a>
+<a name="ln285">                            found = true;</a>
+<a name="ln286">                            break;</a>
+<a name="ln287">                        }</a>
+<a name="ln288">                    }</a>
+<a name="ln289">                }</a>
+<a name="ln290">            }</a>
+<a name="ln291">            else</a>
+<a name="ln292">                found = true;</a>
+<a name="ln293"> </a>
+<a name="ln294">            if (found)</a>
+<a name="ln295">            {</a>
+<a name="ln296">                const bool could_see = you.can_see(*mons);</a>
+<a name="ln297">                if (mons-&gt;move_to_pos(hopspot))</a>
+<a name="ln298">                {</a>
+<a name="ln299">                    if (could_see || you.can_see(*mons))</a>
+<a name="ln300">                    {</a>
+<a name="ln301">                        mprf(&quot;%s hops backward while attacking.&quot;,</a>
+<a name="ln302">                             mons-&gt;name(DESC_THE, true).c_str());</a>
+<a name="ln303">                    }</a>
+<a name="ln304">                    mons-&gt;speed_increment -= 2; // Add a small extra delay</a>
+<a name="ln305">                }</a>
+<a name="ln306">            }</a>
+<a name="ln307">        }</a>
+<a name="ln308"> </a>
+<a name="ln309">        melee_attack melee_attk(attacker, defender, attack_number,</a>
+<a name="ln310">                                effective_attack_number);</a>
+<a name="ln311"> </a>
+<a name="ln312">        if (simu)</a>
+<a name="ln313">            melee_attk.simu = true;</a>
+<a name="ln314"> </a>
+<a name="ln315">        // If the attack fails out, keep effective_attack_number up to</a>
+<a name="ln316">        // date so that we don't cause excess energy loss in monsters</a>
+<a name="ln317">        if (!melee_attk.attack())</a>
+<a name="ln318">            effective_attack_number = melee_attk.effective_attack_number;</a>
+<a name="ln319">        else if (did_hit &amp;&amp; !(*did_hit))</a>
+<a name="ln320">            *did_hit = melee_attk.did_hit;</a>
+<a name="ln321"> </a>
+<a name="ln322">        fire_final_effects();</a>
+<a name="ln323">    }</a>
+<a name="ln324"> </a>
+<a name="ln325">    // A spectral weapon attacks whenever the player does</a>
+<a name="ln326">    if (!simu &amp;&amp; attacker-&gt;props.exists(&quot;spectral_weapon&quot;))</a>
+<a name="ln327">        trigger_spectral_weapon(attacker, defender);</a>
+<a name="ln328"> </a>
+<a name="ln329">    return true;</a>
+<a name="ln330">}</a>
+<a name="ln331"> </a>
+<a name="ln332">/**</a>
+<a name="ln333"> * If the given attacker attacks the given defender right now, what kind of</a>
+<a name="ln334"> * extra-damage &quot;stab&quot; attack can the attacker perform, if any?</a>
+<a name="ln335"> *</a>
+<a name="ln336"> * @param attacker  The attacker; may be null.</a>
+<a name="ln337"> * @param defender  The defender.</a>
+<a name="ln338"> * @param actual    True if we're actually committing to a stab, false if we're</a>
+<a name="ln339"> *                  just checking for display purposes.</a>
+<a name="ln340"> * @return          The best (most damaging) kind of stab available to the</a>
+<a name="ln341"> *                  attacker against this defender, or STAB_NO_STAB.</a>
+<a name="ln342"> */</a>
+<a name="ln343">stab_type find_stab_type(const actor *attacker,</a>
+<a name="ln344">                         const actor &amp;defender,</a>
+<a name="ln345">                         bool actual)</a>
+<a name="ln346">{</a>
+<a name="ln347">    const monster* def = defender.as_monster();</a>
+<a name="ln348"> </a>
+<a name="ln349">    // Stabbing intelligent monsters is unchivalric, and disabled under TSO!</a>
+<a name="ln350">    // When just checking for display purposes, still indicate when monsters</a>
+<a name="ln351">    // are sleeping/paralysed etc.</a>
+<a name="ln352">    if (actual &amp;&amp; attacker &amp;&amp; attacker-&gt;is_player()</a>
+<a name="ln353">        &amp;&amp; def &amp;&amp; have_passive(passive_t::no_stabbing))</a>
+<a name="ln354">    {</a>
+<a name="ln355">        return STAB_NO_STAB;</a>
+<a name="ln356">    }</a>
+<a name="ln357"> </a>
+<a name="ln358">    // No stabbing monsters that cannot fight (e.g. plants) or monsters</a>
+<a name="ln359">    // the attacker can't see (either due to invisibility or being behind</a>
+<a name="ln360">    // opaque clouds).</a>
+<a name="ln361">    if (def &amp;&amp; mons_is_firewood(*def))</a>
+<a name="ln362">        return STAB_NO_STAB;</a>
+<a name="ln363"> </a>
+<a name="ln364">    if (attacker &amp;&amp; !attacker-&gt;can_see(defender))</a>
+<a name="ln365">        return STAB_NO_STAB;</a>
+<a name="ln366"> </a>
+<a name="ln367">    // sleeping</a>
+<a name="ln368">    if (defender.asleep())</a>
+<a name="ln369">        return STAB_SLEEPING;</a>
+<a name="ln370"> </a>
+<a name="ln371">    // paralysed</a>
+<a name="ln372">    if (defender.paralysed())</a>
+<a name="ln373">        return STAB_PARALYSED;</a>
+<a name="ln374"> </a>
+<a name="ln375">    // petrified</a>
+<a name="ln376">    if (defender.petrified())</a>
+<a name="ln377">        return STAB_PETRIFIED;</a>
+<a name="ln378"> </a>
+<a name="ln379">    // petrifying</a>
+<a name="ln380">    if (def &amp;&amp; def-&gt;petrifying())</a>
+<a name="ln381">        return STAB_PETRIFYING;</a>
+<a name="ln382"> </a>
+<a name="ln383">    // held in a net</a>
+<a name="ln384">    if (def &amp;&amp; def-&gt;caught())</a>
+<a name="ln385">        return STAB_HELD_IN_NET;</a>
+<a name="ln386"> </a>
+<a name="ln387">    // invisible</a>
+<a name="ln388">    if (attacker &amp;&amp; !attacker-&gt;visible_to(&amp;defender))</a>
+<a name="ln389">        return STAB_INVISIBLE;</a>
+<a name="ln390"> </a>
+<a name="ln391">    // fleeing</a>
+<a name="ln392">    if (def &amp;&amp; mons_is_fleeing(*def))</a>
+<a name="ln393">        return STAB_FLEEING;</a>
+<a name="ln394"> </a>
+<a name="ln395">    // allies</a>
+<a name="ln396">    if (def &amp;&amp; def-&gt;friendly())</a>
+<a name="ln397">        return STAB_ALLY;</a>
+<a name="ln398"> </a>
+<a name="ln399">    // confused (but not perma-confused)</a>
+<a name="ln400">    if (def &amp;&amp; mons_is_confused(*def, false))</a>
+<a name="ln401">        return STAB_CONFUSED;</a>
+<a name="ln402"> </a>
+<a name="ln403">    // Distracted (but not batty); this only applies to players.</a>
+<a name="ln404">    if (attacker &amp;&amp; attacker-&gt;is_player()</a>
+<a name="ln405">        &amp;&amp; def &amp;&amp; def-&gt;foe != MHITYOU &amp;&amp; !mons_is_batty(*def))</a>
+<a name="ln406">    {</a>
+<a name="ln407">        return STAB_DISTRACTED;</a>
+<a name="ln408">    }</a>
+<a name="ln409"> </a>
+<a name="ln410">    return STAB_NO_STAB;</a>
+<a name="ln411">}</a>
+<a name="ln412"> </a>
+<a name="ln413">/**</a>
+<a name="ln414"> * What bonus does this type of stab give the player when attacking?</a>
+<a name="ln415"> *</a>
+<a name="ln416"> * @param   The type of stab in question; e.g. STAB_SLEEPING.</a>
+<a name="ln417"> * @return  The bonus the stab gives. Note that this is used as a divisor for</a>
+<a name="ln418"> *          damage, so the larger the value we return here, the less bonus</a>
+<a name="ln419"> *          damage will be done.</a>
+<a name="ln420"> */</a>
+<a name="ln421">int stab_bonus_denom(stab_type stab)</a>
+<a name="ln422">{</a>
+<a name="ln423">    // XXX: if we don't get rid of this logic, turn it into a static array.</a>
+<a name="ln424">    switch (stab)</a>
+<a name="ln425">    {</a>
+<a name="ln426">        case STAB_NO_STAB:</a>
+<a name="ln427">        case NUM_STABS:</a>
+<a name="ln428">            return 0;</a>
+<a name="ln429">        case STAB_SLEEPING:</a>
+<a name="ln430">        case STAB_PARALYSED:</a>
+<a name="ln431">        case STAB_PETRIFIED:</a>
+<a name="ln432">            return 1;</a>
+<a name="ln433">        default:</a>
+<a name="ln434">            return 4;</a>
+<a name="ln435">    }</a>
+<a name="ln436">}</a>
+<a name="ln437"> </a>
+<a name="ln438">static bool is_boolean_resist(beam_type flavour)</a>
+<a name="ln439">{</a>
+<a name="ln440">    switch (flavour)</a>
+<a name="ln441">    {</a>
+<a name="ln442">    case BEAM_ELECTRICITY:</a>
+<a name="ln443">    case BEAM_MIASMA: // rotting</a>
+<a name="ln444">    case BEAM_STICKY_FLAME:</a>
+<a name="ln445">    case BEAM_WATER:  // water asphyxiation damage,</a>
+<a name="ln446">                      // bypassed by being water inhabitant.</a>
+<a name="ln447">    case BEAM_POISON:</a>
+<a name="ln448">    case BEAM_POISON_ARROW:</a>
+<a name="ln449">        return true;</a>
+<a name="ln450">    default:</a>
+<a name="ln451">        return false;</a>
+<a name="ln452">    }</a>
+<a name="ln453">}</a>
+<a name="ln454"> </a>
+<a name="ln455">// Gets the percentage of the total damage of this damage flavour that can</a>
+<a name="ln456">// be resisted.</a>
+<a name="ln457">static inline int get_resistible_fraction(beam_type flavour)</a>
+<a name="ln458">{</a>
+<a name="ln459">    switch (flavour)</a>
+<a name="ln460">    {</a>
+<a name="ln461">    // Drowning damage from water is resistible by being a water thing, or</a>
+<a name="ln462">    // otherwise asphyx resistant.</a>
+<a name="ln463">    case BEAM_WATER:</a>
+<a name="ln464">        return 40;</a>
+<a name="ln465"> </a>
+<a name="ln466">    // Assume ice storm and throw icicle are mostly solid.</a>
+<a name="ln467">    case BEAM_ICE:</a>
+<a name="ln468">        return 40;</a>
+<a name="ln469"> </a>
+<a name="ln470">    case BEAM_LAVA:</a>
+<a name="ln471">        return 55;</a>
+<a name="ln472"> </a>
+<a name="ln473">    case BEAM_POISON_ARROW:</a>
+<a name="ln474">        return 70;</a>
+<a name="ln475"> </a>
+<a name="ln476">    default:</a>
+<a name="ln477">        return 100;</a>
+<a name="ln478">    }</a>
+<a name="ln479">}</a>
+<a name="ln480"> </a>
+<a name="ln481">static int _beam_to_resist(const actor* defender, beam_type flavour)</a>
+<a name="ln482">{</a>
+<a name="ln483">    switch (flavour)</a>
+<a name="ln484">    {</a>
+<a name="ln485">        case BEAM_FIRE:</a>
+<a name="ln486">        case BEAM_LAVA:</a>
+<a name="ln487">            return defender-&gt;res_fire();</a>
+<a name="ln488">        case BEAM_DAMNATION:</a>
+<a name="ln489">            return defender-&gt;res_damnation();</a>
+<a name="ln490">        case BEAM_STEAM:</a>
+<a name="ln491">            return defender-&gt;res_steam();</a>
+<a name="ln492">        case BEAM_COLD:</a>
+<a name="ln493">        case BEAM_ICE:</a>
+<a name="ln494">            return defender-&gt;res_cold();</a>
+<a name="ln495">        case BEAM_WATER:</a>
+<a name="ln496">            return defender-&gt;res_water_drowning();</a>
+<a name="ln497">        case BEAM_ELECTRICITY:</a>
+<a name="ln498">            return defender-&gt;res_elec();</a>
+<a name="ln499">        case BEAM_NEG:</a>
+<a name="ln500">        case BEAM_PAIN:</a>
+<a name="ln501">        case BEAM_MALIGN_OFFERING:</a>
+<a name="ln502">            return defender-&gt;res_negative_energy();</a>
+<a name="ln503">        case BEAM_ACID:</a>
+<a name="ln504">            return defender-&gt;res_acid();</a>
+<a name="ln505">        case BEAM_POISON:</a>
+<a name="ln506">        case BEAM_POISON_ARROW:</a>
+<a name="ln507">            return defender-&gt;res_poison();</a>
+<a name="ln508">        case BEAM_HOLY:</a>
+<a name="ln509">            return defender-&gt;res_holy_energy();</a>
+<a name="ln510">        default:</a>
+<a name="ln511">            return 0;</a>
+<a name="ln512">    }</a>
+<a name="ln513">}</a>
+<a name="ln514"> </a>
+<a name="ln515"> </a>
+<a name="ln516">/**</a>
+<a name="ln517"> * Adjusts damage for elemental resists, electricity and poison.</a>
+<a name="ln518"> *</a>
+<a name="ln519"> * For players, damage is reduced to 1/2, 1/3, or 1/5 if res has values 1, 2,</a>
+<a name="ln520"> * or 3, respectively. &quot;Boolean&quot; resists (rElec, rPois) reduce damage to 1/3.</a>
+<a name="ln521"> * rN is a special case that reduces damage to 1/2, 1/4, 0 instead.</a>
+<a name="ln522"> *</a>
+<a name="ln523"> * For monsters, damage is reduced to 1/2, 1/5, and 0 for 1/2/3 resistance.</a>
+<a name="ln524"> * &quot;Boolean&quot; resists give 1/3, 1/6, 0 instead.</a>
+<a name="ln525"> *</a>
+<a name="ln526"> * @param defender      The victim of the attack.</a>
+<a name="ln527"> * @param flavour       The type of attack having its damage adjusted.</a>
+<a name="ln528"> *                      (Does not necessarily imply the attack is a beam.)</a>
+<a name="ln529"> * @param rawdamage     The base damage, to be adjusted by resistance.</a>
+<a name="ln530"> * @return              The amount of damage done, after resists are applied.</a>
+<a name="ln531"> */</a>
+<a name="ln532">int resist_adjust_damage(const actor* defender, beam_type flavour, int rawdamage)</a>
+<a name="ln533">{</a>
+<a name="ln534">    const int res = _beam_to_resist(defender, flavour);</a>
+<a name="ln535">    if (!res)</a>
+<a name="ln536">        return rawdamage;</a>
+<a name="ln537"> </a>
+<a name="ln538">    const bool is_mon = defender-&gt;is_monster();</a>
+<a name="ln539"> </a>
+<a name="ln540">    const int resistible_fraction = get_resistible_fraction(flavour);</a>
+<a name="ln541"> </a>
+<a name="ln542">    int resistible = rawdamage * resistible_fraction / 100;</a>
+<a name="ln543">    const int irresistible = rawdamage - resistible;</a>
+<a name="ln544"> </a>
+<a name="ln545">    if (res &gt; 0)</a>
+<a name="ln546">    {</a>
+<a name="ln547">        const bool immune_at_3_res = is_mon</a>
+<a name="ln548">                                     || flavour == BEAM_NEG</a>
+<a name="ln549">                                     || flavour == BEAM_PAIN</a>
+<a name="ln550">                                     || flavour == BEAM_MALIGN_OFFERING</a>
+<a name="ln551">                                     || flavour == BEAM_HOLY</a>
+<a name="ln552">                                     || flavour == BEAM_POISON</a>
+<a name="ln553">                                     // just the resistible part</a>
+<a name="ln554">                                     || flavour == BEAM_POISON_ARROW;</a>
+<a name="ln555"> </a>
+<a name="ln556">        if (immune_at_3_res &amp;&amp; res &gt;= 3 || res &gt; 3)</a>
+<a name="ln557">            resistible = 0;</a>
+<a name="ln558">        else</a>
+<a name="ln559">        {</a>
+<a name="ln560">            // Is this a resist that claims to be boolean for damage purposes?</a>
+<a name="ln561">            const int bonus_res = (is_boolean_resist(flavour) ? 1 : 0);</a>
+<a name="ln562"> </a>
+<a name="ln563">            // Monster resistances are stronger than player versions.</a>
+<a name="ln564">            if (is_mon)</a>
+<a name="ln565">                resistible /= 1 + bonus_res + res * res;</a>
+<a name="ln566">            else if (flavour == BEAM_NEG</a>
+<a name="ln567">                     || flavour == BEAM_PAIN</a>
+<a name="ln568">                     || flavour == BEAM_MALIGN_OFFERING)</a>
+<a name="ln569">            {</a>
+<a name="ln570">                resistible /= res * 2;</a>
+<a name="ln571">            }</a>
+<a name="ln572">            else</a>
+<a name="ln573">                resistible /= (3 * res + 1) / 2 + bonus_res;</a>
+<a name="ln574">        }</a>
+<a name="ln575">    }</a>
+<a name="ln576">    else if (res &lt; 0)</a>
+<a name="ln577">        resistible = resistible * 15 / 10;</a>
+<a name="ln578"> </a>
+<a name="ln579">    return max(resistible + irresistible, 0);</a>
+<a name="ln580">}</a>
+<a name="ln581"> </a>
+<a name="ln582">// Reduce damage by AC.</a>
+<a name="ln583">// In most cases, we want AC to mostly stop weak attacks completely but affect</a>
+<a name="ln584">// strong ones less, but the regular formula is too hard to apply well to cases</a>
+<a name="ln585">// when damage is spread into many small chunks.</a>
+<a name="ln586">//</a>
+<a name="ln587">// Every point of damage is processed independently. Every point of AC has</a>
+<a name="ln588">// an independent 1/81 chance of blocking that damage.</a>
+<a name="ln589">//</a>
+<a name="ln590">// AC 20 stops 22% of damage, AC 40 -- 39%, AC 80 -- 63%.</a>
+<a name="ln591">int apply_chunked_AC(int dam, int ac)</a>
+<a name="ln592">{</a>
+<a name="ln593">    double chance = pow(80.0/81, ac);</a>
+<a name="ln594">    uint64_t cr = chance * (((uint64_t)1) &lt;&lt; 32);</a>
+<a name="ln595"> </a>
+<a name="ln596">    int hurt = 0;</a>
+<a name="ln597">    for (int i = 0; i &lt; dam; i++)</a>
+<a name="ln598">        if (rng::get_uint32() &lt; cr)</a>
+<a name="ln599">            hurt++;</a>
+<a name="ln600"> </a>
+<a name="ln601">    return hurt;</a>
+<a name="ln602">}</a>
+<a name="ln603"> </a>
+<a name="ln604">///////////////////////////////////////////////////////////////////////////</a>
+<a name="ln605"> </a>
+<a name="ln606">bool wielded_weapon_check(item_def *weapon)</a>
+<a name="ln607">{</a>
+<a name="ln608">    bool penance = false;</a>
+<a name="ln609">    if (you.received_weapon_warning</a>
+<a name="ln610">        || (weapon</a>
+<a name="ln611">            &amp;&amp; !needs_handle_warning(*weapon, OPER_ATTACK, penance)</a>
+<a name="ln612">            &amp;&amp; is_melee_weapon(*weapon))</a>
+<a name="ln613">        || you.confused())</a>
+<a name="ln614">    {</a>
+<a name="ln615">        return true;</a>
+<a name="ln616">    }</a>
+<a name="ln617"> </a>
+<a name="ln618">    // Don't pester the player if they're using UC, in treeform,</a>
+<a name="ln619">    // or if they don't have any melee weapons yet.</a>
+<a name="ln620">    if (!weapon</a>
+<a name="ln621">        &amp;&amp; (you.skill(SK_UNARMED_COMBAT) &gt; 0</a>
+<a name="ln622">            || you.form == transformation::tree</a>
+<a name="ln623">            || !any_of(you.inv.begin(), you.inv.end(),</a>
+<a name="ln624">                       [](item_def &amp;it)</a>
+<a name="ln625">                       { return is_melee_weapon(it) &amp;&amp; can_wield(&amp;it); })))</a>
+<a name="ln626">    {</a>
+<a name="ln627">        return true;</a>
+<a name="ln628">    }</a>
+<a name="ln629"> </a>
+<a name="ln630">    string prompt;</a>
+<a name="ln631">    if (weapon)</a>
+<a name="ln632">        prompt = &quot;Really attack while wielding &quot; + weapon-&gt;name(DESC_YOUR) + &quot;?&quot;;</a>
+<a name="ln633">    else</a>
+<a name="ln634">        prompt = &quot;Really attack unarmed?&quot;;</a>
+<a name="ln635">    if (penance)</a>
+<a name="ln636">        prompt += &quot; This could place you under penance!&quot;;</a>
+<a name="ln637"> </a>
+<a name="ln638">    const bool result = yesno(prompt.c_str(), true, 'n');</a>
+<a name="ln639"> </a>
+<a name="ln640">    if (!result)</a>
+<a name="ln641">        canned_msg(MSG_OK);</a>
+<a name="ln642"> </a>
+<a name="ln643">    learned_something_new(HINT_WIELD_WEAPON); // for hints mode Rangers</a>
+<a name="ln644"> </a>
+<a name="ln645">    // Don't warn again if you decide to continue your attack.</a>
+<a name="ln646">    if (result)</a>
+<a name="ln647">        you.received_weapon_warning = true;</a>
+<a name="ln648"> </a>
+<a name="ln649">    return result;</a>
+<a name="ln650">}</a>
+<a name="ln651"> </a>
+<a name="ln652">/**</a>
+<a name="ln653"> * Should the given attacker cleave into the given victim with an axe or axe-</a>
+<a name="ln654"> * like weapon?</a>
+<a name="ln655"> *</a>
+<a name="ln656"> * @param attacker  The creature doing the cleaving.</a>
+<a name="ln657"> * @param defender  The potential cleave-ee.</a>
+<a name="ln658"> * @return          True if the defender is an enemy of the defender; false</a>
+<a name="ln659"> *                  otherwise.</a>
+<a name="ln660"> */</a>
+<a name="ln661">static bool _dont_harm(const actor &amp;attacker, const actor &amp;defender)</a>
+<a name="ln662">{</a>
+<a name="ln663">    if (mons_aligned(&amp;attacker, &amp;defender))</a>
+<a name="ln664">        return true;</a>
+<a name="ln665"> </a>
+<a name="ln666">    if (defender.is_player())</a>
+<a name="ln667">        return attacker.wont_attack();</a>
+<a name="ln668"> </a>
+<a name="ln669">    if (attacker.is_player())</a>
+<a name="ln670">    {</a>
+<a name="ln671">        return defender.wont_attack()</a>
+<a name="ln672">               || mons_attitude(*defender.as_monster()) == ATT_NEUTRAL;</a>
+<a name="ln673">    }</a>
+<a name="ln674"> </a>
+<a name="ln675">    return false;</a>
+<a name="ln676">}</a>
+<a name="ln677"> </a>
+<a name="ln678">/**</a>
+<a name="ln679"> * List potential cleave targets (adjacent hostile creatures), including the</a>
+<a name="ln680"> * defender itself.</a>
+<a name="ln681"> *</a>
+<a name="ln682"> * @param attacker[in]   The attacking creature.</a>
+<a name="ln683"> * @param def[in]        The location of the targeted defender.</a>
+<a name="ln684"> * @param targets[out]   A list to be populated with targets.</a>
+<a name="ln685"> * @param which_attack   The attack_number (default -1, which uses the default weapon).</a>
+<a name="ln686"> */</a>
+<a name="ln687">void get_cleave_targets(const actor &amp;attacker, const coord_def&amp; def,</a>
+<a name="ln688">                        list&lt;actor*&gt; &amp;targets, int which_attack)</a>
+<a name="ln689">{</a>
+<a name="ln690">    // Prevent scanning invalid coordinates if the attacker dies partway through</a>
+<a name="ln691">    // a cleave (due to hitting explosive creatures, or perhaps other things)</a>
+<a name="ln692">    if (!attacker.alive())</a>
+<a name="ln693">        return;</a>
+<a name="ln694"> </a>
+<a name="ln695">    if (actor_at(def))</a>
+<a name="ln696">        targets.push_back(actor_at(def));</a>
+<a name="ln697"> </a>
+<a name="ln698">    const item_def* weap = attacker.weapon(which_attack);</a>
+<a name="ln699"> </a>
+<a name="ln700">    if (weap &amp;&amp; item_attack_skill(*weap) == SK_AXES</a>
+<a name="ln701">            || attacker.is_player()</a>
+<a name="ln702">               &amp;&amp; (you.form == transformation::hydra &amp;&amp; you.heads() &gt; 1</a>
+<a name="ln703">                   || you.duration[DUR_CLEAVE]))</a>
+<a name="ln704">    {</a>
+<a name="ln705">        const coord_def atk = attacker.pos();</a>
+<a name="ln706">        coord_def atk_vector = def - atk;</a>
+<a name="ln707">        const int dir = random_choose(-1, 1);</a>
+<a name="ln708"> </a>
+<a name="ln709">        for (int i = 0; i &lt; 7; ++i)</a>
+<a name="ln710">        {</a>
+<a name="ln711">            atk_vector = rotate_adjacent(atk_vector, dir);</a>
+<a name="ln712"> </a>
+<a name="ln713">            actor *target = actor_at(atk + atk_vector);</a>
+<a name="ln714">            if (target &amp;&amp; !_dont_harm(attacker, *target))</a>
+<a name="ln715">                targets.push_back(target);</a>
+<a name="ln716">        }</a>
+<a name="ln717">    }</a>
+<a name="ln718"> </a>
+<a name="ln719">    if (weap &amp;&amp; is_unrandom_artefact(*weap, UNRAND_GYRE))</a>
+<a name="ln720">    {</a>
+<a name="ln721">        list&lt;actor*&gt; new_targets;</a>
+<a name="ln722">        for (actor* targ : targets)</a>
+<a name="ln723">        {</a>
+<a name="ln724">            new_targets.push_back(targ);</a>
+<a name="ln725">            new_targets.push_back(targ);</a>
+<a name="ln726">        }</a>
+<a name="ln727">        targets = new_targets;</a>
+<a name="ln728">    }</a>
+<a name="ln729">}</a>
+<a name="ln730"> </a>
+<a name="ln731">/**</a>
+<a name="ln732"> * Attack a provided list of cleave targets.</a>
+<a name="ln733"> *</a>
+<a name="ln734"> * @param attacker                  The attacking creature.</a>
+<a name="ln735"> * @param targets                   The targets to cleave.</a>
+<a name="ln736"> * @param attack_number             ?</a>
+<a name="ln737"> * @param effective_attack_number   ?</a>
+<a name="ln738"> */</a>
+<a name="ln739">void attack_cleave_targets(actor &amp;attacker, list&lt;actor*&gt; &amp;targets,</a>
+<a name="ln740">                           int attack_number, int effective_attack_number,</a>
+<a name="ln741">                           wu_jian_attack_type wu_jian_attack)</a>
+<a name="ln742">{</a>
+<a name="ln743">    if (attacker.is_player())</a>
+<a name="ln744">    {</a>
+<a name="ln745">        const item_def* weap = attacker.weapon(attack_number);</a>
+<a name="ln746"> </a>
+<a name="ln747">        if ((wu_jian_attack == WU_JIAN_ATTACK_WHIRLWIND</a>
+<a name="ln748">             || wu_jian_attack == WU_JIAN_ATTACK_WALL_JUMP</a>
+<a name="ln749">             || wu_jian_attack == WU_JIAN_ATTACK_TRIGGERED_AUX)</a>
+<a name="ln750">            &amp;&amp; !(weap &amp;&amp; is_unrandom_artefact(*weap, UNRAND_GYRE)))</a>
+<a name="ln751">        {</a>
+<a name="ln752">            return; // WJC AOE attacks don't cleave, but G&amp;G use cleaving</a>
+<a name="ln753">            // XXX: If a player under Xom wrath gets cleaving while using G&amp;G and</a>
+<a name="ln754">            // worshiping Wu they'll be able to cleave their Wu attacks.</a>
+<a name="ln755">        }</a>
+<a name="ln756">    }</a>
+<a name="ln757"> </a>
+<a name="ln758">    while (attacker.alive() &amp;&amp; !targets.empty())</a>
+<a name="ln759">    {</a>
+<a name="ln760">        actor* def = targets.front();</a>
+<a name="ln761"> </a>
+<a name="ln762">        if (def &amp;&amp; def-&gt;alive() &amp;&amp; !_dont_harm(attacker, *def) &amp;&amp; adjacent(attacker.pos(), def-&gt;pos()))</a>
+<a name="ln763">        {</a>
+<a name="ln764">            melee_attack attck(&amp;attacker, def, attack_number,</a>
+<a name="ln765">                               ++effective_attack_number, true);</a>
+<a name="ln766"> </a>
+<a name="ln767">            attck.wu_jian_attack = wu_jian_attack;</a>
+<a name="ln768">            attck.attack();</a>
+<a name="ln769">        }</a>
+<a name="ln770">        targets.pop_front();</a>
+<a name="ln771">    }</a>
+<a name="ln772">}</a>
+<a name="ln773"> </a>
+<a name="ln774">/**</a>
+<a name="ln775"> * What skill is required to reach mindelay with a weapon? May be &gt;27.</a>
+<a name="ln776"> * @param weapon The weapon to be considered.</a>
+<a name="ln777"> * @returns The level of the relevant skill you must reach.</a>
+<a name="ln778"> */</a>
+<a name="ln779">int weapon_min_delay_skill(const item_def &amp;weapon)</a>
+<a name="ln780">{</a>
+<a name="ln781">    const int speed = property(weapon, PWPN_SPEED);</a>
+<a name="ln782">    const int mindelay = weapon_min_delay(weapon, false);</a>
+<a name="ln783">    return (speed - mindelay) * 2;</a>
+<a name="ln784">}</a>
+<a name="ln785"> </a>
+<a name="ln786">/**</a>
+<a name="ln787"> * How fast will this weapon get from your skill training?</a>
+<a name="ln788"> *</a>
+<a name="ln789"> * @param weapon the weapon to be considered.</a>
+<a name="ln790"> * @param check_speed whether to take it into account if the weapon has the</a>
+<a name="ln791"> *                    speed brand.</a>
+<a name="ln792"> * @return How many aut the fastest possible attack with this weapon would take.</a>
+<a name="ln793"> */</a>
+<a name="ln794">int weapon_min_delay(const item_def &amp;weapon, bool check_speed)</a>
+<a name="ln795">{</a>
+<a name="ln796">    const int base = property(weapon, PWPN_SPEED);</a>
+<a name="ln797">    int min_delay = base/2;</a>
+<a name="ln798"> </a>
+<a name="ln799">    // Short blades can get up to at least unarmed speed.</a>
+<a name="ln800">    if (item_attack_skill(weapon) == SK_SHORT_BLADES &amp;&amp; min_delay &gt; 5)</a>
+<a name="ln801">        min_delay = 5;</a>
+<a name="ln802"> </a>
+<a name="ln803">    // All weapons have min delay 7 or better</a>
+<a name="ln804">    if (min_delay &gt; 7)</a>
+<a name="ln805">        min_delay = 7;</a>
+<a name="ln806"> </a>
+<a name="ln807">    // ...except crossbows...</a>
+<a name="ln808">    if (item_attack_skill(weapon) == SK_CROSSBOWS &amp;&amp; min_delay &lt; 10)</a>
+<a name="ln809">        min_delay = 10;</a>
+<a name="ln810"> </a>
+<a name="ln811">    // ... and unless it would take more than skill 27 to get there.</a>
+<a name="ln812">    // Round up the reduction from skill, so that min delay is rounded down.</a>
+<a name="ln813">    min_delay = max(min_delay, base - (MAX_SKILL_LEVEL + 1)/2);</a>
+<a name="ln814"> </a>
+<a name="ln815">    if (check_speed &amp;&amp; get_weapon_brand(weapon) == SPWPN_SPEED)</a>
+<a name="ln816">    {</a>
+<a name="ln817">        min_delay *= 2;</a>
+<a name="ln818">        min_delay /= 3;</a>
+<a name="ln819">    }</a>
+<a name="ln820"> </a>
+<a name="ln821">    // never go faster than speed 3 (ie 3.33 attacks per round)</a>
+<a name="ln822">    if (min_delay &lt; 3)</a>
+<a name="ln823">        min_delay = 3;</a>
+<a name="ln824"> </a>
+<a name="ln825">    return min_delay;</a>
+<a name="ln826">}</a>
+<a name="ln827"> </a>
+<a name="ln828">int mons_weapon_damage_rating(const item_def &amp;launcher)</a>
+<a name="ln829">{</a>
+<a name="ln830">    return property(launcher, PWPN_DAMAGE) + launcher.plus;</a>
+<a name="ln831">}</a>
+<a name="ln832"> </a>
+<a name="ln833">// Returns a rough estimate of damage from firing/throwing missile.</a>
+<a name="ln834">int mons_missile_damage(monster* mons, const item_def *launch,</a>
+<a name="ln835">                        const item_def *missile)</a>
+<a name="ln836">{</a>
+<a name="ln837">    if (!missile || (!launch &amp;&amp; !is_throwable(mons, *missile)))</a>
+<a name="ln838">        return 0;</a>
+<a name="ln839"> </a>
+<a name="ln840">    const int missile_damage = property(*missile, PWPN_DAMAGE) / 2 + 1;</a>
+<a name="ln841">    const int launch_damage  = launch? property(*launch, PWPN_DAMAGE) : 0;</a>
+<a name="ln842">    return max(0, launch_damage + missile_damage);</a>
+<a name="ln843">}</a>
+<a name="ln844"> </a>
+<a name="ln845">int mons_usable_missile(monster* mons, item_def **launcher)</a>
+<a name="ln846">{</a>
+<a name="ln847">    *launcher = nullptr;</a>
+<a name="ln848">    item_def *launch = nullptr;</a>
+<a name="ln849">    for (int i = MSLOT_WEAPON; i &lt;= MSLOT_ALT_WEAPON; ++i)</a>
+<a name="ln850">    {</a>
+<a name="ln851">        if (item_def *item = mons-&gt;mslot_item(static_cast&lt;mon_inv_type&gt;(i)))</a>
+<a name="ln852">        {</a>
+<a name="ln853">            if (is_range_weapon(*item))</a>
+<a name="ln854">                launch = item;</a>
+<a name="ln855">        }</a>
+<a name="ln856">    }</a>
+<a name="ln857"> </a>
+<a name="ln858">    const item_def *missiles = mons-&gt;missiles();</a>
+<a name="ln859">    if (launch &amp;&amp; missiles &amp;&amp; !missiles-&gt;launched_by(*launch))</a>
+<a name="ln860">        launch = nullptr;</a>
+<a name="ln861"> </a>
+<a name="ln862">    const int fdam = mons_missile_damage(mons, launch, missiles);</a>
+<a name="ln863"> </a>
+<a name="ln864">    if (!fdam)</a>
+<a name="ln865">        return NON_ITEM;</a>
+<a name="ln866">    else</a>
+<a name="ln867">    {</a>
+<a name="ln868">        *launcher = launch;</a>
+<a name="ln869">        return missiles-&gt;index();</a>
+<a name="ln870">    }</a>
+<a name="ln871">}</a>
+<a name="ln872"> </a>
+<a name="ln873">bool bad_attack(const monster *mon, string&amp; adj, string&amp; suffix,</a>
+<a name="ln874">                bool&amp; would_cause_penance, coord_def attack_pos)</a>
+<a name="ln875">{</a>
+<a name="ln876">    ASSERT(mon); // XXX: change to const monster &amp;mon</a>
+<a name="ln877">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln878"> </a>
+<a name="ln879">    if (!you.can_see(*mon))</a>
+<a name="ln880">        return false;</a>
+<a name="ln881"> </a>
+<a name="ln882">    if (attack_pos == coord_def(0, 0))</a>
+<a name="ln883">        attack_pos = you.pos();</a>
+<a name="ln884"> </a>
+<a name="ln885">    adj.clear();</a>
+<a name="ln886">    suffix.clear();</a>
+<a name="ln887">    would_cause_penance = false;</a>
+<a name="ln888"> </a>
+<a name="ln889">    if (is_sanctuary(mon-&gt;pos()) || is_sanctuary(attack_pos))</a>
+<a name="ln890">        suffix = &quot;, despite your sanctuary&quot;;</a>
+<a name="ln891"> </a>
+<a name="ln892">    if (you.duration[DUR_LIFESAVING]</a>
+<a name="ln893">        &amp;&amp; mon-&gt;holiness() &amp; (MH_NATURAL | MH_PLANT))</a>
+<a name="ln894">    {</a>
+<a name="ln895">        suffix = &quot; while asking for your life to be spared&quot;;</a>
+<a name="ln896">        would_cause_penance = true;</a>
+<a name="ln897">    }</a>
+<a name="ln898"> </a>
+<a name="ln899">    if (you_worship(GOD_JIYVA) &amp;&amp; mons_is_slime(*mon)</a>
+<a name="ln900">        &amp;&amp; !(mon-&gt;is_shapeshifter() &amp;&amp; (mon-&gt;flags &amp; MF_KNOWN_SHIFTER)))</a>
+<a name="ln901">    {</a>
+<a name="ln902">        would_cause_penance = true;</a>
+<a name="ln903">        return true;</a>
+<a name="ln904">    }</a>
+<a name="ln905"> </a>
+<a name="ln906">    if (mon-&gt;friendly())</a>
+<a name="ln907">    {</a>
+<a name="ln908">        if (god_hates_attacking_friend(you.religion, *mon))</a>
+<a name="ln909">        {</a>
+<a name="ln910">            adj = &quot;your ally &quot;;</a>
+<a name="ln911"> </a>
+<a name="ln912">            monster_info mi(mon, MILEV_NAME);</a>
+<a name="ln913">            if (!mi.is(MB_NAME_UNQUALIFIED))</a>
+<a name="ln914">                adj += &quot;the &quot;;</a>
+<a name="ln915"> </a>
+<a name="ln916">            would_cause_penance = true;</a>
+<a name="ln917"> </a>
+<a name="ln918">        }</a>
+<a name="ln919">        else</a>
+<a name="ln920">        {</a>
+<a name="ln921">            adj = &quot;your &quot;;</a>
+<a name="ln922"> </a>
+<a name="ln923">            monster_info mi(mon, MILEV_NAME);</a>
+<a name="ln924">            if (mi.is(MB_NAME_UNQUALIFIED))</a>
+<a name="ln925">                adj += &quot;ally &quot;;</a>
+<a name="ln926">        }</a>
+<a name="ln927"> </a>
+<a name="ln928">        return true;</a>
+<a name="ln929">    }</a>
+<a name="ln930"> </a>
+<a name="ln931">    if (mon-&gt;neutral() &amp;&amp; is_good_god(you.religion))</a>
+<a name="ln932">    {</a>
+<a name="ln933">        adj += &quot;neutral &quot;;</a>
+<a name="ln934">        if (you_worship(GOD_SHINING_ONE) || you_worship(GOD_ELYVILON))</a>
+<a name="ln935">            would_cause_penance = true;</a>
+<a name="ln936">    }</a>
+<a name="ln937">    else if (mon-&gt;wont_attack())</a>
+<a name="ln938">    {</a>
+<a name="ln939">        adj += &quot;non-hostile &quot;;</a>
+<a name="ln940">        if (you_worship(GOD_SHINING_ONE) || you_worship(GOD_ELYVILON))</a>
+<a name="ln941">            would_cause_penance = true;</a>
+<a name="ln942">    }</a>
+<a name="ln943"> </a>
+<a name="ln944">    return !adj.empty() || !suffix.empty();</a>
+<a name="ln945">}</a>
+<a name="ln946"> </a>
+<a name="ln947">bool stop_attack_prompt(const monster* mon, bool beam_attack,</a>
+<a name="ln948">                        coord_def beam_target, bool *prompted,</a>
+<a name="ln949">                        coord_def attack_pos)</a>
+<a name="ln950">{</a>
+<a name="ln951">    ASSERT(mon); // XXX: change to const monster &amp;mon</a>
+<a name="ln952">    bool penance = false;</a>
+<a name="ln953"> </a>
+<a name="ln954">    if (prompted)</a>
+<a name="ln955">        *prompted = false;</a>
+<a name="ln956"> </a>
+<a name="ln957">    if (crawl_state.disables[DIS_CONFIRMATIONS])</a>
+<a name="ln958">        return false;</a>
+<a name="ln959"> </a>
+<a name="ln960">    if (you.confused() || !you.can_see(*mon))</a>
+<a name="ln961">        return false;</a>
+<a name="ln962"> </a>
+<a name="ln963">    string adj, suffix;</a>
+<a name="ln964">    if (!bad_attack(mon, adj, suffix, penance, attack_pos))</a>
+<a name="ln965">        return false;</a>
+<a name="ln966"> </a>
+<a name="ln967">    // Listed in the form: &quot;your rat&quot;, &quot;Blork the orc&quot;.</a>
+<a name="ln968">    string mon_name = mon-&gt;name(DESC_PLAIN);</a>
+<a name="ln969">    if (starts_with(mon_name, &quot;the &quot;)) // no &quot;your the Royal Jelly&quot; nor &quot;the the RJ&quot;</a>
+<a name="ln970">        mon_name = mon_name.substr(4); // strlen(&quot;the &quot;)</a>
+<a name="ln971">    if (!starts_with(adj, &quot;your&quot;))</a>
+<a name="ln972">        adj = &quot;the &quot; + adj;</a>
+<a name="ln973">    mon_name = adj + mon_name;</a>
+<a name="ln974">    string verb;</a>
+<a name="ln975">    if (beam_attack)</a>
+<a name="ln976">    {</a>
+<a name="ln977">        verb = &quot;fire &quot;;</a>
+<a name="ln978">        if (beam_target == mon-&gt;pos())</a>
+<a name="ln979">            verb += &quot;at &quot;;</a>
+<a name="ln980">        else</a>
+<a name="ln981">        {</a>
+<a name="ln982">            verb += &quot;in &quot; + apostrophise(mon_name) + &quot; direction&quot;;</a>
+<a name="ln983">            mon_name = &quot;&quot;;</a>
+<a name="ln984">        }</a>
+<a name="ln985">    }</a>
+<a name="ln986">    else</a>
+<a name="ln987">        verb = &quot;attack &quot;;</a>
+<a name="ln988"> </a>
+<a name="ln989">    const string prompt = make_stringf(&quot;Really %s%s%s?%s&quot;,</a>
+<a name="ln990">             verb.c_str(), mon_name.c_str(), suffix.c_str(),</a>
+<a name="ln991">             penance ? &quot; This attack would place you under penance!&quot; : &quot;&quot;);</a>
+<a name="ln992"> </a>
+<a name="ln993">    if (prompted)</a>
+<a name="ln994">        *prompted = true;</a>
+<a name="ln995"> </a>
+<a name="ln996">    if (yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln997">        return false;</a>
+<a name="ln998">    else</a>
+<a name="ln999">    {</a>
+<a name="ln1000">        canned_msg(MSG_OK);</a>
+<a name="ln1001">        return true;</a>
+<a name="ln1002">    }</a>
+<a name="ln1003">}</a>
+<a name="ln1004"> </a>
+<a name="ln1005">bool stop_attack_prompt(targeter &amp;hitfunc, const char* verb,</a>
+<a name="ln1006">                        function&lt;bool(const actor *victim)&gt; affects,</a>
+<a name="ln1007">                        bool *prompted, const monster *defender)</a>
+<a name="ln1008">{</a>
+<a name="ln1009">    if (crawl_state.disables[DIS_CONFIRMATIONS])</a>
+<a name="ln1010">        return false;</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    if (crawl_state.which_god_acting() == GOD_XOM)</a>
+<a name="ln1013">        return false;</a>
+<a name="ln1014"> </a>
+<a name="ln1015">    if (you.confused())</a>
+<a name="ln1016">        return false;</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    string adj, suffix;</a>
+<a name="ln1019">    bool penance = false;</a>
+<a name="ln1020">    bool defender_ok = true;</a>
+<a name="ln1021">    counted_monster_list victims;</a>
+<a name="ln1022">    for (distance_iterator di(hitfunc.origin, false, true, LOS_RADIUS); di; ++di)</a>
+<a name="ln1023">    {</a>
+<a name="ln1024">        if (hitfunc.is_affected(*di) &lt;= AFF_NO)</a>
+<a name="ln1025">            continue;</a>
+<a name="ln1026"> </a>
+<a name="ln1027">        const monster* mon = monster_at(*di);</a>
+<a name="ln1028">        if (!mon || !you.can_see(*mon))</a>
+<a name="ln1029">            continue;</a>
+<a name="ln1030"> </a>
+<a name="ln1031">        if (affects &amp;&amp; !affects(mon))</a>
+<a name="ln1032">            continue;</a>
+<a name="ln1033"> </a>
+<a name="ln1034">        string adjn, suffixn;</a>
+<a name="ln1035">        bool penancen = false;</a>
+<a name="ln1036">        if (bad_attack(mon, adjn, suffixn, penancen))</a>
+<a name="ln1037">        {</a>
+<a name="ln1038">            // record the adjectives for the first listed, or</a>
+<a name="ln1039">            // first that would cause penance</a>
+<a name="ln1040">            if (victims.empty() || penancen &amp;&amp; !penance)</a>
+<a name="ln1041">                adj = adjn, suffix = suffixn, penance = penancen;</a>
+<a name="ln1042"> </a>
+<a name="ln1043">            victims.add(mon);</a>
+<a name="ln1044"> </a>
+<a name="ln1045">            if (defender &amp;&amp; defender == mon)</a>
+<a name="ln1046">                defender_ok = false;</a>
+<a name="ln1047">        }</a>
+<a name="ln1048">    }</a>
+<a name="ln1049"> </a>
+<a name="ln1050">    if (victims.empty())</a>
+<a name="ln1051">        return false;</a>
+<a name="ln1052"> </a>
+<a name="ln1053">    // Listed in the form: &quot;your rat&quot;, &quot;Blork the orc&quot;.</a>
+<a name="ln1054">    string mon_name = victims.describe(DESC_PLAIN);</a>
+<a name="ln1055">    if (starts_with(mon_name, &quot;the &quot;)) // no &quot;your the Royal Jelly&quot; nor &quot;the the RJ&quot;</a>
+<a name="ln1056">        mon_name = mon_name.substr(4); // strlen(&quot;the &quot;)</a>
+<a name="ln1057">    if (!starts_with(adj, &quot;your&quot;))</a>
+<a name="ln1058">        adj = &quot;the &quot; + adj;</a>
+<a name="ln1059">    mon_name = adj + mon_name;</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    const string prompt = make_stringf(&quot;Really %s%s %s%s?%s&quot;,</a>
+<a name="ln1062">             verb, defender_ok ? &quot; near&quot; : &quot;&quot;, mon_name.c_str(),</a>
+<a name="ln1063">             suffix.c_str(),</a>
+<a name="ln1064">             penance ? &quot; This attack would place you under penance!&quot; : &quot;&quot;);</a>
+<a name="ln1065"> </a>
+<a name="ln1066">    if (prompted)</a>
+<a name="ln1067">        *prompted = true;</a>
+<a name="ln1068"> </a>
+<a name="ln1069">    if (yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln1070">        return false;</a>
+<a name="ln1071">    else</a>
+<a name="ln1072">    {</a>
+<a name="ln1073">        canned_msg(MSG_OK);</a>
+<a name="ln1074">        return true;</a>
+<a name="ln1075">    }</a>
+<a name="ln1076">}</a>
+<a name="ln1077"> </a>
+<a name="ln1078">/**</a>
+<a name="ln1079"> * Does the player have Olgreb's Toxic Radiance up that would/could cause</a>
+<a name="ln1080"> * a hostile summon to be created? If so, prompt the player as to whether they</a>
+<a name="ln1081"> * want to continue to create their summon. Note that this prompt is never a</a>
+<a name="ln1082"> * penance prompt, because we don't cause penance when monsters enter line of</a>
+<a name="ln1083"> * sight when OTR is active, regardless of how they entered LOS.</a>
+<a name="ln1084"> *</a>
+<a name="ln1085"> * @param verb    The verb to be used in the prompt. Defaults to &quot;summon&quot;.</a>
+<a name="ln1086"> * @return        True if the player wants to abort.</a>
+<a name="ln1087"> */</a>
+<a name="ln1088">bool otr_stop_summoning_prompt(string verb)</a>
+<a name="ln1089">{</a>
+<a name="ln1090">    if (!you.duration[DUR_TOXIC_RADIANCE])</a>
+<a name="ln1091">        return false;</a>
+<a name="ln1092"> </a>
+<a name="ln1093">    if (crawl_state.disables[DIS_CONFIRMATIONS])</a>
+<a name="ln1094">        return false;</a>
+<a name="ln1095"> </a>
+<a name="ln1096">    if (crawl_state.which_god_acting() == GOD_XOM)</a>
+<a name="ln1097">        return false;</a>
+<a name="ln1098"> </a>
+<a name="ln1099">    string prompt = make_stringf(&quot;Really %s while emitting a toxic aura?&quot;,</a>
+<a name="ln1100">                                 verb.c_str());</a>
+<a name="ln1101"> </a>
+<a name="ln1102">    if (yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln1103">        return false;</a>
+<a name="ln1104">    else</a>
+<a name="ln1105">    {</a>
+<a name="ln1106">        canned_msg(MSG_OK);</a>
+<a name="ln1107">        return true;</a>
+<a name="ln1108">    }</a>
+<a name="ln1109">}</a>
+
+</code></pre>
+<div class="balloon" rel="808"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: min_delay < 10.</p></div>
+<div class="balloon" rel="1040"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation. Consider inspecting the 'victims.empty() || penancen &&!penance' expression.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

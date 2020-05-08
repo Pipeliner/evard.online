@@ -1,0 +1,513 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>l-debug.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*** Debugging functions (dlua only).</a>
+<a name="ln2"> * @module debug</a>
+<a name="ln3"> */</a>
+<a name="ln4">#include &quot;AppHdr.h&quot;</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;l-libs.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;act-iter.h&quot;</a>
+<a name="ln9">#include &quot;branch.h&quot;</a>
+<a name="ln10">#include &quot;chardump.h&quot;</a>
+<a name="ln11">#include &quot;cluautil.h&quot;</a>
+<a name="ln12">#include &quot;coordit.h&quot;</a>
+<a name="ln13">#include &quot;dbg-util.h&quot;</a>
+<a name="ln14">#include &quot;dungeon.h&quot;</a>
+<a name="ln15">#include &quot;files.h&quot;</a>
+<a name="ln16">#include &quot;god-wrath.h&quot;</a>
+<a name="ln17">#include &quot;los.h&quot;</a>
+<a name="ln18">#include &quot;message.h&quot;</a>
+<a name="ln19">#include &quot;mon-act.h&quot;</a>
+<a name="ln20">#include &quot;mon-death.h&quot;</a>
+<a name="ln21">#include &quot;mon-poly.h&quot;</a>
+<a name="ln22">#include &quot;ng-setup.h&quot;</a>
+<a name="ln23">#include &quot;religion.h&quot;</a>
+<a name="ln24">#include &quot;stairs.h&quot;</a>
+<a name="ln25">#include &quot;state.h&quot;</a>
+<a name="ln26">#include &quot;stringutil.h&quot;</a>
+<a name="ln27">#include &quot;tileview.h&quot;</a>
+<a name="ln28">#include &quot;view.h&quot;</a>
+<a name="ln29">#include &quot;wiz-dgn.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">// WARNING: This is a very low-level call.</a>
+<a name="ln32">//</a>
+<a name="ln33">// Usage: goto_place(&quot;placename&quot;, &lt;bind_entrance&gt;)</a>
+<a name="ln34">// &quot;placename&quot; is the name of the place as used in maps, such as &quot;Lair:2&quot;,</a>
+<a name="ln35">// &quot;Vaults:$&quot;, etc.</a>
+<a name="ln36">//</a>
+<a name="ln37">// If &lt;bind_entrance&gt; is specified, the entrance point of</a>
+<a name="ln38">// the branch specified in place_name is bound to the given level in the</a>
+<a name="ln39">// parent branch (the entrance level should be 1-based). This can be helpful</a>
+<a name="ln40">// when testing scenarios that depend on the absolute depth of the current</a>
+<a name="ln41">// place.</a>
+<a name="ln42">LUAFN(debug_goto_place)</a>
+<a name="ln43">{</a>
+<a name="ln44">    try</a>
+<a name="ln45">    {</a>
+<a name="ln46">        const level_id id = level_id::parse_level_id(luaL_checkstring(ls, 1));</a>
+<a name="ln47">        const int bind_entrance =</a>
+<a name="ln48">            lua_isnumber(ls, 2)? luaL_safe_checkint(ls, 2) : -1;</a>
+<a name="ln49"> </a>
+<a name="ln50">        if (is_connected_branch(id.branch))</a>
+<a name="ln51">            you.level_stack.clear();</a>
+<a name="ln52">        else</a>
+<a name="ln53">        {</a>
+<a name="ln54">            for (int i = you.level_stack.size() - 1; i &gt;= 0; i--)</a>
+<a name="ln55">                if (you.level_stack[i].id == id)</a>
+<a name="ln56">                    you.level_stack.resize(i);</a>
+<a name="ln57">            if (!player_in_branch(id.branch))</a>
+<a name="ln58">                you.level_stack.push_back(level_pos::current());</a>
+<a name="ln59">        }</a>
+<a name="ln60"> </a>
+<a name="ln61">        you.goto_place(id);</a>
+<a name="ln62">        if (bind_entrance != -1)</a>
+<a name="ln63">            brentry[you.where_are_you].depth = bind_entrance;</a>
+<a name="ln64">    }</a>
+<a name="ln65">    catch (const bad_level_id &amp;err)</a>
+<a name="ln66">    {</a>
+<a name="ln67">        luaL_error(ls, err.what());</a>
+<a name="ln68">    }</a>
+<a name="ln69">    return 0;</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">LUAWRAP(debug_dungeon_setup, initial_dungeon_setup())</a>
+<a name="ln73"> </a>
+<a name="ln74">LUAFN(debug_enter_dungeon)</a>
+<a name="ln75">{</a>
+<a name="ln76">    UNUSED(ls);</a>
+<a name="ln77"> </a>
+<a name="ln78">    init_level_connectivity();</a>
+<a name="ln79"> </a>
+<a name="ln80">    you.where_are_you = BRANCH_DUNGEON;</a>
+<a name="ln81">    you.depth = 1;</a>
+<a name="ln82"> </a>
+<a name="ln83">    load_level(DNGN_STONE_STAIRS_DOWN_I, LOAD_START_GAME, level_id());</a>
+<a name="ln84">    return 0;</a>
+<a name="ln85">}</a>
+<a name="ln86"> </a>
+<a name="ln87">LUAWRAP(debug_down_stairs, down_stairs(DNGN_STONE_STAIRS_DOWN_I))</a>
+<a name="ln88">LUAWRAP(debug_up_stairs, up_stairs(DNGN_STONE_STAIRS_UP_I))</a>
+<a name="ln89"> </a>
+<a name="ln90">LUAFN(debug_flush_map_memory)</a>
+<a name="ln91">{</a>
+<a name="ln92">    UNUSED(ls);</a>
+<a name="ln93">    dgn_flush_map_memory();</a>
+<a name="ln94">    init_level_connectivity();</a>
+<a name="ln95">    return 0;</a>
+<a name="ln96">}</a>
+<a name="ln97"> </a>
+<a name="ln98">LUAFN(debug_generate_level)</a>
+<a name="ln99">{</a>
+<a name="ln100">    no_messages mx;</a>
+<a name="ln101">    env.map_knowledge.init(map_cell());</a>
+<a name="ln102">    los_changed();</a>
+<a name="ln103">    tile_init_default_flavour();</a>
+<a name="ln104">    tile_clear_flavour();</a>
+<a name="ln105">    tile_new_level(true);</a>
+<a name="ln106">    builder(lua_isboolean(ls, 1)? lua_toboolean(ls, 1) : true);</a>
+<a name="ln107">    update_portal_entrances();</a>
+<a name="ln108">    return 0;</a>
+<a name="ln109">}</a>
+<a name="ln110"> </a>
+<a name="ln111">LUAFN(debug_reveal_mimics)</a>
+<a name="ln112">{</a>
+<a name="ln113">    UNUSED(ls);</a>
+<a name="ln114">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln115">        if (mimic_at(*ri))</a>
+<a name="ln116">            discover_mimic(*ri);</a>
+<a name="ln117">    return 0;</a>
+<a name="ln118">}</a>
+<a name="ln119"> </a>
+<a name="ln120">LUAWRAP(debug_los_changed, los_changed())</a>
+<a name="ln121"> </a>
+<a name="ln122">LUAFN(debug_dump_map)</a>
+<a name="ln123">{</a>
+<a name="ln124">    const int pos = lua_isuserdata(ls, 1) ? 2 : 1;</a>
+<a name="ln125">    if (lua_isstring(ls, pos))</a>
+<a name="ln126">        dump_map(lua_tostring(ls, pos), true);</a>
+<a name="ln127">    return 0;</a>
+<a name="ln128">}</a>
+<a name="ln129"> </a>
+<a name="ln130">LUAFN(debug_vault_names)</a>
+<a name="ln131">{</a>
+<a name="ln132">    vector&lt;string&gt; vnames = level_vault_names(true);</a>
+<a name="ln133">    string r;</a>
+<a name="ln134">    r = comma_separated_line(vnames.begin(), vnames.end());</a>
+<a name="ln135">    lua_pushstring(ls, r.c_str());</a>
+<a name="ln136">    return 1;</a>
+<a name="ln137">}</a>
+<a name="ln138"> </a>
+<a name="ln139">LUAFN(_debug_test_explore)</a>
+<a name="ln140">{</a>
+<a name="ln141">    UNUSED(ls);</a>
+<a name="ln142">#ifdef WIZARD</a>
+<a name="ln143">    debug_test_explore();</a>
+<a name="ln144">#endif</a>
+<a name="ln145">    return 0;</a>
+<a name="ln146">}</a>
+<a name="ln147"> </a>
+<a name="ln148">LUAFN(debug_bouncy_beam)</a>
+<a name="ln149">{</a>
+<a name="ln150">    coord_def source;</a>
+<a name="ln151">    coord_def target;</a>
+<a name="ln152"> </a>
+<a name="ln153">    source.x = luaL_safe_checkint(ls, 1);</a>
+<a name="ln154">    source.y = luaL_safe_checkint(ls, 2);</a>
+<a name="ln155">    target.x = luaL_safe_checkint(ls, 3);</a>
+<a name="ln156">    target.y = luaL_safe_checkint(ls, 4);</a>
+<a name="ln157">    int range = luaL_safe_checkint(ls, 5);</a>
+<a name="ln158">    bool findray = false;</a>
+<a name="ln159">    if (lua_gettop(ls) &gt; 5)</a>
+<a name="ln160">        findray = lua_toboolean(ls, 6);</a>
+<a name="ln161"> </a>
+<a name="ln162">    bolt beam;</a>
+<a name="ln163"> </a>
+<a name="ln164">    beam.range      = range;</a>
+<a name="ln165">    beam.glyph      = '*';</a>
+<a name="ln166">    beam.colour     = LIGHTCYAN;</a>
+<a name="ln167">    beam.flavour    = BEAM_ELECTRICITY;</a>
+<a name="ln168">    beam.source     = source;</a>
+<a name="ln169">    beam.target     = target;</a>
+<a name="ln170">    beam.pierce     = true;</a>
+<a name="ln171">    beam.draw_delay = 0;</a>
+<a name="ln172"> </a>
+<a name="ln173">    if (findray)</a>
+<a name="ln174">        beam.chose_ray = find_ray(source, target, beam.ray, opc_solid_see);</a>
+<a name="ln175"> </a>
+<a name="ln176">    beam.name       = &quot;debug lightning beam&quot;;</a>
+<a name="ln177">    beam.short_name = &quot;DEBUG&quot;;</a>
+<a name="ln178"> </a>
+<a name="ln179">    beam.fire();</a>
+<a name="ln180"> </a>
+<a name="ln181">    return 0;</a>
+<a name="ln182">}</a>
+<a name="ln183"> </a>
+<a name="ln184">// If menv[] is full, dismiss all monsters not near the player.</a>
+<a name="ln185">LUAFN(debug_cull_monsters)</a>
+<a name="ln186">{</a>
+<a name="ln187">    UNUSED(ls);</a>
+<a name="ln188"> </a>
+<a name="ln189">    // At least one empty space in menv</a>
+<a name="ln190">    for (const auto &amp;mons : menv_real)</a>
+<a name="ln191">        if (mons.type == MONS_NO_MONSTER)</a>
+<a name="ln192">            return 0;</a>
+<a name="ln193"> </a>
+<a name="ln194">    mprf(MSGCH_DIAGNOSTICS, &quot;menv[] is full, dismissing non-near monsters&quot;);</a>
+<a name="ln195"> </a>
+<a name="ln196">    // menv[] is full</a>
+<a name="ln197">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln198">    {</a>
+<a name="ln199">        if (you.see_cell(mi-&gt;pos()))</a>
+<a name="ln200">            continue;</a>
+<a name="ln201"> </a>
+<a name="ln202">        mi-&gt;flags |= MF_HARD_RESET;</a>
+<a name="ln203">        monster_die(**mi, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln204">    }</a>
+<a name="ln205"> </a>
+<a name="ln206">    return 0;</a>
+<a name="ln207">}</a>
+<a name="ln208"> </a>
+<a name="ln209">LUAFN(debug_dismiss_adjacent)</a>
+<a name="ln210">{</a>
+<a name="ln211">    UNUSED(ls);</a>
+<a name="ln212"> </a>
+<a name="ln213">    for (adjacent_iterator ai(you.pos()); ai; ++ai)</a>
+<a name="ln214">    {</a>
+<a name="ln215">        monster* mon = monster_at(*ai);</a>
+<a name="ln216"> </a>
+<a name="ln217">        if (mon)</a>
+<a name="ln218">        {</a>
+<a name="ln219">            mon-&gt;flags |= MF_HARD_RESET;</a>
+<a name="ln220">            monster_die(*mon, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln221">        }</a>
+<a name="ln222">    }</a>
+<a name="ln223"> </a>
+<a name="ln224">    return 0;</a>
+<a name="ln225">}</a>
+<a name="ln226"> </a>
+<a name="ln227">LUAFN(debug_dismiss_monsters)</a>
+<a name="ln228">{</a>
+<a name="ln229">    UNUSED(ls);</a>
+<a name="ln230"> </a>
+<a name="ln231">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln232">    {</a>
+<a name="ln233">        if (mi)</a>
+<a name="ln234">        {</a>
+<a name="ln235">            mi-&gt;flags |= MF_HARD_RESET;</a>
+<a name="ln236">            monster_die(**mi, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln237">        }</a>
+<a name="ln238">    }</a>
+<a name="ln239"> </a>
+<a name="ln240">    return 0;</a>
+<a name="ln241">}</a>
+<a name="ln242"> </a>
+<a name="ln243">LUAFN(debug_god_wrath)</a>
+<a name="ln244">{</a>
+<a name="ln245">    const char *god_name = luaL_checkstring(ls, 1);</a>
+<a name="ln246">    if (!god_name)</a>
+<a name="ln247">    {</a>
+<a name="ln248">        string err = &quot;god_wrath requires a god!&quot;;</a>
+<a name="ln249">        return luaL_argerror(ls, 1, err.c_str());</a>
+<a name="ln250">    }</a>
+<a name="ln251"> </a>
+<a name="ln252">    god_type god = strcmp(god_name, &quot;random&quot;) ? str_to_god(god_name) : GOD_RANDOM;</a>
+<a name="ln253">    if (god == GOD_NO_GOD)</a>
+<a name="ln254">    {</a>
+<a name="ln255">        string err = make_stringf(&quot;'%s' matches no god.&quot;, god_name);</a>
+<a name="ln256">        return luaL_argerror(ls, 1, err.c_str());</a>
+<a name="ln257">    }</a>
+<a name="ln258"> </a>
+<a name="ln259">    bool no_bonus = lua_toboolean(ls, 2);</a>
+<a name="ln260"> </a>
+<a name="ln261">    divine_retribution(god, no_bonus);</a>
+<a name="ln262">    return 0;</a>
+<a name="ln263">}</a>
+<a name="ln264"> </a>
+<a name="ln265">LUAFN(debug_handle_monster_move)</a>
+<a name="ln266">{</a>
+<a name="ln267">    MonsterWrap *mw = clua_get_userdata&lt; MonsterWrap &gt;(ls, MONS_METATABLE);</a>
+<a name="ln268">    if (!mw || !mw-&gt;mons)</a>
+<a name="ln269">        return 0;</a>
+<a name="ln270"> </a>
+<a name="ln271">    handle_monster_move(mw-&gt;mons);</a>
+<a name="ln272">    return 0;</a>
+<a name="ln273">}</a>
+<a name="ln274"> </a>
+<a name="ln275">static FixedBitVector&lt;NUM_MONSTERS&gt; saved_uniques;</a>
+<a name="ln276"> </a>
+<a name="ln277">LUAFN(debug_save_uniques)</a>
+<a name="ln278">{</a>
+<a name="ln279">    UNUSED(ls);</a>
+<a name="ln280">    saved_uniques = you.unique_creatures;</a>
+<a name="ln281">    return 0;</a>
+<a name="ln282">}</a>
+<a name="ln283"> </a>
+<a name="ln284">LUAFN(debug_reset_uniques)</a>
+<a name="ln285">{</a>
+<a name="ln286">    UNUSED(ls);</a>
+<a name="ln287">    you.unique_creatures.reset();</a>
+<a name="ln288">    return 0;</a>
+<a name="ln289">}</a>
+<a name="ln290"> </a>
+<a name="ln291">LUAFN(debug_randomize_uniques)</a>
+<a name="ln292">{</a>
+<a name="ln293">    UNUSED(ls);</a>
+<a name="ln294">    you.unique_creatures.reset();</a>
+<a name="ln295">    for (monster_type mt = MONS_0; mt &lt; NUM_MONSTERS; ++mt)</a>
+<a name="ln296">    {</a>
+<a name="ln297">        if (!mons_is_unique(mt))</a>
+<a name="ln298">            continue;</a>
+<a name="ln299">        you.unique_creatures.set(mt, coinflip());</a>
+<a name="ln300">    }</a>
+<a name="ln301">    return 0;</a>
+<a name="ln302">}</a>
+<a name="ln303"> </a>
+<a name="ln304">// Compare list of uniques on current level with</a>
+<a name="ln305">// you.unique_creatures.</a>
+<a name="ln306">static bool _check_uniques()</a>
+<a name="ln307">{</a>
+<a name="ln308">    bool ret = true;</a>
+<a name="ln309"> </a>
+<a name="ln310">    FixedBitVector&lt;NUM_MONSTERS&gt; uniques_on_level;</a>
+<a name="ln311">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln312">        if (mons_is_unique(mi-&gt;type))</a>
+<a name="ln313">            uniques_on_level.set(mi-&gt;type);</a>
+<a name="ln314"> </a>
+<a name="ln315">    for (monster_type mt = MONS_0; mt &lt; NUM_MONSTERS; ++mt)</a>
+<a name="ln316">    {</a>
+<a name="ln317">        if (!mons_is_unique(mt) || mons_species(mt) == MONS_SERPENT_OF_HELL)</a>
+<a name="ln318">            continue;</a>
+<a name="ln319">        bool was_set = saved_uniques[mt];</a>
+<a name="ln320">        bool is_set = you.unique_creatures[mt];</a>
+<a name="ln321">        bool placed = uniques_on_level[mt];</a>
+<a name="ln322">        if (placed &amp;&amp; was_set</a>
+<a name="ln323">            || placed &amp;&amp; !is_set</a>
+<a name="ln324">            || was_set &amp;&amp; !is_set</a>
+<a name="ln325">            || !was_set &amp;&amp; is_set &amp;&amp; !placed)</a>
+<a name="ln326">        {</a>
+<a name="ln327">            mprf(MSGCH_ERROR,</a>
+<a name="ln328">                 &quot;Bad unique tracking: %s placed=%d was_set=%d is_set=%d&quot;,</a>
+<a name="ln329">                 mons_type_name(mt, DESC_PLAIN).c_str(),</a>
+<a name="ln330">                 placed, was_set, is_set);</a>
+<a name="ln331">            ret = false;</a>
+<a name="ln332">        }</a>
+<a name="ln333">    }</a>
+<a name="ln334">    return ret;</a>
+<a name="ln335">}</a>
+<a name="ln336"> </a>
+<a name="ln337">LUAFN(debug_check_uniques)</a>
+<a name="ln338">{</a>
+<a name="ln339">    lua_pushboolean(ls, _check_uniques());</a>
+<a name="ln340">    return 1;</a>
+<a name="ln341">}</a>
+<a name="ln342"> </a>
+<a name="ln343">LUAFN(debug_viewwindow)</a>
+<a name="ln344">{</a>
+<a name="ln345">    viewwindow(lua_toboolean(ls, 1));</a>
+<a name="ln346">    return 0;</a>
+<a name="ln347">}</a>
+<a name="ln348"> </a>
+<a name="ln349">LUAWRAP(debug_seen_monsters_react, seen_monsters_react())</a>
+<a name="ln350"> </a>
+<a name="ln351">static const char* disablements[] =</a>
+<a name="ln352">{</a>
+<a name="ln353">    &quot;spawns&quot;,</a>
+<a name="ln354">    &quot;mon_act&quot;,</a>
+<a name="ln355">    &quot;mon_regen&quot;,</a>
+<a name="ln356">    &quot;player_regen&quot;,</a>
+<a name="ln357">    &quot;hunger&quot;,</a>
+<a name="ln358">    &quot;death&quot;,</a>
+<a name="ln359">    &quot;delay&quot;,</a>
+<a name="ln360">    &quot;confirmations&quot;,</a>
+<a name="ln361">    &quot;afflictions&quot;,</a>
+<a name="ln362">    &quot;mon_sight&quot;,</a>
+<a name="ln363">    &quot;save_checkpoints&quot;,</a>
+<a name="ln364">};</a>
+<a name="ln365"> </a>
+<a name="ln366">LUAFN(debug_disable)</a>
+<a name="ln367">{</a>
+<a name="ln368">    COMPILE_CHECK(ARRAYSZ(disablements) == NUM_DISABLEMENTS);</a>
+<a name="ln369"> </a>
+<a name="ln370">    const char* what = luaL_checkstring(ls, 1);</a>
+<a name="ln371">    for (int dis = 0; dis &lt; NUM_DISABLEMENTS; dis++)</a>
+<a name="ln372">        if (what &amp;&amp; !strcmp(what, disablements[dis]))</a>
+<a name="ln373">        {</a>
+<a name="ln374">            bool onoff = true;</a>
+<a name="ln375">            if (lua_isboolean(ls, 2))</a>
+<a name="ln376">                onoff = lua_toboolean(ls, 2);</a>
+<a name="ln377">            crawl_state.disables.set(dis, onoff);</a>
+<a name="ln378">            return 0;</a>
+<a name="ln379">        }</a>
+<a name="ln380">    luaL_argerror(ls, 1,</a>
+<a name="ln381">                  make_stringf(&quot;unknown thing to disable: %s&quot;, what).c_str());</a>
+<a name="ln382"> </a>
+<a name="ln383">    return 0;</a>
+<a name="ln384">}</a>
+<a name="ln385"> </a>
+<a name="ln386">// call crawl's ASSERT with a boolean.</a>
+<a name="ln387">// swap out regular lua `assert` with this (debug.cpp_assert) to easily produce a crashlog from a lua test</a>
+<a name="ln388">// the optional 2nd argument will print a dprf to the log before crashing.</a>
+<a name="ln389">LUAFN(debug_cpp_assert)</a>
+<a name="ln390">{</a>
+<a name="ln391">    bool test = lua_toboolean(ls, 1);</a>
+<a name="ln392">    string reason = &quot;&quot;;</a>
+<a name="ln393">    if (!lua_isnoneornil(ls, 2))</a>
+<a name="ln394">        reason = reason + &quot;: (&quot; + luaL_checkstring(ls, 2) + &quot;)&quot;;</a>
+<a name="ln395">    if (!test)</a>
+<a name="ln396">        dprf(&quot;ASSERT from lua failed%s&quot;, reason.c_str());</a>
+<a name="ln397">    ASSERT(test);</a>
+<a name="ln398">    return 0;</a>
+<a name="ln399">}</a>
+<a name="ln400"> </a>
+<a name="ln401">LUAFN(debug_reset_rng)</a>
+<a name="ln402">{</a>
+<a name="ln403">    // call this with care...</a>
+<a name="ln404"> </a>
+<a name="ln405">    if (lua_type(ls, 1) == LUA_TSTRING)</a>
+<a name="ln406">    {</a>
+<a name="ln407">        const char *seed_string = lua_tostring(ls, 1);</a>
+<a name="ln408">        uint64_t tmp_seed = 0;</a>
+<a name="ln409">        if (!sscanf(seed_string, &quot;%&quot; SCNu64, &amp;tmp_seed))</a>
+<a name="ln410">            tmp_seed = 0;</a>
+<a name="ln411">        Options.seed = tmp_seed;</a>
+<a name="ln412">    }</a>
+<a name="ln413">    else</a>
+<a name="ln414">    {</a>
+<a name="ln415">        // quick and dirty - use only 32 bit seeds</a>
+<a name="ln416">        unsigned int seed = (unsigned int) luaL_safe_checkint(ls, 1);</a>
+<a name="ln417">        Options.seed = (uint64_t) seed;</a>
+<a name="ln418">    }</a>
+<a name="ln419">    rng::reset();</a>
+<a name="ln420">    const string ret = make_stringf(&quot;%&quot; PRIu64, Options.seed);</a>
+<a name="ln421">    lua_pushstring(ls, ret.c_str());</a>
+<a name="ln422">    return 1;</a>
+<a name="ln423">}</a>
+<a name="ln424"> </a>
+<a name="ln425">LUAFN(debug_get_rng_state)</a>
+<a name="ln426">{</a>
+<a name="ln427">    string r = make_stringf(&quot;seed: %&quot; PRIu64 &quot;, generator states: &quot;,</a>
+<a name="ln428">        Options.seed);</a>
+<a name="ln429">    vector&lt;uint64_t&gt; states = rng::get_states();</a>
+<a name="ln430">    for (auto i : states)</a>
+<a name="ln431">        r += make_stringf(&quot;%&quot; PRIu64 &quot; &quot;, i);</a>
+<a name="ln432">    lua_pushstring(ls, r.c_str());</a>
+<a name="ln433">    return 1;</a>
+<a name="ln434">}</a>
+<a name="ln435"> </a>
+<a name="ln436">const struct luaL_reg debug_dlib[] =</a>
+<a name="ln437">{</a>
+<a name="ln438">{ &quot;goto_place&quot;, debug_goto_place },</a>
+<a name="ln439">{ &quot;dungeon_setup&quot;, debug_dungeon_setup },</a>
+<a name="ln440">{ &quot;enter_dungeon&quot;, debug_enter_dungeon },</a>
+<a name="ln441">{ &quot;down_stairs&quot;, debug_down_stairs },</a>
+<a name="ln442">{ &quot;up_stairs&quot;, debug_up_stairs },</a>
+<a name="ln443">{ &quot;flush_map_memory&quot;, debug_flush_map_memory },</a>
+<a name="ln444">{ &quot;generate_level&quot;, debug_generate_level },</a>
+<a name="ln445">{ &quot;reveal_mimics&quot;, debug_reveal_mimics },</a>
+<a name="ln446">{ &quot;los_changed&quot;, debug_los_changed },</a>
+<a name="ln447">{ &quot;dump_map&quot;, debug_dump_map },</a>
+<a name="ln448">{ &quot;vault_names&quot;, debug_vault_names },</a>
+<a name="ln449">{ &quot;test_explore&quot;, _debug_test_explore },</a>
+<a name="ln450">{ &quot;bouncy_beam&quot;, debug_bouncy_beam },</a>
+<a name="ln451">{ &quot;cull_monsters&quot;, debug_cull_monsters},</a>
+<a name="ln452">{ &quot;dismiss_adjacent&quot;, debug_dismiss_adjacent},</a>
+<a name="ln453">{ &quot;dismiss_monsters&quot;, debug_dismiss_monsters},</a>
+<a name="ln454">{ &quot;god_wrath&quot;, debug_god_wrath},</a>
+<a name="ln455">{ &quot;handle_monster_move&quot;, debug_handle_monster_move },</a>
+<a name="ln456">{ &quot;save_uniques&quot;, debug_save_uniques },</a>
+<a name="ln457">{ &quot;randomize_uniques&quot;, debug_randomize_uniques },</a>
+<a name="ln458">{ &quot;reset_uniques&quot;, debug_reset_uniques },</a>
+<a name="ln459">{ &quot;check_uniques&quot;, debug_check_uniques },</a>
+<a name="ln460">{ &quot;viewwindow&quot;, debug_viewwindow },</a>
+<a name="ln461">{ &quot;seen_monsters_react&quot;, debug_seen_monsters_react },</a>
+<a name="ln462">{ &quot;disable&quot;, debug_disable },</a>
+<a name="ln463">{ &quot;cpp_assert&quot;, debug_cpp_assert },</a>
+<a name="ln464">{ &quot;reset_rng&quot;, debug_reset_rng },</a>
+<a name="ln465">{ &quot;get_rng_state&quot;, debug_get_rng_state },</a>
+<a name="ln466">{ nullptr, nullptr }</a>
+<a name="ln467">};</a>
+
+</code></pre>
+<div class="balloon" rel="165"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'beam.glyph' variable was assigned the same value.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

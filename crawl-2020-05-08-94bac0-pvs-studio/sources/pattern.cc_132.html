@@ -1,0 +1,278 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>pattern.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#ifdef REGEX_PCRE</a>
+<a name="ln4">    // Statically link pcre on Windows</a>
+<a name="ln5">    #if defined(TARGET_OS_WINDOWS)</a>
+<a name="ln6">        #define PCRE_STATIC</a>
+<a name="ln7">    #endif</a>
+<a name="ln8"> </a>
+<a name="ln9">    #include &lt;pcre.h&gt;</a>
+<a name="ln10">#endif</a>
+<a name="ln11"> </a>
+<a name="ln12">#ifdef REGEX_POSIX</a>
+<a name="ln13">    #include &lt;regex.h&gt;</a>
+<a name="ln14">#endif</a>
+<a name="ln15"> </a>
+<a name="ln16">#include &quot;pattern.h&quot;</a>
+<a name="ln17">#include &quot;stringutil.h&quot;</a>
+<a name="ln18"> </a>
+<a name="ln19">#if defined(REGEX_PCRE)</a>
+<a name="ln20">////////////////////////////////////////////////////////////////////</a>
+<a name="ln21">// Perl Compatible Regular Expressions</a>
+<a name="ln22"> </a>
+<a name="ln23">static void *_compile_pattern(const char *pattern, bool icase)</a>
+<a name="ln24">{</a>
+<a name="ln25">    const char *error;</a>
+<a name="ln26">    int erroffset;</a>
+<a name="ln27">    int flags = icase ? PCRE_CASELESS : 0;</a>
+<a name="ln28">    return pcre_compile(pattern,</a>
+<a name="ln29">                        flags,</a>
+<a name="ln30">                        &amp;error,</a>
+<a name="ln31">                        &amp;erroffset,</a>
+<a name="ln32">                        nullptr);</a>
+<a name="ln33">}</a>
+<a name="ln34"> </a>
+<a name="ln35">static void _free_compiled_pattern(void *cp)</a>
+<a name="ln36">{</a>
+<a name="ln37">    if (cp)</a>
+<a name="ln38">        pcre_free(cp);</a>
+<a name="ln39">}</a>
+<a name="ln40"> </a>
+<a name="ln41">static bool _pattern_match(void *compiled_pattern, const char *text, int length)</a>
+<a name="ln42">{</a>
+<a name="ln43">    int ovector[42];</a>
+<a name="ln44">    int pcre_rc = pcre_exec(static_cast&lt;pcre *&gt;(compiled_pattern),</a>
+<a name="ln45">                            nullptr,</a>
+<a name="ln46">                            text, length, 0, 0,</a>
+<a name="ln47">                            ovector, sizeof(ovector) / sizeof(*ovector));</a>
+<a name="ln48">    return pcre_rc &gt;= 0;</a>
+<a name="ln49">}</a>
+<a name="ln50"> </a>
+<a name="ln51">static pattern_match _pattern_match_location(void *compiled_pattern,</a>
+<a name="ln52">                                             const char *text, int length)</a>
+<a name="ln53">{</a>
+<a name="ln54">    int ovector[42];</a>
+<a name="ln55">    int pcre_rc = pcre_exec(static_cast&lt;pcre *&gt;(compiled_pattern),</a>
+<a name="ln56">                            nullptr,</a>
+<a name="ln57">                            text, length, 0, 0,</a>
+<a name="ln58">                            ovector, sizeof(ovector) / sizeof(*ovector));</a>
+<a name="ln59">    if (pcre_rc &gt;= 0)</a>
+<a name="ln60">        return pattern_match::succeeded(string(text), ovector[0], ovector[1]);</a>
+<a name="ln61">    else</a>
+<a name="ln62">        return pattern_match::failed(string(text));</a>
+<a name="ln63">}</a>
+<a name="ln64"> </a>
+<a name="ln65">////////////////////////////////////////////////////////////////////</a>
+<a name="ln66">#else</a>
+<a name="ln67">////////////////////////////////////////////////////////////////////</a>
+<a name="ln68">// POSIX regular expressions</a>
+<a name="ln69"> </a>
+<a name="ln70">static void *_compile_pattern(const char *pattern, bool icase)</a>
+<a name="ln71">{</a>
+<a name="ln72">    regex_t *re = new regex_t;</a>
+<a name="ln73">    if (!re)</a>
+<a name="ln74">        return nullptr;</a>
+<a name="ln75"> </a>
+<a name="ln76">    int flags = REG_EXTENDED;</a>
+<a name="ln77">    if (icase)</a>
+<a name="ln78">        flags |= REG_ICASE;</a>
+<a name="ln79">    int rc = regcomp(re, pattern, flags);</a>
+<a name="ln80">    // Nonzero return code == failure</a>
+<a name="ln81">    if (rc)</a>
+<a name="ln82">    {</a>
+<a name="ln83">        delete re;</a>
+<a name="ln84">        return nullptr;</a>
+<a name="ln85">    }</a>
+<a name="ln86">    return re;</a>
+<a name="ln87">}</a>
+<a name="ln88"> </a>
+<a name="ln89">static void _free_compiled_pattern(void *cp)</a>
+<a name="ln90">{</a>
+<a name="ln91">    if (cp)</a>
+<a name="ln92">    {</a>
+<a name="ln93">        regex_t *re = static_cast&lt;regex_t *&gt;(cp);</a>
+<a name="ln94">        regfree(re);</a>
+<a name="ln95">        delete re;</a>
+<a name="ln96">    }</a>
+<a name="ln97">}</a>
+<a name="ln98"> </a>
+<a name="ln99">static bool _pattern_match(void *compiled_pattern, const char *text, int length)</a>
+<a name="ln100">{</a>
+<a name="ln101">    UNUSED(length);</a>
+<a name="ln102">    regex_t *re = static_cast&lt;regex_t *&gt;(compiled_pattern);</a>
+<a name="ln103">    return !regexec(re, text, 0, nullptr, 0);</a>
+<a name="ln104">}</a>
+<a name="ln105"> </a>
+<a name="ln106">static pattern_match _pattern_match_location(void *compiled_pattern,</a>
+<a name="ln107">                                             const char *text, int length)</a>
+<a name="ln108">{</a>
+<a name="ln109">    UNUSED(length);</a>
+<a name="ln110">    regmatch_t match;</a>
+<a name="ln111">    regex_t *re = static_cast&lt;regex_t *&gt;(compiled_pattern);</a>
+<a name="ln112">    if (!regexec(re, text, 1, &amp;match, 0))</a>
+<a name="ln113">        return pattern_match::succeeded(string(text), match.rm_so, match.rm_eo);</a>
+<a name="ln114">    else</a>
+<a name="ln115">        return pattern_match::failed(string(text));</a>
+<a name="ln116">}</a>
+<a name="ln117"> </a>
+<a name="ln118">////////////////////////////////////////////////////////////////////</a>
+<a name="ln119">#endif</a>
+<a name="ln120"> </a>
+<a name="ln121">string pattern_match::annotate_string(const string &amp;color) const</a>
+<a name="ln122">{</a>
+<a name="ln123">    string ret(text);</a>
+<a name="ln124"> </a>
+<a name="ln125">    if (*this &amp;&amp; start &lt; end)</a>
+<a name="ln126">    {</a>
+<a name="ln127">        ret.insert(end, make_stringf(&quot;&lt;/%s&gt;&quot;, color.c_str()));</a>
+<a name="ln128">        ret.insert(start, make_stringf(&quot;&lt;%s&gt;&quot;, color.c_str()));</a>
+<a name="ln129">    }</a>
+<a name="ln130"> </a>
+<a name="ln131">    return ret;</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">text_pattern::~text_pattern()</a>
+<a name="ln135">{</a>
+<a name="ln136">    if (compiled_pattern)</a>
+<a name="ln137">        _free_compiled_pattern(compiled_pattern);</a>
+<a name="ln138">}</a>
+<a name="ln139"> </a>
+<a name="ln140">const text_pattern &amp;text_pattern::operator= (const text_pattern &amp;tp)</a>
+<a name="ln141">{</a>
+<a name="ln142">    if (this == &amp;tp)</a>
+<a name="ln143">        return tp;</a>
+<a name="ln144"> </a>
+<a name="ln145">    if (compiled_pattern)</a>
+<a name="ln146">        _free_compiled_pattern(compiled_pattern);</a>
+<a name="ln147">    pattern = tp.pattern;</a>
+<a name="ln148">    compiled_pattern = nullptr;</a>
+<a name="ln149">    isvalid      = tp.isvalid;</a>
+<a name="ln150">    ignore_case  = tp.ignore_case;</a>
+<a name="ln151">    return *this;</a>
+<a name="ln152">}</a>
+<a name="ln153"> </a>
+<a name="ln154">const text_pattern &amp;text_pattern::operator= (const string &amp;spattern)</a>
+<a name="ln155">{</a>
+<a name="ln156">    if (pattern == spattern)</a>
+<a name="ln157">        return *this;</a>
+<a name="ln158"> </a>
+<a name="ln159">    if (compiled_pattern)</a>
+<a name="ln160">        _free_compiled_pattern(compiled_pattern);</a>
+<a name="ln161">    pattern = spattern;</a>
+<a name="ln162">    compiled_pattern = nullptr;</a>
+<a name="ln163">    isvalid = true;</a>
+<a name="ln164">    // We don't change ignore_case</a>
+<a name="ln165">    return *this;</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">bool text_pattern::operator== (const text_pattern &amp;tp) const</a>
+<a name="ln169">{</a>
+<a name="ln170">    if (this == &amp;tp)</a>
+<a name="ln171">        return true;</a>
+<a name="ln172"> </a>
+<a name="ln173">    return pattern == tp.pattern &amp;&amp; ignore_case == tp.ignore_case;</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">bool text_pattern::compile() const</a>
+<a name="ln177">{</a>
+<a name="ln178">    return !empty()?</a>
+<a name="ln179">        !!(compiled_pattern = _compile_pattern(pattern.c_str(), ignore_case))</a>
+<a name="ln180">      : false;</a>
+<a name="ln181">}</a>
+<a name="ln182"> </a>
+<a name="ln183">bool text_pattern::matches(const char *s, int length) const</a>
+<a name="ln184">{</a>
+<a name="ln185">    return valid() &amp;&amp; _pattern_match(compiled_pattern, s, length);</a>
+<a name="ln186">}</a>
+<a name="ln187"> </a>
+<a name="ln188">pattern_match text_pattern::match_location(const char *s, int length) const</a>
+<a name="ln189">{</a>
+<a name="ln190">    if (valid())</a>
+<a name="ln191">        return _pattern_match_location(compiled_pattern, s, length);</a>
+<a name="ln192">    else</a>
+<a name="ln193">        return pattern_match::failed(string(s));</a>
+<a name="ln194">}</a>
+<a name="ln195"> </a>
+<a name="ln196">const plaintext_pattern &amp;plaintext_pattern::operator= (const string &amp;spattern)</a>
+<a name="ln197">{</a>
+<a name="ln198">    if (pattern == spattern)</a>
+<a name="ln199">        return *this;</a>
+<a name="ln200"> </a>
+<a name="ln201">    pattern = spattern;</a>
+<a name="ln202">    // We don't change ignore_case</a>
+<a name="ln203"> </a>
+<a name="ln204">    return *this;</a>
+<a name="ln205">}</a>
+<a name="ln206"> </a>
+<a name="ln207">bool plaintext_pattern::operator== (const plaintext_pattern &amp;tp) const</a>
+<a name="ln208">{</a>
+<a name="ln209">    if (this == &amp;tp)</a>
+<a name="ln210">        return true;</a>
+<a name="ln211"> </a>
+<a name="ln212">    return pattern == tp.pattern &amp;&amp; ignore_case == tp.ignore_case;</a>
+<a name="ln213">}</a>
+<a name="ln214"> </a>
+<a name="ln215">bool plaintext_pattern::matches(const string &amp;s) const</a>
+<a name="ln216">{</a>
+<a name="ln217">    string needle = ignore_case ? lowercase_string(pattern) : pattern;</a>
+<a name="ln218">    string haystack = ignore_case ? lowercase_string(s) : s;</a>
+<a name="ln219">    return haystack.find(needle) != string::npos;</a>
+<a name="ln220">}</a>
+<a name="ln221"> </a>
+<a name="ln222">pattern_match plaintext_pattern::match_location(const string &amp;s) const</a>
+<a name="ln223">{</a>
+<a name="ln224">    string needle = ignore_case ? lowercase_string(pattern) : pattern;</a>
+<a name="ln225">    string haystack = ignore_case ? lowercase_string(s) : s;</a>
+<a name="ln226">    size_t pos;</a>
+<a name="ln227">    if ((pos = haystack.find(needle)) != string::npos)</a>
+<a name="ln228">        return pattern_match::succeeded(s, pos, pos + pattern.length());</a>
+<a name="ln229">    else</a>
+<a name="ln230">        return pattern_match::failed(s);</a>
+<a name="ln231">}</a>
+
+</code></pre>
+<div class="balloon" rel="73"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v668/" target="_blank">V668</a> There is no sense in testing the 're' pointer against null, as the memory was allocated using the 'new' operator. The exception will be generated in the case of memory allocation error.</p></div>
+<div class="balloon" rel="143"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v790/" target="_blank">V790</a> It is odd that the assignment operator takes an object by a constant reference and returns this object.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

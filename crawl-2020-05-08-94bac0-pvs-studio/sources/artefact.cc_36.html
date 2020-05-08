@@ -1,0 +1,1902 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>artefact.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Random and unrandom artefact functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;artefact.h&quot;</a>
+<a name="ln9">#include &quot;art-enum.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &lt;algorithm&gt;</a>
+<a name="ln12">#include &lt;climits&gt;</a>
+<a name="ln13">#include &lt;cstdio&gt;</a>
+<a name="ln14">#include &lt;cstdlib&gt;</a>
+<a name="ln15">#include &lt;cstring&gt;</a>
+<a name="ln16">#include &lt;functional&gt;</a>
+<a name="ln17"> </a>
+<a name="ln18">#include &quot;branch.h&quot;</a>
+<a name="ln19">#include &quot;colour.h&quot;</a>
+<a name="ln20">#include &quot;database.h&quot;</a>
+<a name="ln21">#include &quot;god-item.h&quot;</a>
+<a name="ln22">#include &quot;item-name.h&quot;</a>
+<a name="ln23">#include &quot;item-prop.h&quot;</a>
+<a name="ln24">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln25">#include &quot;items.h&quot;</a>
+<a name="ln26">#include &quot;libutil.h&quot;</a>
+<a name="ln27">#include &quot;makeitem.h&quot;</a>
+<a name="ln28">#include &quot;random.h&quot;</a>
+<a name="ln29">#include &quot;religion.h&quot;</a>
+<a name="ln30">#include &quot;shout.h&quot;</a>
+<a name="ln31">#include &quot;spl-book.h&quot;</a>
+<a name="ln32">#include &quot;state.h&quot;</a>
+<a name="ln33">#include &quot;stringutil.h&quot;</a>
+<a name="ln34">#include &quot;unicode.h&quot;</a>
+<a name="ln35"> </a>
+<a name="ln36">// Putting this here since art-enum.h is generated.</a>
+<a name="ln37"> </a>
+<a name="ln38">// Make sure there's enough room in you.unique_items to hold all</a>
+<a name="ln39">// the unrandarts.</a>
+<a name="ln40">COMPILE_CHECK(NUM_UNRANDARTS &lt; MAX_UNRANDARTS);</a>
+<a name="ln41">// Non-artefact brands and unrandart indexes both go into</a>
+<a name="ln42">// item.special, so make sure they don't overlap.</a>
+<a name="ln43">COMPILE_CHECK((int) NUM_SPECIAL_WEAPONS &lt; (int) UNRAND_START);</a>
+<a name="ln44"> </a>
+<a name="ln45">static bool _god_fits_artefact(const god_type which_god, const item_def &amp;item,</a>
+<a name="ln46">                               bool name_check_only = false)</a>
+<a name="ln47">{</a>
+<a name="ln48">    if (which_god == GOD_NO_GOD)</a>
+<a name="ln49">        return false;</a>
+<a name="ln50"> </a>
+<a name="ln51">    // Jellies can't eat artefacts, so their god won't make any.</a>
+<a name="ln52">    if (which_god == GOD_JIYVA)</a>
+<a name="ln53">        return false;</a>
+<a name="ln54"> </a>
+<a name="ln55">    // First check the item's base_type and sub_type, then check the</a>
+<a name="ln56">    // item's brand and other randart properties.</a>
+<a name="ln57"> </a>
+<a name="ln58">    const bool type_bad = !god_likes_item_type(item, which_god);</a>
+<a name="ln59"> </a>
+<a name="ln60">    if (type_bad &amp;&amp; !name_check_only)</a>
+<a name="ln61">    {</a>
+<a name="ln62">        die(&quot;%s attempting to gift invalid type of item.&quot;,</a>
+<a name="ln63">            god_name(which_god).c_str());</a>
+<a name="ln64">    }</a>
+<a name="ln65"> </a>
+<a name="ln66">    if (type_bad)</a>
+<a name="ln67">        return false;</a>
+<a name="ln68"> </a>
+<a name="ln69">    const int brand = get_weapon_brand(item);</a>
+<a name="ln70">    const int ego   = get_armour_ego_type(item);</a>
+<a name="ln71"> </a>
+<a name="ln72">    if (is_evil_god(which_god) &amp;&amp; brand == SPWPN_HOLY_WRATH)</a>
+<a name="ln73">        return false;</a>
+<a name="ln74">    else if (is_good_god(which_god)</a>
+<a name="ln75">             &amp;&amp; (brand == SPWPN_DRAINING</a>
+<a name="ln76">                 || brand == SPWPN_PAIN</a>
+<a name="ln77">                 || brand == SPWPN_VAMPIRISM</a>
+<a name="ln78">                 || brand == SPWPN_REAPING</a>
+<a name="ln79">                 || brand == SPWPN_CHAOS</a>
+<a name="ln80">                 || is_demonic(item)</a>
+<a name="ln81">                 || artefact_property(item, ARTP_CURSE)))</a>
+<a name="ln82">    {</a>
+<a name="ln83">        return false;</a>
+<a name="ln84">    }</a>
+<a name="ln85"> </a>
+<a name="ln86">    switch (which_god)</a>
+<a name="ln87">    {</a>
+<a name="ln88">    case GOD_ELYVILON:</a>
+<a name="ln89">        // Peaceful healer god: no berserking.</a>
+<a name="ln90">        if (artefact_property(item, ARTP_ANGRY)</a>
+<a name="ln91">            || artefact_property(item, ARTP_BERSERK))</a>
+<a name="ln92">        {</a>
+<a name="ln93">            return false;</a>
+<a name="ln94">        }</a>
+<a name="ln95">        break;</a>
+<a name="ln96"> </a>
+<a name="ln97">    case GOD_ZIN:</a>
+<a name="ln98">        // Lawful god: no mutagenics.</a>
+<a name="ln99">        if (artefact_property(item, ARTP_CONTAM))</a>
+<a name="ln100">            return false;</a>
+<a name="ln101">        break;</a>
+<a name="ln102"> </a>
+<a name="ln103">    case GOD_SHINING_ONE:</a>
+<a name="ln104">        // Crusader god: holiness, honourable combat.</a>
+<a name="ln105">        if (item.base_type == OBJ_WEAPONS &amp;&amp; brand != SPWPN_HOLY_WRATH)</a>
+<a name="ln106">            return false;</a>
+<a name="ln107"> </a>
+<a name="ln108">        if (artefact_property(item, ARTP_INVISIBLE)</a>
+<a name="ln109">            || artefact_property(item, ARTP_STEALTH) &gt; 0)</a>
+<a name="ln110">        {</a>
+<a name="ln111">            return false;</a>
+<a name="ln112">        }</a>
+<a name="ln113">        break;</a>
+<a name="ln114"> </a>
+<a name="ln115">    case GOD_LUGONU:</a>
+<a name="ln116">        // Abyss god: corruption.</a>
+<a name="ln117">        if (item.base_type == OBJ_WEAPONS &amp;&amp; brand != SPWPN_DISTORTION)</a>
+<a name="ln118">            return false;</a>
+<a name="ln119">        break;</a>
+<a name="ln120"> </a>
+<a name="ln121">    case GOD_KIKUBAAQUDGHA:</a>
+<a name="ln122">        // Necromancy god.</a>
+<a name="ln123">        if (item.base_type == OBJ_WEAPONS &amp;&amp; brand != SPWPN_PAIN)</a>
+<a name="ln124">            return false;</a>
+<a name="ln125">    case GOD_SIF_MUNA:</a>
+<a name="ln126">    case GOD_VEHUMET:</a>
+<a name="ln127">        // The magic gods: no preventing spellcasting.</a>
+<a name="ln128">        if (artefact_property(item, ARTP_PREVENT_SPELLCASTING))</a>
+<a name="ln129">            return false;</a>
+<a name="ln130">        break;</a>
+<a name="ln131"> </a>
+<a name="ln132">    case GOD_TROG:</a>
+<a name="ln133">        // Limited selection of brands.</a>
+<a name="ln134">        if (brand != SPWPN_VORPAL</a>
+<a name="ln135">            &amp;&amp; brand != SPWPN_FLAMING</a>
+<a name="ln136">            &amp;&amp; brand != SPWPN_ANTIMAGIC)</a>
+<a name="ln137">        {</a>
+<a name="ln138">            return false;</a>
+<a name="ln139">        }</a>
+<a name="ln140"> </a>
+<a name="ln141">        if (artefact_property(item, ARTP_MAGICAL_POWER) &gt; 0)</a>
+<a name="ln142">            return false;</a>
+<a name="ln143">        break;</a>
+<a name="ln144"> </a>
+<a name="ln145">    case GOD_CHEIBRIADOS:</a>
+<a name="ln146">        // Slow god: no speed, no berserking.</a>
+<a name="ln147">        if (brand == SPWPN_SPEED)</a>
+<a name="ln148">            return false;</a>
+<a name="ln149"> </a>
+<a name="ln150">        if (ego == SPARM_RUNNING)</a>
+<a name="ln151">            return false;</a>
+<a name="ln152"> </a>
+<a name="ln153">        if (artefact_property(item, ARTP_ANGRY)</a>
+<a name="ln154">            || artefact_property(item, ARTP_BERSERK))</a>
+<a name="ln155">        {</a>
+<a name="ln156">            return false;</a>
+<a name="ln157">        }</a>
+<a name="ln158">        break;</a>
+<a name="ln159"> </a>
+<a name="ln160">    case GOD_DITHMENOS:</a>
+<a name="ln161">        // No reducing stealth.</a>
+<a name="ln162">        if (artefact_property(item, ARTP_STEALTH) &lt; 0)</a>
+<a name="ln163">            return false;</a>
+<a name="ln164">        break;</a>
+<a name="ln165"> </a>
+<a name="ln166">    default:</a>
+<a name="ln167">        break;</a>
+<a name="ln168">    }</a>
+<a name="ln169"> </a>
+<a name="ln170">    return true;</a>
+<a name="ln171">}</a>
+<a name="ln172"> </a>
+<a name="ln173">string replace_name_parts(const string &amp;name_in, const item_def&amp; item)</a>
+<a name="ln174">{</a>
+<a name="ln175">    string name = name_in;</a>
+<a name="ln176"> </a>
+<a name="ln177">    const god_type god_gift = origin_as_god_gift(item);</a>
+<a name="ln178"> </a>
+<a name="ln179">    // Don't allow &quot;player's Death&quot; type names for god gifts (except</a>
+<a name="ln180">    // for those from Xom).</a>
+<a name="ln181">    if (name.find(&quot;@player_death@&quot;, 0) != string::npos</a>
+<a name="ln182">        || name.find(&quot;@player_doom@&quot;, 0) != string::npos)</a>
+<a name="ln183">    {</a>
+<a name="ln184">        if (god_gift == GOD_NO_GOD || god_gift == GOD_XOM)</a>
+<a name="ln185">        {</a>
+<a name="ln186">            name = replace_all(name, &quot;@player_death@&quot;,</a>
+<a name="ln187">                               &quot;@player_name@&quot;</a>
+<a name="ln188">                               + getRandNameString(&quot;killer_name&quot;));</a>
+<a name="ln189">            name = replace_all(name, &quot;@player_doom@&quot;,</a>
+<a name="ln190">                               &quot;@player_name@'s &quot;</a>
+<a name="ln191">                               + getRandNameString(&quot;death_or_doom&quot;));</a>
+<a name="ln192">        }</a>
+<a name="ln193">        else</a>
+<a name="ln194">        {</a>
+<a name="ln195">            // Simply overwrite the name with one of type &quot;God's Favour&quot;.</a>
+<a name="ln196">            name = &quot;of &quot;;</a>
+<a name="ln197">            name += god_name(god_gift, false);</a>
+<a name="ln198">            name += &quot;'s &quot;;</a>
+<a name="ln199">            name += getRandNameString(&quot;divine_esteem&quot;);</a>
+<a name="ln200">        }</a>
+<a name="ln201">    }</a>
+<a name="ln202">    name = replace_all(name, &quot;@player_name@&quot;, you.your_name);</a>
+<a name="ln203"> </a>
+<a name="ln204">    name = replace_all(name, &quot;@player_species@&quot;,</a>
+<a name="ln205">                 species_name(you.species, SPNAME_GENUS));</a>
+<a name="ln206"> </a>
+<a name="ln207">    if (name.find(&quot;@branch_name@&quot;, 0) != string::npos)</a>
+<a name="ln208">    {</a>
+<a name="ln209">        string place = branches[random2(NUM_BRANCHES)].longname;</a>
+<a name="ln210">        if (!place.empty())</a>
+<a name="ln211">            name = replace_all(name, &quot;@branch_name@&quot;, place);</a>
+<a name="ln212">    }</a>
+<a name="ln213"> </a>
+<a name="ln214">    // Occasionally use long name for Xom (see religion.cc).</a>
+<a name="ln215">    name = replace_all(name, &quot;@xom_name@&quot;, god_name(GOD_XOM, coinflip()));</a>
+<a name="ln216"> </a>
+<a name="ln217">    if (name.find(&quot;@god_name@&quot;, 0) != string::npos)</a>
+<a name="ln218">    {</a>
+<a name="ln219">        god_type which_god;</a>
+<a name="ln220"> </a>
+<a name="ln221">        // God gifts will always get the gifting god's name.</a>
+<a name="ln222">        if (god_gift != GOD_NO_GOD)</a>
+<a name="ln223">            which_god = god_gift;</a>
+<a name="ln224">        else</a>
+<a name="ln225">        {</a>
+<a name="ln226">            do</a>
+<a name="ln227">            {</a>
+<a name="ln228">                which_god = random_god();</a>
+<a name="ln229">            }</a>
+<a name="ln230">            while (!_god_fits_artefact(which_god, item, true));</a>
+<a name="ln231">        }</a>
+<a name="ln232"> </a>
+<a name="ln233">        name = replace_all(name, &quot;@god_name@&quot;, god_name(which_god, false));</a>
+<a name="ln234">    }</a>
+<a name="ln235"> </a>
+<a name="ln236">    return name;</a>
+<a name="ln237">}</a>
+<a name="ln238"> </a>
+<a name="ln239">// Remember: disallow unrandart creation in Abyss/Pan.</a>
+<a name="ln240"> </a>
+<a name="ln241">// Functions defined in art-func.h are referenced in art-data.h</a>
+<a name="ln242">#include &quot;art-func.h&quot;</a>
+<a name="ln243"> </a>
+<a name="ln244">static const unrandart_entry unranddata[] =</a>
+<a name="ln245">{</a>
+<a name="ln246">#include &quot;art-data.h&quot;</a>
+<a name="ln247">};</a>
+<a name="ln248"> </a>
+<a name="ln249">static const unrandart_entry *_seekunrandart(const item_def &amp;item);</a>
+<a name="ln250"> </a>
+<a name="ln251">bool is_known_artefact(const item_def &amp;item)</a>
+<a name="ln252">{</a>
+<a name="ln253">    if (!item_type_known(item))</a>
+<a name="ln254">        return false;</a>
+<a name="ln255"> </a>
+<a name="ln256">    return is_artefact(item);</a>
+<a name="ln257">}</a>
+<a name="ln258"> </a>
+<a name="ln259">bool is_artefact(const item_def &amp;item)</a>
+<a name="ln260">{</a>
+<a name="ln261">    return item.flags &amp; ISFLAG_ARTEFACT_MASK;</a>
+<a name="ln262">}</a>
+<a name="ln263"> </a>
+<a name="ln264">// returns true is item is a pure randart</a>
+<a name="ln265">bool is_random_artefact(const item_def &amp;item)</a>
+<a name="ln266">{</a>
+<a name="ln267">    return item.flags &amp; ISFLAG_RANDART;</a>
+<a name="ln268">}</a>
+<a name="ln269"> </a>
+<a name="ln270">/** Is this an unrandart, and if so which one?</a>
+<a name="ln271"> *</a>
+<a name="ln272"> *  @param item The item to be checked.</a>
+<a name="ln273"> *  @param which The unrand enum to be checked against (default 0).</a>
+<a name="ln274"> *  @returns true if item is an unrand, and if which is not 0, if it is the unrand</a>
+<a name="ln275"> *           specfied by enum in which.</a>
+<a name="ln276"> */</a>
+<a name="ln277">bool is_unrandom_artefact(const item_def &amp;item, int which)</a>
+<a name="ln278">{</a>
+<a name="ln279">    return item.flags &amp; ISFLAG_UNRANDART</a>
+<a name="ln280">           &amp;&amp; (!which || which == item.unrand_idx);</a>
+<a name="ln281">}</a>
+<a name="ln282"> </a>
+<a name="ln283">bool is_special_unrandom_artefact(const item_def &amp;item)</a>
+<a name="ln284">{</a>
+<a name="ln285">    return item.flags &amp; ISFLAG_UNRANDART</a>
+<a name="ln286">           &amp;&amp; (_seekunrandart(item)-&gt;flags &amp; UNRAND_FLAG_SPECIAL);</a>
+<a name="ln287">}</a>
+<a name="ln288"> </a>
+<a name="ln289">void autoid_unrand(item_def &amp;item)</a>
+<a name="ln290">{</a>
+<a name="ln291">    if (!(item.flags &amp; ISFLAG_UNRANDART) || item.flags &amp; ISFLAG_KNOW_TYPE)</a>
+<a name="ln292">        return;</a>
+<a name="ln293">    const uint16_t uflags = _seekunrandart(item)-&gt;flags;</a>
+<a name="ln294">    if (uflags &amp; UNRAND_FLAG_UNIDED)</a>
+<a name="ln295">        return;</a>
+<a name="ln296"> </a>
+<a name="ln297">    set_ident_flags(item, ISFLAG_IDENT_MASK | ISFLAG_NOTED_ID);</a>
+<a name="ln298">}</a>
+<a name="ln299"> </a>
+<a name="ln300">unique_item_status_type get_unique_item_status(int art)</a>
+<a name="ln301">{</a>
+<a name="ln302">    ASSERT_RANGE(art, UNRAND_START + 1, UNRAND_LAST);</a>
+<a name="ln303">    return you.unique_items[art - UNRAND_START];</a>
+<a name="ln304">}</a>
+<a name="ln305"> </a>
+<a name="ln306">static void _set_unique_item_status(int art, unique_item_status_type status)</a>
+<a name="ln307">{</a>
+<a name="ln308">    ASSERT_RANGE(art, UNRAND_START + 1, UNRAND_LAST);</a>
+<a name="ln309">    you.unique_items[art - UNRAND_START] = status;</a>
+<a name="ln310">}</a>
+<a name="ln311"> </a>
+<a name="ln312">void set_unique_item_status(const item_def&amp; item,</a>
+<a name="ln313">                            unique_item_status_type status)</a>
+<a name="ln314">{</a>
+<a name="ln315">    if (item.flags &amp; ISFLAG_UNRANDART)</a>
+<a name="ln316">        _set_unique_item_status(item.unrand_idx, status);</a>
+<a name="ln317">}</a>
+<a name="ln318"> </a>
+<a name="ln319">/**</a>
+<a name="ln320"> * Fill out the inherent ARTPs corresponding to a given type of armour.</a>
+<a name="ln321"> *</a>
+<a name="ln322"> * @param arm           The armour_type of the armour in question.</a>
+<a name="ln323"> * @param proprt[out]   The properties list to be populated.</a>
+<a name="ln324"> */</a>
+<a name="ln325">static void _populate_armour_intrinsic_artps(const armour_type arm,</a>
+<a name="ln326">                                             artefact_properties_t &amp;proprt)</a>
+<a name="ln327">{</a>
+<a name="ln328">    proprt[ARTP_FIRE] += armour_type_prop(arm, ARMF_RES_FIRE);</a>
+<a name="ln329">    proprt[ARTP_COLD] += armour_type_prop(arm, ARMF_RES_COLD);</a>
+<a name="ln330">    proprt[ARTP_NEGATIVE_ENERGY] += armour_type_prop(arm, ARMF_RES_NEG);</a>
+<a name="ln331">    proprt[ARTP_POISON] += armour_type_prop(arm, ARMF_RES_POISON);</a>
+<a name="ln332">    proprt[ARTP_ELECTRICITY] += armour_type_prop(arm, ARMF_RES_ELEC);</a>
+<a name="ln333">    proprt[ARTP_RCORR] += armour_type_prop(arm, ARMF_RES_CORR);</a>
+<a name="ln334">    proprt[ARTP_MAGIC_RESISTANCE] += armour_type_prop(arm, ARMF_RES_MAGIC);</a>
+<a name="ln335">    proprt[ARTP_STEALTH] += armour_type_prop(arm, ARMF_STEALTH);</a>
+<a name="ln336">    proprt[ARTP_REGENERATION] += armour_type_prop(arm, ARMF_REGENERATION);</a>
+<a name="ln337">}</a>
+<a name="ln338"> </a>
+<a name="ln339">/// The artefact properties corresponding to a given piece of jewellery.</a>
+<a name="ln340">struct jewellery_fake_artp</a>
+<a name="ln341">{</a>
+<a name="ln342">    /// The artp matching the jewellery (e.g. ARTP_AC for RING_PROTECTION)</a>
+<a name="ln343">    artefact_prop_type  artp;</a>
+<a name="ln344">    /// The value of the artp. (E.g. '9' for RING_MAGICAL_POWER.) If set to 0, uses item.plus instead.</a>
+<a name="ln345">    int                 plus;</a>
+<a name="ln346">};</a>
+<a name="ln347"> </a>
+<a name="ln348">static map&lt;jewellery_type, vector&lt;jewellery_fake_artp&gt;&gt; jewellery_artps = {</a>
+<a name="ln349">    { AMU_RAGE, { { ARTP_BERSERK, 1 } } },</a>
+<a name="ln350">    { AMU_REGENERATION, { { ARTP_REGENERATION, 1 } } },</a>
+<a name="ln351">    { AMU_REFLECTION, { { ARTP_SHIELDING, 0 } } },</a>
+<a name="ln352">    { AMU_HARM, { { ARTP_DRAIN, 1 } } },</a>
+<a name="ln353"> </a>
+<a name="ln354">    { RING_MAGICAL_POWER, { { ARTP_MAGICAL_POWER, 9 } } },</a>
+<a name="ln355">    { RING_FLIGHT, { { ARTP_FLY, 1 } } },</a>
+<a name="ln356">    { RING_SEE_INVISIBLE, { { ARTP_SEE_INVISIBLE, 1 } } },</a>
+<a name="ln357">    { RING_STEALTH, { { ARTP_STEALTH, 1 } } },</a>
+<a name="ln358">    { RING_ATTENTION, { { ARTP_STEALTH, -1 } } },</a>
+<a name="ln359"> </a>
+<a name="ln360">    { RING_PROTECTION_FROM_FIRE, { { ARTP_FIRE, 1 } } },</a>
+<a name="ln361">    { RING_PROTECTION_FROM_COLD, { { ARTP_COLD, 1 } } },</a>
+<a name="ln362">    { RING_POISON_RESISTANCE, { { ARTP_POISON, 1 } } },</a>
+<a name="ln363">    { RING_LIFE_PROTECTION, { { ARTP_NEGATIVE_ENERGY, 1 } } },</a>
+<a name="ln364">    { RING_PROTECTION_FROM_MAGIC, { { ARTP_MAGIC_RESISTANCE, 1 } } },</a>
+<a name="ln365">    { RING_RESIST_CORROSION, { { ARTP_RCORR, 1 } } },</a>
+<a name="ln366"> </a>
+<a name="ln367">    { RING_FIRE, { { ARTP_FIRE, 1 }, { ARTP_COLD, -1 } } },</a>
+<a name="ln368">    { RING_ICE, { { ARTP_COLD, 1 }, { ARTP_FIRE, -1 } } },</a>
+<a name="ln369"> </a>
+<a name="ln370">    { RING_STRENGTH, { { ARTP_STRENGTH, 0 } } },</a>
+<a name="ln371">    { RING_INTELLIGENCE, { { ARTP_INTELLIGENCE, 0 } } },</a>
+<a name="ln372">    { RING_DEXTERITY, { { ARTP_DEXTERITY, 0 } } },</a>
+<a name="ln373">    { RING_PROTECTION, { { ARTP_AC, 0 } } },</a>
+<a name="ln374">    { RING_EVASION, { { ARTP_EVASION, 0 } } },</a>
+<a name="ln375">    { RING_SLAYING, { { ARTP_SLAYING, 0 } } },</a>
+<a name="ln376">};</a>
+<a name="ln377"> </a>
+<a name="ln378">/**</a>
+<a name="ln379"> * Fill out the inherent ARTPs corresponding to a given type of jewellery.</a>
+<a name="ln380"> *</a>
+<a name="ln381"> * @param arm           The jewellery in question.</a>
+<a name="ln382"> * @param proprt[out]   The properties list to be populated.</a>
+<a name="ln383"> * @param known[out]    The props which are known.</a>
+<a name="ln384"> */</a>
+<a name="ln385">static void _populate_jewel_intrinsic_artps(const item_def &amp;item,</a>
+<a name="ln386">                                              artefact_properties_t &amp;proprt,</a>
+<a name="ln387">                                              artefact_known_props_t &amp;known)</a>
+<a name="ln388">{</a>
+<a name="ln389">    const jewellery_type jewel = (jewellery_type)item.sub_type;</a>
+<a name="ln390">    vector&lt;jewellery_fake_artp&gt; *props = map_find(jewellery_artps, jewel);</a>
+<a name="ln391">    if (!props)</a>
+<a name="ln392">        return;</a>
+<a name="ln393"> </a>
+<a name="ln394">    const bool id_props = item_ident(item, ISFLAG_KNOW_PROPERTIES)</a>
+<a name="ln395">                          || item_ident(item, ISFLAG_KNOW_TYPE);</a>
+<a name="ln396"> </a>
+<a name="ln397">    for (const auto &amp;fake_artp : *props)</a>
+<a name="ln398">    {</a>
+<a name="ln399">        proprt[fake_artp.artp] += fake_artp.plus ? fake_artp.plus : item.plus;</a>
+<a name="ln400">        if (id_props)</a>
+<a name="ln401">            known[fake_artp.artp] = true;</a>
+<a name="ln402">    }</a>
+<a name="ln403">}</a>
+<a name="ln404"> </a>
+<a name="ln405"> </a>
+<a name="ln406">/**</a>
+<a name="ln407"> * Fill out the inherent ARTPs corresponding to a given item.</a>
+<a name="ln408"> *</a>
+<a name="ln409"> * @param arm           The item in question.</a>
+<a name="ln410"> * @param proprt[out]   The properties list to be populated.</a>
+<a name="ln411"> * @param known[out]    The props which are known.</a>
+<a name="ln412"> */</a>
+<a name="ln413">static void _populate_item_intrinsic_artps(const item_def &amp;item,</a>
+<a name="ln414">                                             artefact_properties_t &amp;proprt,</a>
+<a name="ln415">                                             artefact_known_props_t &amp;known)</a>
+<a name="ln416">{</a>
+<a name="ln417">    switch (item.base_type)</a>
+<a name="ln418">    {</a>
+<a name="ln419">        case OBJ_ARMOUR:</a>
+<a name="ln420">            _populate_armour_intrinsic_artps((armour_type)item.sub_type,</a>
+<a name="ln421">                                             proprt);</a>
+<a name="ln422">            break;</a>
+<a name="ln423">        case OBJ_JEWELLERY:</a>
+<a name="ln424">            _populate_jewel_intrinsic_artps(item, proprt, known);</a>
+<a name="ln425">            break;</a>
+<a name="ln426">        default:</a>
+<a name="ln427">            break;</a>
+<a name="ln428">    }</a>
+<a name="ln429">}</a>
+<a name="ln430"> </a>
+<a name="ln431">void artefact_desc_properties(const item_def &amp;item,</a>
+<a name="ln432">                              artefact_properties_t &amp;proprt,</a>
+<a name="ln433">                              artefact_known_props_t &amp;known)</a>
+<a name="ln434">{</a>
+<a name="ln435">    // Randart books have no randart properties.</a>
+<a name="ln436">    if (item.base_type == OBJ_BOOKS)</a>
+<a name="ln437">        return;</a>
+<a name="ln438"> </a>
+<a name="ln439">    // actual artefact properties</a>
+<a name="ln440">    artefact_properties(item, proprt);</a>
+<a name="ln441">    artefact_known_properties(item, known);</a>
+<a name="ln442"> </a>
+<a name="ln443">    // fake artefact properties (intrinsics)</a>
+<a name="ln444">    _populate_item_intrinsic_artps(item, proprt, known);</a>
+<a name="ln445">}</a>
+<a name="ln446"> </a>
+<a name="ln447">static void _add_randart_weapon_brand(const item_def &amp;item,</a>
+<a name="ln448">                                    artefact_properties_t &amp;item_props)</a>
+<a name="ln449">{</a>
+<a name="ln450">    const int item_type = item.sub_type;</a>
+<a name="ln451"> </a>
+<a name="ln452">    if (!is_weapon_brand_ok(item_type, item_props[ARTP_BRAND], true))</a>
+<a name="ln453">        item_props[ARTP_BRAND] = SPWPN_NORMAL;</a>
+<a name="ln454"> </a>
+<a name="ln455">    if (item_props[ARTP_BRAND] != SPWPN_NORMAL)</a>
+<a name="ln456">        return;</a>
+<a name="ln457"> </a>
+<a name="ln458">    if (is_range_weapon(item))</a>
+<a name="ln459">    {</a>
+<a name="ln460">        item_props[ARTP_BRAND] = random_choose_weighted(</a>
+<a name="ln461">            2, SPWPN_SPEED,</a>
+<a name="ln462">            4, SPWPN_VENOM,</a>
+<a name="ln463">            4, SPWPN_VORPAL,</a>
+<a name="ln464">            4, SPWPN_FLAMING,</a>
+<a name="ln465">            4, SPWPN_FREEZING);</a>
+<a name="ln466"> </a>
+<a name="ln467">        if (item_attack_skill(item) == SK_CROSSBOWS)</a>
+<a name="ln468">        {</a>
+<a name="ln469">            // Penetration and electrocution are only allowed on</a>
+<a name="ln470">            // crossbows. This may change in future.</a>
+<a name="ln471">            if (one_chance_in(5))</a>
+<a name="ln472">                item_props[ARTP_BRAND] = SPWPN_ELECTROCUTION;</a>
+<a name="ln473">            else if (one_chance_in(5))</a>
+<a name="ln474">                item_props[ARTP_BRAND] = SPWPN_PENETRATION;</a>
+<a name="ln475">        }</a>
+<a name="ln476">    }</a>
+<a name="ln477">    else if (is_demonic(item) &amp;&amp; x_chance_in_y(7, 9))</a>
+<a name="ln478">    {</a>
+<a name="ln479">        item_props[ARTP_BRAND] = random_choose(</a>
+<a name="ln480">            SPWPN_DRAINING,</a>
+<a name="ln481">            SPWPN_FLAMING,</a>
+<a name="ln482">            SPWPN_FREEZING,</a>
+<a name="ln483">            SPWPN_ELECTROCUTION,</a>
+<a name="ln484">            SPWPN_VAMPIRISM,</a>
+<a name="ln485">            SPWPN_PAIN,</a>
+<a name="ln486">            SPWPN_VENOM);</a>
+<a name="ln487">        // fall back to regular melee brands 2/9 of the time</a>
+<a name="ln488">    }</a>
+<a name="ln489">    else</a>
+<a name="ln490">    {</a>
+<a name="ln491">        item_props[ARTP_BRAND] = random_choose_weighted(</a>
+<a name="ln492">            73, SPWPN_VORPAL,</a>
+<a name="ln493">            34, SPWPN_FLAMING,</a>
+<a name="ln494">            34, SPWPN_FREEZING,</a>
+<a name="ln495">            26, SPWPN_VENOM,</a>
+<a name="ln496">            26, SPWPN_DRAINING,</a>
+<a name="ln497">            13, SPWPN_HOLY_WRATH,</a>
+<a name="ln498">            13, SPWPN_ELECTROCUTION,</a>
+<a name="ln499">            13, SPWPN_SPEED,</a>
+<a name="ln500">            13, SPWPN_VAMPIRISM,</a>
+<a name="ln501">            13, SPWPN_PAIN,</a>
+<a name="ln502">            13, SPWPN_ANTIMAGIC,</a>
+<a name="ln503">            13, SPWPN_PROTECTION,</a>
+<a name="ln504">             3, SPWPN_DISTORTION,</a>
+<a name="ln505">             3, SPWPN_CHAOS);</a>
+<a name="ln506">    }</a>
+<a name="ln507"> </a>
+<a name="ln508">    // no brand = magic flag to reject and retry</a>
+<a name="ln509">    if (!is_weapon_brand_ok(item_type, item_props[ARTP_BRAND], true))</a>
+<a name="ln510">        item_props[ARTP_BRAND] = SPWPN_NORMAL;</a>
+<a name="ln511">}</a>
+<a name="ln512"> </a>
+<a name="ln513">/**</a>
+<a name="ln514"> * Can the given artefact property be placed on the given item?</a>
+<a name="ln515"> *</a>
+<a name="ln516"> * @param prop          The artefact property in question (e.g. ARTP_BLINK).</a>
+<a name="ln517"> * @param item          The item in question.</a>
+<a name="ln518"> * @param extant_props  The properties already chosen for the artefact.</a>
+<a name="ln519"> * @return              True if the property doesn't conflict with any chosen</a>
+<a name="ln520"> *                      or intrinsic properties, and doesn't violate any other</a>
+<a name="ln521"> *                      special constraints (e.g. no slaying on weapons);</a>
+<a name="ln522"> *                      false otherwise.</a>
+<a name="ln523"> */</a>
+<a name="ln524">static bool _artp_can_go_on_item(artefact_prop_type prop, const item_def &amp;item,</a>
+<a name="ln525">                                 const artefact_properties_t &amp;extant_props)</a>
+<a name="ln526">{</a>
+<a name="ln527">    artefact_properties_t intrinsic_proprt;</a>
+<a name="ln528">    intrinsic_proprt.init(0);</a>
+<a name="ln529">    artefact_known_props_t _;</a>
+<a name="ln530">    _populate_item_intrinsic_artps(item, intrinsic_proprt, _);</a>
+<a name="ln531">    if (intrinsic_proprt[prop])</a>
+<a name="ln532">        return false; // don't duplicate intrinsic props</a>
+<a name="ln533"> </a>
+<a name="ln534">    const object_class_type item_class = item.base_type;</a>
+<a name="ln535"> </a>
+<a name="ln536">    switch (prop)</a>
+<a name="ln537">    {</a>
+<a name="ln538">        case ARTP_SLAYING:</a>
+<a name="ln539">            return item_class != OBJ_WEAPONS; // they already have slaying!</a>
+<a name="ln540">        case ARTP_POISON:</a>
+<a name="ln541">        case ARTP_SEE_INVISIBLE:</a>
+<a name="ln542">            return !item.is_type(OBJ_ARMOUR, ARM_NAGA_BARDING);</a>
+<a name="ln543">            // naga already have rPois &amp; sInv!</a>
+<a name="ln544">        case ARTP_CORRODE:</a>
+<a name="ln545">            return !extant_props[ARTP_RCORR];</a>
+<a name="ln546">        case ARTP_RCORR:</a>
+<a name="ln547">            return item_class == OBJ_ARMOUR &amp;&amp; !extant_props[ARTP_CORRODE];</a>
+<a name="ln548">        case ARTP_REGENERATION:</a>
+<a name="ln549">        case ARTP_PREVENT_SPELLCASTING:</a>
+<a name="ln550">            return item_class == OBJ_ARMOUR; // limit availability to armour</a>
+<a name="ln551">        case ARTP_BERSERK:</a>
+<a name="ln552">        case ARTP_ANGRY:</a>
+<a name="ln553">        case ARTP_NOISE:</a>
+<a name="ln554">            return item_class == OBJ_WEAPONS &amp;&amp; !is_range_weapon(item);</a>
+<a name="ln555">            // works poorly with ranged weapons</a>
+<a name="ln556">        case ARTP_CAUSE_TELEPORTATION:</a>
+<a name="ln557">            return item_class != OBJ_WEAPONS</a>
+<a name="ln558">                   &amp;&amp; !crawl_state.game_is_sprint()</a>
+<a name="ln559">                   &amp;&amp; !extant_props[ARTP_PREVENT_TELEPORTATION];</a>
+<a name="ln560">            // no tele in sprint, and too annoying on weapons (swappable)</a>
+<a name="ln561">            // and obv we shouldn't generate contradictory props</a>
+<a name="ln562">        case ARTP_PREVENT_TELEPORTATION:</a>
+<a name="ln563">            return !extant_props[ARTP_BLINK]</a>
+<a name="ln564">                   &amp;&amp; !extant_props[ARTP_CAUSE_TELEPORTATION]</a>
+<a name="ln565">                   &amp;&amp; item_class == OBJ_ARMOUR;</a>
+<a name="ln566">            // armour only, and no contradictory props</a>
+<a name="ln567">        case ARTP_BLINK:</a>
+<a name="ln568">            return !extant_props[ARTP_PREVENT_TELEPORTATION];</a>
+<a name="ln569">            // no contradictory props</a>
+<a name="ln570">        case ARTP_MAGICAL_POWER:</a>
+<a name="ln571">            return item_class != OBJ_WEAPONS</a>
+<a name="ln572">                   || get_weapon_brand(item) != SPWPN_ANTIMAGIC;</a>
+<a name="ln573">            // not quite as interesting on armour, since you swap it less</a>
+<a name="ln574">            // rings have 2 slots, so little swap pressure</a>
+<a name="ln575">        case ARTP_FRAGILE:</a>
+<a name="ln576">            return item_class != OBJ_ARMOUR</a>
+<a name="ln577">                   &amp;&amp; (item_class != OBJ_JEWELLERY</a>
+<a name="ln578">                       || jewellery_is_amulet(item));</a>
+<a name="ln579">        case ARTP_HARM:</a>
+<a name="ln580">            return item_class != OBJ_JEWELLERY &amp;&amp; extant_props[ARTP_DRAIN];</a>
+<a name="ln581">            // only get harm with *Drain</a>
+<a name="ln582">        default:</a>
+<a name="ln583">            return true;</a>
+<a name="ln584">    }</a>
+<a name="ln585">}</a>
+<a name="ln586"> </a>
+<a name="ln587">/// Generation info for a type of artefact property.</a>
+<a name="ln588">struct artefact_prop_data</a>
+<a name="ln589">{</a>
+<a name="ln590">    /// The name of the prop, as displayed on item annotations, etc.</a>
+<a name="ln591">    const char *name;</a>
+<a name="ln592">    /// The types of values this prop can have (e.g. bool, positive int, int)</a>
+<a name="ln593">    artp_value_type value_types;</a>
+<a name="ln594">    /// Weight in randart selection (higher = more common)</a>
+<a name="ln595">    int weight;</a>
+<a name="ln596">    /// Randomly generate a 'good' value; null if this prop is never good</a>
+<a name="ln597">    function&lt;int ()&gt; gen_good_value;</a>
+<a name="ln598">    /// Randomly generate a 'bad' value; null if this prop is never bad</a>
+<a name="ln599">    function&lt;int ()&gt; gen_bad_value;</a>
+<a name="ln600">    /// The value beyond which the artp should not be repeatedly applied.</a>
+<a name="ln601">    int max_dup;</a>
+<a name="ln602">    /// The amount to increment the odds of a property being reapplied</a>
+<a name="ln603">    int odds_inc;</a>
+<a name="ln604">};</a>
+<a name="ln605"> </a>
+<a name="ln606">/// Generate 'good' values for stat artps (e.g. ARTP_STRENGTH)</a>
+<a name="ln607">static int _gen_good_stat_artp() { return 1 + random2(3); }</a>
+<a name="ln608"> </a>
+<a name="ln609">/// Generate 'bad' values for stat artps (e.g. ARTP_STRENGTH)</a>
+<a name="ln610">static int _gen_bad_stat_artp() { return -2 - random2(4); }</a>
+<a name="ln611"> </a>
+<a name="ln612">/// Generate 'good' values for resist-ish artps (e.g. ARTP_FIRE)</a>
+<a name="ln613">static int _gen_good_res_artp() { return 1; }</a>
+<a name="ln614"> </a>
+<a name="ln615">/// Generate 'bad' values for resist-ish artps (e.g. ARTP_FIRE)</a>
+<a name="ln616">static int _gen_bad_res_artp() { return -1; }</a>
+<a name="ln617"> </a>
+<a name="ln618">/// Generate 'good' values for ARTP_HP/ARTP_MAGICAL_POWER</a>
+<a name="ln619">static int _gen_good_hpmp_artp() { return 9; }</a>
+<a name="ln620"> </a>
+<a name="ln621">/// Generate 'bad' values for ARTP_HP/ARTP_MAGICAL_POWER</a>
+<a name="ln622">static int _gen_bad_hpmp_artp() { return -_gen_good_hpmp_artp(); }</a>
+<a name="ln623"> </a>
+<a name="ln624">/// Generation info for artefact properties.</a>
+<a name="ln625">static const artefact_prop_data artp_data[] =</a>
+<a name="ln626">{</a>
+<a name="ln627">    { &quot;Brand&quot;, ARTP_VAL_BRAND, 0, nullptr, nullptr, 0, 0 }, // ARTP_BRAND,</a>
+<a name="ln628">    { &quot;AC&quot;, ARTP_VAL_ANY, 0, nullptr, nullptr, 0, 0}, // ARTP_AC,</a>
+<a name="ln629">    { &quot;EV&quot;, ARTP_VAL_ANY, 0, nullptr, nullptr, 0, 0 }, // ARTP_EVASION,</a>
+<a name="ln630">    { &quot;Str&quot;, ARTP_VAL_ANY, 100,     // ARTP_STRENGTH,</a>
+<a name="ln631">        _gen_good_stat_artp, _gen_bad_stat_artp, 7, 1 },</a>
+<a name="ln632">    { &quot;Int&quot;, ARTP_VAL_ANY, 100,     // ARTP_INTELLIGENCE,</a>
+<a name="ln633">        _gen_good_stat_artp, _gen_bad_stat_artp, 7, 1 },</a>
+<a name="ln634">    { &quot;Dex&quot;, ARTP_VAL_ANY, 100,     // ARTP_DEXTERITY,</a>
+<a name="ln635">        _gen_good_stat_artp, _gen_bad_stat_artp, 7, 1 },</a>
+<a name="ln636">    { &quot;rF&quot;, ARTP_VAL_ANY, 60,       // ARTP_FIRE,</a>
+<a name="ln637">        _gen_good_res_artp, _gen_bad_res_artp, 2, 4},</a>
+<a name="ln638">    { &quot;rC&quot;, ARTP_VAL_ANY, 60,       // ARTP_COLD,</a>
+<a name="ln639">        _gen_good_res_artp, _gen_bad_res_artp, 2, 4 },</a>
+<a name="ln640">    { &quot;rElec&quot;, ARTP_VAL_BOOL, 55,   // ARTP_ELECTRICITY,</a>
+<a name="ln641">        []() { return 1; }, nullptr, 0, 0  },</a>
+<a name="ln642">    { &quot;rPois&quot;, ARTP_VAL_BOOL, 55,   // ARTP_POISON,</a>
+<a name="ln643">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln644">    { &quot;rN&quot;, ARTP_VAL_ANY, 55,       // ARTP_NEGATIVE_ENERGY,</a>
+<a name="ln645">        _gen_good_res_artp, nullptr, 2, 4 },</a>
+<a name="ln646">    { &quot;MR&quot;, ARTP_VAL_ANY, 50,       // ARTP_MAGIC_RESISTANCE,</a>
+<a name="ln647">        _gen_good_res_artp, _gen_bad_res_artp, 2, 4 },</a>
+<a name="ln648">    { &quot;SInv&quot;, ARTP_VAL_BOOL, 30,    // ARTP_SEE_INVISIBLE,</a>
+<a name="ln649">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln650">    { &quot;+Inv&quot;, ARTP_VAL_BOOL, 15,    // ARTP_INVISIBLE,</a>
+<a name="ln651">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln652">    { &quot;+Fly&quot;, ARTP_VAL_BOOL, 15,    // ARTP_FLY,</a>
+<a name="ln653">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln654">#if TAG_MAJOR_VERSION &gt; 34</a>
+<a name="ln655">    { &quot;+Fog&quot;, ARTP_VAL_BOOL, 0, nullptr, nullptr, 0, 0 }, // ARTP_FOG,</a>
+<a name="ln656">#endif</a>
+<a name="ln657">    { &quot;+Blink&quot;, ARTP_VAL_BOOL, 15,  // ARTP_BLINK,</a>
+<a name="ln658">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln659">    { &quot;+Rage&quot;, ARTP_VAL_BOOL, 15,   // ARTP_BERSERK,</a>
+<a name="ln660">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln661">    { &quot;*Noise&quot;, ARTP_VAL_POS, 25,    // ARTP_NOISE,</a>
+<a name="ln662">        nullptr, []() { return 2; }, 0, 0 },</a>
+<a name="ln663">    { &quot;-Cast&quot;, ARTP_VAL_BOOL, 25,   // ARTP_PREVENT_SPELLCASTING,</a>
+<a name="ln664">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln665">    { &quot;*Tele&quot;, ARTP_VAL_BOOL,  0,   // ARTP_CAUSE_TELEPORTATION,</a>
+<a name="ln666">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln667">    { &quot;-Tele&quot;, ARTP_VAL_BOOL, 25,   // ARTP_PREVENT_TELEPORTATION,</a>
+<a name="ln668">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln669">    { &quot;*Rage&quot;, ARTP_VAL_POS, 25,    // ARTP_ANGRY,</a>
+<a name="ln670">        nullptr, []() { return 5; }, 0, 0 },</a>
+<a name="ln671">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln672">    { &quot;Hungry&quot;, ARTP_VAL_POS, 0, nullptr, nullptr, 0, 0 },// ARTP_METABOLISM,</a>
+<a name="ln673">#endif</a>
+<a name="ln674">    { &quot;*Contam&quot;, ARTP_VAL_POS, 20,   // ARTP_CONTAM</a>
+<a name="ln675">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln676">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln677">    { &quot;Acc&quot;, ARTP_VAL_ANY, 0, nullptr, nullptr, 0, 0 }, // ARTP_ACCURACY,</a>
+<a name="ln678">#endif</a>
+<a name="ln679">    { &quot;Slay&quot;, ARTP_VAL_ANY, 30,     // ARTP_SLAYING,</a>
+<a name="ln680">      []() { return 2 + random2(2); },</a>
+<a name="ln681">      []() { return -(2 + random2(5)); }, 3, 2 },</a>
+<a name="ln682">    { &quot;*Curse&quot;, ARTP_VAL_POS, 0, nullptr, nullptr, 0 }, // ARTP_CURSE,</a>
+<a name="ln683">    { &quot;Stlth&quot;, ARTP_VAL_ANY, 40,    // ARTP_STEALTH,</a>
+<a name="ln684">        _gen_good_res_artp, _gen_bad_res_artp, 0, 0 },</a>
+<a name="ln685">    { &quot;MP&quot;, ARTP_VAL_ANY, 15,       // ARTP_MAGICAL_POWER,</a>
+<a name="ln686">        _gen_good_hpmp_artp, _gen_bad_hpmp_artp, 0, 0 },</a>
+<a name="ln687">    { &quot;Delay&quot;, ARTP_VAL_ANY, 0, nullptr, nullptr, 0, 0 }, // ARTP_BASE_DELAY,</a>
+<a name="ln688">    { &quot;HP&quot;, ARTP_VAL_ANY, 0,       // ARTP_HP,</a>
+<a name="ln689">        _gen_good_hpmp_artp, _gen_bad_hpmp_artp, 0, 0 },</a>
+<a name="ln690">    { &quot;Clar&quot;, ARTP_VAL_BOOL, 0, nullptr, nullptr, 0, 0 }, // ARTP_CLARITY,</a>
+<a name="ln691">    { &quot;BAcc&quot;, ARTP_VAL_ANY, 0, nullptr, nullptr, 0, 0 },  // ARTP_BASE_ACC,</a>
+<a name="ln692">    { &quot;BDam&quot;, ARTP_VAL_ANY, 0, nullptr, nullptr, 0, 0 },  // ARTP_BASE_DAM,</a>
+<a name="ln693">    { &quot;RMsl&quot;, ARTP_VAL_BOOL, 0, nullptr, nullptr, 0, 0 }, // ARTP_RMSL,</a>
+<a name="ln694">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln695">    { &quot;+Fog&quot;, ARTP_VAL_BOOL, 0, nullptr, nullptr, 0, 0 }, // ARTP_FOG,</a>
+<a name="ln696">#endif</a>
+<a name="ln697">    { &quot;Regen&quot;, ARTP_VAL_BOOL, 35,   // ARTP_REGENERATION,</a>
+<a name="ln698">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln699">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln700">    { &quot;SustAt&quot;, ARTP_VAL_BOOL, 0, nullptr, nullptr, 0, 0 }, // ARTP_SUSTAT,</a>
+<a name="ln701">#endif</a>
+<a name="ln702">    { &quot;nupgr&quot;, ARTP_VAL_BOOL, 0, nullptr, nullptr, 0, 0 },// ARTP_NO_UPGRADE,</a>
+<a name="ln703">    { &quot;rCorr&quot;, ARTP_VAL_BOOL, 40,   // ARTP_RCORR,</a>
+<a name="ln704">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln705">    { &quot;rMut&quot;, ARTP_VAL_BOOL, 0, nullptr, nullptr, 0, 0 }, // ARTP_RMUT,</a>
+<a name="ln706">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln707">    { &quot;+Twstr&quot;, ARTP_VAL_BOOL, 0,   // ARTP_TWISTER,</a>
+<a name="ln708">        []() { return 1; }, nullptr, 0, 0 },</a>
+<a name="ln709">#endif</a>
+<a name="ln710">    { &quot;*Corrode&quot;, ARTP_VAL_BOOL, 25, // ARTP_CORRODE,</a>
+<a name="ln711">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln712">    { &quot;*Drain&quot;, ARTP_VAL_BOOL, 25, // ARTP_DRAIN,</a>
+<a name="ln713">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln714">    { &quot;*Slow&quot;, ARTP_VAL_BOOL, 25, // ARTP_SLOW,</a>
+<a name="ln715">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln716">    { &quot;Fragile&quot;, ARTP_VAL_BOOL, 25, // ARTP_FRAGILE,</a>
+<a name="ln717">        nullptr, []() { return 1; }, 0, 0 },</a>
+<a name="ln718">    { &quot;SH&quot;, ARTP_VAL_ANY, 0, nullptr, nullptr, 0, 0 }, // ARTP_SHIELDING,</a>
+<a name="ln719">    { &quot;Harm&quot;, ARTP_VAL_BOOL, 0, // ARTP_HARM,</a>
+<a name="ln720">        []() {return 1;}, nullptr, 0, 0},</a>
+<a name="ln721">};</a>
+<a name="ln722">COMPILE_CHECK(ARRAYSZ(artp_data) == ARTP_NUM_PROPERTIES);</a>
+<a name="ln723">// weights sum to 1000</a>
+<a name="ln724"> </a>
+<a name="ln725"> </a>
+<a name="ln726">/**</a>
+<a name="ln727"> * Is it possible for the given artp to be generated with 'good' values</a>
+<a name="ln728"> * (generally helpful to the player?</a>
+<a name="ln729"> * E.g. ARTP_SLAYING, ARTP_FIRE, ARTP_REGENERATION, etc.</a>
+<a name="ln730"> *</a>
+<a name="ln731"> * @param prop      The artefact property in question.</a>
+<a name="ln732"> * @return      true if the ARTP is ever generated as a 'good' prop; false</a>
+<a name="ln733"> *              otherwise.</a>
+<a name="ln734"> */</a>
+<a name="ln735">bool artp_potentially_good(artefact_prop_type prop)</a>
+<a name="ln736">{</a>
+<a name="ln737">    return artp_data[prop].gen_good_value != nullptr;</a>
+<a name="ln738">}</a>
+<a name="ln739"> </a>
+<a name="ln740">/**</a>
+<a name="ln741"> * Is it possible for the given artp to be generated with 'bad' values</a>
+<a name="ln742"> * (generally harmful to the player?</a>
+<a name="ln743"> * E.g. ARTP_SLAYING, ARTP_AC, ARTP_CONTAM, etc.</a>
+<a name="ln744"> *</a>
+<a name="ln745"> * @param prop      The artefact property in question.</a>
+<a name="ln746"> * @return      true if the ARTP is ever generated as a 'bad' prop; false</a>
+<a name="ln747"> *              otherwise.</a>
+<a name="ln748"> */</a>
+<a name="ln749">bool artp_potentially_bad(artefact_prop_type prop)</a>
+<a name="ln750">{</a>
+<a name="ln751">    return artp_data[prop].gen_bad_value != nullptr;</a>
+<a name="ln752">}</a>
+<a name="ln753"> </a>
+<a name="ln754">/**</a>
+<a name="ln755"> * What type of values can this prop have?</a>
+<a name="ln756"> *</a>
+<a name="ln757"> * Positive, boolean (0 or 1), or any (integer).</a>
+<a name="ln758"> *</a>
+<a name="ln759"> * There should be a better way of expressing this...</a>
+<a name="ln760"> *</a>
+<a name="ln761"> * @param prop      The prop type in question.</a>
+<a name="ln762"> * @return          Possible value types for the prop.</a>
+<a name="ln763"> */</a>
+<a name="ln764">artp_value_type artp_potential_value_types(artefact_prop_type prop)</a>
+<a name="ln765">{</a>
+<a name="ln766">    ASSERT_RANGE(prop, 0, ARRAYSZ(artp_data));</a>
+<a name="ln767">    return artp_data[prop].value_types;</a>
+<a name="ln768">}</a>
+<a name="ln769"> </a>
+<a name="ln770">/**</a>
+<a name="ln771"> * Return the name for a given artefact property.</a>
+<a name="ln772"> *</a>
+<a name="ln773"> * @param prop      The artp in question.</a>
+<a name="ln774"> * @return          A name; e.g. rCorr, Slay, HP, etc.</a>
+<a name="ln775"> */</a>
+<a name="ln776">const char *artp_name(artefact_prop_type prop)</a>
+<a name="ln777">{</a>
+<a name="ln778">    ASSERT_RANGE(prop, 0, ARRAYSZ(artp_data));</a>
+<a name="ln779">    return artp_data[prop].name;</a>
+<a name="ln780">}</a>
+<a name="ln781"> </a>
+<a name="ln782">/**</a>
+<a name="ln783"> * Add a 'good' version of a given prop to the given set of item props.</a>
+<a name="ln784"> *</a>
+<a name="ln785"> * The property may already exist in the set; if so, increase its value.</a>
+<a name="ln786"> *</a>
+<a name="ln787"> * @param prop[in]              The prop to be added.</a>
+<a name="ln788"> * @param item_props[out]       The list of item props to be added to.</a>
+<a name="ln789"> */</a>
+<a name="ln790">static void _add_good_randart_prop(artefact_prop_type prop,</a>
+<a name="ln791">                                   artefact_properties_t &amp;item_props)</a>
+<a name="ln792">{</a>
+<a name="ln793">    // Add one to the starting value for stat bonuses.</a>
+<a name="ln794">    if ((prop == ARTP_STRENGTH</a>
+<a name="ln795">         || prop == ARTP_INTELLIGENCE</a>
+<a name="ln796">         || prop == ARTP_DEXTERITY)</a>
+<a name="ln797">        &amp;&amp; item_props[prop] == 0)</a>
+<a name="ln798">    {</a>
+<a name="ln799">        item_props[prop]++;</a>
+<a name="ln800">    }</a>
+<a name="ln801"> </a>
+<a name="ln802">    item_props[prop] += artp_data[prop].gen_good_value();</a>
+<a name="ln803">}</a>
+<a name="ln804"> </a>
+<a name="ln805">/**</a>
+<a name="ln806"> * Generate the properties for a randart. We start with a quality level, then</a>
+<a name="ln807"> * determine number of good and bad properties from that level. The more good</a>
+<a name="ln808"> * properties we have, the more likely we are to add some bad properties in</a>
+<a name="ln809"> * to make it a bit more interesting.</a>
+<a name="ln810"> *</a>
+<a name="ln811"> * For each &quot;good&quot; and &quot;bad&quot; property we want, we randomly pick from the total</a>
+<a name="ln812"> * list of good or bad properties; if the picked property already exists and</a>
+<a name="ln813"> * can have variable levels, we increment the levels by a certain amount. There</a>
+<a name="ln814"> * is a maximum number of distinct properties that can be applied to a randart</a>
+<a name="ln815"> * (for legibility, mostly), so overflow gets picked as increments to</a>
+<a name="ln816"> * variable-level properties when possible.</a>
+<a name="ln817"> *</a>
+<a name="ln818"> * @param item          The item to apply properties to.</a>
+<a name="ln819"> * @param item_props    The properties of that item.</a>
+<a name="ln820"> * @param quality       How high quality the randart will be, measured in number</a>
+<a name="ln821">                        of rolls for good property boosts.</a>
+<a name="ln822"> * @param max_bad_props The maximum number of bad properties this artefact can</a>
+<a name="ln823">                        be given.</a>
+<a name="ln824"> */</a>
+<a name="ln825">static void _get_randart_properties(const item_def &amp;item,</a>
+<a name="ln826">                                    artefact_properties_t &amp;item_props,</a>
+<a name="ln827">                                    int quality = 0,</a>
+<a name="ln828">                                    const int max_bad_props = 2)</a>
+<a name="ln829">{</a>
+<a name="ln830">    const object_class_type item_class = item.base_type;</a>
+<a name="ln831"> </a>
+<a name="ln832">    // If we didn't receive a quality level, figure out how good we want the</a>
+<a name="ln833">    // artefact to be. The default calculation range is 1 to 7.</a>
+<a name="ln834">    if (quality &lt; 1)</a>
+<a name="ln835">        quality = max(1, binomial(7, 30));</a>
+<a name="ln836"> </a>
+<a name="ln837">    // then consider adding bad properties. the better the artefact, the more</a>
+<a name="ln838">    // likely we add a bad property, up to a max of 2.</a>
+<a name="ln839">    int bad = min(binomial(1 + div_rand_round(quality, 5), 30), max_bad_props);</a>
+<a name="ln840">    // we start by assuming we'll allow one good property per quality level</a>
+<a name="ln841">    // and an additional one for each bad property.</a>
+<a name="ln842">    int good = quality + bad;</a>
+<a name="ln843">    // but we want avoid generating more then 4-ish properties properties or</a>
+<a name="ln844">    // things get spammy. Extra &quot;good&quot; properties will be used to enhance</a>
+<a name="ln845">    // properties only, not to add more distinct properties. There is still a</a>
+<a name="ln846">    // small chance of &gt;4 properties.</a>
+<a name="ln847">    int max_properties = 4 + one_chance_in(20);</a>
+<a name="ln848">    max_properties += one_chance_in(40);</a>
+<a name="ln849">    int enhance = 0;</a>
+<a name="ln850">    if (good + bad &gt; max_properties)</a>
+<a name="ln851">    {</a>
+<a name="ln852">        enhance = good + bad - max_properties;</a>
+<a name="ln853">        good = max_properties - bad;</a>
+<a name="ln854">    }</a>
+<a name="ln855"> </a>
+<a name="ln856">    // initialize a vector of weighted artefact properties to pick from</a>
+<a name="ln857">    vector&lt;pair&lt;artefact_prop_type, int&gt;&gt; art_prop_weights;</a>
+<a name="ln858">    for (int i = 0; i &lt; ARTP_NUM_PROPERTIES; ++i)</a>
+<a name="ln859">    {</a>
+<a name="ln860">        art_prop_weights.emplace_back(static_cast&lt;artefact_prop_type&gt;(i),</a>
+<a name="ln861">                                      artp_data[i].weight);</a>
+<a name="ln862">    }</a>
+<a name="ln863">    item_props.init(0);</a>
+<a name="ln864"> </a>
+<a name="ln865">    // make sure all weapons have a brand</a>
+<a name="ln866">    if (item_class == OBJ_WEAPONS)</a>
+<a name="ln867">        _add_randart_weapon_brand(item, item_props);</a>
+<a name="ln868"> </a>
+<a name="ln869">    // randomly pick properties from the list, choose an appropriate value,</a>
+<a name="ln870">    // then subtract them from the good/bad/enhance count as needed</a>
+<a name="ln871">    // the 'enhance' count is not guaranteed to be used.</a>
+<a name="ln872">    while (good &gt; 0 || bad &gt; 0)</a>
+<a name="ln873">    {</a>
+<a name="ln874">        const artefact_prop_type *prop_ptr</a>
+<a name="ln875">            = random_choose_weighted(art_prop_weights);</a>
+<a name="ln876">        ASSERTM(prop_ptr, &quot;all %d randart properties have weight 0?&quot;,</a>
+<a name="ln877">                (int) art_prop_weights.size());</a>
+<a name="ln878">        const artefact_prop_type prop = *prop_ptr;</a>
+<a name="ln879"> </a>
+<a name="ln880">        if (!_artp_can_go_on_item(prop, item, item_props))</a>
+<a name="ln881">            continue;</a>
+<a name="ln882"> </a>
+<a name="ln883">        // should we try to generate a good or bad version of the prop?</a>
+<a name="ln884">        const bool can_gen_good = good &gt; 0 &amp;&amp; artp_potentially_good(prop);</a>
+<a name="ln885">        const bool can_gen_bad = bad &gt; 0 &amp;&amp; artp_potentially_bad(prop);</a>
+<a name="ln886">        const bool gen_good = can_gen_good &amp;&amp; (!can_gen_bad || coinflip());</a>
+<a name="ln887"> </a>
+<a name="ln888">        if (gen_good)</a>
+<a name="ln889">        {</a>
+<a name="ln890">            // potentially increment the value of the property more than once,</a>
+<a name="ln891">            // using up a good property each time.</a>
+<a name="ln892">            // always do so if there's any 'enhance' left, if possible.</a>
+<a name="ln893">            for (int chance_denom = 1;</a>
+<a name="ln894">                 item_props[prop] &lt;= artp_data[prop].max_dup</a>
+<a name="ln895">                    &amp;&amp; (enhance &gt; 0</a>
+<a name="ln896">                        || good &gt; 0 &amp;&amp; one_chance_in(chance_denom));</a>
+<a name="ln897">                 chance_denom += artp_data[prop].odds_inc)</a>
+<a name="ln898">            {</a>
+<a name="ln899">                _add_good_randart_prop(prop, item_props);</a>
+<a name="ln900">                if (enhance &gt; 0 &amp;&amp; chance_denom &gt; 1)</a>
+<a name="ln901">                    --enhance;</a>
+<a name="ln902">                else</a>
+<a name="ln903">                    --good;</a>
+<a name="ln904">            }</a>
+<a name="ln905">        }</a>
+<a name="ln906">        else if (can_gen_bad)</a>
+<a name="ln907">        {</a>
+<a name="ln908">            item_props[prop] = artp_data[prop].gen_bad_value();</a>
+<a name="ln909">            --bad;</a>
+<a name="ln910">        }</a>
+<a name="ln911">        else</a>
+<a name="ln912">            continue;</a>
+<a name="ln913"> </a>
+<a name="ln914">        // don't choose the same prop twice</a>
+<a name="ln915">        const auto weight_tuple = make_pair(prop, artp_data[prop].weight);</a>
+<a name="ln916">        const auto old_end = art_prop_weights.end();</a>
+<a name="ln917">        const auto new_end = std::remove(art_prop_weights.begin(), old_end,</a>
+<a name="ln918">                                         weight_tuple);</a>
+<a name="ln919">        // That should have removed exactly one entry.</a>
+<a name="ln920">        ASSERT(new_end == old_end - 1);</a>
+<a name="ln921">        art_prop_weights.erase(new_end, old_end);</a>
+<a name="ln922">    }</a>
+<a name="ln923">}</a>
+<a name="ln924"> </a>
+<a name="ln925">void setup_unrandart(item_def &amp;item, bool creating)</a>
+<a name="ln926">{</a>
+<a name="ln927">    ASSERT(is_unrandom_artefact(item));</a>
+<a name="ln928">    CrawlVector &amp;rap = item.props[ARTEFACT_PROPS_KEY].get_vector();</a>
+<a name="ln929">    const unrandart_entry *unrand = _seekunrandart(item);</a>
+<a name="ln930"> </a>
+<a name="ln931">    if (unrand-&gt;prpty[ARTP_NO_UPGRADE] &amp;&amp; !creating)</a>
+<a name="ln932">        return; // don't mangle mutable items</a>
+<a name="ln933"> </a>
+<a name="ln934">    for (int i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln935">        rap[i] = static_cast&lt;short&gt;(unrand-&gt;prpty[i]);</a>
+<a name="ln936"> </a>
+<a name="ln937">    item.base_type = unrand-&gt;base_type;</a>
+<a name="ln938">    item.sub_type  = unrand-&gt;sub_type;</a>
+<a name="ln939">    item.plus      = unrand-&gt;plus;</a>
+<a name="ln940">}</a>
+<a name="ln941"> </a>
+<a name="ln942">static bool _init_artefact_properties(item_def &amp;item)</a>
+<a name="ln943">{</a>
+<a name="ln944">    ASSERT(is_artefact(item));</a>
+<a name="ln945"> </a>
+<a name="ln946">    if (is_unrandom_artefact(item))</a>
+<a name="ln947">    {</a>
+<a name="ln948">        setup_unrandart(item);</a>
+<a name="ln949">        return true;</a>
+<a name="ln950">    }</a>
+<a name="ln951"> </a>
+<a name="ln952">    CrawlVector &amp;rap = item.props[ARTEFACT_PROPS_KEY].get_vector();</a>
+<a name="ln953">    for (vec_size i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln954">        rap[i] = static_cast&lt;short&gt;(0);</a>
+<a name="ln955"> </a>
+<a name="ln956">    ASSERT(item.base_type != OBJ_BOOKS);</a>
+<a name="ln957"> </a>
+<a name="ln958">    artefact_properties_t prop;</a>
+<a name="ln959">    prop.init(0);</a>
+<a name="ln960">    _get_randart_properties(item, prop);</a>
+<a name="ln961"> </a>
+<a name="ln962">    for (int i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln963">    {</a>
+<a name="ln964">        if (i == ARTP_CURSE &amp;&amp; prop[i])</a>
+<a name="ln965">        {</a>
+<a name="ln966">            do_curse_item(item);</a>
+<a name="ln967">            continue;</a>
+<a name="ln968">        }</a>
+<a name="ln969">        rap[i] = static_cast&lt;short&gt;(prop[i]);</a>
+<a name="ln970">    }</a>
+<a name="ln971"> </a>
+<a name="ln972"> </a>
+<a name="ln973">    return true;</a>
+<a name="ln974">}</a>
+<a name="ln975"> </a>
+<a name="ln976">void artefact_known_properties(const item_def &amp;item,</a>
+<a name="ln977">                               artefact_known_props_t &amp;known)</a>
+<a name="ln978">{</a>
+<a name="ln979">    ASSERT(is_artefact(item));</a>
+<a name="ln980">    if (!item.props.exists(KNOWN_PROPS_KEY)) // randbooks</a>
+<a name="ln981">        return;</a>
+<a name="ln982"> </a>
+<a name="ln983">    const CrawlStoreValue &amp;_val = item.props[KNOWN_PROPS_KEY];</a>
+<a name="ln984">    ASSERT(_val.get_type() == SV_VEC);</a>
+<a name="ln985">    const CrawlVector &amp;known_vec = _val.get_vector();</a>
+<a name="ln986">    ASSERT(known_vec.get_type()     == SV_BOOL);</a>
+<a name="ln987">    ASSERT(known_vec.size()         == ART_PROPERTIES);</a>
+<a name="ln988">    ASSERT(known_vec.get_max_size() == ART_PROPERTIES);</a>
+<a name="ln989"> </a>
+<a name="ln990">    if (item_ident(item, ISFLAG_KNOW_PROPERTIES))</a>
+<a name="ln991">    {</a>
+<a name="ln992">        for (vec_size i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln993">            known[i] = static_cast&lt;bool&gt;(true);</a>
+<a name="ln994">    }</a>
+<a name="ln995">    else</a>
+<a name="ln996">    {</a>
+<a name="ln997">        for (vec_size i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln998">            known[i] = known_vec[i];</a>
+<a name="ln999">    }</a>
+<a name="ln1000">}</a>
+<a name="ln1001"> </a>
+<a name="ln1002">void artefact_properties(const item_def &amp;item,</a>
+<a name="ln1003">                         artefact_properties_t  &amp;proprt)</a>
+<a name="ln1004">{</a>
+<a name="ln1005">    ASSERT(is_artefact(item));</a>
+<a name="ln1006">    ASSERT(item.props.exists(ARTEFACT_PROPS_KEY) || is_unrandom_artefact(item));</a>
+<a name="ln1007"> </a>
+<a name="ln1008">    if (item.props.exists(ARTEFACT_PROPS_KEY))</a>
+<a name="ln1009">    {</a>
+<a name="ln1010">        const CrawlVector &amp;rap_vec =</a>
+<a name="ln1011">            item.props[ARTEFACT_PROPS_KEY].get_vector();</a>
+<a name="ln1012">        ASSERT(rap_vec.get_type()     == SV_SHORT);</a>
+<a name="ln1013">        ASSERT(rap_vec.size()         == ART_PROPERTIES);</a>
+<a name="ln1014">        ASSERT(rap_vec.get_max_size() == ART_PROPERTIES);</a>
+<a name="ln1015"> </a>
+<a name="ln1016">        for (vec_size i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln1017">            proprt[i] = rap_vec[i].get_short();</a>
+<a name="ln1018">    }</a>
+<a name="ln1019">    else // if (is_unrandom_artefact(item))</a>
+<a name="ln1020">    {</a>
+<a name="ln1021">        const unrandart_entry *unrand = _seekunrandart(item);</a>
+<a name="ln1022"> </a>
+<a name="ln1023">        for (int i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln1024">            proprt[i] = static_cast&lt;short&gt;(unrand-&gt;prpty[i]);</a>
+<a name="ln1025">    }</a>
+<a name="ln1026">}</a>
+<a name="ln1027"> </a>
+<a name="ln1028">int artefact_property(const item_def &amp;item, artefact_prop_type prop)</a>
+<a name="ln1029">{</a>
+<a name="ln1030">    ASSERT(is_artefact(item));</a>
+<a name="ln1031">    ASSERT(item.props.exists(ARTEFACT_PROPS_KEY) || is_unrandom_artefact(item));</a>
+<a name="ln1032"> </a>
+<a name="ln1033">    if (item.props.exists(ARTEFACT_PROPS_KEY))</a>
+<a name="ln1034">    {</a>
+<a name="ln1035">        const CrawlVector &amp;rap_vec =</a>
+<a name="ln1036">            item.props[ARTEFACT_PROPS_KEY].get_vector();</a>
+<a name="ln1037">        return rap_vec[prop].get_short();</a>
+<a name="ln1038">    }</a>
+<a name="ln1039">    else // if (is_unrandom_artefact(item))</a>
+<a name="ln1040">    {</a>
+<a name="ln1041">        const unrandart_entry *unrand = _seekunrandart(item);</a>
+<a name="ln1042">        return static_cast&lt;short&gt;(unrand-&gt;prpty[prop]);</a>
+<a name="ln1043"> </a>
+<a name="ln1044">    }</a>
+<a name="ln1045">}</a>
+<a name="ln1046"> </a>
+<a name="ln1047">/**</a>
+<a name="ln1048"> * Check whether a particular property's value is known to the player.</a>
+<a name="ln1049"> */</a>
+<a name="ln1050">bool artefact_property_known(const item_def &amp;item, artefact_prop_type prop)</a>
+<a name="ln1051">{</a>
+<a name="ln1052">    ASSERT(is_artefact(item));</a>
+<a name="ln1053">    if (item_ident(item, ISFLAG_KNOW_PROPERTIES))</a>
+<a name="ln1054">        return true;</a>
+<a name="ln1055"> </a>
+<a name="ln1056">    if (!item.props.exists(KNOWN_PROPS_KEY)) // randbooks</a>
+<a name="ln1057">        return false;</a>
+<a name="ln1058"> </a>
+<a name="ln1059">    const CrawlVector &amp;known_vec = item.props[KNOWN_PROPS_KEY].get_vector();</a>
+<a name="ln1060">    ASSERT(known_vec.get_type()     == SV_BOOL);</a>
+<a name="ln1061">    ASSERT(known_vec.size()         == ART_PROPERTIES);</a>
+<a name="ln1062"> </a>
+<a name="ln1063">    return known_vec[prop].get_bool();</a>
+<a name="ln1064">}</a>
+<a name="ln1065"> </a>
+<a name="ln1066">/**</a>
+<a name="ln1067"> * check what the player knows about an a particular property.</a>
+<a name="ln1068"> */</a>
+<a name="ln1069">int artefact_known_property(const item_def &amp;item, artefact_prop_type prop)</a>
+<a name="ln1070">{</a>
+<a name="ln1071">    return artefact_property_known(item, prop) ? artefact_property(item, prop)</a>
+<a name="ln1072">                                               : 0;</a>
+<a name="ln1073">}</a>
+<a name="ln1074"> </a>
+<a name="ln1075">static int _artefact_num_props(const artefact_properties_t &amp;proprt)</a>
+<a name="ln1076">{</a>
+<a name="ln1077">    int num = 0;</a>
+<a name="ln1078"> </a>
+<a name="ln1079">    // Count all properties.</a>
+<a name="ln1080">    for (int i = 0; i &lt; ARTP_NUM_PROPERTIES; ++i)</a>
+<a name="ln1081">        if (proprt[i] != 0)</a>
+<a name="ln1082">            num++;</a>
+<a name="ln1083"> </a>
+<a name="ln1084">    return num;</a>
+<a name="ln1085">}</a>
+<a name="ln1086"> </a>
+<a name="ln1087">void artefact_learn_prop(item_def &amp;item, artefact_prop_type prop)</a>
+<a name="ln1088">{</a>
+<a name="ln1089">    ASSERT(is_artefact(item));</a>
+<a name="ln1090">    ASSERT(item.props.exists(KNOWN_PROPS_KEY));</a>
+<a name="ln1091">    CrawlStoreValue &amp;_val = item.props[KNOWN_PROPS_KEY];</a>
+<a name="ln1092">    ASSERT(_val.get_type() == SV_VEC);</a>
+<a name="ln1093">    CrawlVector &amp;known_vec = _val.get_vector();</a>
+<a name="ln1094">    ASSERT(known_vec.get_type()     == SV_BOOL);</a>
+<a name="ln1095">    ASSERT(known_vec.size()         == ART_PROPERTIES);</a>
+<a name="ln1096">    ASSERT(known_vec.get_max_size() == ART_PROPERTIES);</a>
+<a name="ln1097"> </a>
+<a name="ln1098">    if (item_ident(item, ISFLAG_KNOW_PROPERTIES))</a>
+<a name="ln1099">        return;</a>
+<a name="ln1100"> </a>
+<a name="ln1101">    known_vec[prop] = static_cast&lt;bool&gt;(true);</a>
+<a name="ln1102">}</a>
+<a name="ln1103"> </a>
+<a name="ln1104">static string _get_artefact_type(const item_def &amp;item, bool appear = false)</a>
+<a name="ln1105">{</a>
+<a name="ln1106">    switch (item.base_type)</a>
+<a name="ln1107">    {</a>
+<a name="ln1108">    case OBJ_BOOKS:</a>
+<a name="ln1109">        return &quot;book&quot;;</a>
+<a name="ln1110">    case OBJ_WEAPONS:</a>
+<a name="ln1111">        return &quot;weapon&quot;;</a>
+<a name="ln1112">    case OBJ_ARMOUR:</a>
+<a name="ln1113">        if (item.sub_type == ARM_ROBE)</a>
+<a name="ln1114">            return &quot;robe&quot;;</a>
+<a name="ln1115">        if (get_item_slot(item) == EQ_BODY_ARMOUR)</a>
+<a name="ln1116">            return &quot;body armour&quot;;</a>
+<a name="ln1117">        return &quot;armour&quot;;</a>
+<a name="ln1118">    case OBJ_JEWELLERY:</a>
+<a name="ln1119">        // Distinguish between amulets and rings only in appearance.</a>
+<a name="ln1120">        if (!appear)</a>
+<a name="ln1121">            return &quot;jewellery&quot;;</a>
+<a name="ln1122"> </a>
+<a name="ln1123">        if (jewellery_is_amulet(item))</a>
+<a name="ln1124">            return &quot;amulet&quot;;</a>
+<a name="ln1125">        else</a>
+<a name="ln1126">            return &quot;ring&quot;;</a>
+<a name="ln1127">    default:</a>
+<a name="ln1128">        return &quot;artefact&quot;;</a>
+<a name="ln1129">    }</a>
+<a name="ln1130">}</a>
+<a name="ln1131"> </a>
+<a name="ln1132">static bool _pick_db_name(const item_def &amp;item)</a>
+<a name="ln1133">{</a>
+<a name="ln1134">    switch (item.base_type)</a>
+<a name="ln1135">    {</a>
+<a name="ln1136">    case OBJ_WEAPONS:</a>
+<a name="ln1137">    case OBJ_ARMOUR:</a>
+<a name="ln1138">        return coinflip();</a>
+<a name="ln1139">    case OBJ_JEWELLERY:</a>
+<a name="ln1140">        return one_chance_in(5);</a>
+<a name="ln1141">    default:</a>
+<a name="ln1142">        return false;</a>
+<a name="ln1143">    }</a>
+<a name="ln1144">}</a>
+<a name="ln1145"> </a>
+<a name="ln1146">static string _artefact_name_lookup(const item_def &amp;item, const string &amp;lookup)</a>
+<a name="ln1147">{</a>
+<a name="ln1148">    const string name = getRandNameString(lookup);</a>
+<a name="ln1149">    return name.empty() ? name : replace_name_parts(name, item);</a>
+<a name="ln1150">}</a>
+<a name="ln1151"> </a>
+<a name="ln1152">static bool _artefact_name_lookup(string &amp;result, const item_def &amp;item,</a>
+<a name="ln1153">                                  const string &amp;lookup)</a>
+<a name="ln1154">{</a>
+<a name="ln1155">    result = _artefact_name_lookup(item, lookup);</a>
+<a name="ln1156">    return !result.empty();</a>
+<a name="ln1157">}</a>
+<a name="ln1158"> </a>
+<a name="ln1159">string make_artefact_name(const item_def &amp;item, bool appearance)</a>
+<a name="ln1160">{</a>
+<a name="ln1161">    ASSERT(is_artefact(item));</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    ASSERT(item.base_type == OBJ_WEAPONS</a>
+<a name="ln1164">           || item.base_type == OBJ_ARMOUR</a>
+<a name="ln1165">           || item.base_type == OBJ_JEWELLERY</a>
+<a name="ln1166">           || item.base_type == OBJ_BOOKS);</a>
+<a name="ln1167"> </a>
+<a name="ln1168">    if (is_unrandom_artefact(item))</a>
+<a name="ln1169">    {</a>
+<a name="ln1170">        const unrandart_entry *unrand = _seekunrandart(item);</a>
+<a name="ln1171">        if (!appearance)</a>
+<a name="ln1172">            return unrand-&gt;name;</a>
+<a name="ln1173">        return unrand-&gt;unid_name;</a>
+<a name="ln1174">    }</a>
+<a name="ln1175"> </a>
+<a name="ln1176">    string lookup;</a>
+<a name="ln1177">    string result;</a>
+<a name="ln1178"> </a>
+<a name="ln1179">    // Use prefix of gifting god, if applicable.</a>
+<a name="ln1180">    bool god_gift = false;</a>
+<a name="ln1181">    int item_orig = 0;</a>
+<a name="ln1182">    if (!appearance)</a>
+<a name="ln1183">    {</a>
+<a name="ln1184">        // Divine gifts don't look special, so this is only necessary</a>
+<a name="ln1185">        // for actually naming an item.</a>
+<a name="ln1186">        item_orig = item.orig_monnum;</a>
+<a name="ln1187">        if (item_orig &lt; 0)</a>
+<a name="ln1188">            item_orig = -item_orig;</a>
+<a name="ln1189">        else</a>
+<a name="ln1190">            item_orig = 0;</a>
+<a name="ln1191"> </a>
+<a name="ln1192">        if (item_orig &gt; GOD_NO_GOD &amp;&amp; item_orig &lt; NUM_GODS)</a>
+<a name="ln1193">        {</a>
+<a name="ln1194">            lookup += god_name(static_cast&lt;god_type&gt;(item_orig), false) + &quot; &quot;;</a>
+<a name="ln1195">            god_gift = true;</a>
+<a name="ln1196">        }</a>
+<a name="ln1197">    }</a>
+<a name="ln1198"> </a>
+<a name="ln1199">    // get base type</a>
+<a name="ln1200">    lookup += _get_artefact_type(item, appearance);</a>
+<a name="ln1201"> </a>
+<a name="ln1202">    if (appearance)</a>
+<a name="ln1203">    {</a>
+<a name="ln1204">        string appear = getRandNameString(lookup, &quot; appearance&quot;);</a>
+<a name="ln1205">        if (appear.empty())</a>
+<a name="ln1206">        {</a>
+<a name="ln1207">            appear = getRandNameString(&quot;general appearance&quot;);</a>
+<a name="ln1208">            if (appear.empty()) // still nothing found?</a>
+<a name="ln1209">                appear = &quot;non-descript&quot;;</a>
+<a name="ln1210">        }</a>
+<a name="ln1211"> </a>
+<a name="ln1212">        result += appear;</a>
+<a name="ln1213">        result += &quot; &quot;;</a>
+<a name="ln1214">        result += item_base_name(item);</a>
+<a name="ln1215">        return result;</a>
+<a name="ln1216">    }</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    if (_pick_db_name(item))</a>
+<a name="ln1219">    {</a>
+<a name="ln1220">        result += item_base_name(item) + &quot; &quot;;</a>
+<a name="ln1221"> </a>
+<a name="ln1222">        int tries = 100;</a>
+<a name="ln1223">        string name;</a>
+<a name="ln1224">        do</a>
+<a name="ln1225">        {</a>
+<a name="ln1226">            (_artefact_name_lookup(name, item, lookup)</a>
+<a name="ln1227"> </a>
+<a name="ln1228">             // If nothing found, try god name alone.</a>
+<a name="ln1229">             || (god_gift</a>
+<a name="ln1230">                 &amp;&amp; _artefact_name_lookup(name, item,</a>
+<a name="ln1231">                                          god_name(</a>
+<a name="ln1232">                                             static_cast&lt;god_type&gt;(item_orig),</a>
+<a name="ln1233">                                             false)))</a>
+<a name="ln1234"> </a>
+<a name="ln1235">             // If still nothing found, try base type alone.</a>
+<a name="ln1236">             || _artefact_name_lookup(name, item, _get_artefact_type(item)));</a>
+<a name="ln1237">        }</a>
+<a name="ln1238">        while (--tries &gt; 0 &amp;&amp; strwidth(name) &gt; 25);</a>
+<a name="ln1239"> </a>
+<a name="ln1240">        if (name.empty()) // still nothing found?</a>
+<a name="ln1241">            result += &quot;of Bugginess&quot;;</a>
+<a name="ln1242">        else</a>
+<a name="ln1243">            result += name;</a>
+<a name="ln1244">    }</a>
+<a name="ln1245">    else</a>
+<a name="ln1246">    {</a>
+<a name="ln1247">        // construct a unique name</a>
+<a name="ln1248">        const string st_p = make_name();</a>
+<a name="ln1249">        result += item_base_name(item);</a>
+<a name="ln1250"> </a>
+<a name="ln1251">        if (one_chance_in(3))</a>
+<a name="ln1252">        {</a>
+<a name="ln1253">            result += &quot; of &quot;;</a>
+<a name="ln1254">            result += st_p;</a>
+<a name="ln1255">        }</a>
+<a name="ln1256">        else</a>
+<a name="ln1257">        {</a>
+<a name="ln1258">            result += &quot; \&quot;&quot;;</a>
+<a name="ln1259">            result += st_p;</a>
+<a name="ln1260">            result += &quot;\&quot;&quot;;</a>
+<a name="ln1261">        }</a>
+<a name="ln1262">    }</a>
+<a name="ln1263"> </a>
+<a name="ln1264">    return result;</a>
+<a name="ln1265">}</a>
+<a name="ln1266"> </a>
+<a name="ln1267">static const unrandart_entry *_seekunrandart(const item_def &amp;item)</a>
+<a name="ln1268">{</a>
+<a name="ln1269">    return get_unrand_entry(item.unrand_idx);</a>
+<a name="ln1270">}</a>
+<a name="ln1271"> </a>
+<a name="ln1272">string get_artefact_base_name(const item_def &amp;item, bool terse)</a>
+<a name="ln1273">{</a>
+<a name="ln1274">    string base_name = item_base_name(item);</a>
+<a name="ln1275">    const char* custom_type = _seekunrandart(item)-&gt;type_name;</a>
+<a name="ln1276">    if (custom_type)</a>
+<a name="ln1277">        base_name = custom_type;</a>
+<a name="ln1278">    if (terse)</a>
+<a name="ln1279">    {</a>
+<a name="ln1280">        base_name = replace_all(base_name, &quot;executioner's axe&quot;, &quot;exec axe&quot;);</a>
+<a name="ln1281">        base_name = replace_all(base_name, &quot;giant spiked club&quot;, &quot;g.spiked club&quot;);</a>
+<a name="ln1282">        base_name = replace_all(base_name, &quot;triple crossbow&quot;, &quot;triple xbow&quot;);</a>
+<a name="ln1283">    }</a>
+<a name="ln1284">    return base_name;</a>
+<a name="ln1285">}</a>
+<a name="ln1286"> </a>
+<a name="ln1287">string get_artefact_name(const item_def &amp;item, bool force_known)</a>
+<a name="ln1288">{</a>
+<a name="ln1289">    ASSERT(is_artefact(item));</a>
+<a name="ln1290"> </a>
+<a name="ln1291">    if (item_type_known(item) || force_known)</a>
+<a name="ln1292">    {</a>
+<a name="ln1293">        // print artefact's real name, if that's set</a>
+<a name="ln1294">        if (item.props.exists(ARTEFACT_NAME_KEY))</a>
+<a name="ln1295">            return item.props[ARTEFACT_NAME_KEY].get_string();</a>
+<a name="ln1296">        // other unrands don't use cached names</a>
+<a name="ln1297">        if (is_unrandom_artefact(item))</a>
+<a name="ln1298">            return _seekunrandart(item)-&gt;name;</a>
+<a name="ln1299">        return make_artefact_name(item, false);</a>
+<a name="ln1300">    }</a>
+<a name="ln1301">    // print artefact appearance</a>
+<a name="ln1302">    if (item.props.exists(ARTEFACT_APPEAR_KEY))</a>
+<a name="ln1303">        return item.props[ARTEFACT_APPEAR_KEY].get_string();</a>
+<a name="ln1304">    return make_artefact_name(item, true);</a>
+<a name="ln1305">}</a>
+<a name="ln1306"> </a>
+<a name="ln1307">void set_artefact_name(item_def &amp;item, const string &amp;name)</a>
+<a name="ln1308">{</a>
+<a name="ln1309">    ASSERT(is_artefact(item));</a>
+<a name="ln1310">    ASSERT(!name.empty());</a>
+<a name="ln1311">    item.props[ARTEFACT_NAME_KEY].get_string() = name;</a>
+<a name="ln1312">}</a>
+<a name="ln1313"> </a>
+<a name="ln1314">int find_unrandart_index(const item_def&amp; artefact)</a>
+<a name="ln1315">{</a>
+<a name="ln1316">    return artefact.unrand_idx;</a>
+<a name="ln1317">}</a>
+<a name="ln1318"> </a>
+<a name="ln1319">const unrandart_entry* get_unrand_entry(int unrand_index)</a>
+<a name="ln1320">{</a>
+<a name="ln1321">    unrand_index -= UNRAND_START;</a>
+<a name="ln1322"> </a>
+<a name="ln1323">    if (unrand_index &lt;= -1 || unrand_index &gt;= NUM_UNRANDARTS)</a>
+<a name="ln1324">        return &amp;unranddata[0];  // dummy unrandart</a>
+<a name="ln1325">    else</a>
+<a name="ln1326">        return &amp;unranddata[unrand_index];</a>
+<a name="ln1327">}</a>
+<a name="ln1328"> </a>
+<a name="ln1329">int find_okay_unrandart(uint8_t aclass, uint8_t atype, bool in_abyss)</a>
+<a name="ln1330">{</a>
+<a name="ln1331">    int ret = -1;</a>
+<a name="ln1332"> </a>
+<a name="ln1333">    // Pick randomly among not-yet-existing unrandarts with the proper</a>
+<a name="ln1334">    // base_type and sub_type.</a>
+<a name="ln1335">    for (int i = 0, count = 0; i &lt; NUM_UNRANDARTS; i++)</a>
+<a name="ln1336">    {</a>
+<a name="ln1337">        const int              index = i + UNRAND_START;</a>
+<a name="ln1338">        const unrandart_entry* entry = &amp;unranddata[i];</a>
+<a name="ln1339"> </a>
+<a name="ln1340">        // Skip dummy entries.</a>
+<a name="ln1341">        if (entry-&gt;base_type == OBJ_UNASSIGNED)</a>
+<a name="ln1342">            continue;</a>
+<a name="ln1343"> </a>
+<a name="ln1344">        const unique_item_status_type status =</a>
+<a name="ln1345">            get_unique_item_status(index);</a>
+<a name="ln1346"> </a>
+<a name="ln1347">        if (in_abyss &amp;&amp; status != UNIQ_LOST_IN_ABYSS</a>
+<a name="ln1348">            || !in_abyss &amp;&amp; status != UNIQ_NOT_EXISTS)</a>
+<a name="ln1349">        {</a>
+<a name="ln1350">            continue;</a>
+<a name="ln1351">        }</a>
+<a name="ln1352"> </a>
+<a name="ln1353">        // Never randomly generated until lost in the abyss.</a>
+<a name="ln1354">        if ((!in_abyss || status != UNIQ_LOST_IN_ABYSS)</a>
+<a name="ln1355">            &amp;&amp; entry-&gt;flags &amp; UNRAND_FLAG_NOGEN)</a>
+<a name="ln1356">        {</a>
+<a name="ln1357">            continue;</a>
+<a name="ln1358">        }</a>
+<a name="ln1359"> </a>
+<a name="ln1360">        if (entry-&gt;base_type != aclass</a>
+<a name="ln1361">            || atype != OBJ_RANDOM &amp;&amp; entry-&gt;sub_type != atype</a>
+<a name="ln1362">               // Acquirement.</a>
+<a name="ln1363">               &amp;&amp; (aclass != OBJ_WEAPONS</a>
+<a name="ln1364">                   || item_attack_skill(entry-&gt;base_type, atype) !=</a>
+<a name="ln1365">                      item_attack_skill(entry-&gt;base_type, entry-&gt;sub_type)</a>
+<a name="ln1366">                   || hands_reqd(&amp;you, entry-&gt;base_type,</a>
+<a name="ln1367">                                 atype) !=</a>
+<a name="ln1368">                      hands_reqd(&amp;you, entry-&gt;base_type,</a>
+<a name="ln1369">                                 entry-&gt;sub_type)))</a>
+<a name="ln1370">        {</a>
+<a name="ln1371">            continue;</a>
+<a name="ln1372">        }</a>
+<a name="ln1373"> </a>
+<a name="ln1374">        count++;</a>
+<a name="ln1375"> </a>
+<a name="ln1376">        if (one_chance_in(count))</a>
+<a name="ln1377">            ret = index;</a>
+<a name="ln1378">    }</a>
+<a name="ln1379"> </a>
+<a name="ln1380">    return ret;</a>
+<a name="ln1381">}</a>
+<a name="ln1382"> </a>
+<a name="ln1383">int get_unrandart_num(const char *name)</a>
+<a name="ln1384">{</a>
+<a name="ln1385">    string uname = name;</a>
+<a name="ln1386">    uname = replace_all(uname, &quot; &quot;, &quot;_&quot;);</a>
+<a name="ln1387">    uname = replace_all(uname, &quot;'&quot;, &quot;&quot;);</a>
+<a name="ln1388">    lowercase(uname);</a>
+<a name="ln1389">    string quoted = &quot;\&quot;&quot;;</a>
+<a name="ln1390">    quoted += uname;</a>
+<a name="ln1391">    quoted += &quot;\&quot;&quot;;</a>
+<a name="ln1392"> </a>
+<a name="ln1393">    for (unsigned int i = 0; i &lt; ARRAYSZ(unranddata); ++i)</a>
+<a name="ln1394">    {</a>
+<a name="ln1395">        string art = unranddata[i].name;</a>
+<a name="ln1396">        art = replace_all(art, &quot; &quot;, &quot;_&quot;);</a>
+<a name="ln1397">        art = replace_all(art, &quot;'&quot;, &quot;&quot;);</a>
+<a name="ln1398">        lowercase(art);</a>
+<a name="ln1399">        if (art == uname || art.find(quoted) != string::npos)</a>
+<a name="ln1400">            return UNRAND_START + i;</a>
+<a name="ln1401">    }</a>
+<a name="ln1402">    return SPWPN_NORMAL;</a>
+<a name="ln1403">}</a>
+<a name="ln1404"> </a>
+<a name="ln1405">static bool _randart_is_redundant(const item_def &amp;item,</a>
+<a name="ln1406">                                   artefact_properties_t &amp;proprt)</a>
+<a name="ln1407">{</a>
+<a name="ln1408">    if (item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln1409">        return false;</a>
+<a name="ln1410"> </a>
+<a name="ln1411">    artefact_prop_type provides  = ARTP_NUM_PROPERTIES;</a>
+<a name="ln1412"> </a>
+<a name="ln1413">    switch (item.sub_type)</a>
+<a name="ln1414">    {</a>
+<a name="ln1415">    case RING_PROTECTION:</a>
+<a name="ln1416">        provides = ARTP_AC;</a>
+<a name="ln1417">        break;</a>
+<a name="ln1418"> </a>
+<a name="ln1419">    case RING_FIRE:</a>
+<a name="ln1420">    case RING_PROTECTION_FROM_FIRE:</a>
+<a name="ln1421">        provides = ARTP_FIRE;</a>
+<a name="ln1422">        break;</a>
+<a name="ln1423"> </a>
+<a name="ln1424">    case RING_POISON_RESISTANCE:</a>
+<a name="ln1425">        provides = ARTP_POISON;</a>
+<a name="ln1426">        break;</a>
+<a name="ln1427"> </a>
+<a name="ln1428">    case RING_ICE:</a>
+<a name="ln1429">    case RING_PROTECTION_FROM_COLD:</a>
+<a name="ln1430">        provides = ARTP_COLD;</a>
+<a name="ln1431">        break;</a>
+<a name="ln1432"> </a>
+<a name="ln1433">    case RING_STRENGTH:</a>
+<a name="ln1434">        provides = ARTP_STRENGTH;</a>
+<a name="ln1435">        break;</a>
+<a name="ln1436"> </a>
+<a name="ln1437">    case RING_SLAYING:</a>
+<a name="ln1438">        provides = ARTP_SLAYING;</a>
+<a name="ln1439">        break;</a>
+<a name="ln1440"> </a>
+<a name="ln1441">    case RING_SEE_INVISIBLE:</a>
+<a name="ln1442">        provides = ARTP_SEE_INVISIBLE;</a>
+<a name="ln1443">        break;</a>
+<a name="ln1444"> </a>
+<a name="ln1445">    case RING_STEALTH:</a>
+<a name="ln1446">        provides = ARTP_STEALTH;</a>
+<a name="ln1447">        break;</a>
+<a name="ln1448"> </a>
+<a name="ln1449">    case RING_TELEPORTATION:</a>
+<a name="ln1450">        provides = ARTP_CAUSE_TELEPORTATION;</a>
+<a name="ln1451">        break;</a>
+<a name="ln1452"> </a>
+<a name="ln1453">    case RING_EVASION:</a>
+<a name="ln1454">        provides = ARTP_EVASION;</a>
+<a name="ln1455">        break;</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    case RING_DEXTERITY:</a>
+<a name="ln1458">        provides = ARTP_DEXTERITY;</a>
+<a name="ln1459">        break;</a>
+<a name="ln1460"> </a>
+<a name="ln1461">    case RING_INTELLIGENCE:</a>
+<a name="ln1462">        provides = ARTP_INTELLIGENCE;</a>
+<a name="ln1463">        break;</a>
+<a name="ln1464"> </a>
+<a name="ln1465">    case RING_MAGICAL_POWER:</a>
+<a name="ln1466">        provides = ARTP_MAGICAL_POWER;</a>
+<a name="ln1467">        break;</a>
+<a name="ln1468"> </a>
+<a name="ln1469">    case RING_FLIGHT:</a>
+<a name="ln1470">        provides = ARTP_FLY;</a>
+<a name="ln1471">        break;</a>
+<a name="ln1472"> </a>
+<a name="ln1473">    case RING_LIFE_PROTECTION:</a>
+<a name="ln1474">        provides = ARTP_NEGATIVE_ENERGY;</a>
+<a name="ln1475">        break;</a>
+<a name="ln1476"> </a>
+<a name="ln1477">    case RING_PROTECTION_FROM_MAGIC:</a>
+<a name="ln1478">        provides = ARTP_MAGIC_RESISTANCE;</a>
+<a name="ln1479">        break;</a>
+<a name="ln1480"> </a>
+<a name="ln1481">    case RING_RESIST_CORROSION:</a>
+<a name="ln1482">        provides = ARTP_RCORR;</a>
+<a name="ln1483">        break;</a>
+<a name="ln1484"> </a>
+<a name="ln1485">    case AMU_RAGE:</a>
+<a name="ln1486">        provides = ARTP_BERSERK;</a>
+<a name="ln1487">        break;</a>
+<a name="ln1488"> </a>
+<a name="ln1489">    case AMU_INACCURACY:</a>
+<a name="ln1490">        provides = ARTP_SLAYING;</a>
+<a name="ln1491">        break;</a>
+<a name="ln1492"> </a>
+<a name="ln1493">    case AMU_REGENERATION:</a>
+<a name="ln1494">        provides = ARTP_REGENERATION;</a>
+<a name="ln1495">        break;</a>
+<a name="ln1496"> </a>
+<a name="ln1497">    case AMU_REFLECTION:</a>
+<a name="ln1498">        provides = ARTP_SHIELDING;</a>
+<a name="ln1499">        break;</a>
+<a name="ln1500"> </a>
+<a name="ln1501">    case AMU_HARM:</a>
+<a name="ln1502">        provides = ARTP_DRAIN;</a>
+<a name="ln1503">        break;</a>
+<a name="ln1504">    }</a>
+<a name="ln1505"> </a>
+<a name="ln1506">    if (provides == ARTP_NUM_PROPERTIES)</a>
+<a name="ln1507">        return false;</a>
+<a name="ln1508"> </a>
+<a name="ln1509">    if (proprt[provides] != 0)</a>
+<a name="ln1510">        return true;</a>
+<a name="ln1511"> </a>
+<a name="ln1512">    return false;</a>
+<a name="ln1513">}</a>
+<a name="ln1514"> </a>
+<a name="ln1515">static bool _randart_is_conflicting(const item_def &amp;item,</a>
+<a name="ln1516">                                     artefact_properties_t &amp;proprt)</a>
+<a name="ln1517">{</a>
+<a name="ln1518">    if (item.base_type == OBJ_WEAPONS</a>
+<a name="ln1519">        &amp;&amp; get_weapon_brand(item) == SPWPN_HOLY_WRATH</a>
+<a name="ln1520">        &amp;&amp; is_demonic(item))</a>
+<a name="ln1521">    {</a>
+<a name="ln1522">        return true;</a>
+<a name="ln1523">    }</a>
+<a name="ln1524"> </a>
+<a name="ln1525">    if (item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln1526">        return false;</a>
+<a name="ln1527"> </a>
+<a name="ln1528">    if (item.sub_type == RING_WIZARDRY &amp;&amp; proprt[ARTP_INTELLIGENCE] &lt; 0)</a>
+<a name="ln1529">        return true;</a>
+<a name="ln1530"> </a>
+<a name="ln1531">    artefact_prop_type conflicts = ARTP_NUM_PROPERTIES;</a>
+<a name="ln1532"> </a>
+<a name="ln1533">    switch (item.sub_type)</a>
+<a name="ln1534">    {</a>
+<a name="ln1535">    case RING_ATTENTION:</a>
+<a name="ln1536">        conflicts = ARTP_STEALTH;</a>
+<a name="ln1537">        break;</a>
+<a name="ln1538"> </a>
+<a name="ln1539">    case RING_FIRE:</a>
+<a name="ln1540">    case RING_ICE:</a>
+<a name="ln1541">    case RING_WIZARDRY:</a>
+<a name="ln1542">    case RING_MAGICAL_POWER:</a>
+<a name="ln1543">        conflicts = ARTP_PREVENT_SPELLCASTING;</a>
+<a name="ln1544">        break;</a>
+<a name="ln1545"> </a>
+<a name="ln1546">    case RING_RESIST_CORROSION:</a>
+<a name="ln1547">        conflicts = ARTP_CORRODE;</a>
+<a name="ln1548">        break;</a>
+<a name="ln1549"> </a>
+<a name="ln1550">    case RING_TELEPORTATION:</a>
+<a name="ln1551">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1552">    case RING_TELEPORT_CONTROL:</a>
+<a name="ln1553">#endif</a>
+<a name="ln1554">        conflicts = ARTP_PREVENT_TELEPORTATION;</a>
+<a name="ln1555">        break;</a>
+<a name="ln1556"> </a>
+<a name="ln1557">    case AMU_RAGE:</a>
+<a name="ln1558">        conflicts = ARTP_STEALTH;</a>
+<a name="ln1559">        break;</a>
+<a name="ln1560">    }</a>
+<a name="ln1561"> </a>
+<a name="ln1562">    if (conflicts == ARTP_NUM_PROPERTIES)</a>
+<a name="ln1563">        return false;</a>
+<a name="ln1564"> </a>
+<a name="ln1565">    if (proprt[conflicts] != 0)</a>
+<a name="ln1566">        return true;</a>
+<a name="ln1567"> </a>
+<a name="ln1568">    return false;</a>
+<a name="ln1569">}</a>
+<a name="ln1570"> </a>
+<a name="ln1571">bool randart_is_bad(const item_def &amp;item, artefact_properties_t &amp;proprt)</a>
+<a name="ln1572">{</a>
+<a name="ln1573">    if (item.base_type == OBJ_BOOKS)</a>
+<a name="ln1574">        return false;</a>
+<a name="ln1575"> </a>
+<a name="ln1576">    if (_artefact_num_props(proprt) == 0)</a>
+<a name="ln1577">        return true;</a>
+<a name="ln1578"> </a>
+<a name="ln1579">    // Weapons must have a brand and at least one other property.</a>
+<a name="ln1580">    if (item.base_type == OBJ_WEAPONS</a>
+<a name="ln1581">        &amp;&amp; (proprt[ARTP_BRAND] == SPWPN_NORMAL</a>
+<a name="ln1582">            || _artefact_num_props(proprt) &lt; 2))</a>
+<a name="ln1583">    {</a>
+<a name="ln1584">        return true;</a>
+<a name="ln1585">    }</a>
+<a name="ln1586"> </a>
+<a name="ln1587">    return _randart_is_redundant(item, proprt)</a>
+<a name="ln1588">           || _randart_is_conflicting(item, proprt);</a>
+<a name="ln1589">}</a>
+<a name="ln1590"> </a>
+<a name="ln1591">bool randart_is_bad(const item_def &amp;item)</a>
+<a name="ln1592">{</a>
+<a name="ln1593">    artefact_properties_t proprt;</a>
+<a name="ln1594">    proprt.init(0);</a>
+<a name="ln1595">    artefact_properties(item, proprt);</a>
+<a name="ln1596"> </a>
+<a name="ln1597">    return randart_is_bad(item, proprt);</a>
+<a name="ln1598">}</a>
+<a name="ln1599"> </a>
+<a name="ln1600">static void _artefact_setup_prop_vectors(item_def &amp;item)</a>
+<a name="ln1601">{</a>
+<a name="ln1602">    CrawlHashTable &amp;props = item.props;</a>
+<a name="ln1603">    if (!props.exists(ARTEFACT_PROPS_KEY))</a>
+<a name="ln1604">        props[ARTEFACT_PROPS_KEY].new_vector(SV_SHORT).resize(ART_PROPERTIES);</a>
+<a name="ln1605"> </a>
+<a name="ln1606">    CrawlVector &amp;rap = props[ARTEFACT_PROPS_KEY].get_vector();</a>
+<a name="ln1607">    rap.set_max_size(ART_PROPERTIES);</a>
+<a name="ln1608"> </a>
+<a name="ln1609">    for (vec_size i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln1610">        rap[i].get_short() = 0;</a>
+<a name="ln1611"> </a>
+<a name="ln1612">    if (!item.props.exists(KNOWN_PROPS_KEY))</a>
+<a name="ln1613">    {</a>
+<a name="ln1614">        props[KNOWN_PROPS_KEY].new_vector(SV_BOOL).resize(ART_PROPERTIES);</a>
+<a name="ln1615">        CrawlVector &amp;known = item.props[KNOWN_PROPS_KEY].get_vector();</a>
+<a name="ln1616">        known.set_max_size(ART_PROPERTIES);</a>
+<a name="ln1617">        for (vec_size i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln1618">            known[i] = static_cast&lt;bool&gt;(false);</a>
+<a name="ln1619">    }</a>
+<a name="ln1620">}</a>
+<a name="ln1621"> </a>
+<a name="ln1622">// If force_mundane is true, normally mundane items are forced to</a>
+<a name="ln1623">// nevertheless become artefacts.</a>
+<a name="ln1624">bool make_item_randart(item_def &amp;item, bool force_mundane)</a>
+<a name="ln1625">{</a>
+<a name="ln1626">    if (item.base_type != OBJ_WEAPONS</a>
+<a name="ln1627">        &amp;&amp; item.base_type != OBJ_ARMOUR</a>
+<a name="ln1628">        &amp;&amp; item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln1629">    {</a>
+<a name="ln1630">        return false;</a>
+<a name="ln1631">    }</a>
+<a name="ln1632"> </a>
+<a name="ln1633">    // This item already is a randart.</a>
+<a name="ln1634">    if (item.flags &amp; ISFLAG_RANDART)</a>
+<a name="ln1635">        return true;</a>
+<a name="ln1636"> </a>
+<a name="ln1637">    // Not a truly random artefact.</a>
+<a name="ln1638">    if (item.flags &amp; ISFLAG_UNRANDART)</a>
+<a name="ln1639">        return false;</a>
+<a name="ln1640"> </a>
+<a name="ln1641">    // Mundane items are much less likely to be artefacts.</a>
+<a name="ln1642">    if (!force_mundane &amp;&amp; item.is_mundane() &amp;&amp; !one_chance_in(5))</a>
+<a name="ln1643">        return false;</a>
+<a name="ln1644"> </a>
+<a name="ln1645">    _artefact_setup_prop_vectors(item);</a>
+<a name="ln1646">    item.flags |= ISFLAG_RANDART;</a>
+<a name="ln1647"> </a>
+<a name="ln1648">    const god_type god_gift = origin_as_god_gift(item);</a>
+<a name="ln1649"> </a>
+<a name="ln1650">    int randart_tries = 500;</a>
+<a name="ln1651">    do</a>
+<a name="ln1652">    {</a>
+<a name="ln1653">        // Now that we found something, initialise the props array.</a>
+<a name="ln1654">        if (--randart_tries &lt;= 0 || !_init_artefact_properties(item))</a>
+<a name="ln1655">        {</a>
+<a name="ln1656">            // Something went wrong that no amount of rerolling will fix.</a>
+<a name="ln1657">            item.unrand_idx = 0;</a>
+<a name="ln1658">            item.props.erase(ARTEFACT_PROPS_KEY);</a>
+<a name="ln1659">            item.props.erase(KNOWN_PROPS_KEY);</a>
+<a name="ln1660">            item.flags &amp;= ~ISFLAG_RANDART;</a>
+<a name="ln1661">            return false;</a>
+<a name="ln1662">        }</a>
+<a name="ln1663">    }</a>
+<a name="ln1664">    while (randart_is_bad(item)</a>
+<a name="ln1665">           || god_gift != GOD_NO_GOD &amp;&amp; !_god_fits_artefact(god_gift, item));</a>
+<a name="ln1666"> </a>
+<a name="ln1667">    // get true artefact name</a>
+<a name="ln1668">    if (item.props.exists(ARTEFACT_NAME_KEY))</a>
+<a name="ln1669">        ASSERT(item.props[ARTEFACT_NAME_KEY].get_type() == SV_STR);</a>
+<a name="ln1670">    else</a>
+<a name="ln1671">        set_artefact_name(item, make_artefact_name(item, false));</a>
+<a name="ln1672"> </a>
+<a name="ln1673">    // get artefact appearance</a>
+<a name="ln1674">    if (item.props.exists(ARTEFACT_APPEAR_KEY))</a>
+<a name="ln1675">        ASSERT(item.props[ARTEFACT_APPEAR_KEY].get_type() == SV_STR);</a>
+<a name="ln1676">    else</a>
+<a name="ln1677">        item.props[ARTEFACT_APPEAR_KEY].get_string() =</a>
+<a name="ln1678">            make_artefact_name(item, true);</a>
+<a name="ln1679"> </a>
+<a name="ln1680">    return true;</a>
+<a name="ln1681">}</a>
+<a name="ln1682"> </a>
+<a name="ln1683">static void _make_faerie_armour(item_def &amp;item)</a>
+<a name="ln1684">{</a>
+<a name="ln1685">    item_def doodad;</a>
+<a name="ln1686">    for (int i=0; i&lt;100; i++)</a>
+<a name="ln1687">    {</a>
+<a name="ln1688">        doodad.clear();</a>
+<a name="ln1689">        doodad.base_type = item.base_type;</a>
+<a name="ln1690">        doodad.sub_type = item.sub_type;</a>
+<a name="ln1691">        if (!make_item_randart(doodad))</a>
+<a name="ln1692">        {</a>
+<a name="ln1693">            i--; // Forbidden props are not absolute, artefactness is.</a>
+<a name="ln1694">            continue;</a>
+<a name="ln1695">        }</a>
+<a name="ln1696"> </a>
+<a name="ln1697">        // -Cast makes no sense on someone called &quot;the Enchantress&quot;.</a>
+<a name="ln1698">        if (artefact_property(doodad, ARTP_PREVENT_SPELLCASTING))</a>
+<a name="ln1699">            continue;</a>
+<a name="ln1700"> </a>
+<a name="ln1701">        if (one_chance_in(20))</a>
+<a name="ln1702">            artefact_set_property(doodad, ARTP_CLARITY, 1);</a>
+<a name="ln1703">        if (one_chance_in(20))</a>
+<a name="ln1704">            artefact_set_property(doodad, ARTP_MAGICAL_POWER, 1 + random2(10));</a>
+<a name="ln1705">        if (one_chance_in(20))</a>
+<a name="ln1706">            artefact_set_property(doodad, ARTP_HP, random2(16) - 5);</a>
+<a name="ln1707"> </a>
+<a name="ln1708">        break;</a>
+<a name="ln1709">    }</a>
+<a name="ln1710">    ASSERT(is_artefact(doodad));</a>
+<a name="ln1711">    ASSERT(doodad.sub_type == item.sub_type);</a>
+<a name="ln1712"> </a>
+<a name="ln1713">    doodad.props[ARTEFACT_APPEAR_KEY].get_string()</a>
+<a name="ln1714">        = item.props[ARTEFACT_APPEAR_KEY].get_string();</a>
+<a name="ln1715">    doodad.props.erase(ARTEFACT_NAME_KEY);</a>
+<a name="ln1716">    item.props = doodad.props;</a>
+<a name="ln1717"> </a>
+<a name="ln1718">    // On body armour, an enchantment of less than 0 is never viable.</a>
+<a name="ln1719">    int high_plus = random2(6) - 2;</a>
+<a name="ln1720">    high_plus += random2(6);</a>
+<a name="ln1721">    item.plus = max(high_plus, random2(2));</a>
+<a name="ln1722">}</a>
+<a name="ln1723"> </a>
+<a name="ln1724">static jewellery_type octoring_types[8] =</a>
+<a name="ln1725">{</a>
+<a name="ln1726">    RING_SEE_INVISIBLE, RING_PROTECTION_FROM_FIRE, RING_PROTECTION_FROM_COLD,</a>
+<a name="ln1727">    RING_RESIST_CORROSION, RING_STEALTH, RING_WIZARDRY, RING_MAGICAL_POWER,</a>
+<a name="ln1728">    RING_LIFE_PROTECTION</a>
+<a name="ln1729">};</a>
+<a name="ln1730"> </a>
+<a name="ln1731">static void _make_octoring(item_def &amp;item)</a>
+<a name="ln1732">{</a>
+<a name="ln1733">    if (you.octopus_king_rings == 0xff)</a>
+<a name="ln1734">    {</a>
+<a name="ln1735">        ASSERT(you.wizard || you.suppress_wizard || crawl_state.test);</a>
+<a name="ln1736">        item.sub_type = octoring_types[random2(8)];</a>
+<a name="ln1737">        return;</a>
+<a name="ln1738">    }</a>
+<a name="ln1739"> </a>
+<a name="ln1740">    int which = 0;</a>
+<a name="ln1741">    do which = random2(8); while (you.octopus_king_rings &amp; (1 &lt;&lt; which));</a>
+<a name="ln1742"> </a>
+<a name="ln1743">    item.sub_type = octoring_types[which];</a>
+<a name="ln1744"> </a>
+<a name="ln1745">    // Save that we've found that particular type</a>
+<a name="ln1746">    you.octopus_king_rings |= 1 &lt;&lt; which;</a>
+<a name="ln1747"> </a>
+<a name="ln1748">    // If there are any types left, unset the 'already found' flag</a>
+<a name="ln1749">    if (you.octopus_king_rings != 0xff)</a>
+<a name="ln1750">        _set_unique_item_status(UNRAND_OCTOPUS_KING_RING, UNIQ_NOT_EXISTS);</a>
+<a name="ln1751">}</a>
+<a name="ln1752"> </a>
+<a name="ln1753">bool make_item_unrandart(item_def &amp;item, int unrand_index)</a>
+<a name="ln1754">{</a>
+<a name="ln1755">    ASSERT_RANGE(unrand_index, UNRAND_START + 1, (UNRAND_START + NUM_UNRANDARTS));</a>
+<a name="ln1756"> </a>
+<a name="ln1757">    item.unrand_idx = unrand_index;</a>
+<a name="ln1758"> </a>
+<a name="ln1759">    const unrandart_entry *unrand = &amp;unranddata[unrand_index - UNRAND_START];</a>
+<a name="ln1760"> </a>
+<a name="ln1761">    item.flags |= ISFLAG_UNRANDART;</a>
+<a name="ln1762">    _artefact_setup_prop_vectors(item);</a>
+<a name="ln1763">    _init_artefact_properties(item);</a>
+<a name="ln1764"> </a>
+<a name="ln1765">    if (unrand-&gt;prpty[ARTP_CURSE])</a>
+<a name="ln1766">        do_curse_item(item);</a>
+<a name="ln1767"> </a>
+<a name="ln1768">    // get artefact appearance</a>
+<a name="ln1769">    ASSERT(!item.props.exists(ARTEFACT_APPEAR_KEY));</a>
+<a name="ln1770">    item.props[ARTEFACT_APPEAR_KEY].get_string() = unrand-&gt;unid_name;</a>
+<a name="ln1771"> </a>
+<a name="ln1772">    _set_unique_item_status(unrand_index, UNIQ_EXISTS);</a>
+<a name="ln1773"> </a>
+<a name="ln1774">    if (unrand_index == UNRAND_FAERIE)</a>
+<a name="ln1775">        _make_faerie_armour(item);</a>
+<a name="ln1776">    else if (unrand_index == UNRAND_OCTOPUS_KING_RING)</a>
+<a name="ln1777">        _make_octoring(item);</a>
+<a name="ln1778">    else if (unrand_index == UNRAND_WOE &amp;&amp; you.species != SP_FELID</a>
+<a name="ln1779">             &amp;&amp; !you.could_wield(item, true, true))</a>
+<a name="ln1780">    {</a>
+<a name="ln1781">        // always wieldable, always 2-handed</a>
+<a name="ln1782">        item.sub_type = WPN_BROAD_AXE;</a>
+<a name="ln1783">    }</a>
+<a name="ln1784"> </a>
+<a name="ln1785">    if (!(unrand-&gt;flags &amp; UNRAND_FLAG_UNIDED)</a>
+<a name="ln1786">        &amp;&amp; !strcmp(unrand-&gt;name, unrand-&gt;unid_name))</a>
+<a name="ln1787">    {</a>
+<a name="ln1788">        set_ident_flags(item, ISFLAG_IDENT_MASK | ISFLAG_NOTED_ID);</a>
+<a name="ln1789">    }</a>
+<a name="ln1790"> </a>
+<a name="ln1791">    return true;</a>
+<a name="ln1792">}</a>
+<a name="ln1793"> </a>
+<a name="ln1794">void unrand_reacts()</a>
+<a name="ln1795">{</a>
+<a name="ln1796">    item_def*  weapon     = you.weapon();</a>
+<a name="ln1797">    const int  old_plus   = weapon ? weapon-&gt;plus : 0;</a>
+<a name="ln1798"> </a>
+<a name="ln1799">    for (int i = 0; i &lt; NUM_EQUIP; i++)</a>
+<a name="ln1800">    {</a>
+<a name="ln1801">        if (you.unrand_reacts[i])</a>
+<a name="ln1802">        {</a>
+<a name="ln1803">            item_def&amp;        item  = you.inv[you.equip[i]];</a>
+<a name="ln1804">            const unrandart_entry* entry = get_unrand_entry(item.unrand_idx);</a>
+<a name="ln1805"> </a>
+<a name="ln1806">            entry-&gt;world_reacts_func(&amp;item);</a>
+<a name="ln1807">        }</a>
+<a name="ln1808">    }</a>
+<a name="ln1809"> </a>
+<a name="ln1810">    if (weapon &amp;&amp; (old_plus != weapon-&gt;plus))</a>
+<a name="ln1811">        you.wield_change = true;</a>
+<a name="ln1812">}</a>
+<a name="ln1813"> </a>
+<a name="ln1814">void artefact_set_property(item_def          &amp;item,</a>
+<a name="ln1815">                            artefact_prop_type prop,</a>
+<a name="ln1816">                            int                val)</a>
+<a name="ln1817">{</a>
+<a name="ln1818">    ASSERT(is_artefact(item));</a>
+<a name="ln1819">    ASSERT(item.props.exists(ARTEFACT_PROPS_KEY));</a>
+<a name="ln1820"> </a>
+<a name="ln1821">    CrawlVector &amp;rap_vec = item.props[ARTEFACT_PROPS_KEY].get_vector();</a>
+<a name="ln1822">    ASSERT(rap_vec.get_type()     == SV_SHORT);</a>
+<a name="ln1823">    ASSERT(rap_vec.size()         == ART_PROPERTIES);</a>
+<a name="ln1824">    ASSERT(rap_vec.get_max_size() == ART_PROPERTIES);</a>
+<a name="ln1825"> </a>
+<a name="ln1826">    rap_vec[prop].get_short() = val;</a>
+<a name="ln1827">}</a>
+<a name="ln1828"> </a>
+<a name="ln1829">template&lt;typename Z&gt;</a>
+<a name="ln1830">static inline void artefact_pad_store_vector(CrawlVector &amp;vec, Z value)</a>
+<a name="ln1831">{</a>
+<a name="ln1832">    if (vec.get_max_size() &lt; ART_PROPERTIES)</a>
+<a name="ln1833">    {</a>
+<a name="ln1834">        // Authentic tribal dance to propitiate the asserts in store.cc:</a>
+<a name="ln1835">        const int old_size = vec.get_max_size();</a>
+<a name="ln1836">        vec.set_max_size(VEC_MAX_SIZE);</a>
+<a name="ln1837">        vec.resize(ART_PROPERTIES);</a>
+<a name="ln1838">        vec.set_max_size(ART_PROPERTIES);</a>
+<a name="ln1839">        for (int i = old_size; i &lt; ART_PROPERTIES; ++i)</a>
+<a name="ln1840">            vec[i] = value;</a>
+<a name="ln1841">    }</a>
+<a name="ln1842">}</a>
+<a name="ln1843"> </a>
+<a name="ln1844">void artefact_fixup_props(item_def &amp;item)</a>
+<a name="ln1845">{</a>
+<a name="ln1846">    CrawlHashTable &amp;props = item.props;</a>
+<a name="ln1847">    if (props.exists(ARTEFACT_PROPS_KEY))</a>
+<a name="ln1848">        artefact_pad_store_vector(props[ARTEFACT_PROPS_KEY], short(0));</a>
+<a name="ln1849"> </a>
+<a name="ln1850">    if (props.exists(KNOWN_PROPS_KEY))</a>
+<a name="ln1851">        artefact_pad_store_vector(props[KNOWN_PROPS_KEY], false);</a>
+<a name="ln1852">}</a>
+
+</code></pre>
+<div class="balloon" rel="467"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'item_props' should be used inside 'item_attack_skill' function.</p></div>
+<div class="balloon" rel="896"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1438"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1438, 1490</p></div>
+<div class="balloon" rel="1536"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 1536, 1558</p></div>
+<div class="balloon" rel="1665"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

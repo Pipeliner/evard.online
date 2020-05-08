@@ -1,0 +1,865 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>tiledgnbuf.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3">#include &quot;tiledgnbuf.h&quot;</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &quot;tile-flags.h&quot;</a>
+<a name="ln6">#include &quot;rltiles/tiledef-dngn.h&quot;</a>
+<a name="ln7">#include &quot;rltiles/tiledef-icons.h&quot;</a>
+<a name="ln8">#include &quot;rltiles/tiledef-main.h&quot;</a>
+<a name="ln9">#include &quot;rltiles/tiledef-player.h&quot;</a>
+<a name="ln10">#include &quot;tiledoll.h&quot;</a>
+<a name="ln11">#include &quot;tilemcache.h&quot;</a>
+<a name="ln12">#include &quot;tilepick.h&quot;</a>
+<a name="ln13"> </a>
+<a name="ln14">DungeonCellBuffer::DungeonCellBuffer(const ImageManager *im) :</a>
+<a name="ln15">    m_buf_floor(&amp;im-&gt;m_textures[TEX_FLOOR]),</a>
+<a name="ln16">    m_buf_wall(&amp;im-&gt;m_textures[TEX_WALL]),</a>
+<a name="ln17">    m_buf_feat(&amp;im-&gt;m_textures[TEX_FEAT]),</a>
+<a name="ln18">    m_buf_feat_trans(&amp;im-&gt;m_textures[TEX_FEAT], 17),</a>
+<a name="ln19">    m_buf_doll(&amp;im-&gt;m_textures[TEX_PLAYER], 17),</a>
+<a name="ln20">    m_buf_main_trans(&amp;im-&gt;m_textures[TEX_DEFAULT], 17),</a>
+<a name="ln21">    m_buf_main(&amp;im-&gt;m_textures[TEX_DEFAULT]),</a>
+<a name="ln22">    m_buf_spells(&amp;im-&gt;m_textures[TEX_GUI]),</a>
+<a name="ln23">    m_buf_skills(&amp;im-&gt;m_textures[TEX_GUI]),</a>
+<a name="ln24">    m_buf_commands(&amp;im-&gt;m_textures[TEX_GUI]),</a>
+<a name="ln25">    m_buf_icons(&amp;im-&gt;m_textures[TEX_ICONS])</a>
+<a name="ln26">{</a>
+<a name="ln27">}</a>
+<a name="ln28"> </a>
+<a name="ln29">static bool _in_water(const packed_cell &amp;cell)</a>
+<a name="ln30">{</a>
+<a name="ln31">    return (cell.bg &amp; TILE_FLAG_WATER) &amp;&amp; !(cell.fg &amp; TILE_FLAG_FLYING);</a>
+<a name="ln32">}</a>
+<a name="ln33"> </a>
+<a name="ln34">void DungeonCellBuffer::add(const packed_cell &amp;cell, int x, int y)</a>
+<a name="ln35">{</a>
+<a name="ln36">    pack_background(x, y, cell);</a>
+<a name="ln37"> </a>
+<a name="ln38">    const tileidx_t fg_idx = cell.fg &amp; TILE_FLAG_MASK;</a>
+<a name="ln39">    const bool in_water = _in_water(cell);</a>
+<a name="ln40"> </a>
+<a name="ln41">    tileidx_t cloud_idx = cell.cloud &amp; TILE_FLAG_MASK;</a>
+<a name="ln42"> </a>
+<a name="ln43">    // in the shoals, ink is handled in pack_cell_overlays(): don't overdraw</a>
+<a name="ln44">    if (cloud_idx == TILE_CLOUD_INK &amp;&amp; player_in_branch(BRANCH_SHOALS))</a>
+<a name="ln45">        cloud_idx = 0;</a>
+<a name="ln46"> </a>
+<a name="ln47">    if (fg_idx &gt;= TILEP_MCACHE_START)</a>
+<a name="ln48">    {</a>
+<a name="ln49">        mcache_entry *entry = mcache.get(fg_idx);</a>
+<a name="ln50">        if (entry)</a>
+<a name="ln51">            pack_mcache(entry, x, y, in_water);</a>
+<a name="ln52">        else</a>
+<a name="ln53">            m_buf_doll.add(TILEP_MONS_UNKNOWN, x, y, 0, in_water, false);</a>
+<a name="ln54">    }</a>
+<a name="ln55">    else if (fg_idx == TILEP_PLAYER)</a>
+<a name="ln56">        pack_player(x, y, in_water);</a>
+<a name="ln57">    else if (fg_idx &gt;= TILE_MAIN_MAX)</a>
+<a name="ln58">        m_buf_doll.add(fg_idx, x, y, TILEP_PART_MAX, in_water, false);</a>
+<a name="ln59"> </a>
+<a name="ln60">    pack_foreground(x, y, cell);</a>
+<a name="ln61"> </a>
+<a name="ln62">    // Draw cloud layer(s)</a>
+<a name="ln63">    if (cloud_idx &amp;&amp; cloud_idx &lt; TILE_FEAT_MAX)</a>
+<a name="ln64">    {</a>
+<a name="ln65">        // If there's a foreground, sandwich it between two semi-transparent</a>
+<a name="ln66">        // clouds at different z-indices. This uses the same alpha fading as</a>
+<a name="ln67">        // a swimming characters but applied to the cloud (instead of as normal</a>
+<a name="ln68">        // applied to the character).</a>
+<a name="ln69">        if (fg_idx)</a>
+<a name="ln70">        {</a>
+<a name="ln71">            m_buf_main_trans.add_masked(cloud_idx, x, y, 0, 0, 0, -1, 255, 255, 20);</a>
+<a name="ln72">            m_buf_main_trans.add_masked(cloud_idx, x, y, 50, 0, 0, -1, 15, 255,20);</a>
+<a name="ln73">        }</a>
+<a name="ln74">        else</a>
+<a name="ln75">            // Otherwise render it normally with full transparency</a>
+<a name="ln76">             m_buf_main.add(cloud_idx, x, y);</a>
+<a name="ln77">    }</a>
+<a name="ln78">}</a>
+<a name="ln79"> </a>
+<a name="ln80">void DungeonCellBuffer::add_monster(const monster_info &amp;mon, int x, int y)</a>
+<a name="ln81">{</a>
+<a name="ln82">    tileidx_t t    = tileidx_monster(mon);</a>
+<a name="ln83">    tileidx_t t0   = t &amp; TILE_FLAG_MASK;</a>
+<a name="ln84">    tileidx_t flag = t &amp; (~TILE_FLAG_MASK);</a>
+<a name="ln85"> </a>
+<a name="ln86">    // Copied from _tile_place_monster()</a>
+<a name="ln87">    if (!mons_class_is_stationary(mon.type) || mon.type == MONS_TRAINING_DUMMY)</a>
+<a name="ln88">    {</a>
+<a name="ln89">        tileidx_t mcache_idx = mcache.register_monster(mon);</a>
+<a name="ln90">        t = flag | (mcache_idx ? mcache_idx : t0);</a>
+<a name="ln91">        t0 = t &amp; TILE_FLAG_MASK;</a>
+<a name="ln92">    }</a>
+<a name="ln93"> </a>
+<a name="ln94">    // Copied from ::add()</a>
+<a name="ln95">    if (t0 &gt;= TILEP_MCACHE_START)</a>
+<a name="ln96">    {</a>
+<a name="ln97">        mcache_entry *entry = mcache.get(t0);</a>
+<a name="ln98">        if (entry)</a>
+<a name="ln99">            pack_mcache(entry, x, y, false);</a>
+<a name="ln100">        else</a>
+<a name="ln101">            m_buf_doll.add(TILEP_MONS_UNKNOWN, x, y, 0, false, false);</a>
+<a name="ln102">    }</a>
+<a name="ln103">    else if (t0 &gt;= TILE_MAIN_MAX)</a>
+<a name="ln104">        m_buf_doll.add(t0, x, y, TILEP_PART_MAX, false, false);</a>
+<a name="ln105">    else if (t0 &amp;&amp; t0 &lt;= TILE_MAIN_MAX)</a>
+<a name="ln106">    {</a>
+<a name="ln107">        const tileidx_t base_idx = tileidx_known_base_item(t0);</a>
+<a name="ln108">        if (base_idx)</a>
+<a name="ln109">            m_buf_main.add(base_idx, x, y);</a>
+<a name="ln110">        m_buf_main.add(t0, x, y);</a>
+<a name="ln111">    }</a>
+<a name="ln112"> </a>
+<a name="ln113">    // hijack pack_foreground() to draw status icons</a>
+<a name="ln114">    packed_cell fake_cell;</a>
+<a name="ln115">    fake_cell.fg = flag;</a>
+<a name="ln116">    fake_cell.bg = 0;</a>
+<a name="ln117">    pack_foreground(x, y, fake_cell);</a>
+<a name="ln118">}</a>
+<a name="ln119"> </a>
+<a name="ln120">void DungeonCellBuffer::add_dngn_tile(int tileidx, int x, int y,</a>
+<a name="ln121">                                      bool in_water)</a>
+<a name="ln122">{</a>
+<a name="ln123">    ASSERT(tileidx &lt; TILE_FEAT_MAX);</a>
+<a name="ln124"> </a>
+<a name="ln125">    if (tileidx &lt; TILE_FLOOR_MAX)</a>
+<a name="ln126">        m_buf_floor.add(tileidx, x, y);</a>
+<a name="ln127">    else if (tileidx &lt; TILE_WALL_MAX)</a>
+<a name="ln128">        m_buf_wall.add(tileidx, x, y);</a>
+<a name="ln129">    else if (in_water)</a>
+<a name="ln130">    {</a>
+<a name="ln131">        m_buf_floor.add(TILE_DNGN_SHALLOW_WATER, x, y);</a>
+<a name="ln132">        m_buf_feat_trans.add(tileidx, x, y, 0, true, false);</a>
+<a name="ln133">    }</a>
+<a name="ln134">    else</a>
+<a name="ln135">        m_buf_feat.add(tileidx, x, y);</a>
+<a name="ln136">}</a>
+<a name="ln137"> </a>
+<a name="ln138">void DungeonCellBuffer::add_main_tile(int tileidx, int x, int y)</a>
+<a name="ln139">{</a>
+<a name="ln140">    tileidx_t base = tileidx_known_base_item(tileidx);</a>
+<a name="ln141">    if (base)</a>
+<a name="ln142">        m_buf_main.add(base, x, y);</a>
+<a name="ln143"> </a>
+<a name="ln144">    m_buf_main.add(tileidx, x, y);</a>
+<a name="ln145">}</a>
+<a name="ln146"> </a>
+<a name="ln147">void DungeonCellBuffer::add_main_tile(int tileidx, int x, int y, int ox, int oy)</a>
+<a name="ln148">{</a>
+<a name="ln149">    tileidx_t base = tileidx_known_base_item(tileidx);</a>
+<a name="ln150">    if (base)</a>
+<a name="ln151">        m_buf_main.add(base, x, y, ox, oy, false);</a>
+<a name="ln152"> </a>
+<a name="ln153">    m_buf_main.add(tileidx, x, y, ox, oy, false);</a>
+<a name="ln154">}</a>
+<a name="ln155"> </a>
+<a name="ln156">void DungeonCellBuffer::add_spell_tile(int tileidx, int x, int y)</a>
+<a name="ln157">{</a>
+<a name="ln158">    m_buf_spells.add(tileidx, x, y);</a>
+<a name="ln159">}</a>
+<a name="ln160"> </a>
+<a name="ln161">void DungeonCellBuffer::add_skill_tile(int tileidx, int x, int y)</a>
+<a name="ln162">{</a>
+<a name="ln163">    m_buf_skills.add(tileidx, x, y);</a>
+<a name="ln164">}</a>
+<a name="ln165"> </a>
+<a name="ln166">void DungeonCellBuffer::add_command_tile(int tileidx, int x, int y)</a>
+<a name="ln167">{</a>
+<a name="ln168">    m_buf_commands.add(tileidx, x, y);</a>
+<a name="ln169">}</a>
+<a name="ln170"> </a>
+<a name="ln171">void DungeonCellBuffer::add_icons_tile(int tileidx, int x, int y)</a>
+<a name="ln172">{</a>
+<a name="ln173">    m_buf_icons.add(tileidx, x, y);</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">void DungeonCellBuffer::add_icons_tile(int tileidx, int x, int y,</a>
+<a name="ln177">                                       int ox, int oy)</a>
+<a name="ln178">{</a>
+<a name="ln179">    m_buf_icons.add(tileidx, x, y, ox, oy, false);</a>
+<a name="ln180">}</a>
+<a name="ln181"> </a>
+<a name="ln182">void DungeonCellBuffer::clear()</a>
+<a name="ln183">{</a>
+<a name="ln184">    m_buf_floor.clear();</a>
+<a name="ln185">    m_buf_wall.clear();</a>
+<a name="ln186">    m_buf_feat.clear();</a>
+<a name="ln187">    m_buf_feat_trans.clear();</a>
+<a name="ln188">    m_buf_doll.clear();</a>
+<a name="ln189">    m_buf_main_trans.clear();</a>
+<a name="ln190">    m_buf_main.clear();</a>
+<a name="ln191">    m_buf_spells.clear();</a>
+<a name="ln192">    m_buf_skills.clear();</a>
+<a name="ln193">    m_buf_commands.clear();</a>
+<a name="ln194">    m_buf_icons.clear();</a>
+<a name="ln195">}</a>
+<a name="ln196"> </a>
+<a name="ln197">void DungeonCellBuffer::draw()</a>
+<a name="ln198">{</a>
+<a name="ln199">    m_buf_floor.draw();</a>
+<a name="ln200">    m_buf_wall.draw();</a>
+<a name="ln201">    m_buf_feat.draw();</a>
+<a name="ln202">    m_buf_feat_trans.draw();</a>
+<a name="ln203">    m_buf_doll.draw();</a>
+<a name="ln204">    m_buf_main_trans.draw();</a>
+<a name="ln205">    m_buf_main.draw();</a>
+<a name="ln206">    m_buf_skills.draw();</a>
+<a name="ln207">    m_buf_spells.draw();</a>
+<a name="ln208">    m_buf_commands.draw();</a>
+<a name="ln209">    m_buf_icons.draw();</a>
+<a name="ln210">}</a>
+<a name="ln211"> </a>
+<a name="ln212">void DungeonCellBuffer::add_blood_overlay(int x, int y, const packed_cell &amp;cell,</a>
+<a name="ln213">                                          bool is_wall)</a>
+<a name="ln214">{</a>
+<a name="ln215">    if (cell.is_liquefied &amp;&amp; !is_wall)</a>
+<a name="ln216">    {</a>
+<a name="ln217">        int offset = cell.flv.special % tile_dngn_count(TILE_LIQUEFACTION);</a>
+<a name="ln218">        m_buf_floor.add(TILE_LIQUEFACTION + offset, x, y);</a>
+<a name="ln219">    }</a>
+<a name="ln220">    else if (cell.is_bloody)</a>
+<a name="ln221">    {</a>
+<a name="ln222">        tileidx_t basetile;</a>
+<a name="ln223">        if (is_wall)</a>
+<a name="ln224">        {</a>
+<a name="ln225">            basetile = cell.old_blood ? TILE_WALL_OLD_BLOOD : TILE_WALL_BLOOD_S;</a>
+<a name="ln226">            basetile += tile_dngn_count(basetile) * cell.blood_rotation;</a>
+<a name="ln227">        }</a>
+<a name="ln228">        else</a>
+<a name="ln229">            basetile = TILE_BLOOD;</a>
+<a name="ln230">        const int offset = cell.flv.special % tile_dngn_count(basetile);</a>
+<a name="ln231">        m_buf_feat.add(basetile + offset, x, y);</a>
+<a name="ln232">    }</a>
+<a name="ln233">}</a>
+<a name="ln234"> </a>
+<a name="ln235">void DungeonCellBuffer::pack_background(int x, int y, const packed_cell &amp;cell)</a>
+<a name="ln236">{</a>
+<a name="ln237">    const tileidx_t bg = cell.bg;</a>
+<a name="ln238">    const tileidx_t bg_idx = cell.bg &amp; TILE_FLAG_MASK;</a>
+<a name="ln239"> </a>
+<a name="ln240">    if (bg_idx &gt;= TILE_DNGN_FIRST_TRANSPARENT)</a>
+<a name="ln241">        add_dngn_tile(cell.flv.floor, x, y);</a>
+<a name="ln242"> </a>
+<a name="ln243">    // Draw blood beneath feature tiles.</a>
+<a name="ln244">    if (bg_idx &gt; TILE_WALL_MAX)</a>
+<a name="ln245">        add_blood_overlay(x, y, cell);</a>
+<a name="ln246"> </a>
+<a name="ln247">    add_dngn_tile(bg_idx, x, y, cell.mangrove_water);</a>
+<a name="ln248"> </a>
+<a name="ln249">    if (bg_idx &gt; TILE_DNGN_UNSEEN)</a>
+<a name="ln250">    {</a>
+<a name="ln251">        // Draw blood on top of wall tiles.</a>
+<a name="ln252">        if (bg_idx &lt;= TILE_WALL_MAX)</a>
+<a name="ln253">            add_blood_overlay(x, y, cell, bg_idx &gt;= TILE_FLOOR_MAX);</a>
+<a name="ln254"> </a>
+<a name="ln255">        for (int i = 0; i &lt; cell.num_dngn_overlay; ++i)</a>
+<a name="ln256">            add_dngn_tile(cell.dngn_overlay[i], x, y);</a>
+<a name="ln257"> </a>
+<a name="ln258">        if (!(bg &amp; TILE_FLAG_UNSEEN))</a>
+<a name="ln259">        {</a>
+<a name="ln260">            // Add tentacle corner overlays.</a>
+<a name="ln261">            if (bg &amp; TILE_FLAG_TENTACLE_NW)</a>
+<a name="ln262">            {</a>
+<a name="ln263">                if (bg &amp; TILE_FLAG_TENTACLE_KRAKEN)</a>
+<a name="ln264">                    m_buf_feat.add(TILE_KRAKEN_OVERLAY_NW, x, y);</a>
+<a name="ln265">                else if (bg &amp; TILE_FLAG_TENTACLE_ELDRITCH)</a>
+<a name="ln266">                    m_buf_feat.add(TILE_ELDRITCH_OVERLAY_NW, x, y);</a>
+<a name="ln267">                else if (bg &amp; TILE_FLAG_TENTACLE_STARSPAWN)</a>
+<a name="ln268">                    m_buf_feat.add(TILE_STARSPAWN_OVERLAY_NW, x, y);</a>
+<a name="ln269">                else if (bg &amp; TILE_FLAG_TENTACLE_VINE)</a>
+<a name="ln270">                    m_buf_feat.add(TILE_VINE_OVERLAY_NW, x, y);</a>
+<a name="ln271">                else if (bg &amp; TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN)</a>
+<a name="ln272">                    m_buf_feat.add(TILE_KRAKEN_ZOMBIE_OVERLAY_NW, x, y);</a>
+<a name="ln273">                else if (bg &amp; TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN)</a>
+<a name="ln274">                    m_buf_feat.add(TILE_KRAKEN_SIMULACRUM_OVERLAY_NW, x, y);</a>
+<a name="ln275">                else if (bg &amp; TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN)</a>
+<a name="ln276">                    m_buf_feat.add(TILE_KRAKEN_SPECTRAL_OVERLAY_NW, x, y);</a>
+<a name="ln277">            }</a>
+<a name="ln278">            else if (bg &amp; TILE_FLAG_TENTACLE_NE)</a>
+<a name="ln279">            {</a>
+<a name="ln280">                if (bg &amp; TILE_FLAG_TENTACLE_KRAKEN)</a>
+<a name="ln281">                    m_buf_feat.add(TILE_KRAKEN_OVERLAY_NE, x, y);</a>
+<a name="ln282">                else if (bg &amp; TILE_FLAG_TENTACLE_ELDRITCH)</a>
+<a name="ln283">                    m_buf_feat.add(TILE_ELDRITCH_OVERLAY_NE, x, y);</a>
+<a name="ln284">                else if (bg &amp; TILE_FLAG_TENTACLE_STARSPAWN)</a>
+<a name="ln285">                    m_buf_feat.add(TILE_STARSPAWN_OVERLAY_NE, x, y);</a>
+<a name="ln286">                else if (bg &amp; TILE_FLAG_TENTACLE_VINE)</a>
+<a name="ln287">                    m_buf_feat.add(TILE_VINE_OVERLAY_NE, x, y);</a>
+<a name="ln288">                else if (bg &amp; TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN)</a>
+<a name="ln289">                    m_buf_feat.add(TILE_KRAKEN_ZOMBIE_OVERLAY_NE, x, y);</a>
+<a name="ln290">                else if (bg &amp; TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN)</a>
+<a name="ln291">                    m_buf_feat.add(TILE_KRAKEN_SIMULACRUM_OVERLAY_NE, x, y);</a>
+<a name="ln292">                else if (bg &amp; TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN)</a>
+<a name="ln293">                    m_buf_feat.add(TILE_KRAKEN_SPECTRAL_OVERLAY_NE, x, y);</a>
+<a name="ln294">            }</a>
+<a name="ln295">            else if (bg &amp; TILE_FLAG_TENTACLE_SW)</a>
+<a name="ln296">            {</a>
+<a name="ln297">                if (bg &amp; TILE_FLAG_TENTACLE_KRAKEN)</a>
+<a name="ln298">                    m_buf_feat.add(TILE_KRAKEN_OVERLAY_SW, x, y);</a>
+<a name="ln299">                else if (bg &amp; TILE_FLAG_TENTACLE_ELDRITCH)</a>
+<a name="ln300">                    m_buf_feat.add(TILE_ELDRITCH_OVERLAY_SW, x, y);</a>
+<a name="ln301">                else if (bg &amp; TILE_FLAG_TENTACLE_STARSPAWN)</a>
+<a name="ln302">                    m_buf_feat.add(TILE_STARSPAWN_OVERLAY_SW, x, y);</a>
+<a name="ln303">                else if (bg &amp; TILE_FLAG_TENTACLE_VINE)</a>
+<a name="ln304">                    m_buf_feat.add(TILE_VINE_OVERLAY_SW, x, y);</a>
+<a name="ln305">                else if (bg &amp; TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN)</a>
+<a name="ln306">                    m_buf_feat.add(TILE_KRAKEN_ZOMBIE_OVERLAY_SW, x, y);</a>
+<a name="ln307">                else if (bg &amp; TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN)</a>
+<a name="ln308">                    m_buf_feat.add(TILE_KRAKEN_SIMULACRUM_OVERLAY_SW, x, y);</a>
+<a name="ln309">                else if (bg &amp; TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN)</a>
+<a name="ln310">                    m_buf_feat.add(TILE_KRAKEN_SPECTRAL_OVERLAY_SW, x, y);</a>
+<a name="ln311">            }</a>
+<a name="ln312">            else if (bg &amp; TILE_FLAG_TENTACLE_SE)</a>
+<a name="ln313">            {</a>
+<a name="ln314">                if (bg &amp; TILE_FLAG_TENTACLE_KRAKEN)</a>
+<a name="ln315">                    m_buf_feat.add(TILE_KRAKEN_OVERLAY_SE, x, y);</a>
+<a name="ln316">                else if (bg &amp; TILE_FLAG_TENTACLE_ELDRITCH)</a>
+<a name="ln317">                    m_buf_feat.add(TILE_ELDRITCH_OVERLAY_SE, x, y);</a>
+<a name="ln318">                else if (bg &amp; TILE_FLAG_TENTACLE_STARSPAWN)</a>
+<a name="ln319">                    m_buf_feat.add(TILE_STARSPAWN_OVERLAY_SE, x, y);</a>
+<a name="ln320">                else if (bg &amp; TILE_FLAG_TENTACLE_VINE)</a>
+<a name="ln321">                    m_buf_feat.add(TILE_VINE_OVERLAY_SE, x, y);</a>
+<a name="ln322">                else if (bg &amp; TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN)</a>
+<a name="ln323">                    m_buf_feat.add(TILE_KRAKEN_ZOMBIE_OVERLAY_SE, x, y);</a>
+<a name="ln324">                else if (bg &amp; TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN)</a>
+<a name="ln325">                    m_buf_feat.add(TILE_KRAKEN_SIMULACRUM_OVERLAY_SE, x, y);</a>
+<a name="ln326">                else if (bg &amp; TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN)</a>
+<a name="ln327">                    m_buf_feat.add(TILE_KRAKEN_SPECTRAL_OVERLAY_SE, x, y);</a>
+<a name="ln328">            }</a>
+<a name="ln329">        }</a>
+<a name="ln330"> </a>
+<a name="ln331">        if (!(bg &amp; TILE_FLAG_UNSEEN))</a>
+<a name="ln332">        {</a>
+<a name="ln333">            if (cell.is_sanctuary)</a>
+<a name="ln334">                m_buf_feat.add(TILE_SANCTUARY, x, y);</a>
+<a name="ln335">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln336">            if (cell.heat_aura)</a>
+<a name="ln337">                m_buf_feat.add(TILE_HEAT_AURA + cell.heat_aura - 1, x, y);</a>
+<a name="ln338">#endif</a>
+<a name="ln339">            if (cell.is_silenced)</a>
+<a name="ln340">                m_buf_feat.add(TILE_SILENCED, x, y);</a>
+<a name="ln341">            if (cell.halo == HALO_RANGE)</a>
+<a name="ln342">                m_buf_feat.add(TILE_HALO_RANGE, x, y);</a>
+<a name="ln343">            if (cell.halo == HALO_UMBRA)</a>
+<a name="ln344">                m_buf_feat.add(TILE_UMBRA + random2(4), x, y);</a>
+<a name="ln345"> </a>
+<a name="ln346">            if (cell.orb_glow)</a>
+<a name="ln347">                m_buf_feat.add(TILE_ORB_GLOW + cell.orb_glow - 1, x, y);</a>
+<a name="ln348">            if (cell.quad_glow)</a>
+<a name="ln349">                m_buf_feat.add(TILE_QUAD_GLOW, x, y);</a>
+<a name="ln350">            if (cell.disjunct)</a>
+<a name="ln351">                m_buf_feat.add(TILE_DISJUNCT + cell.disjunct - 1, x, y);</a>
+<a name="ln352">            if (cell.awakened_forest)</a>
+<a name="ln353">                m_buf_icons.add(TILEI_BERSERK, x, y);</a>
+<a name="ln354"> </a>
+<a name="ln355">            if (cell.fg)</a>
+<a name="ln356">            {</a>
+<a name="ln357">                const tileidx_t att_flag = cell.fg &amp; TILE_FLAG_ATT_MASK;</a>
+<a name="ln358">                if (att_flag == TILE_FLAG_PET)</a>
+<a name="ln359">                    m_buf_feat.add(TILE_HALO_FRIENDLY, x, y);</a>
+<a name="ln360">                else if (att_flag == TILE_FLAG_GD_NEUTRAL)</a>
+<a name="ln361">                    m_buf_feat.add(TILE_HALO_GD_NEUTRAL, x, y);</a>
+<a name="ln362">                else if (att_flag == TILE_FLAG_NEUTRAL)</a>
+<a name="ln363">                    m_buf_feat.add(TILE_HALO_NEUTRAL, x, y);</a>
+<a name="ln364"> </a>
+<a name="ln365">                const tileidx_t threat_flag = cell.fg &amp; TILE_FLAG_THREAT_MASK;</a>
+<a name="ln366">                if (threat_flag == TILE_FLAG_TRIVIAL)</a>
+<a name="ln367">                    m_buf_feat.add(TILE_THREAT_TRIVIAL, x, y);</a>
+<a name="ln368">                else if (threat_flag == TILE_FLAG_EASY)</a>
+<a name="ln369">                    m_buf_feat.add(TILE_THREAT_EASY, x, y);</a>
+<a name="ln370">                else if (threat_flag == TILE_FLAG_TOUGH)</a>
+<a name="ln371">                    m_buf_feat.add(TILE_THREAT_TOUGH, x, y);</a>
+<a name="ln372">                else if (threat_flag == TILE_FLAG_NASTY)</a>
+<a name="ln373">                    m_buf_feat.add(TILE_THREAT_NASTY, x, y);</a>
+<a name="ln374"> </a>
+<a name="ln375">                if (cell.is_highlighted_summoner)</a>
+<a name="ln376">                    m_buf_feat.add(TILE_HALO_SUMMONER, x, y);</a>
+<a name="ln377">            }</a>
+<a name="ln378"> </a>
+<a name="ln379">            // Apply the travel exclusion under the foreground if the cell is</a>
+<a name="ln380">            // visible. It will be applied later if the cell is unseen.</a>
+<a name="ln381">            if (bg &amp; TILE_FLAG_EXCL_CTR)</a>
+<a name="ln382">                m_buf_feat.add(TILE_TRAVEL_EXCLUSION_CENTRE_BG, x, y);</a>
+<a name="ln383">            else if (bg &amp; TILE_FLAG_TRAV_EXCL)</a>
+<a name="ln384">                m_buf_feat.add(TILE_TRAVEL_EXCLUSION_BG, x, y);</a>
+<a name="ln385">        }</a>
+<a name="ln386"> </a>
+<a name="ln387">    }</a>
+<a name="ln388"> </a>
+<a name="ln389">    // allow rays even on completely unseen squares (e.g. passwall)</a>
+<a name="ln390">    if (bg &amp; TILE_FLAG_RAY)</a>
+<a name="ln391">        m_buf_feat.add(TILE_RAY, x, y);</a>
+<a name="ln392">    else if (bg &amp; TILE_FLAG_RAY_OOR)</a>
+<a name="ln393">        m_buf_feat.add(TILE_RAY_OUT_OF_RANGE, x, y);</a>
+<a name="ln394">    else if (bg &amp; TILE_FLAG_LANDING)</a>
+<a name="ln395">        m_buf_feat.add(TILE_LANDING, x, y);</a>
+<a name="ln396">    else if (bg &amp; TILE_FLAG_RAY_MULTI)</a>
+<a name="ln397">        m_buf_feat.add(TILE_RAY_MULTI, x, y);</a>
+<a name="ln398">}</a>
+<a name="ln399"> </a>
+<a name="ln400">void DungeonCellBuffer::pack_foreground(int x, int y, const packed_cell &amp;cell)</a>
+<a name="ln401">{</a>
+<a name="ln402">    const tileidx_t fg = cell.fg;</a>
+<a name="ln403">    const tileidx_t bg = cell.bg;</a>
+<a name="ln404">    const tileidx_t fg_idx = cell.fg &amp; TILE_FLAG_MASK;</a>
+<a name="ln405">    const bool in_water = _in_water(cell);</a>
+<a name="ln406"> </a>
+<a name="ln407">    if (fg_idx &amp;&amp; fg_idx &lt;= TILE_MAIN_MAX)</a>
+<a name="ln408">    {</a>
+<a name="ln409">        const tileidx_t base_idx = tileidx_known_base_item(fg_idx);</a>
+<a name="ln410"> </a>
+<a name="ln411">        if (in_water)</a>
+<a name="ln412">        {</a>
+<a name="ln413">            if (base_idx)</a>
+<a name="ln414">                m_buf_main_trans.add(base_idx, x, y, 0, true, false);</a>
+<a name="ln415">            m_buf_main_trans.add(fg_idx, x, y, 0, true, false);</a>
+<a name="ln416">        }</a>
+<a name="ln417">        else</a>
+<a name="ln418">        {</a>
+<a name="ln419">            if (base_idx)</a>
+<a name="ln420">                m_buf_main.add(base_idx, x, y);</a>
+<a name="ln421"> </a>
+<a name="ln422">            m_buf_main.add(fg_idx, x, y);</a>
+<a name="ln423">        }</a>
+<a name="ln424">    }</a>
+<a name="ln425"> </a>
+<a name="ln426">    if (fg &amp; TILE_FLAG_NET)</a>
+<a name="ln427">        m_buf_icons.add(TILEI_TRAP_NET, x, y);</a>
+<a name="ln428"> </a>
+<a name="ln429">    if (fg &amp; TILE_FLAG_WEB)</a>
+<a name="ln430">        m_buf_icons.add(TILEI_TRAP_WEB, x, y);</a>
+<a name="ln431"> </a>
+<a name="ln432">    if (fg &amp; TILE_FLAG_S_UNDER)</a>
+<a name="ln433">        m_buf_icons.add(TILEI_SOMETHING_UNDER, x, y);</a>
+<a name="ln434"> </a>
+<a name="ln435">    // Pet mark</a>
+<a name="ln436">    if (fg &amp; TILE_FLAG_ATT_MASK)</a>
+<a name="ln437">    {</a>
+<a name="ln438">        const tileidx_t att_flag = fg &amp; TILE_FLAG_ATT_MASK;</a>
+<a name="ln439">        if (att_flag == TILE_FLAG_PET)</a>
+<a name="ln440">            m_buf_icons.add(TILEI_FRIENDLY, x, y);</a>
+<a name="ln441">        else if (att_flag == TILE_FLAG_GD_NEUTRAL)</a>
+<a name="ln442">            m_buf_icons.add(TILEI_GOOD_NEUTRAL, x, y);</a>
+<a name="ln443">        else if (att_flag == TILE_FLAG_NEUTRAL)</a>
+<a name="ln444">            m_buf_icons.add(TILEI_NEUTRAL, x, y);</a>
+<a name="ln445">    }</a>
+<a name="ln446"> </a>
+<a name="ln447">    //The berserk icon is in the lower right, so status_shift doesn't need changing.</a>
+<a name="ln448">    if (fg &amp; TILE_FLAG_BERSERK)</a>
+<a name="ln449">        m_buf_icons.add(TILEI_BERSERK, x, y);</a>
+<a name="ln450">    // ditto ideal</a>
+<a name="ln451">    if (fg &amp; TILE_FLAG_IDEALISED)</a>
+<a name="ln452">        m_buf_icons.add(TILEI_IDEALISED, x, y);</a>
+<a name="ln453"> </a>
+<a name="ln454">    int status_shift = 0;</a>
+<a name="ln455">    if (fg &amp; TILE_FLAG_BEH_MASK)</a>
+<a name="ln456">    {</a>
+<a name="ln457">        const tileidx_t beh_flag = fg &amp; TILE_FLAG_BEH_MASK;</a>
+<a name="ln458">        if (beh_flag == TILE_FLAG_STAB)</a>
+<a name="ln459">        {</a>
+<a name="ln460">            m_buf_icons.add(TILEI_STAB_BRAND, x, y);</a>
+<a name="ln461">            status_shift += 12;</a>
+<a name="ln462">        }</a>
+<a name="ln463">        else if (beh_flag == TILE_FLAG_MAY_STAB)</a>
+<a name="ln464">        {</a>
+<a name="ln465">            m_buf_icons.add(TILEI_MAY_STAB_BRAND, x, y);</a>
+<a name="ln466">            status_shift += 7;</a>
+<a name="ln467">        }</a>
+<a name="ln468">        else if (beh_flag == TILE_FLAG_FLEEING)</a>
+<a name="ln469">        {</a>
+<a name="ln470">            m_buf_icons.add(TILEI_FLEEING, x, y);</a>
+<a name="ln471">            status_shift += 3;</a>
+<a name="ln472">        }</a>
+<a name="ln473">    }</a>
+<a name="ln474"> </a>
+<a name="ln475">    if (fg &amp; TILE_FLAG_POISON_MASK)</a>
+<a name="ln476">    {</a>
+<a name="ln477">        const tileidx_t poison_flag = fg &amp; TILE_FLAG_POISON_MASK;</a>
+<a name="ln478">        if (poison_flag == TILE_FLAG_POISON)</a>
+<a name="ln479">        {</a>
+<a name="ln480">            m_buf_icons.add(TILEI_POISON, x, y, -status_shift, 0);</a>
+<a name="ln481">            status_shift += 5;</a>
+<a name="ln482">        }</a>
+<a name="ln483">        else if (poison_flag == TILE_FLAG_MORE_POISON)</a>
+<a name="ln484">        {</a>
+<a name="ln485">            m_buf_icons.add(TILEI_MORE_POISON, x, y, -status_shift, 0);</a>
+<a name="ln486">            status_shift += 5;</a>
+<a name="ln487">        }</a>
+<a name="ln488">        else if (poison_flag == TILE_FLAG_MAX_POISON)</a>
+<a name="ln489">        {</a>
+<a name="ln490">            m_buf_icons.add(TILEI_MAX_POISON, x, y, -status_shift, 0);</a>
+<a name="ln491">            status_shift += 5;</a>
+<a name="ln492">        }</a>
+<a name="ln493">    }</a>
+<a name="ln494"> </a>
+<a name="ln495">    if (fg &amp; TILE_FLAG_STICKY_FLAME)</a>
+<a name="ln496">    {</a>
+<a name="ln497">        m_buf_icons.add(TILEI_STICKY_FLAME, x, y, -status_shift, 0);</a>
+<a name="ln498">        status_shift += 7;</a>
+<a name="ln499">    }</a>
+<a name="ln500">    if (fg &amp; TILE_FLAG_INNER_FLAME)</a>
+<a name="ln501">    {</a>
+<a name="ln502">        m_buf_icons.add(TILEI_INNER_FLAME, x, y, -status_shift, 0);</a>
+<a name="ln503">        status_shift += 7;</a>
+<a name="ln504">    }</a>
+<a name="ln505">    if (fg &amp; TILE_FLAG_CONSTRICTED)</a>
+<a name="ln506">    {</a>
+<a name="ln507">        m_buf_icons.add(TILEI_CONSTRICTED, x, y, -status_shift, 0);</a>
+<a name="ln508">        status_shift += 11;</a>
+<a name="ln509">    }</a>
+<a name="ln510">    if (fg &amp; TILE_FLAG_GLOWING)</a>
+<a name="ln511">    {</a>
+<a name="ln512">        //if (!cell.halo)</a>
+<a name="ln513">        //    m_buf_feat.add(TILE_HALO, x, y);</a>
+<a name="ln514"> </a>
+<a name="ln515">        m_buf_icons.add(TILEI_GLOWING, x, y, -status_shift, 0);</a>
+<a name="ln516">        status_shift += 7;</a>
+<a name="ln517">    }</a>
+<a name="ln518">    if (fg &amp; TILE_FLAG_HASTED)</a>
+<a name="ln519">    {</a>
+<a name="ln520">        m_buf_icons.add(TILEI_HASTED, x, y, -status_shift, 0);</a>
+<a name="ln521">        status_shift += 6;</a>
+<a name="ln522">    }</a>
+<a name="ln523">    if (fg &amp; TILE_FLAG_SLOWED)</a>
+<a name="ln524">    {</a>
+<a name="ln525">        m_buf_icons.add(TILEI_SLOWED, x, y, -status_shift, 0);</a>
+<a name="ln526">        status_shift += 6;</a>
+<a name="ln527">    }</a>
+<a name="ln528">    if (fg &amp; TILE_FLAG_MIGHT)</a>
+<a name="ln529">    {</a>
+<a name="ln530">        m_buf_icons.add(TILEI_MIGHT, x, y, -status_shift, 0);</a>
+<a name="ln531">        status_shift += 6;</a>
+<a name="ln532">    }</a>
+<a name="ln533">    if (fg &amp; TILE_FLAG_DRAIN)</a>
+<a name="ln534">    {</a>
+<a name="ln535">        m_buf_icons.add(TILEI_DRAIN, x, y, -status_shift, 0);</a>
+<a name="ln536">        status_shift += 6;</a>
+<a name="ln537">    }</a>
+<a name="ln538">    if (fg &amp; TILE_FLAG_PAIN_MIRROR)</a>
+<a name="ln539">    {</a>
+<a name="ln540">        m_buf_icons.add(TILEI_PAIN_MIRROR, x, y, -status_shift, 0);</a>
+<a name="ln541">        status_shift += 7;</a>
+<a name="ln542">    }</a>
+<a name="ln543">    if (fg &amp; TILE_FLAG_PETRIFYING)</a>
+<a name="ln544">    {</a>
+<a name="ln545">        m_buf_icons.add(TILEI_PETRIFYING, x, y, -status_shift, 0);</a>
+<a name="ln546">        status_shift += 6;</a>
+<a name="ln547">    }</a>
+<a name="ln548">    if (fg &amp; TILE_FLAG_PETRIFIED)</a>
+<a name="ln549">    {</a>
+<a name="ln550">        m_buf_icons.add(TILEI_PETRIFIED, x, y, -status_shift, 0);</a>
+<a name="ln551">        status_shift += 6;</a>
+<a name="ln552">    }</a>
+<a name="ln553">    if (fg &amp; TILE_FLAG_BLIND)</a>
+<a name="ln554">    {</a>
+<a name="ln555">        m_buf_icons.add(TILEI_BLIND, x, y, -status_shift, 0);</a>
+<a name="ln556">        status_shift += 10;</a>
+<a name="ln557">    }</a>
+<a name="ln558">    if (fg &amp; TILE_FLAG_DEATHS_DOOR)</a>
+<a name="ln559">    {</a>
+<a name="ln560">        m_buf_icons.add(TILEI_DEATHS_DOOR, x, y, -status_shift, 0);</a>
+<a name="ln561">        status_shift += 10;</a>
+<a name="ln562">    }</a>
+<a name="ln563">    if (fg &amp; TILE_FLAG_BOUND_SOUL)</a>
+<a name="ln564">    {</a>
+<a name="ln565">        m_buf_icons.add(TILEI_BOUND_SOUL, x, y, -status_shift, 0);</a>
+<a name="ln566">        status_shift += 6;</a>
+<a name="ln567">    }</a>
+<a name="ln568">    if (fg &amp; TILE_FLAG_INFESTED)</a>
+<a name="ln569">    {</a>
+<a name="ln570">        m_buf_icons.add(TILEI_INFESTED, x, y, -status_shift, 0);</a>
+<a name="ln571">        status_shift += 6;</a>
+<a name="ln572">    }</a>
+<a name="ln573">    if (fg &amp; TILE_FLAG_CORRODED)</a>
+<a name="ln574">    {</a>
+<a name="ln575">        m_buf_icons.add(TILEI_CORRODED, x, y, -status_shift, 0);</a>
+<a name="ln576">        status_shift += 6;</a>
+<a name="ln577">    }</a>
+<a name="ln578">    if (fg &amp; TILE_FLAG_SWIFT)</a>
+<a name="ln579">    {</a>
+<a name="ln580">        m_buf_icons.add(TILEI_SWIFT, x, y, -status_shift, 0);</a>
+<a name="ln581">        status_shift += 6;</a>
+<a name="ln582">    }</a>
+<a name="ln583">    if (fg &amp; TILE_FLAG_RECALL)</a>
+<a name="ln584">    {</a>
+<a name="ln585">        m_buf_icons.add(TILEI_RECALL, x, y, -status_shift, 0);</a>
+<a name="ln586">        status_shift += 9;</a>
+<a name="ln587">    }</a>
+<a name="ln588">    if (fg &amp; TILE_FLAG_VILE_CLUTCH)</a>
+<a name="ln589">    {</a>
+<a name="ln590">        m_buf_icons.add(TILEI_VILE_CLUTCH, x, y, -status_shift, 0);</a>
+<a name="ln591">        status_shift += 11;</a>
+<a name="ln592">    }</a>
+<a name="ln593">    if (fg &amp; TILE_FLAG_POSSESSABLE)</a>
+<a name="ln594">    {</a>
+<a name="ln595">        m_buf_icons.add(TILEI_POSSESSABLE, x, y, -status_shift, 0);</a>
+<a name="ln596">        status_shift += 6;</a>
+<a name="ln597">    }</a>
+<a name="ln598"> </a>
+<a name="ln599">    // Summoned and anim. weap. icons will overlap if you have a</a>
+<a name="ln600">    // summoned dancing weapon, but that's rare and still looks okay.</a>
+<a name="ln601">    if (fg &amp; TILE_FLAG_ANIM_WEP)</a>
+<a name="ln602">        m_buf_icons.add(TILEI_ANIMATED_WEAPON, x, y);</a>
+<a name="ln603">    if (fg &amp; TILE_FLAG_SUMMONED)</a>
+<a name="ln604">        m_buf_icons.add(TILEI_SUMMONED, x, y);</a>
+<a name="ln605">    if (fg &amp; TILE_FLAG_PERM_SUMMON)</a>
+<a name="ln606">        m_buf_icons.add(TILEI_PERM_SUMMON, x, y);</a>
+<a name="ln607"> </a>
+<a name="ln608">    if (bg &amp; TILE_FLAG_UNSEEN &amp;&amp; (bg != TILE_FLAG_UNSEEN || fg))</a>
+<a name="ln609">        m_buf_icons.add(TILEI_MESH, x, y);</a>
+<a name="ln610"> </a>
+<a name="ln611">    if (bg &amp; TILE_FLAG_OOR &amp;&amp; (bg != TILE_FLAG_OOR || fg))</a>
+<a name="ln612">        m_buf_icons.add(TILEI_OOR_MESH, x, y);</a>
+<a name="ln613"> </a>
+<a name="ln614">    if (bg &amp; TILE_FLAG_MM_UNSEEN &amp;&amp; (bg != TILE_FLAG_MM_UNSEEN || fg))</a>
+<a name="ln615">        m_buf_icons.add(TILEI_MAGIC_MAP_MESH, x, y);</a>
+<a name="ln616"> </a>
+<a name="ln617">    // Don't let the &quot;new stair&quot; icon cover up any existing icons, but</a>
+<a name="ln618">    // draw it otherwise.</a>
+<a name="ln619">    if (bg &amp; TILE_FLAG_NEW_STAIR &amp;&amp; status_shift == 0)</a>
+<a name="ln620">        m_buf_icons.add(TILEI_NEW_STAIR, x, y);</a>
+<a name="ln621"> </a>
+<a name="ln622">    if (bg &amp; TILE_FLAG_NEW_TRANSPORTER &amp;&amp; status_shift == 0)</a>
+<a name="ln623">        m_buf_icons.add(TILEI_NEW_TRANSPORTER, x, y);</a>
+<a name="ln624"> </a>
+<a name="ln625">    if (bg &amp; TILE_FLAG_EXCL_CTR &amp;&amp; (bg &amp; TILE_FLAG_UNSEEN))</a>
+<a name="ln626">        m_buf_icons.add(TILEI_TRAVEL_EXCLUSION_CENTRE_FG, x, y);</a>
+<a name="ln627">    else if (bg &amp; TILE_FLAG_TRAV_EXCL &amp;&amp; (bg &amp; TILE_FLAG_UNSEEN))</a>
+<a name="ln628">        m_buf_icons.add(TILEI_TRAVEL_EXCLUSION_FG, x, y);</a>
+<a name="ln629"> </a>
+<a name="ln630">    // Tutorial cursor takes precedence over other cursors.</a>
+<a name="ln631">    if (bg &amp; TILE_FLAG_TUT_CURSOR)</a>
+<a name="ln632">        m_buf_icons.add(TILEI_TUTORIAL_CURSOR, x, y);</a>
+<a name="ln633">    else if (bg &amp; TILE_FLAG_CURSOR)</a>
+<a name="ln634">    {</a>
+<a name="ln635">        int type = ((bg &amp; TILE_FLAG_CURSOR) == TILE_FLAG_CURSOR1) ?</a>
+<a name="ln636">            TILEI_CURSOR : TILEI_CURSOR2;</a>
+<a name="ln637"> </a>
+<a name="ln638">        if ((bg &amp; TILE_FLAG_CURSOR) == TILE_FLAG_CURSOR3)</a>
+<a name="ln639">           type = TILEI_CURSOR3;</a>
+<a name="ln640"> </a>
+<a name="ln641">        m_buf_icons.add(type, x, y);</a>
+<a name="ln642">    }</a>
+<a name="ln643"> </a>
+<a name="ln644">    if (cell.travel_trail &amp; 0xF)</a>
+<a name="ln645">    {</a>
+<a name="ln646">        m_buf_icons.add(TILEI_TRAVEL_PATH_FROM +</a>
+<a name="ln647">                        (cell.travel_trail &amp; 0xF) - 1, x, y);</a>
+<a name="ln648">    }</a>
+<a name="ln649">    if (cell.travel_trail &amp; 0xF0)</a>
+<a name="ln650">    {</a>
+<a name="ln651">        m_buf_icons.add(TILEI_TRAVEL_PATH_TO +</a>
+<a name="ln652">                        ((cell.travel_trail &amp; 0xF0) &gt;&gt; 4) - 1, x, y);</a>
+<a name="ln653">    }</a>
+<a name="ln654"> </a>
+<a name="ln655">    if (fg &amp; TILE_FLAG_MDAM_MASK)</a>
+<a name="ln656">    {</a>
+<a name="ln657">        tileidx_t mdam_flag = fg &amp; TILE_FLAG_MDAM_MASK;</a>
+<a name="ln658">        if (mdam_flag == TILE_FLAG_MDAM_LIGHT)</a>
+<a name="ln659">            m_buf_icons.add(TILEI_MDAM_LIGHTLY_DAMAGED, x, y);</a>
+<a name="ln660">        else if (mdam_flag == TILE_FLAG_MDAM_MOD)</a>
+<a name="ln661">            m_buf_icons.add(TILEI_MDAM_MODERATELY_DAMAGED, x, y);</a>
+<a name="ln662">        else if (mdam_flag == TILE_FLAG_MDAM_HEAVY)</a>
+<a name="ln663">            m_buf_icons.add(TILEI_MDAM_HEAVILY_DAMAGED, x, y);</a>
+<a name="ln664">        else if (mdam_flag == TILE_FLAG_MDAM_SEV)</a>
+<a name="ln665">            m_buf_icons.add(TILEI_MDAM_SEVERELY_DAMAGED, x, y);</a>
+<a name="ln666">        else if (mdam_flag == TILE_FLAG_MDAM_ADEAD)</a>
+<a name="ln667">            m_buf_icons.add(TILEI_MDAM_ALMOST_DEAD, x, y);</a>
+<a name="ln668">    }</a>
+<a name="ln669"> </a>
+<a name="ln670">    if (fg &amp; TILE_FLAG_DEMON)</a>
+<a name="ln671">    {</a>
+<a name="ln672">        tileidx_t demon_flag = fg &amp; TILE_FLAG_DEMON;</a>
+<a name="ln673">        if (demon_flag == TILE_FLAG_DEMON_1)</a>
+<a name="ln674">            m_buf_icons.add(TILEI_DEMON_NUM1, x, y);</a>
+<a name="ln675">        else if (demon_flag == TILE_FLAG_DEMON_2)</a>
+<a name="ln676">            m_buf_icons.add(TILEI_DEMON_NUM2, x, y);</a>
+<a name="ln677">        else if (demon_flag == TILE_FLAG_DEMON_3)</a>
+<a name="ln678">            m_buf_icons.add(TILEI_DEMON_NUM3, x, y);</a>
+<a name="ln679">        else if (demon_flag == TILE_FLAG_DEMON_4)</a>
+<a name="ln680">            m_buf_icons.add(TILEI_DEMON_NUM4, x, y);</a>
+<a name="ln681">        else if (demon_flag == TILE_FLAG_DEMON_5)</a>
+<a name="ln682">            m_buf_icons.add(TILEI_DEMON_NUM5, x, y);</a>
+<a name="ln683">    }</a>
+<a name="ln684">}</a>
+<a name="ln685"> </a>
+<a name="ln686">void DungeonCellBuffer::pack_player(int x, int y, bool submerged)</a>
+<a name="ln687">{</a>
+<a name="ln688">    dolls_data result = player_doll;</a>
+<a name="ln689">    fill_doll_equipment(result);</a>
+<a name="ln690">    pack_doll(result, x, y, submerged, false);</a>
+<a name="ln691">}</a>
+<a name="ln692"> </a>
+<a name="ln693">void DungeonCellBuffer::pack_doll(const dolls_data &amp;doll, int x, int y,</a>
+<a name="ln694">                                  bool submerged, bool ghost)</a>
+<a name="ln695">{</a>
+<a name="ln696">    pack_doll_buf(m_buf_doll, doll, x, y, submerged, ghost);</a>
+<a name="ln697">}</a>
+<a name="ln698"> </a>
+<a name="ln699">void DungeonCellBuffer::pack_mcache(mcache_entry *entry, int x, int y,</a>
+<a name="ln700">                                    bool submerged)</a>
+<a name="ln701">{</a>
+<a name="ln702">    ASSERT(entry);</a>
+<a name="ln703"> </a>
+<a name="ln704">    bool trans = entry-&gt;transparent();</a>
+<a name="ln705"> </a>
+<a name="ln706">    const dolls_data *doll = entry-&gt;doll();</a>
+<a name="ln707">    if (doll)</a>
+<a name="ln708">        pack_doll(*doll, x, y, submerged, trans);</a>
+<a name="ln709"> </a>
+<a name="ln710">    tile_draw_info dinfo[mcache_entry::MAX_INFO_COUNT];</a>
+<a name="ln711">    int draw_info_count = entry-&gt;info(&amp;dinfo[0]);</a>
+<a name="ln712">    for (int i = 0; i &lt; draw_info_count; i++)</a>
+<a name="ln713">    {</a>
+<a name="ln714">        m_buf_doll.add(dinfo[i].idx, x, y, TILEP_PART_MAX, submerged, trans,</a>
+<a name="ln715">                       dinfo[i].ofs_x, dinfo[i].ofs_y);</a>
+<a name="ln716">    }</a>
+<a name="ln717">}</a>
+<a name="ln718">#endif //TILEDGNBUF.CC</a>
+
+</code></pre>
+<div class="balloon" rel="263"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="265"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ELDRITCH' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="267"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_STARSPAWN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="269"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_VINE' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="271"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="273"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="275"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="275"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="273"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression is always false.</p></div>
+<div class="balloon" rel="271"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="269"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_VINE' is always false.</p></div>
+<div class="balloon" rel="267"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_STARSPAWN' is always false.</p></div>
+<div class="balloon" rel="265"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_ELDRITCH' is always false.</p></div>
+<div class="balloon" rel="263"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="280"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="282"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ELDRITCH' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="284"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_STARSPAWN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="286"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_VINE' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="288"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="290"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="292"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="292"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="290"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression is always false.</p></div>
+<div class="balloon" rel="288"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="286"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_VINE' is always false.</p></div>
+<div class="balloon" rel="284"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_STARSPAWN' is always false.</p></div>
+<div class="balloon" rel="282"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_ELDRITCH' is always false.</p></div>
+<div class="balloon" rel="280"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="295"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SW' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="297"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="299"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ELDRITCH' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="301"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_STARSPAWN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="303"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_VINE' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="305"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="307"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="309"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="314"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="316"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ELDRITCH' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="318"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_STARSPAWN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="320"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_VINE' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="322"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="324"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SIMULACRUM_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="326"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="326"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_SPECTRAL_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="324"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression is always false.</p></div>
+<div class="balloon" rel="322"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_ZOMBIE_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="320"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_VINE' is always false.</p></div>
+<div class="balloon" rel="318"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_STARSPAWN' is always false.</p></div>
+<div class="balloon" rel="316"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_ELDRITCH' is always false.</p></div>
+<div class="balloon" rel="314"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_KRAKEN' is always false.</p></div>
+<div class="balloon" rel="295"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_TENTACLE_SW' is always false.</p></div>
+<div class="balloon" rel="365"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_THREAT_MASK' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="331"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v581/" target="_blank">V581</a> The conditional expressions of the 'if' statements situated alongside each other are identical. Check lines: 258, 331.</p></div>
+<div class="balloon" rel="394"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_LANDING' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="396"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_RAY_MULTI' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="396"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_RAY_MULTI' is always false.</p></div>
+<div class="balloon" rel="394"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'bg & TILE_FLAG_LANDING' is always false.</p></div>
+<div class="balloon" rel="451"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_IDEALISED' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="451"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_IDEALISED' is always false.</p></div>
+<div class="balloon" rel="488"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'poison_flag == TILE_FLAG_MAX_POISON' is always false.</p></div>
+<div class="balloon" rel="518"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_HASTED' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="518"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_HASTED' is always false.</p></div>
+<div class="balloon" rel="523"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_SLOWED' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="523"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_SLOWED' is always false.</p></div>
+<div class="balloon" rel="528"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_MIGHT' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="528"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_MIGHT' is always false.</p></div>
+<div class="balloon" rel="533"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_DRAIN' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="533"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_DRAIN' is always false.</p></div>
+<div class="balloon" rel="538"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_PAIN_MIRROR' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="538"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_PAIN_MIRROR' is always false.</p></div>
+<div class="balloon" rel="543"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_PETRIFYING' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="543"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_PETRIFYING' is always false.</p></div>
+<div class="balloon" rel="548"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_PETRIFIED' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="548"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_PETRIFIED' is always false.</p></div>
+<div class="balloon" rel="553"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_BLIND' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="553"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_BLIND' is always false.</p></div>
+<div class="balloon" rel="558"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_DEATHS_DOOR' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="558"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_DEATHS_DOOR' is always false.</p></div>
+<div class="balloon" rel="563"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_BOUND_SOUL' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="563"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_BOUND_SOUL' is always false.</p></div>
+<div class="balloon" rel="568"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_INFESTED' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="568"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_INFESTED' is always false.</p></div>
+<div class="balloon" rel="573"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_CORRODED' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="573"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_CORRODED' is always false.</p></div>
+<div class="balloon" rel="578"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_SWIFT' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="578"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_SWIFT' is always false.</p></div>
+<div class="balloon" rel="583"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_RECALL' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="583"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_RECALL' is always false.</p></div>
+<div class="balloon" rel="588"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_VILE_CLUTCH' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="588"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_VILE_CLUTCH' is always false.</p></div>
+<div class="balloon" rel="593"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_POSSESSABLE' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="593"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_POSSESSABLE' is always false.</p></div>
+<div class="balloon" rel="601"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_ANIM_WEP' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="601"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_ANIM_WEP' is always false.</p></div>
+<div class="balloon" rel="603"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_SUMMONED' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="603"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_SUMMONED' is always false.</p></div>
+<div class="balloon" rel="605"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_PERM_SUMMON' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="605"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_PERM_SUMMON' is always false.</p></div>
+<div class="balloon" rel="666"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'mdam_flag == TILE_FLAG_MDAM_ADEAD' is always false.</p></div>
+<div class="balloon" rel="670"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_DEMON' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="672"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v616/" target="_blank">V616</a> The 'TILE_FLAG_DEMON' named constant with the value of 0 is used in the bitwise operation.</p></div>
+<div class="balloon" rel="670"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'fg & TILE_FLAG_DEMON' is always false.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

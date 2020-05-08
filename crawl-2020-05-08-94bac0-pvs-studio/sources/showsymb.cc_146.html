@@ -1,0 +1,655 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>showsymb.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Rendering of map_cell to glyph and colour.</a>
+<a name="ln4"> *</a>
+<a name="ln5"> * This only needs the information within one object of type map_cell.</a>
+<a name="ln6">**/</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;AppHdr.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;showsymb.h&quot;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;cloud.h&quot;</a>
+<a name="ln13">#include &quot;colour.h&quot;</a>
+<a name="ln14">#include &quot;env.h&quot;</a>
+<a name="ln15">#include &quot;item-name.h&quot;</a>
+<a name="ln16">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln17">#include &quot;options.h&quot;</a>
+<a name="ln18">#include &quot;religion.h&quot;</a>
+<a name="ln19">#include &quot;stash.h&quot;</a>
+<a name="ln20">#include &quot;state.h&quot;</a>
+<a name="ln21">#include &quot;stringutil.h&quot;</a>
+<a name="ln22">#include &quot;terrain.h&quot;</a>
+<a name="ln23">#include &quot;travel.h&quot;</a>
+<a name="ln24">#include &quot;viewchar.h&quot;</a>
+<a name="ln25">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln26">#include &quot;tilepick.h&quot;</a>
+<a name="ln27">#include &quot;rltiles/tiledef-player.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29">static unsigned short _cell_feat_show_colour(const map_cell&amp; cell,</a>
+<a name="ln30">                                             const coord_def&amp; loc,</a>
+<a name="ln31">                                             bool coloured)</a>
+<a name="ln32">{</a>
+<a name="ln33">    dungeon_feature_type feat = cell.feat();</a>
+<a name="ln34">    unsigned short colour = BLACK;</a>
+<a name="ln35">    const feature_def &amp;fdef = get_feature_def(feat);</a>
+<a name="ln36"> </a>
+<a name="ln37">    // These do not obey vault recolouring.</a>
+<a name="ln38">    const bool no_vault_recolour = feat_has_dry_floor(feat)</a>
+<a name="ln39">                                   &amp;&amp; feat != DNGN_FLOOR</a>
+<a name="ln40">                                   &amp;&amp; !feat_is_open_door(feat);</a>
+<a name="ln41"> </a>
+<a name="ln42">    // These aren't shown mossy/bloody/slimy in console.</a>
+<a name="ln43">    const bool norecolour = feat_is_door(feat) || no_vault_recolour;</a>
+<a name="ln44"> </a>
+<a name="ln45">    if (is_stair_exclusion(loc))</a>
+<a name="ln46">        colour = Options.tc_excluded;</a>
+<a name="ln47">    else if (!coloured)</a>
+<a name="ln48">    {</a>
+<a name="ln49">        if (cell.flags &amp; MAP_EMPHASIZE)</a>
+<a name="ln50">            colour = fdef.seen_em_colour();</a>
+<a name="ln51">        else if (cell.flags &amp; MAP_MAGIC_MAPPED_FLAG)</a>
+<a name="ln52">            colour = fdef.unseen_colour();</a>
+<a name="ln53">        else</a>
+<a name="ln54">            colour = fdef.seen_colour();</a>
+<a name="ln55"> </a>
+<a name="ln56">        if (colour)</a>
+<a name="ln57">        {</a>
+<a name="ln58">            // Show trails even out of LOS.</a>
+<a name="ln59">            if (Options.show_travel_trail &amp;&amp; travel_trail_index(loc) &gt;= 0)</a>
+<a name="ln60">                colour |= COLFLAG_REVERSE;</a>
+<a name="ln61">            return colour;</a>
+<a name="ln62">        }</a>
+<a name="ln63">    }</a>
+<a name="ln64">    else if (!feat_is_solid(feat)</a>
+<a name="ln65">             &amp;&amp; (cell.flags &amp; (MAP_SANCTUARY_1 | MAP_SANCTUARY_2)))</a>
+<a name="ln66">    {</a>
+<a name="ln67">        if (cell.flags &amp; MAP_SANCTUARY_1)</a>
+<a name="ln68">            colour = YELLOW;</a>
+<a name="ln69">        else if (cell.flags &amp; MAP_SANCTUARY_2)</a>
+<a name="ln70">        {</a>
+<a name="ln71">            if (!one_chance_in(4))</a>
+<a name="ln72">                colour = WHITE;     // 3/4</a>
+<a name="ln73">            else if (!one_chance_in(3))</a>
+<a name="ln74">                colour = LIGHTCYAN; // 1/6</a>
+<a name="ln75">            else</a>
+<a name="ln76">                colour = LIGHTGREY; // 1/12</a>
+<a name="ln77">        }</a>
+<a name="ln78">    }</a>
+<a name="ln79">    else if (cell.flags &amp; MAP_BLOODY &amp;&amp; !norecolour)</a>
+<a name="ln80">        colour = RED;</a>
+<a name="ln81">    else if (cell.flags &amp; MAP_CORRODING &amp;&amp; !norecolour</a>
+<a name="ln82">             &amp;&amp; !feat_is_wall(feat) &amp;&amp; !feat_is_lava(feat)</a>
+<a name="ln83">             &amp;&amp; !feat_is_water(feat))</a>
+<a name="ln84">    {</a>
+<a name="ln85">        colour = LIGHTGREEN;</a>
+<a name="ln86">    }</a>
+<a name="ln87">    else if (cell.flags &amp; MAP_ICY &amp;&amp; !norecolour)</a>
+<a name="ln88">    {</a>
+<a name="ln89">        if (feat_is_wall(feat))</a>
+<a name="ln90">            colour = ETC_ICE;</a>
+<a name="ln91">        else if (!feat_is_lava(feat) &amp;&amp; !feat_is_water(feat))</a>
+<a name="ln92">            colour = LIGHTCYAN;</a>
+<a name="ln93">    }</a>
+<a name="ln94">    else if (cell.feat_colour() &amp;&amp; !no_vault_recolour)</a>
+<a name="ln95">        colour = cell.feat_colour();</a>
+<a name="ln96">    else</a>
+<a name="ln97">    {</a>
+<a name="ln98">        colour = fdef.colour();</a>
+<a name="ln99"> </a>
+<a name="ln100">        if (fdef.em_colour() &amp;&amp; fdef.em_colour() != fdef.colour()</a>
+<a name="ln101">            &amp;&amp; cell.flags &amp; MAP_EMPHASIZE)</a>
+<a name="ln102">        {</a>
+<a name="ln103">            colour = fdef.em_colour();</a>
+<a name="ln104">        }</a>
+<a name="ln105">    }</a>
+<a name="ln106"> </a>
+<a name="ln107">    if (feat == DNGN_SHALLOW_WATER &amp;&amp; player_in_branch(BRANCH_SHOALS))</a>
+<a name="ln108">        colour = ETC_WAVES;</a>
+<a name="ln109"> </a>
+<a name="ln110">    if (feat_is_tree(feat) &amp;&amp; env.forest_awoken_until)</a>
+<a name="ln111">        colour = ETC_AWOKEN_FOREST;</a>
+<a name="ln112"> </a>
+<a name="ln113">    if (feat == DNGN_FLOOR)</a>
+<a name="ln114">    {</a>
+<a name="ln115">        if (cell.flags &amp; MAP_LIQUEFIED)</a>
+<a name="ln116">            colour = ETC_LIQUEFIED;</a>
+<a name="ln117">        else if (cell.flags &amp; MAP_DISJUNCT)</a>
+<a name="ln118">            colour = ETC_DISJUNCTION;</a>
+<a name="ln119">        else if (cell.flags &amp; MAP_HALOED)</a>
+<a name="ln120">        {</a>
+<a name="ln121">            if (cell.flags &amp; MAP_SILENCED &amp;&amp; cell.flags &amp; MAP_UMBRAED)</a>
+<a name="ln122">                colour = CYAN; // Default for silence.</a>
+<a name="ln123">            else if (cell.flags &amp; MAP_SILENCED)</a>
+<a name="ln124">                colour = LIGHTCYAN;</a>
+<a name="ln125">            else if (cell.flags &amp; MAP_UMBRAED)</a>
+<a name="ln126">                colour = fdef.colour(); // Cancels out!</a>
+<a name="ln127">            else</a>
+<a name="ln128">                colour = YELLOW;</a>
+<a name="ln129">        }</a>
+<a name="ln130">        else if (cell.flags &amp; MAP_UMBRAED)</a>
+<a name="ln131">        {</a>
+<a name="ln132">            if (cell.flags &amp; MAP_SILENCED)</a>
+<a name="ln133">                colour = BLUE; // Silence gets darker</a>
+<a name="ln134">            else</a>
+<a name="ln135">                colour = MAGENTA; // If no holy or silence</a>
+<a name="ln136">        }</a>
+<a name="ln137">        else if (cell.flags &amp; MAP_SILENCED)</a>
+<a name="ln138">            colour = CYAN; // Silence but no holy/unholy</a>
+<a name="ln139">        else if (cell.flags &amp; MAP_ORB_HALOED)</a>
+<a name="ln140">            colour = ETC_ORB_GLOW;</a>
+<a name="ln141">        else if (cell.flags &amp; MAP_QUAD_HALOED)</a>
+<a name="ln142">            colour = BLUE;</a>
+<a name="ln143">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln144">        else if (cell.flags &amp; MAP_HOT)</a>
+<a name="ln145">            colour = ETC_FIRE;</a>
+<a name="ln146">#endif</a>
+<a name="ln147">    }</a>
+<a name="ln148"> </a>
+<a name="ln149">    if (Options.show_travel_trail &amp;&amp; travel_trail_index(loc) &gt;= 0)</a>
+<a name="ln150">        colour |= COLFLAG_REVERSE;</a>
+<a name="ln151"> </a>
+<a name="ln152">    return colour;</a>
+<a name="ln153">}</a>
+<a name="ln154"> </a>
+<a name="ln155">static monster_type _show_mons_type(const monster_info&amp; mi)</a>
+<a name="ln156">{</a>
+<a name="ln157">    if (mi.type == MONS_SLIME_CREATURE &amp;&amp; mi.slime_size &gt; 1)</a>
+<a name="ln158">        return MONS_MERGED_SLIME_CREATURE;</a>
+<a name="ln159">    else if (mi.type == MONS_ZOMBIE)</a>
+<a name="ln160">    {</a>
+<a name="ln161">        return mons_zombie_size(mi.base_type) == Z_BIG ?</a>
+<a name="ln162">            MONS_ZOMBIE_LARGE : MONS_ZOMBIE_SMALL;</a>
+<a name="ln163">    }</a>
+<a name="ln164">    else if (mi.type == MONS_SKELETON)</a>
+<a name="ln165">    {</a>
+<a name="ln166">        return mons_zombie_size(mi.base_type) == Z_BIG ?</a>
+<a name="ln167">            MONS_SKELETON_LARGE : MONS_SKELETON_SMALL;</a>
+<a name="ln168">    }</a>
+<a name="ln169">    else if (mi.type == MONS_SIMULACRUM)</a>
+<a name="ln170">    {</a>
+<a name="ln171">        return mons_zombie_size(mi.base_type) == Z_BIG ?</a>
+<a name="ln172">            MONS_SIMULACRUM_LARGE : MONS_SIMULACRUM_SMALL;</a>
+<a name="ln173">    }</a>
+<a name="ln174">    else if (mi.type == MONS_SENSED)</a>
+<a name="ln175">        return mi.base_type;</a>
+<a name="ln176"> </a>
+<a name="ln177">    return mi.type;</a>
+<a name="ln178">}</a>
+<a name="ln179"> </a>
+<a name="ln180">static int _get_mons_colour(const monster_info&amp; mi)</a>
+<a name="ln181">{</a>
+<a name="ln182">    // Show hp directly on the monster, except for irrelevant ones.</a>
+<a name="ln183">    // Fedhas worshippers might be interested in their plants however.</a>
+<a name="ln184">    if (crawl_state.viewport_monster_hp</a>
+<a name="ln185">        &amp;&amp; (you_worship(GOD_FEDHAS) || !mons_class_is_firewood(mi.type)))</a>
+<a name="ln186">    {</a>
+<a name="ln187">        return dam_colour(mi) | COLFLAG_ITEM_HEAP;</a>
+<a name="ln188">    }</a>
+<a name="ln189"> </a>
+<a name="ln190">    int col = mi.colour();</a>
+<a name="ln191"> </a>
+<a name="ln192">    // We really shouldn't store unmodified colour. This hack compares</a>
+<a name="ln193">    // effective type, but really, all redefinitions should work instantly,</a>
+<a name="ln194">    // rather than for newly spawned monsters only.</a>
+<a name="ln195">    monster_type stype = _show_mons_type(mi);</a>
+<a name="ln196">    if (stype != mi.type &amp;&amp; mi.type != MONS_SENSED)</a>
+<a name="ln197">        col = mons_class_colour(stype);</a>
+<a name="ln198"> </a>
+<a name="ln199">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln200">    if (mi.is(MB_ROLLING))</a>
+<a name="ln201">        col = ETC_BONE;</a>
+<a name="ln202">#endif</a>
+<a name="ln203"> </a>
+<a name="ln204">    if (mi.is(MB_BERSERK))</a>
+<a name="ln205">        col = RED;</a>
+<a name="ln206"> </a>
+<a name="ln207">    if (mi.is(MB_MIRROR_DAMAGE))</a>
+<a name="ln208">        col = ETC_DEATH;</a>
+<a name="ln209"> </a>
+<a name="ln210">    if (mi.is(MB_INNER_FLAME))</a>
+<a name="ln211">        col = ETC_FIRE;</a>
+<a name="ln212"> </a>
+<a name="ln213">    if (mi.attitude == ATT_FRIENDLY)</a>
+<a name="ln214">        col |= COLFLAG_FRIENDLY_MONSTER;</a>
+<a name="ln215">    else if (mi.attitude != ATT_HOSTILE)</a>
+<a name="ln216">        col |= COLFLAG_NEUTRAL_MONSTER;</a>
+<a name="ln217">    else if (Options.stab_brand != CHATTR_NORMAL</a>
+<a name="ln218">             &amp;&amp; mi.is(MB_STABBABLE))</a>
+<a name="ln219">    {</a>
+<a name="ln220">        col |= COLFLAG_WILLSTAB;</a>
+<a name="ln221">    }</a>
+<a name="ln222">    else if (Options.may_stab_brand != CHATTR_NORMAL</a>
+<a name="ln223">             &amp;&amp; mi.is(MB_DISTRACTED))</a>
+<a name="ln224">    {</a>
+<a name="ln225">        col |= COLFLAG_MAYSTAB;</a>
+<a name="ln226">    }</a>
+<a name="ln227">    else if (mons_class_is_stationary(mi.type))</a>
+<a name="ln228">    {</a>
+<a name="ln229">        if (Options.feature_item_brand != CHATTR_NORMAL</a>
+<a name="ln230">            &amp;&amp; feat_stair_direction(grd(mi.pos)) != CMD_NO_CMD)</a>
+<a name="ln231">        {</a>
+<a name="ln232">            col |= COLFLAG_FEATURE_ITEM;</a>
+<a name="ln233">        }</a>
+<a name="ln234">        else if (Options.heap_brand != CHATTR_NORMAL</a>
+<a name="ln235">                 &amp;&amp; you.visible_igrd(mi.pos) != NON_ITEM</a>
+<a name="ln236">                 &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln237">        {</a>
+<a name="ln238">            col |= COLFLAG_ITEM_HEAP;</a>
+<a name="ln239">        }</a>
+<a name="ln240">    }</a>
+<a name="ln241"> </a>
+<a name="ln242">    // Backlit monsters are fuzzy and override colours, but not brands.</a>
+<a name="ln243">    if (!crawl_state.game_is_arena()</a>
+<a name="ln244">        &amp;&amp; !you.can_see_invisible()</a>
+<a name="ln245">        &amp;&amp; mi.is(MB_INVISIBLE)</a>
+<a name="ln246">        &amp;&amp; mi.attitude != ATT_FRIENDLY)</a>
+<a name="ln247">    {</a>
+<a name="ln248">        col = (col &amp; COLFLAG_MASK) | DARKGREY;</a>
+<a name="ln249">    }</a>
+<a name="ln250"> </a>
+<a name="ln251">    return col;</a>
+<a name="ln252">}</a>
+<a name="ln253"> </a>
+<a name="ln254">static cglyph_t _get_item_override(const item_def &amp;item)</a>
+<a name="ln255">{</a>
+<a name="ln256">    cglyph_t g;</a>
+<a name="ln257">    g.ch = 0;</a>
+<a name="ln258">    g.col = 0;</a>
+<a name="ln259"> </a>
+<a name="ln260">    // Skip costly name calculations if not needed.</a>
+<a name="ln261">    if (Options.item_glyph_overrides.empty())</a>
+<a name="ln262">        return g;</a>
+<a name="ln263"> </a>
+<a name="ln264">    string name = stash_annotate_item(STASH_LUA_SEARCH_ANNOTATE, &amp;item)</a>
+<a name="ln265">                + &quot; {&quot; + item_prefix(item, false) + &quot;} &quot; + item.name(DESC_PLAIN);</a>
+<a name="ln266"> </a>
+<a name="ln267">    {</a>
+<a name="ln268">        // Check the cache...</a>
+<a name="ln269">        if (cglyph_t *gly = map_find(Options.item_glyph_cache, name))</a>
+<a name="ln270">            return *gly;</a>
+<a name="ln271">    }</a>
+<a name="ln272"> </a>
+<a name="ln273">    for (auto ir : Options.item_glyph_overrides)</a>
+<a name="ln274">    {</a>
+<a name="ln275">        text_pattern tpat(ir.first);</a>
+<a name="ln276">        if (tpat.matches(name))</a>
+<a name="ln277">        {</a>
+<a name="ln278">            // You may have a rule that sets the glyph but not colour for</a>
+<a name="ln279">            // axes, then another that sets colour only for artefacts</a>
+<a name="ln280">            // (useless items, etc). Thus, apply only parts that apply.</a>
+<a name="ln281">            if (ir.second.ch)</a>
+<a name="ln282">                g.ch = ir.second.ch;</a>
+<a name="ln283">            if (ir.second.col)</a>
+<a name="ln284">                g.col = ir.second.col;</a>
+<a name="ln285">        }</a>
+<a name="ln286">    }</a>
+<a name="ln287"> </a>
+<a name="ln288">    // Matching against a list of regexps can be costly, save up to 1000</a>
+<a name="ln289">    // last matches.</a>
+<a name="ln290">    if (Options.item_glyph_cache.size() &gt;= 1000)</a>
+<a name="ln291">        Options.item_glyph_cache.clear();</a>
+<a name="ln292">    Options.item_glyph_cache[name] = g;</a>
+<a name="ln293"> </a>
+<a name="ln294">    return g;</a>
+<a name="ln295">}</a>
+<a name="ln296"> </a>
+<a name="ln297">show_class get_cell_show_class(const map_cell&amp; cell,</a>
+<a name="ln298">                               bool only_stationary_monsters)</a>
+<a name="ln299">{</a>
+<a name="ln300">    if (cell.invisible_monster())</a>
+<a name="ln301">        return SH_INVIS_EXPOSED;</a>
+<a name="ln302"> </a>
+<a name="ln303">    if (cell.monster() != MONS_NO_MONSTER</a>
+<a name="ln304">        &amp;&amp; (!only_stationary_monsters</a>
+<a name="ln305">            || mons_class_is_stationary(cell.monster())))</a>
+<a name="ln306">    {</a>
+<a name="ln307">        return SH_MONSTER;</a>
+<a name="ln308">    }</a>
+<a name="ln309"> </a>
+<a name="ln310">    if (cell.cloud() != CLOUD_NONE)</a>
+<a name="ln311">        return SH_CLOUD;</a>
+<a name="ln312"> </a>
+<a name="ln313">    const dungeon_feature_type feat = cell.feat();</a>
+<a name="ln314">    if (feat &amp;&amp; feat_is_solid(feat)</a>
+<a name="ln315">        || feat_has_dry_floor(feat)</a>
+<a name="ln316">           &amp;&amp; feat != DNGN_FLOOR</a>
+<a name="ln317">           &amp;&amp; !feat_is_open_door(feat)</a>
+<a name="ln318">           &amp;&amp; feat != DNGN_ABANDONED_SHOP</a>
+<a name="ln319">           &amp;&amp; feat != DNGN_STONE_ARCH</a>
+<a name="ln320">           &amp;&amp; feat != DNGN_EXPIRED_PORTAL</a>
+<a name="ln321">           &amp;&amp; !feat_is_fountain(feat))</a>
+<a name="ln322">    {</a>
+<a name="ln323">        return SH_FEATURE;</a>
+<a name="ln324">    }</a>
+<a name="ln325"> </a>
+<a name="ln326">    if (cell.item())</a>
+<a name="ln327">        return SH_ITEM;</a>
+<a name="ln328"> </a>
+<a name="ln329">    if (cell.feat())</a>
+<a name="ln330">        return SH_FEATURE;</a>
+<a name="ln331"> </a>
+<a name="ln332">    return SH_NOTHING;</a>
+<a name="ln333">}</a>
+<a name="ln334"> </a>
+<a name="ln335">static const unsigned short ripple_table[] =</a>
+<a name="ln336">{</a>
+<a name="ln337">     BLUE,          // BLACK        =&gt; BLUE (default)</a>
+<a name="ln338">     BLUE,          // BLUE         =&gt; BLUE</a>
+<a name="ln339">     GREEN,         // GREEN        =&gt; GREEN</a>
+<a name="ln340">     CYAN,          // CYAN         =&gt; CYAN</a>
+<a name="ln341">     RED,           // RED          =&gt; RED</a>
+<a name="ln342">     MAGENTA,       // MAGENTA      =&gt; MAGENTA</a>
+<a name="ln343">     BROWN,         // BROWN        =&gt; BROWN</a>
+<a name="ln344">     DARKGREY,      // LIGHTGREY    =&gt; DARKGREY</a>
+<a name="ln345">     DARKGREY,      // DARKGREY     =&gt; DARKGREY</a>
+<a name="ln346">     BLUE,          // LIGHTBLUE    =&gt; BLUE</a>
+<a name="ln347">     GREEN,         // LIGHTGREEN   =&gt; GREEN</a>
+<a name="ln348">     BLUE,          // LIGHTCYAN    =&gt; BLUE</a>
+<a name="ln349">     RED,           // LIGHTRED     =&gt; RED</a>
+<a name="ln350">     MAGENTA,       // LIGHTMAGENTA =&gt; MAGENTA</a>
+<a name="ln351">     BROWN,         // YELLOW       =&gt; BROWN</a>
+<a name="ln352">     LIGHTGREY,     // WHITE        =&gt; LIGHTGREY</a>
+<a name="ln353">};</a>
+<a name="ln354"> </a>
+<a name="ln355">static cglyph_t _get_cell_glyph_with_class(const map_cell&amp; cell,</a>
+<a name="ln356">                                           const coord_def&amp; loc,</a>
+<a name="ln357">                                           const show_class cls,</a>
+<a name="ln358">                                           int colour_mode)</a>
+<a name="ln359">{</a>
+<a name="ln360">    const bool coloured = colour_mode == 0 ? cell.visible() : (colour_mode &gt; 0);</a>
+<a name="ln361">    cglyph_t g;</a>
+<a name="ln362">    show_type show;</a>
+<a name="ln363"> </a>
+<a name="ln364">    g.ch = 0;</a>
+<a name="ln365">    const cloud_type cell_cloud = cell.cloud();</a>
+<a name="ln366"> </a>
+<a name="ln367">    switch (cls)</a>
+<a name="ln368">    {</a>
+<a name="ln369">    case SH_INVIS_EXPOSED:</a>
+<a name="ln370">        ASSERT(cell.invisible_monster());</a>
+<a name="ln371"> </a>
+<a name="ln372">        show.cls = SH_INVIS_EXPOSED;</a>
+<a name="ln373">        if (cell_cloud != CLOUD_NONE)</a>
+<a name="ln374">            g.col = cell.cloud_colour();</a>
+<a name="ln375">        else</a>
+<a name="ln376">            g.col = ripple_table[cell.feat_colour() &amp; 0xf];</a>
+<a name="ln377">        break;</a>
+<a name="ln378"> </a>
+<a name="ln379">    case SH_MONSTER:</a>
+<a name="ln380">    {</a>
+<a name="ln381">        show = cell.monster();</a>
+<a name="ln382">        const monster_info* mi = cell.monsterinfo();</a>
+<a name="ln383">        ASSERT(mi);</a>
+<a name="ln384"> </a>
+<a name="ln385">        if (cell.detected_monster())</a>
+<a name="ln386">        {</a>
+<a name="ln387">            ASSERT(mi-&gt;type == MONS_SENSED);</a>
+<a name="ln388">            if (mons_is_sensed(mi-&gt;base_type))</a>
+<a name="ln389">                g.col = mons_class_colour(mi-&gt;base_type);</a>
+<a name="ln390">            else</a>
+<a name="ln391">                g.col = Options.detected_monster_colour;</a>
+<a name="ln392">        }</a>
+<a name="ln393">        else if (!coloured)</a>
+<a name="ln394">            g.col = Options.remembered_monster_colour;</a>
+<a name="ln395">        else</a>
+<a name="ln396">            g.col = _get_mons_colour(*mi);</a>
+<a name="ln397"> </a>
+<a name="ln398">        monster_type stype = _show_mons_type(*mi);</a>
+<a name="ln399">        if (show.mons == MONS_SENSED)</a>
+<a name="ln400">            g.ch = mons_char(mi-&gt;base_type);</a>
+<a name="ln401">        else</a>
+<a name="ln402">            g.ch = mons_char(stype);</a>
+<a name="ln403"> </a>
+<a name="ln404">        if (mons_is_tentacle_segment(stype))</a>
+<a name="ln405">        {</a>
+<a name="ln406">            switch (tileidx_tentacle(*mi))</a>
+<a name="ln407">            {</a>
+<a name="ln408">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_N_SW:</a>
+<a name="ln409">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_N_SE:</a>
+<a name="ln410">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_S_NW:</a>
+<a name="ln411">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_S_NE:</a>
+<a name="ln412">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_N_S:</a>
+<a name="ln413">                g.ch = dchar_glyph(DCHAR_DRAW_VERT);</a>
+<a name="ln414">                break;</a>
+<a name="ln415">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_W_NE:</a>
+<a name="ln416">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_W_SE:</a>
+<a name="ln417">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_E_NW:</a>
+<a name="ln418">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_E_SW:</a>
+<a name="ln419">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_E_W:</a>
+<a name="ln420">                g.ch = dchar_glyph(DCHAR_DRAW_HORIZ);</a>
+<a name="ln421">                break;</a>
+<a name="ln422">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_NE_SW:</a>
+<a name="ln423">                g.ch = dchar_glyph(DCHAR_DRAW_SLASH);</a>
+<a name="ln424">                break;</a>
+<a name="ln425">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_NW_SE:</a>
+<a name="ln426">                g.ch = dchar_glyph(DCHAR_DRAW_BACKSLASH);</a>
+<a name="ln427">                break;</a>
+<a name="ln428">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_E_N:</a>
+<a name="ln429">                g.ch = dchar_glyph(DCHAR_DRAW_BL);</a>
+<a name="ln430">                break;</a>
+<a name="ln431">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_E_S:</a>
+<a name="ln432">                g.ch = dchar_glyph(DCHAR_DRAW_TL);</a>
+<a name="ln433">                break;</a>
+<a name="ln434">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_S_W:</a>
+<a name="ln435">                g.ch = dchar_glyph(DCHAR_DRAW_TR);</a>
+<a name="ln436">                break;</a>
+<a name="ln437">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_N_W:</a>
+<a name="ln438">                g.ch = dchar_glyph(DCHAR_DRAW_BR);</a>
+<a name="ln439">                break;</a>
+<a name="ln440">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_NE_NW:</a>
+<a name="ln441">                g.ch = dchar_glyph(DCHAR_DRAW_DOWN);</a>
+<a name="ln442">                break;</a>
+<a name="ln443">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_SE_SW:</a>
+<a name="ln444">                g.ch = dchar_glyph(DCHAR_DRAW_UP);</a>
+<a name="ln445">                break;</a>
+<a name="ln446">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_NW_SW:</a>
+<a name="ln447">                g.ch = dchar_glyph(DCHAR_DRAW_RIGHT);</a>
+<a name="ln448">                break;</a>
+<a name="ln449">            case TILEP_MONS_KRAKEN_TENTACLE_SEGMENT_NE_SE:</a>
+<a name="ln450">                g.ch = dchar_glyph(DCHAR_DRAW_LEFT);</a>
+<a name="ln451">                break;</a>
+<a name="ln452">            default: break;</a>
+<a name="ln453">            }</a>
+<a name="ln454">        }</a>
+<a name="ln455"> </a>
+<a name="ln456">        // If we want to show weapons, overwrite all of that.</a>
+<a name="ln457">        item_def* weapon = mi-&gt;inv[MSLOT_WEAPON].get();</a>
+<a name="ln458">        if (crawl_state.viewport_weapons &amp;&amp; weapon)</a>
+<a name="ln459">        {</a>
+<a name="ln460">            show = *weapon;</a>
+<a name="ln461">            g = _get_item_override(*weapon);</a>
+<a name="ln462">            if (!g.col)</a>
+<a name="ln463">                g.col = weapon-&gt;get_colour();</a>
+<a name="ln464">        }</a>
+<a name="ln465"> </a>
+<a name="ln466">        break;</a>
+<a name="ln467">    }</a>
+<a name="ln468"> </a>
+<a name="ln469">    case SH_CLOUD:</a>
+<a name="ln470">        ASSERT(cell_cloud);</a>
+<a name="ln471">        show.cls = SH_CLOUD;</a>
+<a name="ln472">        if (coloured)</a>
+<a name="ln473">            g.col = cell.cloud_colour();</a>
+<a name="ln474">        else</a>
+<a name="ln475">            g.col = DARKGRAY;</a>
+<a name="ln476"> </a>
+<a name="ln477">        if (cloud_type_tile_info(cell.cloudinfo()-&gt;type).variation</a>
+<a name="ln478">            == CTVARY_DUR)</a>
+<a name="ln479">        {</a>
+<a name="ln480">            // duration is already clamped to 0-3</a>
+<a name="ln481">            int dur = cell.cloudinfo()-&gt;duration;</a>
+<a name="ln482">            switch (dur)</a>
+<a name="ln483">            {</a>
+<a name="ln484">            case 0:</a>
+<a name="ln485">                g.ch = dchar_glyph(DCHAR_CLOUD_TERMINAL);</a>
+<a name="ln486">                break;</a>
+<a name="ln487">            case 1:</a>
+<a name="ln488">                g.ch = dchar_glyph(DCHAR_CLOUD_FADING);</a>
+<a name="ln489">                break;</a>
+<a name="ln490">            case 2:</a>
+<a name="ln491">                g.ch = dchar_glyph(DCHAR_CLOUD_WEAK);</a>
+<a name="ln492">                break;</a>
+<a name="ln493">            case 3:</a>
+<a name="ln494">                g.ch = dchar_glyph(DCHAR_CLOUD);</a>
+<a name="ln495">                break;</a>
+<a name="ln496">            }</a>
+<a name="ln497">        }</a>
+<a name="ln498">        else</a>
+<a name="ln499">            g.ch = dchar_glyph(DCHAR_CLOUD);</a>
+<a name="ln500">        break;</a>
+<a name="ln501"> </a>
+<a name="ln502">    case SH_FEATURE:</a>
+<a name="ln503">        show = cell.feat();</a>
+<a name="ln504">        ASSERT(show);</a>
+<a name="ln505"> </a>
+<a name="ln506">        g.col = _cell_feat_show_colour(cell, loc, coloured);</a>
+<a name="ln507"> </a>
+<a name="ln508">        if (cell.item())</a>
+<a name="ln509">        {</a>
+<a name="ln510">            if (Options.feature_item_brand</a>
+<a name="ln511">                &amp;&amp; (feat_is_critical(cell.feat())</a>
+<a name="ln512">                    || feat_is_solid(cell.feat())))</a>
+<a name="ln513">            {</a>
+<a name="ln514">                g.col |= COLFLAG_FEATURE_ITEM;</a>
+<a name="ln515">            }</a>
+<a name="ln516">            else if (Options.trap_item_brand &amp;&amp; feat_is_trap(cell.feat()))</a>
+<a name="ln517">                g.col |= COLFLAG_TRAP_ITEM;</a>
+<a name="ln518">        }</a>
+<a name="ln519">        break;</a>
+<a name="ln520"> </a>
+<a name="ln521">    case SH_ITEM:</a>
+<a name="ln522">    {</a>
+<a name="ln523">        const item_info* eitem = cell.item();</a>
+<a name="ln524">        ASSERT(eitem);</a>
+<a name="ln525">        show = *eitem;</a>
+<a name="ln526"> </a>
+<a name="ln527">        g = _get_item_override(*eitem);</a>
+<a name="ln528"> </a>
+<a name="ln529">        if (feat_is_water(cell.feat()))</a>
+<a name="ln530">            g.col = _cell_feat_show_colour(cell, loc, coloured);</a>
+<a name="ln531">        else if (!g.col)</a>
+<a name="ln532">            g.col = eitem-&gt;get_colour();</a>
+<a name="ln533"> </a>
+<a name="ln534">        // monster(mimic)-owned items have link = NON_ITEM+1+midx</a>
+<a name="ln535">        if (cell.flags &amp; MAP_MORE_ITEMS)</a>
+<a name="ln536">            g.col |= COLFLAG_ITEM_HEAP;</a>
+<a name="ln537">        break;</a>
+<a name="ln538">    }</a>
+<a name="ln539"> </a>
+<a name="ln540">    case SH_NOTHING:</a>
+<a name="ln541">    case NUM_SHOW_CLASSES:</a>
+<a name="ln542">        // blackness</a>
+<a name="ln543">        g.ch = ' ';</a>
+<a name="ln544">        return g;</a>
+<a name="ln545">    }</a>
+<a name="ln546"> </a>
+<a name="ln547">    if (!g.ch)</a>
+<a name="ln548">    {</a>
+<a name="ln549">        const feature_def &amp;fdef = get_feature_def(show);</a>
+<a name="ln550">        g.ch = cell.seen() ? fdef.symbol() : fdef.magic_symbol();</a>
+<a name="ln551">    }</a>
+<a name="ln552"> </a>
+<a name="ln553">    if (g.col)</a>
+<a name="ln554">        g.col = real_colour(g.col, loc);</a>
+<a name="ln555"> </a>
+<a name="ln556">    return g;</a>
+<a name="ln557">}</a>
+<a name="ln558"> </a>
+<a name="ln559">cglyph_t get_cell_glyph(const coord_def&amp; loc, bool only_stationary_monsters,</a>
+<a name="ln560">                        int colour_mode)</a>
+<a name="ln561">{</a>
+<a name="ln562">    // note: this does NOT determine output of the player glyph;</a>
+<a name="ln563">    // that's handled by itself in _draw_player() in view.cc</a>
+<a name="ln564">    const map_cell&amp; cell = env.map_knowledge(loc);</a>
+<a name="ln565">    const show_class cell_show_class =</a>
+<a name="ln566">        get_cell_show_class(cell, only_stationary_monsters);</a>
+<a name="ln567">    return _get_cell_glyph_with_class(cell, loc, cell_show_class, colour_mode);</a>
+<a name="ln568">}</a>
+<a name="ln569"> </a>
+<a name="ln570">char32_t get_feat_symbol(dungeon_feature_type feat)</a>
+<a name="ln571">{</a>
+<a name="ln572">    return get_feature_def(feat).symbol();</a>
+<a name="ln573">}</a>
+<a name="ln574"> </a>
+<a name="ln575">char32_t get_item_symbol(show_item_type it)</a>
+<a name="ln576">{</a>
+<a name="ln577">    return get_feature_def(show_type(it)).symbol();</a>
+<a name="ln578">}</a>
+<a name="ln579"> </a>
+<a name="ln580">cglyph_t get_item_glyph(const item_def&amp; item)</a>
+<a name="ln581">{</a>
+<a name="ln582">    cglyph_t g = _get_item_override(item);</a>
+<a name="ln583">    if (!g.ch)</a>
+<a name="ln584">        g.ch = get_feature_def(show_type(item)).symbol();</a>
+<a name="ln585">    if (!g.col)</a>
+<a name="ln586">        g.col = item.get_colour();</a>
+<a name="ln587">    return g;</a>
+<a name="ln588">}</a>
+<a name="ln589"> </a>
+<a name="ln590">cglyph_t get_mons_glyph(const monster_info&amp; mi)</a>
+<a name="ln591">{</a>
+<a name="ln592">    monster_type stype = _show_mons_type(mi);</a>
+<a name="ln593">    cglyph_t g;</a>
+<a name="ln594"> </a>
+<a name="ln595">    g.ch = mons_char(stype);</a>
+<a name="ln596">    g.col = _get_mons_colour(mi);</a>
+<a name="ln597">    g.col = real_colour(g.col);</a>
+<a name="ln598">    return g;</a>
+<a name="ln599">}</a>
+<a name="ln600"> </a>
+<a name="ln601">string glyph_to_tagstr(const cglyph_t&amp; g)</a>
+<a name="ln602">{</a>
+<a name="ln603">    string col = colour_to_str(g.col);</a>
+<a name="ln604">    string ch = stringize_glyph(g.ch);</a>
+<a name="ln605">    if (g.ch == '&lt;')</a>
+<a name="ln606">        ch += &quot;&lt;&quot;;</a>
+<a name="ln607">    return make_stringf(&quot;&lt;%s&gt;%s&lt;/%s&gt;&quot;, col.c_str(), ch.c_str(), col.c_str());</a>
+<a name="ln608">}</a>
+
+</code></pre>
+<div class="balloon" rel="314"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'feat' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+<div class="balloon" rel="329"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'cell.feat()' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

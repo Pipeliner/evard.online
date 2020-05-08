@@ -1,0 +1,2457 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>terrain.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Terrain related functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;terrain.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;functional&gt;</a>
+<a name="ln12">#include &lt;sstream&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;areas.h&quot;</a>
+<a name="ln15">#include &quot;attack.h&quot;</a>
+<a name="ln16">#include &quot;branch.h&quot;</a>
+<a name="ln17">#include &quot;cloud.h&quot;</a>
+<a name="ln18">#include &quot;coord.h&quot;</a>
+<a name="ln19">#include &quot;coordit.h&quot;</a>
+<a name="ln20">#include &quot;dgn-event.h&quot;</a>
+<a name="ln21">#include &quot;dgn-overview.h&quot;</a>
+<a name="ln22">#include &quot;directn.h&quot;</a>
+<a name="ln23">#include &quot;dungeon.h&quot;</a>
+<a name="ln24">#include &quot;env.h&quot;</a>
+<a name="ln25">#include &quot;fight.h&quot;</a>
+<a name="ln26">#include &quot;feature.h&quot;</a>
+<a name="ln27">#include &quot;fprop.h&quot;</a>
+<a name="ln28">#include &quot;god-abil.h&quot;</a>
+<a name="ln29">#include &quot;item-prop.h&quot;</a>
+<a name="ln30">#include &quot;items.h&quot;</a>
+<a name="ln31">#include &quot;level-state-type.h&quot;</a>
+<a name="ln32">#include &quot;libutil.h&quot;</a>
+<a name="ln33">#include &quot;mapmark.h&quot;</a>
+<a name="ln34">#include &quot;message.h&quot;</a>
+<a name="ln35">#include &quot;mon-behv.h&quot;</a>
+<a name="ln36">#include &quot;mon-place.h&quot;</a>
+<a name="ln37">#include &quot;mon-poly.h&quot;</a>
+<a name="ln38">#include &quot;mon-util.h&quot;</a>
+<a name="ln39">#include &quot;ouch.h&quot;</a>
+<a name="ln40">#include &quot;player.h&quot;</a>
+<a name="ln41">#include &quot;random.h&quot;</a>
+<a name="ln42">#include &quot;religion.h&quot;</a>
+<a name="ln43">#include &quot;species.h&quot;</a>
+<a name="ln44">#include &quot;spl-transloc.h&quot;</a>
+<a name="ln45">#include &quot;state.h&quot;</a>
+<a name="ln46">#include &quot;stringutil.h&quot;</a>
+<a name="ln47">#include &quot;tileview.h&quot;</a>
+<a name="ln48">#include &quot;transform.h&quot;</a>
+<a name="ln49">#include &quot;traps.h&quot;</a>
+<a name="ln50">#include &quot;travel.h&quot;</a>
+<a name="ln51">#include &quot;viewchar.h&quot;</a>
+<a name="ln52">#include &quot;view.h&quot;</a>
+<a name="ln53"> </a>
+<a name="ln54">static bool _revert_terrain_to_floor(coord_def pos);</a>
+<a name="ln55"> </a>
+<a name="ln56">actor* actor_at(const coord_def&amp; c)</a>
+<a name="ln57">{</a>
+<a name="ln58">    if (!in_bounds(c))</a>
+<a name="ln59">        return nullptr;</a>
+<a name="ln60">    if (c == you.pos())</a>
+<a name="ln61">        return &amp;you;</a>
+<a name="ln62">    return monster_at(c);</a>
+<a name="ln63">}</a>
+<a name="ln64"> </a>
+<a name="ln65">/** Can a malign gateway be placed on this feature?</a>
+<a name="ln66"> */</a>
+<a name="ln67">bool feat_is_malign_gateway_suitable(dungeon_feature_type feat)</a>
+<a name="ln68">{</a>
+<a name="ln69">    return feat == DNGN_FLOOR || feat == DNGN_SHALLOW_WATER;</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">/** Is this feature a type of wall?</a>
+<a name="ln73"> */</a>
+<a name="ln74">bool feat_is_wall(dungeon_feature_type feat)</a>
+<a name="ln75">{</a>
+<a name="ln76">    return get_feature_def(feat).flags &amp; FFT_WALL;</a>
+<a name="ln77">}</a>
+<a name="ln78"> </a>
+<a name="ln79">/** Is this feature one of the main stone downstairs of a level?</a>
+<a name="ln80"> */</a>
+<a name="ln81">bool feat_is_stone_stair_down(dungeon_feature_type feat)</a>
+<a name="ln82">{</a>
+<a name="ln83">     return feat == DNGN_STONE_STAIRS_DOWN_I</a>
+<a name="ln84">            || feat == DNGN_STONE_STAIRS_DOWN_II</a>
+<a name="ln85">            || feat == DNGN_STONE_STAIRS_DOWN_III;</a>
+<a name="ln86">}</a>
+<a name="ln87"> </a>
+<a name="ln88">/** Is this feature one of the main stone upstairs of a level?</a>
+<a name="ln89"> */</a>
+<a name="ln90">bool feat_is_stone_stair_up(dungeon_feature_type feat)</a>
+<a name="ln91">{</a>
+<a name="ln92">    return feat == DNGN_STONE_STAIRS_UP_I</a>
+<a name="ln93">           || feat == DNGN_STONE_STAIRS_UP_II</a>
+<a name="ln94">           || feat == DNGN_STONE_STAIRS_UP_III;</a>
+<a name="ln95">}</a>
+<a name="ln96"> </a>
+<a name="ln97">/** Is this feature one of the main stone stairs of a level?</a>
+<a name="ln98"> */</a>
+<a name="ln99">bool feat_is_stone_stair(dungeon_feature_type feat)</a>
+<a name="ln100">{</a>
+<a name="ln101">    return feat_is_stone_stair_up(feat) || feat_is_stone_stair_down(feat);</a>
+<a name="ln102">}</a>
+<a name="ln103"> </a>
+<a name="ln104">/** Is it possible to call this feature a staircase? (purely cosmetic)</a>
+<a name="ln105"> */</a>
+<a name="ln106">bool feat_is_staircase(dungeon_feature_type feat)</a>
+<a name="ln107">{</a>
+<a name="ln108">    if (feat_is_stone_stair(feat))</a>
+<a name="ln109">        return true;</a>
+<a name="ln110"> </a>
+<a name="ln111">    // All branch entries/exits are staircases, except for Zot and Vaults entry.</a>
+<a name="ln112">    if (feat == DNGN_ENTER_VAULTS</a>
+<a name="ln113">        || feat == DNGN_EXIT_VAULTS</a>
+<a name="ln114">        || feat == DNGN_ENTER_ZOT</a>
+<a name="ln115">        || feat == DNGN_EXIT_ZOT)</a>
+<a name="ln116">    {</a>
+<a name="ln117">        return false;</a>
+<a name="ln118">    }</a>
+<a name="ln119"> </a>
+<a name="ln120">    return feat_is_branch_entrance(feat)</a>
+<a name="ln121">           || feat_is_branch_exit(feat)</a>
+<a name="ln122">           || feat == DNGN_ABYSSAL_STAIR;</a>
+<a name="ln123">}</a>
+<a name="ln124"> </a>
+<a name="ln125">/**</a>
+<a name="ln126"> * Define a memoized function from dungeon_feature_type to bool.</a>
+<a name="ln127"> * This macro should be followed by the non-memoized version of the</a>
+<a name="ln128"> * function body: see feat_is_branch_entrance below for an example.</a>
+<a name="ln129"> *</a>
+<a name="ln130"> * @param funcname The name of the function to define.</a>
+<a name="ln131"> * @param paramname The name under which the function's single parameter,</a>
+<a name="ln132"> *        of type dungeon_feature_type, is visible in the function body.</a>
+<a name="ln133"> */</a>
+<a name="ln134">#define FEATFN_MEMOIZED(funcname, paramname) \</a>
+<a name="ln135">    static bool _raw_ ## funcname (dungeon_feature_type); \</a>
+<a name="ln136">    bool funcname (dungeon_feature_type feat) \</a>
+<a name="ln137">    { \</a>
+<a name="ln138">        static int cached[NUM_FEATURES+1] = { 0 }; \</a>
+<a name="ln139">        if (!cached[feat]) cached[feat] = _raw_ ## funcname (feat) ? 1 : -1; \</a>
+<a name="ln140">        return cached[feat] &gt; 0; \</a>
+<a name="ln141">    } \</a>
+<a name="ln142">    static bool _raw_ ## funcname (dungeon_feature_type paramname)</a>
+<a name="ln143"> </a>
+<a name="ln144">/** Is this feature a branch entrance that should show up on ^O?</a>
+<a name="ln145"> */</a>
+<a name="ln146">FEATFN_MEMOIZED(feat_is_branch_entrance, feat)</a>
+<a name="ln147">{</a>
+<a name="ln148">    if (feat == DNGN_ENTER_HELL)</a>
+<a name="ln149">        return false;</a>
+<a name="ln150"> </a>
+<a name="ln151">    for (branch_iterator it; it; ++it)</a>
+<a name="ln152">    {</a>
+<a name="ln153">        if (it-&gt;entry_stairs == feat</a>
+<a name="ln154">            &amp;&amp; is_connected_branch(it-&gt;id))</a>
+<a name="ln155">        {</a>
+<a name="ln156">            return true;</a>
+<a name="ln157">        }</a>
+<a name="ln158">    }</a>
+<a name="ln159"> </a>
+<a name="ln160">    return false;</a>
+<a name="ln161">}</a>
+<a name="ln162"> </a>
+<a name="ln163">/** Counterpart to feat_is_branch_entrance.</a>
+<a name="ln164"> */</a>
+<a name="ln165">FEATFN_MEMOIZED(feat_is_branch_exit, feat)</a>
+<a name="ln166">{</a>
+<a name="ln167">    if (feat == DNGN_ENTER_HELL || feat == DNGN_EXIT_HELL)</a>
+<a name="ln168">        return false;</a>
+<a name="ln169"> </a>
+<a name="ln170">    for (branch_iterator it; it; ++it)</a>
+<a name="ln171">    {</a>
+<a name="ln172">        if (it-&gt;exit_stairs == feat</a>
+<a name="ln173">            &amp;&amp; is_connected_branch(it-&gt;id))</a>
+<a name="ln174">        {</a>
+<a name="ln175">            return true;</a>
+<a name="ln176">        }</a>
+<a name="ln177">    }</a>
+<a name="ln178"> </a>
+<a name="ln179">    return false;</a>
+<a name="ln180">}</a>
+<a name="ln181"> </a>
+<a name="ln182">/** Is this feature an entrance to a portal branch?</a>
+<a name="ln183"> */</a>
+<a name="ln184">FEATFN_MEMOIZED(feat_is_portal_entrance, feat)</a>
+<a name="ln185">{</a>
+<a name="ln186">    // These are have different rules from normal connected branches, but they</a>
+<a name="ln187">    // also have different rules from &quot;portal vaults,&quot; and are more similar to</a>
+<a name="ln188">    // real branches in some respects.</a>
+<a name="ln189">    if (feat == DNGN_ENTER_ABYSS || feat == DNGN_ENTER_PANDEMONIUM)</a>
+<a name="ln190">        return false;</a>
+<a name="ln191"> </a>
+<a name="ln192">    for (branch_iterator it; it; ++it)</a>
+<a name="ln193">    {</a>
+<a name="ln194">        if (it-&gt;entry_stairs == feat</a>
+<a name="ln195">            &amp;&amp; !is_connected_branch(it-&gt;id))</a>
+<a name="ln196">        {</a>
+<a name="ln197">            return true;</a>
+<a name="ln198">        }</a>
+<a name="ln199">    }</a>
+<a name="ln200">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln201">    if (feat == DNGN_ENTER_PORTAL_VAULT)</a>
+<a name="ln202">        return true;</a>
+<a name="ln203">#endif</a>
+<a name="ln204"> </a>
+<a name="ln205">    return false;</a>
+<a name="ln206">}</a>
+<a name="ln207"> </a>
+<a name="ln208">/** Counterpart to feat_is_portal_entrance.</a>
+<a name="ln209"> */</a>
+<a name="ln210">FEATFN_MEMOIZED(feat_is_portal_exit, feat)</a>
+<a name="ln211">{</a>
+<a name="ln212">    if (feat == DNGN_EXIT_ABYSS || feat == DNGN_EXIT_PANDEMONIUM)</a>
+<a name="ln213">        return false;</a>
+<a name="ln214"> </a>
+<a name="ln215">    for (branch_iterator it; it; ++it)</a>
+<a name="ln216">    {</a>
+<a name="ln217">        if (it-&gt;exit_stairs == feat</a>
+<a name="ln218">            &amp;&amp; !is_connected_branch(it-&gt;id))</a>
+<a name="ln219">        {</a>
+<a name="ln220">            return true;</a>
+<a name="ln221">        }</a>
+<a name="ln222">    }</a>
+<a name="ln223">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln224">    if (feat == DNGN_EXIT_PORTAL_VAULT)</a>
+<a name="ln225">        return true;</a>
+<a name="ln226">#endif</a>
+<a name="ln227"> </a>
+<a name="ln228">    return false;</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">/** Is this feature a kind of portal?</a>
+<a name="ln232"> */</a>
+<a name="ln233">bool feat_is_portal(dungeon_feature_type feat)</a>
+<a name="ln234">{</a>
+<a name="ln235">    return feat == DNGN_MALIGN_GATEWAY</a>
+<a name="ln236">        || feat_is_portal_entrance(feat)</a>
+<a name="ln237">        || feat_is_portal_exit(feat);</a>
+<a name="ln238">}</a>
+<a name="ln239"> </a>
+<a name="ln240">/** Is this feature a kind of level exit?</a>
+<a name="ln241"> */</a>
+<a name="ln242">bool feat_is_stair(dungeon_feature_type gridc)</a>
+<a name="ln243">{</a>
+<a name="ln244">    return feat_is_travelable_stair(gridc) || feat_is_gate(gridc);</a>
+<a name="ln245">}</a>
+<a name="ln246"> </a>
+<a name="ln247">/** Is this feature a level exit stair with a consistent endpoint?</a>
+<a name="ln248"> */</a>
+<a name="ln249">bool feat_is_travelable_stair(dungeon_feature_type feat)</a>
+<a name="ln250">{</a>
+<a name="ln251">    return feat_is_stone_stair(feat)</a>
+<a name="ln252">           || feat_is_escape_hatch(feat)</a>
+<a name="ln253">           || feat_is_branch_entrance(feat)</a>
+<a name="ln254">           || feat_is_branch_exit(feat)</a>
+<a name="ln255">           || feat == DNGN_ENTER_HELL</a>
+<a name="ln256">           || feat == DNGN_EXIT_HELL;</a>
+<a name="ln257">}</a>
+<a name="ln258"> </a>
+<a name="ln259">/** Is this feature an escape hatch?</a>
+<a name="ln260"> */</a>
+<a name="ln261">bool feat_is_escape_hatch(dungeon_feature_type feat)</a>
+<a name="ln262">{</a>
+<a name="ln263">    return feat == DNGN_ESCAPE_HATCH_DOWN</a>
+<a name="ln264">           || feat == DNGN_ESCAPE_HATCH_UP;</a>
+<a name="ln265">}</a>
+<a name="ln266"> </a>
+<a name="ln267">/** Is this feature a gate?</a>
+<a name="ln268">  * XXX: Why does this matter??</a>
+<a name="ln269"> */</a>
+<a name="ln270">bool feat_is_gate(dungeon_feature_type feat)</a>
+<a name="ln271">{</a>
+<a name="ln272">    if (feat_is_portal_entrance(feat)</a>
+<a name="ln273">        || feat_is_portal_exit(feat))</a>
+<a name="ln274">    {</a>
+<a name="ln275">        return true;</a>
+<a name="ln276">    }</a>
+<a name="ln277"> </a>
+<a name="ln278">    switch (feat)</a>
+<a name="ln279">    {</a>
+<a name="ln280">    case DNGN_ENTER_ABYSS:</a>
+<a name="ln281">    case DNGN_EXIT_THROUGH_ABYSS:</a>
+<a name="ln282">    case DNGN_EXIT_ABYSS:</a>
+<a name="ln283">    case DNGN_ABYSSAL_STAIR:</a>
+<a name="ln284">    case DNGN_ENTER_PANDEMONIUM:</a>
+<a name="ln285">    case DNGN_EXIT_PANDEMONIUM:</a>
+<a name="ln286">    case DNGN_TRANSIT_PANDEMONIUM:</a>
+<a name="ln287">    case DNGN_ENTER_VAULTS:</a>
+<a name="ln288">    case DNGN_EXIT_VAULTS:</a>
+<a name="ln289">    case DNGN_ENTER_ZOT:</a>
+<a name="ln290">    case DNGN_EXIT_ZOT:</a>
+<a name="ln291">    case DNGN_ENTER_HELL:</a>
+<a name="ln292">    case DNGN_EXIT_HELL:</a>
+<a name="ln293">    case DNGN_ENTER_DIS:</a>
+<a name="ln294">    case DNGN_ENTER_GEHENNA:</a>
+<a name="ln295">    case DNGN_ENTER_COCYTUS:</a>
+<a name="ln296">    case DNGN_ENTER_TARTARUS:</a>
+<a name="ln297">        return true;</a>
+<a name="ln298">    default:</a>
+<a name="ln299">        return false;</a>
+<a name="ln300">    }</a>
+<a name="ln301">}</a>
+<a name="ln302"> </a>
+<a name="ln303">/** What command do you use to traverse this feature?</a>
+<a name="ln304"> *</a>
+<a name="ln305"> *  @param feat the feature.</a>
+<a name="ln306"> *  @returns CMD_GO_UPSTAIRS if it's a stair up, CMD_GO_DOWNSTAIRS if it's a</a>
+<a name="ln307"> *           stair down, and CMD_NO_CMD if it can't be used to move.</a>
+<a name="ln308"> */</a>
+<a name="ln309">command_type feat_stair_direction(dungeon_feature_type feat)</a>
+<a name="ln310">{</a>
+<a name="ln311">    if (feat_is_portal_entrance(feat)</a>
+<a name="ln312">        || feat_is_branch_entrance(feat))</a>
+<a name="ln313">    {</a>
+<a name="ln314">        return CMD_GO_DOWNSTAIRS;</a>
+<a name="ln315">    }</a>
+<a name="ln316">    if (feat_is_portal_exit(feat)</a>
+<a name="ln317">        || feat_is_branch_exit(feat))</a>
+<a name="ln318">    {</a>
+<a name="ln319">        return CMD_GO_UPSTAIRS;</a>
+<a name="ln320">    }</a>
+<a name="ln321"> </a>
+<a name="ln322">    if (feat_is_altar(feat))</a>
+<a name="ln323">        return CMD_GO_UPSTAIRS; // arbitrary; consistent with shops</a>
+<a name="ln324"> </a>
+<a name="ln325">    switch (feat)</a>
+<a name="ln326">    {</a>
+<a name="ln327">    case DNGN_ENTER_HELL:</a>
+<a name="ln328">        return player_in_hell() ? CMD_GO_UPSTAIRS : CMD_GO_DOWNSTAIRS;</a>
+<a name="ln329"> </a>
+<a name="ln330">    case DNGN_STONE_STAIRS_UP_I:</a>
+<a name="ln331">    case DNGN_STONE_STAIRS_UP_II:</a>
+<a name="ln332">    case DNGN_STONE_STAIRS_UP_III:</a>
+<a name="ln333">    case DNGN_ESCAPE_HATCH_UP:</a>
+<a name="ln334">    case DNGN_ENTER_SHOP:</a>
+<a name="ln335">    case DNGN_EXIT_HELL:</a>
+<a name="ln336">        return CMD_GO_UPSTAIRS;</a>
+<a name="ln337"> </a>
+<a name="ln338">    case DNGN_STONE_STAIRS_DOWN_I:</a>
+<a name="ln339">    case DNGN_STONE_STAIRS_DOWN_II:</a>
+<a name="ln340">    case DNGN_STONE_STAIRS_DOWN_III:</a>
+<a name="ln341">    case DNGN_ESCAPE_HATCH_DOWN:</a>
+<a name="ln342">    case DNGN_ENTER_ABYSS:</a>
+<a name="ln343">    case DNGN_EXIT_THROUGH_ABYSS:</a>
+<a name="ln344">    case DNGN_EXIT_ABYSS:</a>
+<a name="ln345">    case DNGN_ABYSSAL_STAIR:</a>
+<a name="ln346">    case DNGN_ENTER_PANDEMONIUM:</a>
+<a name="ln347">    case DNGN_EXIT_PANDEMONIUM:</a>
+<a name="ln348">    case DNGN_TRANSIT_PANDEMONIUM:</a>
+<a name="ln349">    case DNGN_TRANSPORTER:</a>
+<a name="ln350">        return CMD_GO_DOWNSTAIRS;</a>
+<a name="ln351"> </a>
+<a name="ln352">    default:</a>
+<a name="ln353">        return CMD_NO_CMD;</a>
+<a name="ln354">    }</a>
+<a name="ln355">}</a>
+<a name="ln356"> </a>
+<a name="ln357">/** Can you normally see through this feature?</a>
+<a name="ln358"> */</a>
+<a name="ln359">bool feat_is_opaque(dungeon_feature_type feat)</a>
+<a name="ln360">{</a>
+<a name="ln361">    return get_feature_def(feat).flags &amp; FFT_OPAQUE;</a>
+<a name="ln362">}</a>
+<a name="ln363"> </a>
+<a name="ln364">/** Can you move into this feature in normal play?</a>
+<a name="ln365"> */</a>
+<a name="ln366">bool feat_is_solid(dungeon_feature_type feat)</a>
+<a name="ln367">{</a>
+<a name="ln368">    return get_feature_def(feat).flags &amp; FFT_SOLID;</a>
+<a name="ln369">}</a>
+<a name="ln370"> </a>
+<a name="ln371">/** Can you wall jump against this feature? (Wu Jian)?</a>
+<a name="ln372"> */</a>
+<a name="ln373">bool feat_can_wall_jump_against(dungeon_feature_type feat)</a>
+<a name="ln374">{</a>
+<a name="ln375">    return feat_is_wall(feat)</a>
+<a name="ln376">           || feat == DNGN_GRATE</a>
+<a name="ln377">           || feat_is_closed_door(feat)</a>
+<a name="ln378">           || feat_is_tree(feat)</a>
+<a name="ln379">           || feat_is_statuelike(feat);</a>
+<a name="ln380">}</a>
+<a name="ln381"> </a>
+<a name="ln382">/** Can you move into this cell in normal play?</a>
+<a name="ln383"> */</a>
+<a name="ln384">bool cell_is_solid(const coord_def &amp;c)</a>
+<a name="ln385">{</a>
+<a name="ln386">    return feat_is_solid(grd(c));</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389">/** Can a human stand on this feature without flying?</a>
+<a name="ln390"> */</a>
+<a name="ln391">bool feat_has_solid_floor(dungeon_feature_type feat)</a>
+<a name="ln392">{</a>
+<a name="ln393">    return !feat_is_solid(feat) &amp;&amp; feat != DNGN_DEEP_WATER</a>
+<a name="ln394">           &amp;&amp; feat != DNGN_LAVA;</a>
+<a name="ln395">}</a>
+<a name="ln396"> </a>
+<a name="ln397">/** Is there enough dry floor on this feature to stand without penalty?</a>
+<a name="ln398"> */</a>
+<a name="ln399">bool feat_has_dry_floor(dungeon_feature_type feat)</a>
+<a name="ln400">{</a>
+<a name="ln401">    return feat_has_solid_floor(feat) &amp;&amp; !feat_is_water(feat);</a>
+<a name="ln402">}</a>
+<a name="ln403"> </a>
+<a name="ln404">/** Is this feature a variety of door?</a>
+<a name="ln405"> */</a>
+<a name="ln406">bool feat_is_door(dungeon_feature_type feat)</a>
+<a name="ln407">{</a>
+<a name="ln408">    return feat_is_closed_door(feat) || feat_is_open_door(feat);</a>
+<a name="ln409">}</a>
+<a name="ln410"> </a>
+<a name="ln411">/** Is this feature a variety of closed door?</a>
+<a name="ln412"> */</a>
+<a name="ln413">bool feat_is_closed_door(dungeon_feature_type feat)</a>
+<a name="ln414">{</a>
+<a name="ln415">    return feat == DNGN_CLOSED_DOOR</a>
+<a name="ln416">           || feat == DNGN_CLOSED_CLEAR_DOOR</a>
+<a name="ln417">           || feat_is_runed(feat)</a>
+<a name="ln418">           || feat == DNGN_SEALED_DOOR</a>
+<a name="ln419">           || feat == DNGN_SEALED_CLEAR_DOOR;</a>
+<a name="ln420">}</a>
+<a name="ln421"> </a>
+<a name="ln422">/** Is this feature a variety of open door?</a>
+<a name="ln423"> */</a>
+<a name="ln424">bool feat_is_open_door(dungeon_feature_type feat)</a>
+<a name="ln425">{</a>
+<a name="ln426">    return feat == DNGN_OPEN_DOOR || feat == DNGN_OPEN_CLEAR_DOOR;</a>
+<a name="ln427">}</a>
+<a name="ln428"> </a>
+<a name="ln429">/** Has this feature been sealed by a vault warden?</a>
+<a name="ln430"> */</a>
+<a name="ln431">bool feat_is_sealed(dungeon_feature_type feat)</a>
+<a name="ln432">{</a>
+<a name="ln433">    return feat == DNGN_SEALED_STAIRS_DOWN</a>
+<a name="ln434">        || feat == DNGN_SEALED_STAIRS_UP</a>
+<a name="ln435">        || feat == DNGN_SEALED_DOOR</a>
+<a name="ln436">        || feat == DNGN_SEALED_CLEAR_DOOR;</a>
+<a name="ln437">}</a>
+<a name="ln438"> </a>
+<a name="ln439">/** Is this feature a type of runed door?</a>
+<a name="ln440"> */</a>
+<a name="ln441">bool feat_is_runed(dungeon_feature_type feat)</a>
+<a name="ln442">{</a>
+<a name="ln443">    return feat == DNGN_RUNED_DOOR || feat == DNGN_RUNED_CLEAR_DOOR;</a>
+<a name="ln444">}</a>
+<a name="ln445"> </a>
+<a name="ln446">/** Is the original feature at this position runed, as in a runed door?</a>
+<a name="ln447"> */</a>
+<a name="ln448">bool cell_is_runed(const coord_def &amp;p)</a>
+<a name="ln449">{</a>
+<a name="ln450">    // the orig_terrain call will check the actual terrain if there's no change</a>
+<a name="ln451">    return feat_is_runed(orig_terrain(p));</a>
+<a name="ln452">}</a>
+<a name="ln453"> </a>
+<a name="ln454">/** Is this feature a type of statue, i.e., granite or an idol?</a>
+<a name="ln455"> */</a>
+<a name="ln456">bool feat_is_statuelike(dungeon_feature_type feat)</a>
+<a name="ln457">{</a>
+<a name="ln458">    return feat == DNGN_ORCISH_IDOL || feat == DNGN_GRANITE_STATUE;</a>
+<a name="ln459">}</a>
+<a name="ln460"> </a>
+<a name="ln461">/** Is this feature permanent, unalterable rock?</a>
+<a name="ln462"> */</a>
+<a name="ln463">bool feat_is_permarock(dungeon_feature_type feat)</a>
+<a name="ln464">{</a>
+<a name="ln465">    return feat == DNGN_PERMAROCK_WALL || feat == DNGN_CLEAR_PERMAROCK_WALL;</a>
+<a name="ln466">}</a>
+<a name="ln467"> </a>
+<a name="ln468">/** Is this feature an open expanse used only as a map border?</a>
+<a name="ln469"> */</a>
+<a name="ln470">bool feat_is_endless(dungeon_feature_type feat)</a>
+<a name="ln471">{</a>
+<a name="ln472">    return feat == DNGN_OPEN_SEA || feat == DNGN_LAVA_SEA</a>
+<a name="ln473">           || feat == DNGN_ENDLESS_SALT;</a>
+<a name="ln474">}</a>
+<a name="ln475"> </a>
+<a name="ln476">/** Can this feature be dug?</a>
+<a name="ln477"> */</a>
+<a name="ln478">bool feat_is_diggable(dungeon_feature_type feat)</a>
+<a name="ln479">{</a>
+<a name="ln480">    return feat == DNGN_ROCK_WALL || feat == DNGN_CLEAR_ROCK_WALL</a>
+<a name="ln481">           || feat == DNGN_SLIMY_WALL || feat == DNGN_GRATE</a>
+<a name="ln482">           || feat == DNGN_ORCISH_IDOL || feat == DNGN_GRANITE_STATUE;</a>
+<a name="ln483">}</a>
+<a name="ln484"> </a>
+<a name="ln485">/** Is this feature a type of trap?</a>
+<a name="ln486"> *</a>
+<a name="ln487"> *  @param feat the feature.</a>
+<a name="ln488"> *  @returns true if it's a trap.</a>
+<a name="ln489"> */</a>
+<a name="ln490">bool feat_is_trap(dungeon_feature_type feat)</a>
+<a name="ln491">{</a>
+<a name="ln492">    if (!is_valid_feature_type(feat))</a>
+<a name="ln493">        return false; // ???</a>
+<a name="ln494">    return get_feature_def(feat).flags &amp; FFT_TRAP;</a>
+<a name="ln495">}</a>
+<a name="ln496"> </a>
+<a name="ln497">/** Is this feature a type of water, with the concomitant dangers/bonuss?</a>
+<a name="ln498"> */</a>
+<a name="ln499">bool feat_is_water(dungeon_feature_type feat)</a>
+<a name="ln500">{</a>
+<a name="ln501">    return feat == DNGN_SHALLOW_WATER</a>
+<a name="ln502">           || feat == DNGN_DEEP_WATER</a>
+<a name="ln503">           || feat == DNGN_OPEN_SEA</a>
+<a name="ln504">           || feat == DNGN_TOXIC_BOG;</a>
+<a name="ln505">}</a>
+<a name="ln506"> </a>
+<a name="ln507">/** Does this feature have enough water to keep water-only monsters alive in it?</a>
+<a name="ln508"> */</a>
+<a name="ln509">bool feat_is_watery(dungeon_feature_type feat)</a>
+<a name="ln510">{</a>
+<a name="ln511">    return feat_is_water(feat) || feat == DNGN_FOUNTAIN_BLUE;</a>
+<a name="ln512">}</a>
+<a name="ln513"> </a>
+<a name="ln514">/** Is this feature a kind of lava?</a>
+<a name="ln515"> */</a>
+<a name="ln516">bool feat_is_lava(dungeon_feature_type feat)</a>
+<a name="ln517">{</a>
+<a name="ln518">    return feat == DNGN_LAVA || feat == DNGN_LAVA_SEA;</a>
+<a name="ln519">}</a>
+<a name="ln520"> </a>
+<a name="ln521">static const pair&lt;god_type, dungeon_feature_type&gt; _god_altars[] =</a>
+<a name="ln522">{</a>
+<a name="ln523">    { GOD_ZIN, DNGN_ALTAR_ZIN },</a>
+<a name="ln524">    { GOD_SHINING_ONE, DNGN_ALTAR_SHINING_ONE },</a>
+<a name="ln525">    { GOD_KIKUBAAQUDGHA, DNGN_ALTAR_KIKUBAAQUDGHA },</a>
+<a name="ln526">    { GOD_YREDELEMNUL, DNGN_ALTAR_YREDELEMNUL },</a>
+<a name="ln527">    { GOD_XOM, DNGN_ALTAR_XOM },</a>
+<a name="ln528">    { GOD_VEHUMET, DNGN_ALTAR_VEHUMET },</a>
+<a name="ln529">    { GOD_OKAWARU, DNGN_ALTAR_OKAWARU },</a>
+<a name="ln530">    { GOD_MAKHLEB, DNGN_ALTAR_MAKHLEB },</a>
+<a name="ln531">    { GOD_SIF_MUNA, DNGN_ALTAR_SIF_MUNA },</a>
+<a name="ln532">    { GOD_TROG, DNGN_ALTAR_TROG },</a>
+<a name="ln533">    { GOD_NEMELEX_XOBEH, DNGN_ALTAR_NEMELEX_XOBEH },</a>
+<a name="ln534">    { GOD_ELYVILON, DNGN_ALTAR_ELYVILON },</a>
+<a name="ln535">    { GOD_LUGONU, DNGN_ALTAR_LUGONU },</a>
+<a name="ln536">    { GOD_BEOGH, DNGN_ALTAR_BEOGH },</a>
+<a name="ln537">    { GOD_JIYVA, DNGN_ALTAR_JIYVA },</a>
+<a name="ln538">    { GOD_FEDHAS, DNGN_ALTAR_FEDHAS },</a>
+<a name="ln539">    { GOD_CHEIBRIADOS, DNGN_ALTAR_CHEIBRIADOS },</a>
+<a name="ln540">    { GOD_ASHENZARI, DNGN_ALTAR_ASHENZARI },</a>
+<a name="ln541">    { GOD_DITHMENOS, DNGN_ALTAR_DITHMENOS },</a>
+<a name="ln542">    { GOD_GOZAG, DNGN_ALTAR_GOZAG },</a>
+<a name="ln543">    { GOD_QAZLAL, DNGN_ALTAR_QAZLAL },</a>
+<a name="ln544">    { GOD_RU, DNGN_ALTAR_RU },</a>
+<a name="ln545">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln546">    { GOD_PAKELLAS, DNGN_ALTAR_PAKELLAS },</a>
+<a name="ln547">#endif</a>
+<a name="ln548">    { GOD_USKAYAW, DNGN_ALTAR_USKAYAW },</a>
+<a name="ln549">    { GOD_HEPLIAKLQANA, DNGN_ALTAR_HEPLIAKLQANA },</a>
+<a name="ln550">    { GOD_WU_JIAN, DNGN_ALTAR_WU_JIAN },</a>
+<a name="ln551">    { GOD_ECUMENICAL, DNGN_ALTAR_ECUMENICAL },</a>
+<a name="ln552">};</a>
+<a name="ln553"> </a>
+<a name="ln554">COMPILE_CHECK(ARRAYSZ(_god_altars) == NUM_GODS );</a>
+<a name="ln555"> </a>
+<a name="ln556">/** Whose altar is this feature?</a>
+<a name="ln557"> *</a>
+<a name="ln558"> *  @param feat the feature.</a>
+<a name="ln559"> *  @returns GOD_NO_GOD if not an altar, otherwise the god_type of the god.</a>
+<a name="ln560"> */</a>
+<a name="ln561">god_type feat_altar_god(dungeon_feature_type feat)</a>
+<a name="ln562">{</a>
+<a name="ln563">    for (const auto &amp;altar : _god_altars)</a>
+<a name="ln564">        if (altar.second == feat)</a>
+<a name="ln565">            return altar.first;</a>
+<a name="ln566"> </a>
+<a name="ln567">    return GOD_NO_GOD;</a>
+<a name="ln568">}</a>
+<a name="ln569"> </a>
+<a name="ln570">/** What feature is the altar of this god?</a>
+<a name="ln571"> *</a>
+<a name="ln572"> *  @param god the god.</a>
+<a name="ln573"> *  @returns DNGN_FLOOR for an invalid god, the god's altar otherwise.</a>
+<a name="ln574"> */</a>
+<a name="ln575">dungeon_feature_type altar_for_god(god_type god)</a>
+<a name="ln576">{</a>
+<a name="ln577">    for (const auto &amp;altar : _god_altars)</a>
+<a name="ln578">        if (altar.first == god)</a>
+<a name="ln579">            return altar.second;</a>
+<a name="ln580"> </a>
+<a name="ln581">    return DNGN_FLOOR;</a>
+<a name="ln582">}</a>
+<a name="ln583"> </a>
+<a name="ln584">/** Is this feature an altar to any god?</a>
+<a name="ln585"> */</a>
+<a name="ln586">bool feat_is_altar(dungeon_feature_type grid)</a>
+<a name="ln587">{</a>
+<a name="ln588">    return feat_altar_god(grid) != GOD_NO_GOD;</a>
+<a name="ln589">}</a>
+<a name="ln590"> </a>
+<a name="ln591">/** Is this feature an altar to the player's god?</a>
+<a name="ln592"> *</a>
+<a name="ln593"> *  @param feat the feature.</a>
+<a name="ln594"> *  @returns true if the player has a god and this is its altar.</a>
+<a name="ln595"> */</a>
+<a name="ln596">bool feat_is_player_altar(dungeon_feature_type grid)</a>
+<a name="ln597">{</a>
+<a name="ln598">    return !you_worship(GOD_NO_GOD) &amp;&amp; you_worship(feat_altar_god(grid));</a>
+<a name="ln599">}</a>
+<a name="ln600"> </a>
+<a name="ln601">/** Is this feature a tree?</a>
+<a name="ln602"> */</a>
+<a name="ln603">bool feat_is_tree(dungeon_feature_type feat)</a>
+<a name="ln604">{</a>
+<a name="ln605">    return feat == DNGN_TREE;</a>
+<a name="ln606">}</a>
+<a name="ln607"> </a>
+<a name="ln608">/** Is this feature made of metal?</a>
+<a name="ln609"> */</a>
+<a name="ln610">bool feat_is_metal(dungeon_feature_type feat)</a>
+<a name="ln611">{</a>
+<a name="ln612">    return feat == DNGN_METAL_WALL || feat == DNGN_GRATE;</a>
+<a name="ln613">}</a>
+<a name="ln614"> </a>
+<a name="ln615">/** Is this feature ambivalent about whether we're going up or down?</a>
+<a name="ln616"> */</a>
+<a name="ln617">bool feat_is_bidirectional_portal(dungeon_feature_type feat)</a>
+<a name="ln618">{</a>
+<a name="ln619">    return get_feature_dchar(feat) == DCHAR_ARCH</a>
+<a name="ln620">           &amp;&amp; feat_stair_direction(feat) != CMD_NO_CMD</a>
+<a name="ln621">           &amp;&amp; feat != DNGN_ENTER_ZOT</a>
+<a name="ln622">           &amp;&amp; feat != DNGN_EXIT_ZOT</a>
+<a name="ln623">           &amp;&amp; feat != DNGN_ENTER_VAULTS</a>
+<a name="ln624">           &amp;&amp; feat != DNGN_EXIT_VAULTS</a>
+<a name="ln625">           &amp;&amp; feat != DNGN_EXIT_HELL</a>
+<a name="ln626">           &amp;&amp; feat != DNGN_ENTER_HELL;</a>
+<a name="ln627">}</a>
+<a name="ln628"> </a>
+<a name="ln629">/** Is this feature a type of fountain?</a>
+<a name="ln630"> */</a>
+<a name="ln631">bool feat_is_fountain(dungeon_feature_type feat)</a>
+<a name="ln632">{</a>
+<a name="ln633">    return feat == DNGN_FOUNTAIN_BLUE</a>
+<a name="ln634">           || feat == DNGN_FOUNTAIN_SPARKLING</a>
+<a name="ln635">           || feat == DNGN_FOUNTAIN_BLOOD</a>
+<a name="ln636">           || feat == DNGN_DRY_FOUNTAIN;</a>
+<a name="ln637">}</a>
+<a name="ln638"> </a>
+<a name="ln639">/** Is this feature non-solid enough that you can reach past it?</a>
+<a name="ln640"> */</a>
+<a name="ln641">bool feat_is_reachable_past(dungeon_feature_type feat)</a>
+<a name="ln642">{</a>
+<a name="ln643">    return !feat_is_opaque(feat) &amp;&amp; !feat_is_wall(feat) &amp;&amp; feat != DNGN_GRATE;</a>
+<a name="ln644">}</a>
+<a name="ln645"> </a>
+<a name="ln646">/** Is this feature important to the game?</a>
+<a name="ln647"> *</a>
+<a name="ln648"> *  @param feat the feature.</a>
+<a name="ln649"> *  @returns true for altars, stairs/portals, and malign gateways (???).</a>
+<a name="ln650"> */</a>
+<a name="ln651">bool feat_is_critical(dungeon_feature_type feat)</a>
+<a name="ln652">{</a>
+<a name="ln653">    return feat_stair_direction(feat) != CMD_NO_CMD</a>
+<a name="ln654">           || feat_altar_god(feat) != GOD_NO_GOD</a>
+<a name="ln655">           || feat == DNGN_TRANSPORTER_LANDING</a>
+<a name="ln656">           || feat == DNGN_MALIGN_GATEWAY;</a>
+<a name="ln657">}</a>
+<a name="ln658"> </a>
+<a name="ln659">/** Can you use this feature for a map border?</a>
+<a name="ln660"> */</a>
+<a name="ln661">bool feat_is_valid_border(dungeon_feature_type feat)</a>
+<a name="ln662">{</a>
+<a name="ln663">    return feat_is_wall(feat)</a>
+<a name="ln664">           || feat_is_tree(feat)</a>
+<a name="ln665">           || feat == DNGN_OPEN_SEA</a>
+<a name="ln666">           || feat == DNGN_LAVA_SEA</a>
+<a name="ln667">           || feat == DNGN_ENDLESS_SALT;</a>
+<a name="ln668">}</a>
+<a name="ln669"> </a>
+<a name="ln670">/** Can this feature be a mimic?</a>
+<a name="ln671"> *</a>
+<a name="ln672"> *  @param feat the feature</a>
+<a name="ln673"> *  @param strict if true, disallow features for which being a mimic would be bad in</a>
+<a name="ln674">                  normal generation; vaults can still use such mimics.</a>
+<a name="ln675"> *  @returns whether this could make a valid mimic type.</a>
+<a name="ln676"> */</a>
+<a name="ln677">bool feat_is_mimicable(dungeon_feature_type feat, bool strict)</a>
+<a name="ln678">{</a>
+<a name="ln679">    if (!strict &amp;&amp; feat != DNGN_FLOOR &amp;&amp; feat != DNGN_SHALLOW_WATER</a>
+<a name="ln680">        &amp;&amp; feat != DNGN_DEEP_WATER)</a>
+<a name="ln681">    {</a>
+<a name="ln682">        return true;</a>
+<a name="ln683">    }</a>
+<a name="ln684"> </a>
+<a name="ln685">    if (feat == DNGN_ENTER_ZIGGURAT)</a>
+<a name="ln686">        return false;</a>
+<a name="ln687"> </a>
+<a name="ln688">    if (feat_is_portal_entrance(feat))</a>
+<a name="ln689">        return true;</a>
+<a name="ln690"> </a>
+<a name="ln691">    if (feat == DNGN_ENTER_SHOP)</a>
+<a name="ln692">        return true;</a>
+<a name="ln693"> </a>
+<a name="ln694">    return false;</a>
+<a name="ln695">}</a>
+<a name="ln696"> </a>
+<a name="ln697">/** Can creatures on this feature be shafted?</a>
+<a name="ln698"> *</a>
+<a name="ln699"> * @param feat The feature in question.</a>
+<a name="ln700"> * @returns Whether creatures standing on this feature can be shafted (by</a>
+<a name="ln701"> *          magical effects, Formicid digging, etc).</a>
+<a name="ln702"> */</a>
+<a name="ln703">bool feat_is_shaftable(dungeon_feature_type feat)</a>
+<a name="ln704">{</a>
+<a name="ln705">    return feat_has_dry_floor(feat)</a>
+<a name="ln706">           &amp;&amp; !feat_is_stair(feat)</a>
+<a name="ln707">           &amp;&amp; !feat_is_portal(feat);</a>
+<a name="ln708">}</a>
+<a name="ln709"> </a>
+<a name="ln710">int count_neighbours_with_func(const coord_def&amp; c, bool (*checker)(dungeon_feature_type))</a>
+<a name="ln711">{</a>
+<a name="ln712">    int count = 0;</a>
+<a name="ln713">    for (adjacent_iterator ai(c); ai; ++ai)</a>
+<a name="ln714">    {</a>
+<a name="ln715">        if (checker(grd(*ai)))</a>
+<a name="ln716">            count++;</a>
+<a name="ln717">    }</a>
+<a name="ln718">    return count;</a>
+<a name="ln719">}</a>
+<a name="ln720"> </a>
+<a name="ln721">// For internal use by find_connected_identical only.</a>
+<a name="ln722">static void _find_connected_identical(const coord_def &amp;d,</a>
+<a name="ln723">                                      dungeon_feature_type ft,</a>
+<a name="ln724">                                      set&lt;coord_def&gt;&amp; out,</a>
+<a name="ln725">                                      bool known_only)</a>
+<a name="ln726">{</a>
+<a name="ln727">    if (grd(d) != ft || (known_only &amp;&amp; !env.map_knowledge(d).known()))</a>
+<a name="ln728">        return;</a>
+<a name="ln729"> </a>
+<a name="ln730">    string prop = env.markers.property_at(d, MAT_ANY, &quot;connected_exclude&quot;);</a>
+<a name="ln731"> </a>
+<a name="ln732">    if (!prop.empty())</a>
+<a name="ln733">    {</a>
+<a name="ln734">        // Don't treat this square as connected to anything. Ignore it.</a>
+<a name="ln735">        // Continue the search in other directions.</a>
+<a name="ln736">        return;</a>
+<a name="ln737">    }</a>
+<a name="ln738"> </a>
+<a name="ln739">    if (out.insert(d).second)</a>
+<a name="ln740">    {</a>
+<a name="ln741">        _find_connected_identical(coord_def(d.x+1, d.y), ft, out, known_only);</a>
+<a name="ln742">        _find_connected_identical(coord_def(d.x-1, d.y), ft, out, known_only);</a>
+<a name="ln743">        _find_connected_identical(coord_def(d.x, d.y+1), ft, out, known_only);</a>
+<a name="ln744">        _find_connected_identical(coord_def(d.x, d.y-1), ft, out, known_only);</a>
+<a name="ln745">    }</a>
+<a name="ln746">}</a>
+<a name="ln747"> </a>
+<a name="ln748">// Find all connected cells containing ft, starting at d.</a>
+<a name="ln749">void find_connected_identical(const coord_def &amp;d, set&lt;coord_def&gt;&amp; out, bool known_only)</a>
+<a name="ln750">{</a>
+<a name="ln751">    string prop = env.markers.property_at(d, MAT_ANY, &quot;connected_exclude&quot;);</a>
+<a name="ln752"> </a>
+<a name="ln753">    if (!prop.empty())</a>
+<a name="ln754">        out.insert(d);</a>
+<a name="ln755">    else</a>
+<a name="ln756">        _find_connected_identical(d, grd(d), out, known_only);</a>
+<a name="ln757">}</a>
+<a name="ln758"> </a>
+<a name="ln759">void get_door_description(int door_size, const char** adjective, const char** noun)</a>
+<a name="ln760">{</a>
+<a name="ln761">    const char* descriptions[] =</a>
+<a name="ln762">    {</a>
+<a name="ln763">        &quot;miniscule &quot; , &quot;buggy door&quot;,</a>
+<a name="ln764">        &quot;&quot;           , &quot;door&quot;,</a>
+<a name="ln765">        &quot;large &quot;     , &quot;door&quot;,</a>
+<a name="ln766">        &quot;&quot;           , &quot;gate&quot;,</a>
+<a name="ln767">        &quot;huge &quot;      , &quot;gate&quot;,</a>
+<a name="ln768">    };</a>
+<a name="ln769"> </a>
+<a name="ln770">    int max_idx = static_cast&lt;int&gt;(ARRAYSZ(descriptions) - 2);</a>
+<a name="ln771">    const unsigned int idx = min(door_size*2, max_idx);</a>
+<a name="ln772"> </a>
+<a name="ln773">    *adjective = descriptions[idx];</a>
+<a name="ln774">    *noun = descriptions[idx+1];</a>
+<a name="ln775">}</a>
+<a name="ln776"> </a>
+<a name="ln777">coord_def get_random_stair()</a>
+<a name="ln778">{</a>
+<a name="ln779">    vector&lt;coord_def&gt; st;</a>
+<a name="ln780">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln781">    {</a>
+<a name="ln782">        const dungeon_feature_type feat = grd(*ri);</a>
+<a name="ln783">        if (feat_is_travelable_stair(feat) &amp;&amp; !feat_is_escape_hatch(feat)</a>
+<a name="ln784">            &amp;&amp; feat != DNGN_EXIT_DUNGEON</a>
+<a name="ln785">            &amp;&amp; feat != DNGN_EXIT_HELL)</a>
+<a name="ln786">        {</a>
+<a name="ln787">            st.push_back(*ri);</a>
+<a name="ln788">        }</a>
+<a name="ln789">    }</a>
+<a name="ln790">    if (st.empty())</a>
+<a name="ln791">        return coord_def();        // sanity check: shouldn't happen</a>
+<a name="ln792">    return st[random2(st.size())];</a>
+<a name="ln793">}</a>
+<a name="ln794"> </a>
+<a name="ln795">static unique_ptr&lt;map_mask_boolean&gt; _slime_wall_precomputed_neighbour_mask;</a>
+<a name="ln796"> </a>
+<a name="ln797">static void _precompute_slime_wall_neighbours()</a>
+<a name="ln798">{</a>
+<a name="ln799">    map_mask_boolean &amp;mask(*_slime_wall_precomputed_neighbour_mask);</a>
+<a name="ln800">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln801">    {</a>
+<a name="ln802">        if (grd(*ri) == DNGN_SLIMY_WALL)</a>
+<a name="ln803">        {</a>
+<a name="ln804">            for (adjacent_iterator ai(*ri); ai; ++ai)</a>
+<a name="ln805">                mask(*ai) = true;</a>
+<a name="ln806">        }</a>
+<a name="ln807">    }</a>
+<a name="ln808">}</a>
+<a name="ln809"> </a>
+<a name="ln810">unwind_slime_wall_precomputer::unwind_slime_wall_precomputer(bool docompute)</a>
+<a name="ln811">    : did_compute_mask(false)</a>
+<a name="ln812">{</a>
+<a name="ln813">    if (!(env.level_state &amp; LSTATE_SLIMY_WALL))</a>
+<a name="ln814">        return;</a>
+<a name="ln815"> </a>
+<a name="ln816">    if (docompute &amp;&amp; !_slime_wall_precomputed_neighbour_mask)</a>
+<a name="ln817">    {</a>
+<a name="ln818">        did_compute_mask = true;</a>
+<a name="ln819">        _slime_wall_precomputed_neighbour_mask.reset(</a>
+<a name="ln820">            new map_mask_boolean(false));</a>
+<a name="ln821">        _precompute_slime_wall_neighbours();</a>
+<a name="ln822">    }</a>
+<a name="ln823">}</a>
+<a name="ln824"> </a>
+<a name="ln825">unwind_slime_wall_precomputer::~unwind_slime_wall_precomputer()</a>
+<a name="ln826">{</a>
+<a name="ln827">    if (did_compute_mask)</a>
+<a name="ln828">        _slime_wall_precomputed_neighbour_mask.reset(nullptr);</a>
+<a name="ln829">}</a>
+<a name="ln830"> </a>
+<a name="ln831">bool slime_wall_neighbour(const coord_def&amp; c)</a>
+<a name="ln832">{</a>
+<a name="ln833">    if (!(env.level_state &amp; LSTATE_SLIMY_WALL))</a>
+<a name="ln834">        return false;</a>
+<a name="ln835"> </a>
+<a name="ln836">    if (_slime_wall_precomputed_neighbour_mask)</a>
+<a name="ln837">        return (*_slime_wall_precomputed_neighbour_mask)(c);</a>
+<a name="ln838"> </a>
+<a name="ln839">    // Not using count_adjacent_slime_walls because the early return might</a>
+<a name="ln840">    // be relevant for performance here. TODO: profile it and find out.</a>
+<a name="ln841">    for (adjacent_iterator ai(c); ai; ++ai)</a>
+<a name="ln842">        if (env.grid(*ai) == DNGN_SLIMY_WALL)</a>
+<a name="ln843">            return true;</a>
+<a name="ln844">    return false;</a>
+<a name="ln845">}</a>
+<a name="ln846"> </a>
+<a name="ln847">int count_adjacent_slime_walls(const coord_def &amp;pos)</a>
+<a name="ln848">{</a>
+<a name="ln849">    int count = 0;</a>
+<a name="ln850">    for (adjacent_iterator ai(pos); ai; ++ai)</a>
+<a name="ln851">        if (env.grid(*ai) == DNGN_SLIMY_WALL)</a>
+<a name="ln852">            count++;</a>
+<a name="ln853"> </a>
+<a name="ln854">    return count;</a>
+<a name="ln855">}</a>
+<a name="ln856"> </a>
+<a name="ln857">void slime_wall_damage(actor* act, int delay)</a>
+<a name="ln858">{</a>
+<a name="ln859">    ASSERT(act);</a>
+<a name="ln860"> </a>
+<a name="ln861">    if (actor_slime_wall_immune(act))</a>
+<a name="ln862">        return;</a>
+<a name="ln863"> </a>
+<a name="ln864">    const int walls = count_adjacent_slime_walls(act-&gt;pos());</a>
+<a name="ln865">    if (!walls)</a>
+<a name="ln866">        return;</a>
+<a name="ln867"> </a>
+<a name="ln868">    const int strength = div_rand_round(3 * walls * delay, BASELINE_DELAY);</a>
+<a name="ln869"> </a>
+<a name="ln870">    if (act-&gt;is_player())</a>
+<a name="ln871">    {</a>
+<a name="ln872">        you.splash_with_acid(nullptr, strength, false,</a>
+<a name="ln873">                            (walls &gt; 1) ? &quot;The walls burn you!&quot;</a>
+<a name="ln874">                                        : &quot;The wall burns you!&quot;);</a>
+<a name="ln875">    }</a>
+<a name="ln876">    else</a>
+<a name="ln877">    {</a>
+<a name="ln878">        monster* mon = act-&gt;as_monster();</a>
+<a name="ln879"> </a>
+<a name="ln880">        const int dam = resist_adjust_damage(mon, BEAM_ACID,</a>
+<a name="ln881">                                             roll_dice(2, strength));</a>
+<a name="ln882">        if (dam &gt; 0 &amp;&amp; you.can_see(*mon))</a>
+<a name="ln883">        {</a>
+<a name="ln884">            mprf((walls &gt; 1) ? &quot;The walls burn %s!&quot; : &quot;The wall burns %s!&quot;,</a>
+<a name="ln885">                  mon-&gt;name(DESC_THE).c_str());</a>
+<a name="ln886">        }</a>
+<a name="ln887">        mon-&gt;hurt(nullptr, dam, BEAM_ACID);</a>
+<a name="ln888">    }</a>
+<a name="ln889">}</a>
+<a name="ln890"> </a>
+<a name="ln891">int count_adjacent_icy_walls(const coord_def &amp;pos)</a>
+<a name="ln892">{</a>
+<a name="ln893">    int count = 0;</a>
+<a name="ln894">    for (adjacent_iterator ai(pos); ai; ++ai)</a>
+<a name="ln895">        if (is_icecovered(*ai))</a>
+<a name="ln896">            count++;</a>
+<a name="ln897"> </a>
+<a name="ln898">    return count;</a>
+<a name="ln899">}</a>
+<a name="ln900"> </a>
+<a name="ln901">void feat_splash_noise(dungeon_feature_type feat)</a>
+<a name="ln902">{</a>
+<a name="ln903">    if (crawl_state.generating_level)</a>
+<a name="ln904">        return;</a>
+<a name="ln905"> </a>
+<a name="ln906">    switch (feat)</a>
+<a name="ln907">    {</a>
+<a name="ln908">    case DNGN_SHALLOW_WATER:</a>
+<a name="ln909">    case DNGN_DEEP_WATER:</a>
+<a name="ln910">        mprf(MSGCH_SOUND, &quot;You hear a splash.&quot;);</a>
+<a name="ln911">        return;</a>
+<a name="ln912"> </a>
+<a name="ln913">    case DNGN_LAVA:</a>
+<a name="ln914">        mprf(MSGCH_SOUND, &quot;You hear a sizzling splash.&quot;);</a>
+<a name="ln915">        return;</a>
+<a name="ln916"> </a>
+<a name="ln917">    default:</a>
+<a name="ln918">        return;</a>
+<a name="ln919">    }</a>
+<a name="ln920">}</a>
+<a name="ln921"> </a>
+<a name="ln922">/** Does this feature destroy any items that fall into it?</a>
+<a name="ln923"> */</a>
+<a name="ln924">bool feat_destroys_items(dungeon_feature_type feat)</a>
+<a name="ln925">{</a>
+<a name="ln926">    return feat == DNGN_LAVA;</a>
+<a name="ln927">}</a>
+<a name="ln928"> </a>
+<a name="ln929">/** Does this feature make items that fall into it permanently inaccessible?</a>
+<a name="ln930"> */</a>
+<a name="ln931">bool feat_eliminates_items(dungeon_feature_type feat)</a>
+<a name="ln932">{</a>
+<a name="ln933">    return feat_destroys_items(feat)</a>
+<a name="ln934">           || feat == DNGN_DEEP_WATER &amp;&amp; !species_likes_water(you.species);</a>
+<a name="ln935">}</a>
+<a name="ln936"> </a>
+<a name="ln937">static coord_def _dgn_find_nearest_square(</a>
+<a name="ln938">    const coord_def &amp;pos,</a>
+<a name="ln939">    function&lt;bool (const coord_def &amp;)&gt; acceptable,</a>
+<a name="ln940">    function&lt;bool (const coord_def &amp;)&gt; traversable = nullptr)</a>
+<a name="ln941">{</a>
+<a name="ln942">    memset(travel_point_distance, 0, sizeof(travel_distance_grid_t));</a>
+<a name="ln943"> </a>
+<a name="ln944">    vector&lt;coord_def&gt; points[2];</a>
+<a name="ln945">    int iter = 0;</a>
+<a name="ln946">    points[iter].push_back(pos);</a>
+<a name="ln947"> </a>
+<a name="ln948">    while (!points[iter].empty())</a>
+<a name="ln949">    {</a>
+<a name="ln950">        // Iterate each layer of BFS in random order to avoid bias.</a>
+<a name="ln951">        shuffle_array(points[iter]);</a>
+<a name="ln952">        for (const auto &amp;p : points[iter])</a>
+<a name="ln953">        {</a>
+<a name="ln954">            if (p != pos &amp;&amp; acceptable(p))</a>
+<a name="ln955">                return p;</a>
+<a name="ln956"> </a>
+<a name="ln957">            travel_point_distance[p.x][p.y] = 1;</a>
+<a name="ln958">            for (int yi = -1; yi &lt;= 1; ++yi)</a>
+<a name="ln959">                for (int xi = -1; xi &lt;= 1; ++xi)</a>
+<a name="ln960">                {</a>
+<a name="ln961">                    if (!xi &amp;&amp; !yi)</a>
+<a name="ln962">                        continue;</a>
+<a name="ln963"> </a>
+<a name="ln964">                    const coord_def np = p + coord_def(xi, yi);</a>
+<a name="ln965">                    if (!in_bounds(np) || travel_point_distance[np.x][np.y])</a>
+<a name="ln966">                        continue;</a>
+<a name="ln967"> </a>
+<a name="ln968">                    if (traversable &amp;&amp; !traversable(np))</a>
+<a name="ln969">                        continue;</a>
+<a name="ln970"> </a>
+<a name="ln971">                    points[!iter].push_back(np);</a>
+<a name="ln972">                }</a>
+<a name="ln973">        }</a>
+<a name="ln974"> </a>
+<a name="ln975">        points[iter].clear();</a>
+<a name="ln976">        iter = !iter;</a>
+<a name="ln977">    }</a>
+<a name="ln978"> </a>
+<a name="ln979">    return coord_def(0, 0); // Not found.</a>
+<a name="ln980">}</a>
+<a name="ln981"> </a>
+<a name="ln982">static bool _item_safe_square(const coord_def &amp;pos)</a>
+<a name="ln983">{</a>
+<a name="ln984">    const dungeon_feature_type feat = grd(pos);</a>
+<a name="ln985">    return feat_is_traversable(feat) &amp;&amp; !feat_destroys_items(feat);</a>
+<a name="ln986">}</a>
+<a name="ln987"> </a>
+<a name="ln988">static bool _item_traversable_square(const coord_def &amp;pos)</a>
+<a name="ln989">{</a>
+<a name="ln990">    return !cell_is_solid(pos);</a>
+<a name="ln991">}</a>
+<a name="ln992"> </a>
+<a name="ln993">// Moves an item on the floor to the nearest adjacent floor-space.</a>
+<a name="ln994">static bool _dgn_shift_item(const coord_def &amp;pos, item_def &amp;item)</a>
+<a name="ln995">{</a>
+<a name="ln996">    // First try to avoid pushing things through solid features...</a>
+<a name="ln997">    coord_def np = _dgn_find_nearest_square(pos, _item_safe_square,</a>
+<a name="ln998">                                            _item_traversable_square);</a>
+<a name="ln999">    // ... but if we have to, so be it.</a>
+<a name="ln1000">    if (!in_bounds(np) || np == pos)</a>
+<a name="ln1001">        np = _dgn_find_nearest_square(pos, _item_safe_square);</a>
+<a name="ln1002"> </a>
+<a name="ln1003">    if (in_bounds(np) &amp;&amp; np != pos)</a>
+<a name="ln1004">    {</a>
+<a name="ln1005">        int index = item.index();</a>
+<a name="ln1006">        move_item_to_grid(&amp;index, np);</a>
+<a name="ln1007">        return true;</a>
+<a name="ln1008">    }</a>
+<a name="ln1009">    return false;</a>
+<a name="ln1010">}</a>
+<a name="ln1011"> </a>
+<a name="ln1012">static bool _is_feature_shift_target(const coord_def &amp;pos)</a>
+<a name="ln1013">{</a>
+<a name="ln1014">    return grd(pos) == DNGN_FLOOR &amp;&amp; !dungeon_events.has_listeners_at(pos)</a>
+<a name="ln1015">           &amp;&amp; !actor_at(pos);</a>
+<a name="ln1016">}</a>
+<a name="ln1017"> </a>
+<a name="ln1018">// Moves everything at src to dst. This is not a swap operation: src will be</a>
+<a name="ln1019">// left with the same feature it started with, and should be overwritten with</a>
+<a name="ln1020">// something new. Assumes there are no actors in the destination square.</a>
+<a name="ln1021">//</a>
+<a name="ln1022">// Things that are moved:</a>
+<a name="ln1023">// 1. Dungeon terrain (set to DNGN_UNSEEN)</a>
+<a name="ln1024">// 2. Actors (including the player)</a>
+<a name="ln1025">// 3. Items</a>
+<a name="ln1026">// 4. Clouds</a>
+<a name="ln1027">// 5. Terrain properties</a>
+<a name="ln1028">// 6. Terrain colours</a>
+<a name="ln1029">// 7. Vault (map) mask</a>
+<a name="ln1030">// 8. Vault id mask</a>
+<a name="ln1031">// 9. Map markers, dungeon listeners, shopping list</a>
+<a name="ln1032">//10. Player's knowledge</a>
+<a name="ln1033">void dgn_move_entities_at(coord_def src, coord_def dst,</a>
+<a name="ln1034">                          bool move_player,</a>
+<a name="ln1035">                          bool move_monster,</a>
+<a name="ln1036">                          bool move_items)</a>
+<a name="ln1037">{</a>
+<a name="ln1038">    if (!in_bounds(dst) || !in_bounds(src) || src == dst)</a>
+<a name="ln1039">        return;</a>
+<a name="ln1040"> </a>
+<a name="ln1041">    move_notable_thing(src, dst);</a>
+<a name="ln1042"> </a>
+<a name="ln1043">    dungeon_feature_type dfeat = grd(src);</a>
+<a name="ln1044">    if (dfeat == DNGN_ENTER_SHOP)</a>
+<a name="ln1045">    {</a>
+<a name="ln1046">        ASSERT(shop_at(src));</a>
+<a name="ln1047">        env.shop[dst] = env.shop[src];</a>
+<a name="ln1048">        env.shop[dst].pos = dst;</a>
+<a name="ln1049">        env.shop.erase(src);</a>
+<a name="ln1050">        grd(src) = DNGN_FLOOR;</a>
+<a name="ln1051">    }</a>
+<a name="ln1052">    else if (feat_is_trap(dfeat))</a>
+<a name="ln1053">    {</a>
+<a name="ln1054">        ASSERT(trap_at(src));</a>
+<a name="ln1055">        env.trap[dst] = env.trap[src];</a>
+<a name="ln1056">        env.trap[dst].pos = dst;</a>
+<a name="ln1057">        env.trap.erase(src);</a>
+<a name="ln1058">        grd(src) = DNGN_FLOOR;</a>
+<a name="ln1059">    }</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    grd(dst) = dfeat;</a>
+<a name="ln1062"> </a>
+<a name="ln1063">    if (move_monster || move_player)</a>
+<a name="ln1064">        ASSERT(!actor_at(dst));</a>
+<a name="ln1065"> </a>
+<a name="ln1066">    if (move_monster)</a>
+<a name="ln1067">    {</a>
+<a name="ln1068">        if (monster* mon = monster_at(src))</a>
+<a name="ln1069">        {</a>
+<a name="ln1070">            mon-&gt;moveto(dst);</a>
+<a name="ln1071">            if (mon-&gt;type == MONS_ELDRITCH_TENTACLE)</a>
+<a name="ln1072">            {</a>
+<a name="ln1073">                if (mon-&gt;props.exists(&quot;base_position&quot;))</a>
+<a name="ln1074">                {</a>
+<a name="ln1075">                    coord_def delta = dst - src;</a>
+<a name="ln1076">                    coord_def base_pos = mon-&gt;props[&quot;base_position&quot;].get_coord();</a>
+<a name="ln1077">                    base_pos += delta;</a>
+<a name="ln1078">                    mon-&gt;props[&quot;base_position&quot;].get_coord() = base_pos;</a>
+<a name="ln1079">                }</a>
+<a name="ln1080"> </a>
+<a name="ln1081">            }</a>
+<a name="ln1082">            mgrd(dst) = mgrd(src);</a>
+<a name="ln1083">            mgrd(src) = NON_MONSTER;</a>
+<a name="ln1084">        }</a>
+<a name="ln1085">    }</a>
+<a name="ln1086"> </a>
+<a name="ln1087">    if (move_player &amp;&amp; you.pos() == src)</a>
+<a name="ln1088">        you.shiftto(dst);</a>
+<a name="ln1089"> </a>
+<a name="ln1090">    if (move_items)</a>
+<a name="ln1091">        move_item_stack_to_grid(src, dst);</a>
+<a name="ln1092"> </a>
+<a name="ln1093">    if (cell_is_solid(dst))</a>
+<a name="ln1094">    {</a>
+<a name="ln1095">        delete_cloud(src);</a>
+<a name="ln1096">        delete_cloud(dst); // in case there was already a clear there</a>
+<a name="ln1097">    }</a>
+<a name="ln1098">    else</a>
+<a name="ln1099">        move_cloud(src, dst);</a>
+<a name="ln1100"> </a>
+<a name="ln1101">    // Move terrain colours and properties.</a>
+<a name="ln1102">    env.pgrid(dst) = env.pgrid(src);</a>
+<a name="ln1103">    env.grid_colours(dst) = env.grid_colours(src);</a>
+<a name="ln1104">#ifdef USE_TILE</a>
+<a name="ln1105">    env.tile_bk_fg(dst) = env.tile_bk_fg(src);</a>
+<a name="ln1106">    env.tile_bk_bg(dst) = env.tile_bk_bg(src);</a>
+<a name="ln1107">    env.tile_bk_cloud(dst) = env.tile_bk_cloud(src);</a>
+<a name="ln1108">#endif</a>
+<a name="ln1109">    env.tile_flv(dst) = env.tile_flv(src);</a>
+<a name="ln1110"> </a>
+<a name="ln1111">    // Move vault masks.</a>
+<a name="ln1112">    env.level_map_mask(dst) = env.level_map_mask(src);</a>
+<a name="ln1113">    env.level_map_ids(dst) = env.level_map_ids(src);</a>
+<a name="ln1114"> </a>
+<a name="ln1115">    // Move markers, dungeon listeners and shopping list.</a>
+<a name="ln1116">    env.markers.move(src, dst);</a>
+<a name="ln1117">    dungeon_events.move_listeners(src, dst);</a>
+<a name="ln1118">    shopping_list.move_things(src, dst);</a>
+<a name="ln1119"> </a>
+<a name="ln1120">    // Move player's knowledge.</a>
+<a name="ln1121">    env.map_knowledge(dst) = env.map_knowledge(src);</a>
+<a name="ln1122">    env.map_seen.set(dst, env.map_seen(src));</a>
+<a name="ln1123">    StashTrack.move_stash(src, dst);</a>
+<a name="ln1124">}</a>
+<a name="ln1125"> </a>
+<a name="ln1126">static bool _dgn_shift_feature(const coord_def &amp;pos)</a>
+<a name="ln1127">{</a>
+<a name="ln1128">    const dungeon_feature_type dfeat = grd(pos);</a>
+<a name="ln1129">    if (!feat_is_critical(dfeat) &amp;&amp; !env.markers.find(pos, MAT_ANY))</a>
+<a name="ln1130">        return false;</a>
+<a name="ln1131"> </a>
+<a name="ln1132">    const coord_def dest =</a>
+<a name="ln1133">        _dgn_find_nearest_square(pos, _is_feature_shift_target);</a>
+<a name="ln1134"> </a>
+<a name="ln1135">    dgn_move_entities_at(pos, dest, false, false, false);</a>
+<a name="ln1136">    return true;</a>
+<a name="ln1137">}</a>
+<a name="ln1138"> </a>
+<a name="ln1139">static void _dgn_check_terrain_items(const coord_def &amp;pos, bool preserve_items)</a>
+<a name="ln1140">{</a>
+<a name="ln1141">    const dungeon_feature_type feat = grd(pos);</a>
+<a name="ln1142"> </a>
+<a name="ln1143">    int item = igrd(pos);</a>
+<a name="ln1144">    while (item != NON_ITEM)</a>
+<a name="ln1145">    {</a>
+<a name="ln1146">        const int curr = item;</a>
+<a name="ln1147">        item = mitm[item].link;</a>
+<a name="ln1148"> </a>
+<a name="ln1149">        if (!feat_is_solid(feat) &amp;&amp; !feat_destroys_items(feat))</a>
+<a name="ln1150">            continue;</a>
+<a name="ln1151"> </a>
+<a name="ln1152">        // Game-critical item.</a>
+<a name="ln1153">        if (preserve_items || mitm[curr].is_critical())</a>
+<a name="ln1154">            _dgn_shift_item(pos, mitm[curr]);</a>
+<a name="ln1155">        else</a>
+<a name="ln1156">        {</a>
+<a name="ln1157">            feat_splash_noise(feat);</a>
+<a name="ln1158">            item_was_destroyed(mitm[curr]);</a>
+<a name="ln1159">            destroy_item(curr);</a>
+<a name="ln1160">        }</a>
+<a name="ln1161">    }</a>
+<a name="ln1162">}</a>
+<a name="ln1163"> </a>
+<a name="ln1164">static bool _dgn_check_terrain_monsters(const coord_def &amp;pos)</a>
+<a name="ln1165">{</a>
+<a name="ln1166">    if (monster* m = monster_at(pos))</a>
+<a name="ln1167">    {</a>
+<a name="ln1168">        m-&gt;apply_location_effects(pos);</a>
+<a name="ln1169">        return true;</a>
+<a name="ln1170">    }</a>
+<a name="ln1171">    else</a>
+<a name="ln1172">        return false;</a>
+<a name="ln1173">}</a>
+<a name="ln1174"> </a>
+<a name="ln1175">// Clear blood or off of terrain that shouldn't have it. Also clear of blood if</a>
+<a name="ln1176">// a bloody wall has been dug out and replaced by a floor, or if a bloody floor</a>
+<a name="ln1177">// has been replaced by a wall.</a>
+<a name="ln1178">static void _dgn_check_terrain_covering(const coord_def &amp;pos,</a>
+<a name="ln1179">                                     dungeon_feature_type old_feat,</a>
+<a name="ln1180">                                     dungeon_feature_type new_feat)</a>
+<a name="ln1181">{</a>
+<a name="ln1182">    if (!testbits(env.pgrid(pos), FPROP_BLOODY))</a>
+<a name="ln1183">        return;</a>
+<a name="ln1184"> </a>
+<a name="ln1185">    if (new_feat == DNGN_UNSEEN)</a>
+<a name="ln1186">    {</a>
+<a name="ln1187">        // Caller has already changed the grid, and old_feat is actually</a>
+<a name="ln1188">        // the new feat.</a>
+<a name="ln1189">        if (old_feat != DNGN_FLOOR &amp;&amp; !feat_is_solid(old_feat))</a>
+<a name="ln1190">            env.pgrid(pos) &amp;= ~(FPROP_BLOODY);</a>
+<a name="ln1191">    }</a>
+<a name="ln1192">    else</a>
+<a name="ln1193">    {</a>
+<a name="ln1194">        if (feat_is_solid(old_feat) != feat_is_solid(new_feat)</a>
+<a name="ln1195">            || feat_is_water(new_feat) || new_feat == DNGN_LAVA</a>
+<a name="ln1196">            || feat_is_critical(new_feat))</a>
+<a name="ln1197">        {</a>
+<a name="ln1198">            env.pgrid(pos) &amp;= ~(FPROP_BLOODY);</a>
+<a name="ln1199">        }</a>
+<a name="ln1200">    }</a>
+<a name="ln1201">}</a>
+<a name="ln1202"> </a>
+<a name="ln1203">static void _dgn_check_terrain_player(const coord_def pos)</a>
+<a name="ln1204">{</a>
+<a name="ln1205">    if (crawl_state.generating_level || !crawl_state.need_save)</a>
+<a name="ln1206">        return; // don't reference player if they don't currently exist</a>
+<a name="ln1207"> </a>
+<a name="ln1208">    if (pos != you.pos())</a>
+<a name="ln1209">        return;</a>
+<a name="ln1210"> </a>
+<a name="ln1211">    if (you.can_pass_through(pos))</a>
+<a name="ln1212">        move_player_to_grid(pos, false);</a>
+<a name="ln1213">    else</a>
+<a name="ln1214">        you_teleport_now();</a>
+<a name="ln1215">}</a>
+<a name="ln1216"> </a>
+<a name="ln1217">/**</a>
+<a name="ln1218"> * Change a given feature to a new type, cleaning up associated issues</a>
+<a name="ln1219"> * (monsters/items in walls, blood on water, etc) in the process.</a>
+<a name="ln1220"> *</a>
+<a name="ln1221"> * @param pos               The location to be changed.</a>
+<a name="ln1222"> * @param nfeat             The feature to be changed to.</a>
+<a name="ln1223"> * @param preserve_features Whether to shunt the old feature to a nearby loc.</a>
+<a name="ln1224"> * @param preserve_items    Whether to shunt items to a nearby loc, if they</a>
+<a name="ln1225"> *                          can't stay in this one.</a>
+<a name="ln1226"> * @param temporary         Whether the terrain change is only temporary &amp; so</a>
+<a name="ln1227"> *                          shouldn't affect branch/travel knowledge.</a>
+<a name="ln1228"> * @param wizmode           Whether this is a wizmode terrain change,</a>
+<a name="ln1229"> *                          &amp; shouldn't check whether the player can actually</a>
+<a name="ln1230"> *                          exist in the new feature.</a>
+<a name="ln1231"> */</a>
+<a name="ln1232">void dungeon_terrain_changed(const coord_def &amp;pos,</a>
+<a name="ln1233">                             dungeon_feature_type nfeat,</a>
+<a name="ln1234">                             bool preserve_features,</a>
+<a name="ln1235">                             bool preserve_items,</a>
+<a name="ln1236">                             bool temporary,</a>
+<a name="ln1237">                             bool wizmode)</a>
+<a name="ln1238">{</a>
+<a name="ln1239">    if (grd(pos) == nfeat)</a>
+<a name="ln1240">        return;</a>
+<a name="ln1241">    if (_dgn_check_terrain_monsters(pos) &amp;&amp; feat_is_wall(nfeat))</a>
+<a name="ln1242">        return;</a>
+<a name="ln1243"> </a>
+<a name="ln1244">    _dgn_check_terrain_covering(pos, grd(pos), nfeat);</a>
+<a name="ln1245"> </a>
+<a name="ln1246">    if (nfeat != DNGN_UNSEEN)</a>
+<a name="ln1247">    {</a>
+<a name="ln1248">        if (preserve_features)</a>
+<a name="ln1249">            _dgn_shift_feature(pos);</a>
+<a name="ln1250"> </a>
+<a name="ln1251">        if (!temporary)</a>
+<a name="ln1252">            unnotice_feature(level_pos(level_id::current(), pos));</a>
+<a name="ln1253"> </a>
+<a name="ln1254">        grd(pos) = nfeat;</a>
+<a name="ln1255">        // Reset feature tile</a>
+<a name="ln1256">        env.tile_flv(pos).feat = 0;</a>
+<a name="ln1257">        env.tile_flv(pos).feat_idx = 0;</a>
+<a name="ln1258"> </a>
+<a name="ln1259">        if (is_notable_terrain(nfeat) &amp;&amp; you.see_cell(pos))</a>
+<a name="ln1260">            seen_notable_thing(nfeat, pos);</a>
+<a name="ln1261"> </a>
+<a name="ln1262">        // Don't destroy a trap which was just placed.</a>
+<a name="ln1263">        if (!feat_is_trap(nfeat))</a>
+<a name="ln1264">            destroy_trap(pos);</a>
+<a name="ln1265">    }</a>
+<a name="ln1266"> </a>
+<a name="ln1267">    _dgn_check_terrain_items(pos, preserve_items);</a>
+<a name="ln1268">    if (!wizmode)</a>
+<a name="ln1269">        _dgn_check_terrain_player(pos);</a>
+<a name="ln1270">    if (!temporary &amp;&amp; feature_mimic_at(pos))</a>
+<a name="ln1271">        env.level_map_mask(pos) &amp;= ~MMT_MIMIC;</a>
+<a name="ln1272"> </a>
+<a name="ln1273">    set_terrain_changed(pos);</a>
+<a name="ln1274"> </a>
+<a name="ln1275">    // Deal with doors being created by changing features.</a>
+<a name="ln1276">    tile_init_flavour(pos);</a>
+<a name="ln1277">}</a>
+<a name="ln1278"> </a>
+<a name="ln1279">static void _announce_swap_real(coord_def orig_pos, coord_def dest_pos)</a>
+<a name="ln1280">{</a>
+<a name="ln1281">    const dungeon_feature_type orig_feat = grd(dest_pos);</a>
+<a name="ln1282"> </a>
+<a name="ln1283">    const string orig_name =</a>
+<a name="ln1284">        feature_description_at(dest_pos, false,</a>
+<a name="ln1285">                            you.see_cell(orig_pos) ? DESC_THE : DESC_A);</a>
+<a name="ln1286"> </a>
+<a name="ln1287">    string prep = feat_preposition(orig_feat, false);</a>
+<a name="ln1288"> </a>
+<a name="ln1289">    string orig_actor, dest_actor;</a>
+<a name="ln1290">    if (orig_pos == you.pos())</a>
+<a name="ln1291">        orig_actor = &quot;you&quot;;</a>
+<a name="ln1292">    else if (const monster* m = monster_at(orig_pos))</a>
+<a name="ln1293">    {</a>
+<a name="ln1294">        if (you.can_see(*m))</a>
+<a name="ln1295">            orig_actor = m-&gt;name(DESC_THE);</a>
+<a name="ln1296">    }</a>
+<a name="ln1297"> </a>
+<a name="ln1298">    if (dest_pos == you.pos())</a>
+<a name="ln1299">        dest_actor = &quot;you&quot;;</a>
+<a name="ln1300">    else if (const monster* m = monster_at(dest_pos))</a>
+<a name="ln1301">    {</a>
+<a name="ln1302">        if (you.can_see(*m))</a>
+<a name="ln1303">            dest_actor = m-&gt;name(DESC_THE);</a>
+<a name="ln1304">    }</a>
+<a name="ln1305"> </a>
+<a name="ln1306">    ostringstream str;</a>
+<a name="ln1307">    str &lt;&lt; orig_name &lt;&lt; &quot; &quot;;</a>
+<a name="ln1308">    if (you.see_cell(orig_pos) &amp;&amp; !you.see_cell(dest_pos))</a>
+<a name="ln1309">    {</a>
+<a name="ln1310">        str &lt;&lt; &quot;suddenly disappears&quot;;</a>
+<a name="ln1311">        if (!orig_actor.empty())</a>
+<a name="ln1312">            str &lt;&lt; &quot; from &quot; &lt;&lt; prep &lt;&lt; &quot; &quot; &lt;&lt; orig_actor;</a>
+<a name="ln1313">    }</a>
+<a name="ln1314">    else if (!you.see_cell(orig_pos) &amp;&amp; you.see_cell(dest_pos))</a>
+<a name="ln1315">    {</a>
+<a name="ln1316">        str &lt;&lt; &quot;suddenly appears&quot;;</a>
+<a name="ln1317">        if (!dest_actor.empty())</a>
+<a name="ln1318">            str &lt;&lt; &quot; &quot; &lt;&lt; prep &lt;&lt; &quot; &quot; &lt;&lt; dest_actor;</a>
+<a name="ln1319">    }</a>
+<a name="ln1320">    else</a>
+<a name="ln1321">    {</a>
+<a name="ln1322">        str &lt;&lt; &quot;moves&quot;;</a>
+<a name="ln1323">        if (!orig_actor.empty())</a>
+<a name="ln1324">            str &lt;&lt; &quot; from &quot; &lt;&lt; prep &lt;&lt; &quot; &quot; &lt;&lt; orig_actor;</a>
+<a name="ln1325">        if (!dest_actor.empty())</a>
+<a name="ln1326">            str &lt;&lt; &quot; to &quot; &lt;&lt; prep &lt;&lt; &quot; &quot; &lt;&lt; dest_actor;</a>
+<a name="ln1327">    }</a>
+<a name="ln1328">    str &lt;&lt; &quot;!&quot;;</a>
+<a name="ln1329">    mpr(str.str());</a>
+<a name="ln1330">}</a>
+<a name="ln1331"> </a>
+<a name="ln1332">static void _announce_swap(coord_def pos1, coord_def pos2)</a>
+<a name="ln1333">{</a>
+<a name="ln1334">    if (!you.see_cell(pos1) &amp;&amp; !you.see_cell(pos2))</a>
+<a name="ln1335">        return;</a>
+<a name="ln1336"> </a>
+<a name="ln1337">    const dungeon_feature_type feat1 = grd(pos1);</a>
+<a name="ln1338">    const dungeon_feature_type feat2 = grd(pos2);</a>
+<a name="ln1339"> </a>
+<a name="ln1340">    if (feat1 == feat2)</a>
+<a name="ln1341">        return;</a>
+<a name="ln1342"> </a>
+<a name="ln1343">    const bool notable_seen1 = is_notable_terrain(feat1) &amp;&amp; you.see_cell(pos1);</a>
+<a name="ln1344">    const bool notable_seen2 = is_notable_terrain(feat2) &amp;&amp; you.see_cell(pos2);</a>
+<a name="ln1345"> </a>
+<a name="ln1346">    if (notable_seen1 &amp;&amp; notable_seen2)</a>
+<a name="ln1347">    {</a>
+<a name="ln1348">        _announce_swap_real(pos1, pos2);</a>
+<a name="ln1349">        _announce_swap_real(pos2, pos1);</a>
+<a name="ln1350">    }</a>
+<a name="ln1351">    else if (notable_seen1)</a>
+<a name="ln1352">        _announce_swap_real(pos2, pos1);</a>
+<a name="ln1353">    else if (notable_seen2)</a>
+<a name="ln1354">        _announce_swap_real(pos1, pos2);</a>
+<a name="ln1355">    else if (you.see_cell(pos2))</a>
+<a name="ln1356">        _announce_swap_real(pos1, pos2);</a>
+<a name="ln1357">    else</a>
+<a name="ln1358">        _announce_swap_real(pos2, pos1);</a>
+<a name="ln1359">}</a>
+<a name="ln1360"> </a>
+<a name="ln1361">bool swap_features(const coord_def &amp;pos1, const coord_def &amp;pos2,</a>
+<a name="ln1362">                   bool swap_everything, bool announce)</a>
+<a name="ln1363">{</a>
+<a name="ln1364">    ASSERT_IN_BOUNDS(pos1);</a>
+<a name="ln1365">    ASSERT_IN_BOUNDS(pos2);</a>
+<a name="ln1366">    ASSERT(pos1 != pos2);</a>
+<a name="ln1367"> </a>
+<a name="ln1368">    if (is_sanctuary(pos1) || is_sanctuary(pos2))</a>
+<a name="ln1369">        return false;</a>
+<a name="ln1370"> </a>
+<a name="ln1371">    const dungeon_feature_type feat1 = grd(pos1);</a>
+<a name="ln1372">    const dungeon_feature_type feat2 = grd(pos2);</a>
+<a name="ln1373"> </a>
+<a name="ln1374">    if (is_notable_terrain(feat1) &amp;&amp; !you.see_cell(pos1)</a>
+<a name="ln1375">        &amp;&amp; env.map_knowledge(pos1).known())</a>
+<a name="ln1376">    {</a>
+<a name="ln1377">        return false;</a>
+<a name="ln1378">    }</a>
+<a name="ln1379"> </a>
+<a name="ln1380">    if (is_notable_terrain(feat2) &amp;&amp; !you.see_cell(pos2)</a>
+<a name="ln1381">        &amp;&amp; env.map_knowledge(pos2).known())</a>
+<a name="ln1382">    {</a>
+<a name="ln1383">        return false;</a>
+<a name="ln1384">    }</a>
+<a name="ln1385"> </a>
+<a name="ln1386">    const unsigned short col1 = env.grid_colours(pos1);</a>
+<a name="ln1387">    const unsigned short col2 = env.grid_colours(pos2);</a>
+<a name="ln1388"> </a>
+<a name="ln1389">    const terrain_property_t prop1 = env.pgrid(pos1);</a>
+<a name="ln1390">    const terrain_property_t prop2 = env.pgrid(pos2);</a>
+<a name="ln1391"> </a>
+<a name="ln1392">    trap_def* trap1 = trap_at(pos1);</a>
+<a name="ln1393">    trap_def* trap2 = trap_at(pos2);</a>
+<a name="ln1394"> </a>
+<a name="ln1395">    shop_struct* shop1 = shop_at(pos1);</a>
+<a name="ln1396">    shop_struct* shop2 = shop_at(pos2);</a>
+<a name="ln1397"> </a>
+<a name="ln1398">    // Find a temporary holding place for pos1 stuff to be moved to</a>
+<a name="ln1399">    // before pos2 is moved to pos1.</a>
+<a name="ln1400">    coord_def temp(-1, -1);</a>
+<a name="ln1401">    for (int x = X_BOUND_1 + 1; x &lt; X_BOUND_2; x++)</a>
+<a name="ln1402">    {</a>
+<a name="ln1403">        for (int y = Y_BOUND_1 + 1; y &lt; Y_BOUND_2; y++)</a>
+<a name="ln1404">        {</a>
+<a name="ln1405">            coord_def pos(x, y);</a>
+<a name="ln1406">            if (pos == pos1 || pos == pos2)</a>
+<a name="ln1407">                continue;</a>
+<a name="ln1408"> </a>
+<a name="ln1409">            if (!env.markers.find(pos, MAT_ANY)</a>
+<a name="ln1410">                &amp;&amp; !is_notable_terrain(grd(pos))</a>
+<a name="ln1411">                &amp;&amp; !cloud_at(pos))</a>
+<a name="ln1412">            {</a>
+<a name="ln1413">                temp = pos;</a>
+<a name="ln1414">                break;</a>
+<a name="ln1415">            }</a>
+<a name="ln1416">        }</a>
+<a name="ln1417">        if (in_bounds(temp))</a>
+<a name="ln1418">            break;</a>
+<a name="ln1419">    }</a>
+<a name="ln1420"> </a>
+<a name="ln1421">    if (!in_bounds(temp))</a>
+<a name="ln1422">    {</a>
+<a name="ln1423">        mprf(MSGCH_ERROR, &quot;swap_features(): No boring squares on level?&quot;);</a>
+<a name="ln1424">        return false;</a>
+<a name="ln1425">    }</a>
+<a name="ln1426"> </a>
+<a name="ln1427">    // OK, now we guarantee the move.</a>
+<a name="ln1428"> </a>
+<a name="ln1429">    (void) move_notable_thing(pos1, temp);</a>
+<a name="ln1430">    env.markers.move(pos1, temp);</a>
+<a name="ln1431">    dungeon_events.move_listeners(pos1, temp);</a>
+<a name="ln1432">    grd(pos1) = DNGN_UNSEEN;</a>
+<a name="ln1433">    env.pgrid(pos1) = terrain_property_t{};</a>
+<a name="ln1434"> </a>
+<a name="ln1435">    (void) move_notable_thing(pos2, pos1);</a>
+<a name="ln1436">    env.markers.move(pos2, pos1);</a>
+<a name="ln1437">    dungeon_events.move_listeners(pos2, pos1);</a>
+<a name="ln1438">    env.pgrid(pos1) = prop2;</a>
+<a name="ln1439">    env.pgrid(pos2) = prop1;</a>
+<a name="ln1440"> </a>
+<a name="ln1441">    (void) move_notable_thing(temp, pos2);</a>
+<a name="ln1442">    env.markers.move(temp, pos2);</a>
+<a name="ln1443">    dungeon_events.move_listeners(temp, pos2);</a>
+<a name="ln1444"> </a>
+<a name="ln1445">    // Swap features and colours.</a>
+<a name="ln1446">    grd(pos2) = feat1;</a>
+<a name="ln1447">    grd(pos1) = feat2;</a>
+<a name="ln1448"> </a>
+<a name="ln1449">    env.grid_colours(pos1) = col2;</a>
+<a name="ln1450">    env.grid_colours(pos2) = col1;</a>
+<a name="ln1451"> </a>
+<a name="ln1452">    // Swap traps.</a>
+<a name="ln1453">    if (trap1 &amp;&amp; !trap2)</a>
+<a name="ln1454">    {</a>
+<a name="ln1455">        env.trap[pos2] = env.trap[pos1];</a>
+<a name="ln1456">        env.trap[pos2].pos = pos2;</a>
+<a name="ln1457">        env.trap.erase(pos1);</a>
+<a name="ln1458">    }</a>
+<a name="ln1459">    else if (!trap1 &amp;&amp; trap2)</a>
+<a name="ln1460">    {</a>
+<a name="ln1461">        env.trap[pos1] = env.trap[pos2];</a>
+<a name="ln1462">        env.trap[pos1].pos = pos1;</a>
+<a name="ln1463">        env.trap.erase(pos2);</a>
+<a name="ln1464">    }</a>
+<a name="ln1465">    else if (trap1 &amp;&amp; trap2)</a>
+<a name="ln1466">    {</a>
+<a name="ln1467">        trap_def tmp = env.trap[pos1];</a>
+<a name="ln1468">        env.trap[pos1] = env.trap[pos2];</a>
+<a name="ln1469">        env.trap[pos2] = tmp;</a>
+<a name="ln1470">        env.trap[pos1].pos = pos1;</a>
+<a name="ln1471">        env.trap[pos2].pos = pos2;</a>
+<a name="ln1472">    }</a>
+<a name="ln1473"> </a>
+<a name="ln1474">    // Swap shops.</a>
+<a name="ln1475">    if (shop1 &amp;&amp; !shop2)</a>
+<a name="ln1476">    {</a>
+<a name="ln1477">        env.shop[pos2] = env.shop[pos1];</a>
+<a name="ln1478">        env.shop[pos2].pos = pos2;</a>
+<a name="ln1479">        env.shop.erase(pos1);</a>
+<a name="ln1480">    }</a>
+<a name="ln1481">    else if (!shop1 &amp;&amp; shop2)</a>
+<a name="ln1482">    {</a>
+<a name="ln1483">        env.shop[pos1] = env.shop[pos2];</a>
+<a name="ln1484">        env.shop[pos1].pos = pos1;</a>
+<a name="ln1485">        env.shop.erase(pos2);</a>
+<a name="ln1486">    }</a>
+<a name="ln1487">    else if (shop1 &amp;&amp; shop2)</a>
+<a name="ln1488">    {</a>
+<a name="ln1489">        shop_struct tmp = env.shop[pos1];</a>
+<a name="ln1490">        env.shop[pos1] = env.shop[pos2];</a>
+<a name="ln1491">        env.shop[pos2] = tmp;</a>
+<a name="ln1492">        env.shop[pos1].pos = pos1;</a>
+<a name="ln1493">        env.shop[pos2].pos = pos2;</a>
+<a name="ln1494">    }</a>
+<a name="ln1495"> </a>
+<a name="ln1496">    if (!swap_everything)</a>
+<a name="ln1497">    {</a>
+<a name="ln1498">        _dgn_check_terrain_items(pos1, false);</a>
+<a name="ln1499">        _dgn_check_terrain_monsters(pos1);</a>
+<a name="ln1500">        _dgn_check_terrain_player(pos1);</a>
+<a name="ln1501">        set_terrain_changed(pos1);</a>
+<a name="ln1502"> </a>
+<a name="ln1503">        _dgn_check_terrain_items(pos2, false);</a>
+<a name="ln1504">        _dgn_check_terrain_monsters(pos2);</a>
+<a name="ln1505">        _dgn_check_terrain_player(pos2);</a>
+<a name="ln1506">        set_terrain_changed(pos2);</a>
+<a name="ln1507"> </a>
+<a name="ln1508">        if (announce)</a>
+<a name="ln1509">            _announce_swap(pos1, pos2);</a>
+<a name="ln1510">        return true;</a>
+<a name="ln1511">    }</a>
+<a name="ln1512"> </a>
+<a name="ln1513">    // Swap items.</a>
+<a name="ln1514">    for (stack_iterator si(pos1); si; ++si)</a>
+<a name="ln1515">        si-&gt;pos = pos1;</a>
+<a name="ln1516"> </a>
+<a name="ln1517">    for (stack_iterator si(pos2); si; ++si)</a>
+<a name="ln1518">        si-&gt;pos = pos2;</a>
+<a name="ln1519"> </a>
+<a name="ln1520">    // Swap monsters.</a>
+<a name="ln1521">    // Note that trapping nets, etc., move together</a>
+<a name="ln1522">    // with the monster/player, so don't clear them.</a>
+<a name="ln1523">    const int m1 = mgrd(pos1);</a>
+<a name="ln1524">    const int m2 = mgrd(pos2);</a>
+<a name="ln1525"> </a>
+<a name="ln1526">    mgrd(pos1) = m2;</a>
+<a name="ln1527">    mgrd(pos2) = m1;</a>
+<a name="ln1528"> </a>
+<a name="ln1529">    if (monster_at(pos1))</a>
+<a name="ln1530">    {</a>
+<a name="ln1531">        menv[mgrd(pos1)].set_position(pos1);</a>
+<a name="ln1532">        menv[mgrd(pos1)].clear_invalid_constrictions();</a>
+<a name="ln1533">    }</a>
+<a name="ln1534">    if (monster_at(pos2))</a>
+<a name="ln1535">    {</a>
+<a name="ln1536">        menv[mgrd(pos2)].set_position(pos2);</a>
+<a name="ln1537">        menv[mgrd(pos2)].clear_invalid_constrictions();</a>
+<a name="ln1538">    }</a>
+<a name="ln1539"> </a>
+<a name="ln1540">    swap_clouds(pos1, pos2);</a>
+<a name="ln1541"> </a>
+<a name="ln1542">    if (pos1 == you.pos())</a>
+<a name="ln1543">    {</a>
+<a name="ln1544">        you.set_position(pos2);</a>
+<a name="ln1545">        you.clear_invalid_constrictions();</a>
+<a name="ln1546">        viewwindow();</a>
+<a name="ln1547">    }</a>
+<a name="ln1548">    else if (pos2 == you.pos())</a>
+<a name="ln1549">    {</a>
+<a name="ln1550">        you.set_position(pos1);</a>
+<a name="ln1551">        you.clear_invalid_constrictions();</a>
+<a name="ln1552">        viewwindow();</a>
+<a name="ln1553">    }</a>
+<a name="ln1554"> </a>
+<a name="ln1555">    set_terrain_changed(pos1);</a>
+<a name="ln1556">    set_terrain_changed(pos2);</a>
+<a name="ln1557"> </a>
+<a name="ln1558">    if (announce)</a>
+<a name="ln1559">        _announce_swap(pos1, pos2);</a>
+<a name="ln1560"> </a>
+<a name="ln1561">    return true;</a>
+<a name="ln1562">}</a>
+<a name="ln1563"> </a>
+<a name="ln1564">static bool _ok_dest_cell(const actor* orig_actor,</a>
+<a name="ln1565">                          const dungeon_feature_type orig_feat,</a>
+<a name="ln1566">                          const coord_def dest_pos)</a>
+<a name="ln1567">{</a>
+<a name="ln1568">    const dungeon_feature_type dest_feat = grd(dest_pos);</a>
+<a name="ln1569"> </a>
+<a name="ln1570">    if (orig_feat == dest_feat)</a>
+<a name="ln1571">        return false;</a>
+<a name="ln1572"> </a>
+<a name="ln1573">    if (is_notable_terrain(dest_feat))</a>
+<a name="ln1574">        return false;</a>
+<a name="ln1575"> </a>
+<a name="ln1576">    if (trap_at(dest_pos))</a>
+<a name="ln1577">        return false;</a>
+<a name="ln1578"> </a>
+<a name="ln1579">    actor* dest_actor = actor_at(dest_pos);</a>
+<a name="ln1580"> </a>
+<a name="ln1581">    if (orig_actor &amp;&amp; !orig_actor-&gt;is_habitable_feat(dest_feat))</a>
+<a name="ln1582">        return false;</a>
+<a name="ln1583">    if (dest_actor &amp;&amp; !dest_actor-&gt;is_habitable_feat(orig_feat))</a>
+<a name="ln1584">        return false;</a>
+<a name="ln1585"> </a>
+<a name="ln1586">    return true;</a>
+<a name="ln1587">}</a>
+<a name="ln1588"> </a>
+<a name="ln1589">bool slide_feature_over(const coord_def &amp;src, coord_def preferred_dest,</a>
+<a name="ln1590">                        bool announce)</a>
+<a name="ln1591">{</a>
+<a name="ln1592">    ASSERT_IN_BOUNDS(src);</a>
+<a name="ln1593"> </a>
+<a name="ln1594">    const dungeon_feature_type orig_feat = grd(src);</a>
+<a name="ln1595">    const actor* orig_actor = actor_at(src);</a>
+<a name="ln1596"> </a>
+<a name="ln1597">    if (in_bounds(preferred_dest)</a>
+<a name="ln1598">        &amp;&amp; _ok_dest_cell(orig_actor, orig_feat, preferred_dest))</a>
+<a name="ln1599">    {</a>
+<a name="ln1600">        ASSERT(preferred_dest != src);</a>
+<a name="ln1601">    }</a>
+<a name="ln1602">    else</a>
+<a name="ln1603">    {</a>
+<a name="ln1604">        int squares = 0;</a>
+<a name="ln1605">        for (adjacent_iterator ai(src); ai; ++ai)</a>
+<a name="ln1606">        {</a>
+<a name="ln1607">            if (_ok_dest_cell(orig_actor, orig_feat, *ai)</a>
+<a name="ln1608">                &amp;&amp; one_chance_in(++squares))</a>
+<a name="ln1609">            {</a>
+<a name="ln1610">                preferred_dest = *ai;</a>
+<a name="ln1611">            }</a>
+<a name="ln1612">        }</a>
+<a name="ln1613">    }</a>
+<a name="ln1614"> </a>
+<a name="ln1615">    if (!in_bounds(preferred_dest))</a>
+<a name="ln1616">        return false;</a>
+<a name="ln1617"> </a>
+<a name="ln1618">    ASSERT(preferred_dest != src);</a>
+<a name="ln1619">    return swap_features(src, preferred_dest, false, announce);</a>
+<a name="ln1620">}</a>
+<a name="ln1621"> </a>
+<a name="ln1622">/**</a>
+<a name="ln1623"> * Apply harmful environmental effects from the current tile terrain to the</a>
+<a name="ln1624"> * player.</a>
+<a name="ln1625"> *</a>
+<a name="ln1626"> * @param entry     The terrain type in question.</a>
+<a name="ln1627"> */</a>
+<a name="ln1628">void fall_into_a_pool(dungeon_feature_type terrain)</a>
+<a name="ln1629">{</a>
+<a name="ln1630">    if (terrain == DNGN_DEEP_WATER)</a>
+<a name="ln1631">    {</a>
+<a name="ln1632">        if (you.can_water_walk() || form_likes_water())</a>
+<a name="ln1633">            return;</a>
+<a name="ln1634"> </a>
+<a name="ln1635">        if (species_likes_water(you.species) &amp;&amp; !you.transform_uncancellable)</a>
+<a name="ln1636">        {</a>
+<a name="ln1637">            emergency_untransform();</a>
+<a name="ln1638">            return;</a>
+<a name="ln1639">        }</a>
+<a name="ln1640">    }</a>
+<a name="ln1641"> </a>
+<a name="ln1642">    mprf(&quot;You fall into the %s!&quot;,</a>
+<a name="ln1643">         (terrain == DNGN_LAVA)       ? &quot;lava&quot; :</a>
+<a name="ln1644">         (terrain == DNGN_DEEP_WATER) ? &quot;water&quot;</a>
+<a name="ln1645">                                      : &quot;programming rift&quot;);</a>
+<a name="ln1646">    // included in default force_more_message</a>
+<a name="ln1647"> </a>
+<a name="ln1648">    clear_messages();</a>
+<a name="ln1649">    if (terrain == DNGN_LAVA)</a>
+<a name="ln1650">    {</a>
+<a name="ln1651">        if (you.species == SP_MUMMY)</a>
+<a name="ln1652">            mpr(&quot;You burn to ash...&quot;);</a>
+<a name="ln1653">        else</a>
+<a name="ln1654">            mpr(&quot;The lava burns you to a cinder!&quot;);</a>
+<a name="ln1655">        ouch(INSTANT_DEATH, KILLED_BY_LAVA);</a>
+<a name="ln1656">    }</a>
+<a name="ln1657">    else if (terrain == DNGN_DEEP_WATER)</a>
+<a name="ln1658">    {</a>
+<a name="ln1659">        mpr(&quot;You sink like a stone!&quot;);</a>
+<a name="ln1660"> </a>
+<a name="ln1661">        if (you.is_nonliving() || you.undead_state())</a>
+<a name="ln1662">            mpr(&quot;You fall apart...&quot;);</a>
+<a name="ln1663">        else</a>
+<a name="ln1664">            mpr(&quot;You drown...&quot;);</a>
+<a name="ln1665"> </a>
+<a name="ln1666">        ouch(INSTANT_DEATH, KILLED_BY_WATER);</a>
+<a name="ln1667">    }</a>
+<a name="ln1668">}</a>
+<a name="ln1669"> </a>
+<a name="ln1670">typedef map&lt;string, dungeon_feature_type&gt; feat_desc_map;</a>
+<a name="ln1671">static feat_desc_map feat_desc_cache;</a>
+<a name="ln1672"> </a>
+<a name="ln1673">void init_feat_desc_cache()</a>
+<a name="ln1674">{</a>
+<a name="ln1675">    for (int i = 0; i &lt; NUM_FEATURES; i++)</a>
+<a name="ln1676">    {</a>
+<a name="ln1677">        dungeon_feature_type feat = static_cast&lt;dungeon_feature_type&gt;(i);</a>
+<a name="ln1678">        string               desc = feature_description(feat);</a>
+<a name="ln1679"> </a>
+<a name="ln1680">        lowercase(desc);</a>
+<a name="ln1681">        if (!feat_desc_cache.count(desc))</a>
+<a name="ln1682">            feat_desc_cache[desc] = feat;</a>
+<a name="ln1683">    }</a>
+<a name="ln1684">}</a>
+<a name="ln1685"> </a>
+<a name="ln1686">dungeon_feature_type feat_by_desc(string desc)</a>
+<a name="ln1687">{</a>
+<a name="ln1688">    lowercase(desc);</a>
+<a name="ln1689"> </a>
+<a name="ln1690">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1691">    // hard-coded because all the dry fountain variants match this description,</a>
+<a name="ln1692">    // and they have a lower enum value, so the first is incorrectly returned</a>
+<a name="ln1693">    if (desc == &quot;a dry fountain&quot;)</a>
+<a name="ln1694">        return DNGN_DRY_FOUNTAIN;</a>
+<a name="ln1695">#endif</a>
+<a name="ln1696"> </a>
+<a name="ln1697">    return lookup(feat_desc_cache, desc, DNGN_UNSEEN);</a>
+<a name="ln1698">}</a>
+<a name="ln1699"> </a>
+<a name="ln1700">// If active is true, the player is just stepping onto the feature, with the</a>
+<a name="ln1701">// message: &quot;&lt;feature&gt; slides away as you move &lt;prep&gt; it!&quot;</a>
+<a name="ln1702">// Else, the actor is already on the feature:</a>
+<a name="ln1703">// &quot;&lt;feature&gt; moves from &lt;prep origin&gt; to &lt;prep destination&gt;!&quot;</a>
+<a name="ln1704">string feat_preposition(dungeon_feature_type feat, bool active, const actor* who)</a>
+<a name="ln1705">{</a>
+<a name="ln1706">    const bool         airborne = !who || who-&gt;airborne();</a>
+<a name="ln1707">    const command_type dir      = feat_stair_direction(feat);</a>
+<a name="ln1708"> </a>
+<a name="ln1709">    if (dir == CMD_NO_CMD)</a>
+<a name="ln1710">    {</a>
+<a name="ln1711">        if (feat == DNGN_STONE_ARCH)</a>
+<a name="ln1712">            return &quot;beside&quot;;</a>
+<a name="ln1713">        else if (feat_is_solid(feat)) // Passwall?</a>
+<a name="ln1714">        {</a>
+<a name="ln1715">            if (active)</a>
+<a name="ln1716">                return &quot;inside&quot;;</a>
+<a name="ln1717">            else</a>
+<a name="ln1718">                return &quot;around&quot;;</a>
+<a name="ln1719">        }</a>
+<a name="ln1720">        else if (!airborne)</a>
+<a name="ln1721">        {</a>
+<a name="ln1722">            if (feat == DNGN_LAVA || feat_is_water(feat))</a>
+<a name="ln1723">            {</a>
+<a name="ln1724">                if (active)</a>
+<a name="ln1725">                    return &quot;into&quot;;</a>
+<a name="ln1726">                else</a>
+<a name="ln1727">                    return &quot;around&quot;;</a>
+<a name="ln1728">            }</a>
+<a name="ln1729">            else</a>
+<a name="ln1730">            {</a>
+<a name="ln1731">                if (active)</a>
+<a name="ln1732">                    return &quot;onto&quot;;</a>
+<a name="ln1733">                else</a>
+<a name="ln1734">                    return &quot;under&quot;;</a>
+<a name="ln1735">            }</a>
+<a name="ln1736">        }</a>
+<a name="ln1737">    }</a>
+<a name="ln1738"> </a>
+<a name="ln1739">    if (dir == CMD_GO_UPSTAIRS &amp;&amp; feat_is_escape_hatch(feat))</a>
+<a name="ln1740">    {</a>
+<a name="ln1741">        if (active)</a>
+<a name="ln1742">            return &quot;under&quot;;</a>
+<a name="ln1743">        else</a>
+<a name="ln1744">            return &quot;above&quot;;</a>
+<a name="ln1745">    }</a>
+<a name="ln1746"> </a>
+<a name="ln1747">    if (airborne)</a>
+<a name="ln1748">    {</a>
+<a name="ln1749">        if (active)</a>
+<a name="ln1750">            return &quot;over&quot;;</a>
+<a name="ln1751">        else</a>
+<a name="ln1752">            return &quot;beneath&quot;;</a>
+<a name="ln1753">    }</a>
+<a name="ln1754"> </a>
+<a name="ln1755">    if (dir == CMD_GO_DOWNSTAIRS</a>
+<a name="ln1756">        &amp;&amp; (feat_is_staircase(feat) || feat_is_escape_hatch(feat)))</a>
+<a name="ln1757">    {</a>
+<a name="ln1758">        if (active)</a>
+<a name="ln1759">            return &quot;onto&quot;;</a>
+<a name="ln1760">        else</a>
+<a name="ln1761">            return &quot;beneath&quot;;</a>
+<a name="ln1762">    }</a>
+<a name="ln1763">    else</a>
+<a name="ln1764">        return &quot;beside&quot;;</a>
+<a name="ln1765">}</a>
+<a name="ln1766"> </a>
+<a name="ln1767">string stair_climb_verb(dungeon_feature_type feat)</a>
+<a name="ln1768">{</a>
+<a name="ln1769">    ASSERT(feat_stair_direction(feat) != CMD_NO_CMD);</a>
+<a name="ln1770"> </a>
+<a name="ln1771">    if (feat_is_staircase(feat))</a>
+<a name="ln1772">        return &quot;climb&quot;;</a>
+<a name="ln1773">    else if (feat_is_escape_hatch(feat))</a>
+<a name="ln1774">        return &quot;use&quot;;</a>
+<a name="ln1775">    else</a>
+<a name="ln1776">        return &quot;pass through&quot;;</a>
+<a name="ln1777">}</a>
+<a name="ln1778"> </a>
+<a name="ln1779">/** Find the feature with this name.</a>
+<a name="ln1780"> *</a>
+<a name="ln1781"> *  @param name The name (not the user-visible one) to be matched.</a>
+<a name="ln1782"> *  @returns DNGN_UNSEEN if name is &quot;&quot;, DNGN_FLOOR if the name is for a</a>
+<a name="ln1783"> *           dead/forbidden god, and the first entry in the enum with a</a>
+<a name="ln1784"> *           matching name otherwise.</a>
+<a name="ln1785"> */</a>
+<a name="ln1786">dungeon_feature_type dungeon_feature_by_name(const string &amp;name)</a>
+<a name="ln1787">{</a>
+<a name="ln1788">    if (name.empty())</a>
+<a name="ln1789">        return DNGN_UNSEEN;</a>
+<a name="ln1790"> </a>
+<a name="ln1791">    for (unsigned i = 0; i &lt; NUM_FEATURES; ++i)</a>
+<a name="ln1792">    {</a>
+<a name="ln1793">        dungeon_feature_type feat = static_cast&lt;dungeon_feature_type&gt;(i);</a>
+<a name="ln1794"> </a>
+<a name="ln1795">        if (!is_valid_feature_type(feat))</a>
+<a name="ln1796">            continue;</a>
+<a name="ln1797"> </a>
+<a name="ln1798">        if (get_feature_def(feat).vaultname == name)</a>
+<a name="ln1799">        {</a>
+<a name="ln1800"> </a>
+<a name="ln1801">            if (feat_is_altar(feat)</a>
+<a name="ln1802">                &amp;&amp; is_unavailable_god(feat_altar_god(feat)))</a>
+<a name="ln1803">            {</a>
+<a name="ln1804">                return DNGN_FLOOR;</a>
+<a name="ln1805">            }</a>
+<a name="ln1806"> </a>
+<a name="ln1807">            return feat;</a>
+<a name="ln1808">        }</a>
+<a name="ln1809">    }</a>
+<a name="ln1810"> </a>
+<a name="ln1811">    return DNGN_UNSEEN;</a>
+<a name="ln1812">}</a>
+<a name="ln1813"> </a>
+<a name="ln1814">/** Find feature names that contain this name.</a>
+<a name="ln1815"> *</a>
+<a name="ln1816"> *  @param name The string to be matched.</a>
+<a name="ln1817"> *  @returns a list of matching names.</a>
+<a name="ln1818"> */</a>
+<a name="ln1819">vector&lt;string&gt; dungeon_feature_matches(const string &amp;name)</a>
+<a name="ln1820">{</a>
+<a name="ln1821">    vector&lt;string&gt; matches;</a>
+<a name="ln1822"> </a>
+<a name="ln1823">    if (name.empty())</a>
+<a name="ln1824">        return matches;</a>
+<a name="ln1825"> </a>
+<a name="ln1826">    for (unsigned i = 0; i &lt; NUM_FEATURES; ++i)</a>
+<a name="ln1827">    {</a>
+<a name="ln1828">        dungeon_feature_type feat = static_cast&lt;dungeon_feature_type&gt;(i);</a>
+<a name="ln1829"> </a>
+<a name="ln1830">        if (!is_valid_feature_type(feat))</a>
+<a name="ln1831">            continue;</a>
+<a name="ln1832"> </a>
+<a name="ln1833">        const char *featname = get_feature_def(feat).vaultname;</a>
+<a name="ln1834">        if (strstr(featname, name.c_str()))</a>
+<a name="ln1835">            matches.emplace_back(featname);</a>
+<a name="ln1836">    }</a>
+<a name="ln1837"> </a>
+<a name="ln1838">    return matches;</a>
+<a name="ln1839">}</a>
+<a name="ln1840"> </a>
+<a name="ln1841">/** Get the lua/wizmode name for a feature.</a>
+<a name="ln1842"> *</a>
+<a name="ln1843"> *  @param rfeat The feature type to be found.</a>
+<a name="ln1844"> *  @returns nullptr if rfeat is not defined, the vaultname of the corresponding</a>
+<a name="ln1845"> *           feature_def otherwise.</a>
+<a name="ln1846"> */</a>
+<a name="ln1847">const char *dungeon_feature_name(dungeon_feature_type rfeat)</a>
+<a name="ln1848">{</a>
+<a name="ln1849">    if (!is_valid_feature_type(rfeat))</a>
+<a name="ln1850">        return nullptr;</a>
+<a name="ln1851"> </a>
+<a name="ln1852">    return get_feature_def(rfeat).vaultname;</a>
+<a name="ln1853">}</a>
+<a name="ln1854"> </a>
+<a name="ln1855">void destroy_wall(const coord_def&amp; p)</a>
+<a name="ln1856">{</a>
+<a name="ln1857">    if (!in_bounds(p))</a>
+<a name="ln1858">        return;</a>
+<a name="ln1859"> </a>
+<a name="ln1860">    // Blood does not transfer onto floor.</a>
+<a name="ln1861">    if (is_bloodcovered(p))</a>
+<a name="ln1862">        env.pgrid(p) &amp;= ~(FPROP_BLOODY);</a>
+<a name="ln1863"> </a>
+<a name="ln1864">    _revert_terrain_to_floor(p);</a>
+<a name="ln1865">    env.level_map_mask(p) |= MMT_TURNED_TO_FLOOR;</a>
+<a name="ln1866">}</a>
+<a name="ln1867"> </a>
+<a name="ln1868">const char* feat_type_name(dungeon_feature_type feat)</a>
+<a name="ln1869">{</a>
+<a name="ln1870">    if (feat_is_door(feat))</a>
+<a name="ln1871">        return &quot;door&quot;;</a>
+<a name="ln1872">    if (feat_is_wall(feat))</a>
+<a name="ln1873">        return &quot;wall&quot;;</a>
+<a name="ln1874">    if (feat == DNGN_GRATE)</a>
+<a name="ln1875">        return &quot;grate&quot;;</a>
+<a name="ln1876">    if (feat_is_tree(feat))</a>
+<a name="ln1877">        return &quot;tree&quot;;</a>
+<a name="ln1878">    if (feat_is_statuelike(feat))</a>
+<a name="ln1879">        return &quot;statue&quot;;</a>
+<a name="ln1880">    if (feat_is_water(feat))</a>
+<a name="ln1881">        return &quot;water&quot;;</a>
+<a name="ln1882">    if (feat_is_lava(feat))</a>
+<a name="ln1883">        return &quot;lava&quot;;</a>
+<a name="ln1884">    if (feat_is_altar(feat))</a>
+<a name="ln1885">        return &quot;altar&quot;;</a>
+<a name="ln1886">    if (feat_is_trap(feat))</a>
+<a name="ln1887">        return &quot;trap&quot;;</a>
+<a name="ln1888">    if (feat_is_escape_hatch(feat))</a>
+<a name="ln1889">        return &quot;escape hatch&quot;;</a>
+<a name="ln1890">    if (feat_is_portal(feat) || feat_is_gate(feat))</a>
+<a name="ln1891">        return &quot;portal&quot;;</a>
+<a name="ln1892">    if (feat_is_travelable_stair(feat))</a>
+<a name="ln1893">        return &quot;staircase&quot;;</a>
+<a name="ln1894">    if (feat == DNGN_ENTER_SHOP || feat == DNGN_ABANDONED_SHOP)</a>
+<a name="ln1895">        return &quot;shop&quot;;</a>
+<a name="ln1896">    if (feat_is_fountain(feat))</a>
+<a name="ln1897">        return &quot;fountain&quot;;</a>
+<a name="ln1898">    if (feat == DNGN_UNSEEN)</a>
+<a name="ln1899">        return &quot;unknown terrain&quot;;</a>
+<a name="ln1900">    return &quot;floor&quot;;</a>
+<a name="ln1901">}</a>
+<a name="ln1902"> </a>
+<a name="ln1903">void set_terrain_changed(const coord_def p)</a>
+<a name="ln1904">{</a>
+<a name="ln1905">    if (cell_is_solid(p))</a>
+<a name="ln1906">        delete_cloud(p);</a>
+<a name="ln1907"> </a>
+<a name="ln1908">    if (grd(p) == DNGN_SLIMY_WALL)</a>
+<a name="ln1909">        env.level_state |= LSTATE_SLIMY_WALL;</a>
+<a name="ln1910">    else if (grd(p) == DNGN_OPEN_DOOR)</a>
+<a name="ln1911">    {</a>
+<a name="ln1912">        // Restore colour from door-change markers</a>
+<a name="ln1913">        for (map_marker *marker : env.markers.get_markers_at(p))</a>
+<a name="ln1914">        {</a>
+<a name="ln1915">            if (marker-&gt;get_type() == MAT_TERRAIN_CHANGE)</a>
+<a name="ln1916">            {</a>
+<a name="ln1917">                map_terrain_change_marker* tmarker =</a>
+<a name="ln1918">                    dynamic_cast&lt;map_terrain_change_marker*&gt;(marker);</a>
+<a name="ln1919"> </a>
+<a name="ln1920">                if (tmarker-&gt;change_type == TERRAIN_CHANGE_DOOR_SEAL</a>
+<a name="ln1921">                    &amp;&amp; tmarker-&gt;colour != BLACK)</a>
+<a name="ln1922">                {</a>
+<a name="ln1923">                    // Restore the unsealed colour.</a>
+<a name="ln1924">                    dgn_set_grid_colour_at(p, tmarker-&gt;colour);</a>
+<a name="ln1925">                    break;</a>
+<a name="ln1926">                }</a>
+<a name="ln1927">            }</a>
+<a name="ln1928">        }</a>
+<a name="ln1929">    }</a>
+<a name="ln1930"> </a>
+<a name="ln1931">    env.map_knowledge(p).flags |= MAP_CHANGED_FLAG;</a>
+<a name="ln1932"> </a>
+<a name="ln1933">    dungeon_events.fire_position_event(DET_FEAT_CHANGE, p);</a>
+<a name="ln1934"> </a>
+<a name="ln1935">    los_terrain_changed(p);</a>
+<a name="ln1936">}</a>
+<a name="ln1937"> </a>
+<a name="ln1938">/**</a>
+<a name="ln1939"> * Does this cell count for exploraation piety?</a>
+<a name="ln1940"> *</a>
+<a name="ln1941"> * Don't count: endless map borders, deep water, lava, and cells explicitly</a>
+<a name="ln1942"> * marked. (player_view_update_at in view.cc updates the flags)</a>
+<a name="ln1943"> */</a>
+<a name="ln1944">bool cell_triggers_conduct(const coord_def p)</a>
+<a name="ln1945">{</a>
+<a name="ln1946">    return !(feat_is_endless(grd(p))</a>
+<a name="ln1947">             || grd(p) == DNGN_LAVA</a>
+<a name="ln1948">             || grd(p) == DNGN_DEEP_WATER</a>
+<a name="ln1949">             || env.pgrid(p) &amp; FPROP_SEEN_OR_NOEXP);</a>
+<a name="ln1950">}</a>
+<a name="ln1951"> </a>
+<a name="ln1952">bool is_boring_terrain(dungeon_feature_type feat)</a>
+<a name="ln1953">{</a>
+<a name="ln1954">    if (!is_notable_terrain(feat))</a>
+<a name="ln1955">        return true;</a>
+<a name="ln1956"> </a>
+<a name="ln1957">    // Altars in the temple are boring.</a>
+<a name="ln1958">    if (feat_is_altar(feat) &amp;&amp; player_in_branch(BRANCH_TEMPLE))</a>
+<a name="ln1959">        return true;</a>
+<a name="ln1960"> </a>
+<a name="ln1961">    // Only note the first entrance to the Abyss/Pan/Hell</a>
+<a name="ln1962">    // which is found.</a>
+<a name="ln1963">    if ((feat == DNGN_ENTER_ABYSS || feat == DNGN_ENTER_PANDEMONIUM</a>
+<a name="ln1964">         || feat == DNGN_ENTER_HELL)</a>
+<a name="ln1965">         &amp;&amp; overview_knows_num_portals(feat) &gt; 1)</a>
+<a name="ln1966">    {</a>
+<a name="ln1967">        return true;</a>
+<a name="ln1968">    }</a>
+<a name="ln1969"> </a>
+<a name="ln1970">    return false;</a>
+<a name="ln1971">}</a>
+<a name="ln1972"> </a>
+<a name="ln1973">dungeon_feature_type orig_terrain(coord_def pos)</a>
+<a name="ln1974">{</a>
+<a name="ln1975">    const map_marker *mark = env.markers.find(pos, MAT_TERRAIN_CHANGE);</a>
+<a name="ln1976">    if (!mark)</a>
+<a name="ln1977">        return grd(pos);</a>
+<a name="ln1978"> </a>
+<a name="ln1979">    const map_terrain_change_marker *terch</a>
+<a name="ln1980">        = dynamic_cast&lt;const map_terrain_change_marker *&gt;(mark);</a>
+<a name="ln1981">    ASSERTM(terch, &quot;%s has incorrect class&quot;, mark-&gt;debug_describe().c_str());</a>
+<a name="ln1982"> </a>
+<a name="ln1983">    return terch-&gt;old_feature;</a>
+<a name="ln1984">}</a>
+<a name="ln1985"> </a>
+<a name="ln1986">void temp_change_terrain(coord_def pos, dungeon_feature_type newfeat, int dur,</a>
+<a name="ln1987">                         terrain_change_type type, const monster* mon)</a>
+<a name="ln1988">{</a>
+<a name="ln1989">    dungeon_feature_type old_feat = grd(pos);</a>
+<a name="ln1990">    for (map_marker *marker : env.markers.get_markers_at(pos))</a>
+<a name="ln1991">    {</a>
+<a name="ln1992">        if (marker-&gt;get_type() == MAT_TERRAIN_CHANGE)</a>
+<a name="ln1993">        {</a>
+<a name="ln1994">            map_terrain_change_marker* tmarker =</a>
+<a name="ln1995">                    dynamic_cast&lt;map_terrain_change_marker*&gt;(marker);</a>
+<a name="ln1996"> </a>
+<a name="ln1997">            // If change type matches, just modify old one; no need to add new one</a>
+<a name="ln1998">            if (tmarker-&gt;change_type == type)</a>
+<a name="ln1999">            {</a>
+<a name="ln2000">                if (tmarker-&gt;new_feature == newfeat)</a>
+<a name="ln2001">                {</a>
+<a name="ln2002">                    if (tmarker-&gt;duration &lt; dur)</a>
+<a name="ln2003">                    {</a>
+<a name="ln2004">                        tmarker-&gt;duration = dur;</a>
+<a name="ln2005">                        if (mon)</a>
+<a name="ln2006">                            tmarker-&gt;mon_num = mon-&gt;mid;</a>
+<a name="ln2007">                    }</a>
+<a name="ln2008">                }</a>
+<a name="ln2009">                else</a>
+<a name="ln2010">                {</a>
+<a name="ln2011">                    tmarker-&gt;new_feature = newfeat;</a>
+<a name="ln2012">                    tmarker-&gt;duration = dur;</a>
+<a name="ln2013">                    if (mon)</a>
+<a name="ln2014">                        tmarker-&gt;mon_num = mon-&gt;mid;</a>
+<a name="ln2015">                }</a>
+<a name="ln2016">                // ensure that terrain change happens. Sometimes a terrain</a>
+<a name="ln2017">                // change marker can get stuck; this allows re-doing such</a>
+<a name="ln2018">                // cases. Also probably needed by the else case above.</a>
+<a name="ln2019">                dungeon_terrain_changed(pos, newfeat, false, true, true);</a>
+<a name="ln2020">                return;</a>
+<a name="ln2021">            }</a>
+<a name="ln2022">            else</a>
+<a name="ln2023">                old_feat = tmarker-&gt;old_feature;</a>
+<a name="ln2024">        }</a>
+<a name="ln2025">    }</a>
+<a name="ln2026"> </a>
+<a name="ln2027">    // If we are trying to change terrain into what it already is, don't actually</a>
+<a name="ln2028">    // add another marker (unless the current terrain is due to some OTHER marker)</a>
+<a name="ln2029">    if (grd(pos) == newfeat &amp;&amp; newfeat == old_feat)</a>
+<a name="ln2030">        return;</a>
+<a name="ln2031"> </a>
+<a name="ln2032">    int col = env.grid_colours(pos);</a>
+<a name="ln2033">    map_terrain_change_marker *marker =</a>
+<a name="ln2034">        new map_terrain_change_marker(pos, old_feat, newfeat, dur, type,</a>
+<a name="ln2035">                                      mon ? mon-&gt;mid : 0, col);</a>
+<a name="ln2036">    env.markers.add(marker);</a>
+<a name="ln2037">    env.markers.clear_need_activate();</a>
+<a name="ln2038">    dungeon_terrain_changed(pos, newfeat, false, true, true);</a>
+<a name="ln2039">}</a>
+<a name="ln2040"> </a>
+<a name="ln2041">/// What terrain type do destroyed feats become, in the current branch?</a>
+<a name="ln2042">static dungeon_feature_type _destroyed_feat_type()</a>
+<a name="ln2043">{</a>
+<a name="ln2044">    return player_in_branch(BRANCH_SWAMP) ?</a>
+<a name="ln2045">        DNGN_SHALLOW_WATER :</a>
+<a name="ln2046">        DNGN_FLOOR;</a>
+<a name="ln2047">}</a>
+<a name="ln2048"> </a>
+<a name="ln2049">static bool _revert_terrain_to_floor(coord_def pos)</a>
+<a name="ln2050">{</a>
+<a name="ln2051">    dungeon_feature_type newfeat = _destroyed_feat_type();</a>
+<a name="ln2052">    for (map_marker *marker : env.markers.get_markers_at(pos))</a>
+<a name="ln2053">    {</a>
+<a name="ln2054">        if (marker-&gt;get_type() == MAT_TERRAIN_CHANGE)</a>
+<a name="ln2055">        {</a>
+<a name="ln2056">            map_terrain_change_marker* tmarker =</a>
+<a name="ln2057">                    dynamic_cast&lt;map_terrain_change_marker*&gt;(marker);</a>
+<a name="ln2058"> </a>
+<a name="ln2059">            // Don't revert sealed doors to normal doors if we're trying to</a>
+<a name="ln2060">            // remove the door altogether</a>
+<a name="ln2061">            // Same for destroyed trees</a>
+<a name="ln2062">            if ((tmarker-&gt;change_type == TERRAIN_CHANGE_DOOR_SEAL</a>
+<a name="ln2063">                || tmarker-&gt;change_type == TERRAIN_CHANGE_FORESTED)</a>
+<a name="ln2064">                &amp;&amp; newfeat == _destroyed_feat_type())</a>
+<a name="ln2065">            {</a>
+<a name="ln2066">                env.markers.remove(tmarker);</a>
+<a name="ln2067">            }</a>
+<a name="ln2068">            else</a>
+<a name="ln2069">            {</a>
+<a name="ln2070">                newfeat = tmarker-&gt;old_feature;</a>
+<a name="ln2071">                if (tmarker-&gt;new_feature == grd(pos))</a>
+<a name="ln2072">                    env.markers.remove(tmarker);</a>
+<a name="ln2073">            }</a>
+<a name="ln2074">        }</a>
+<a name="ln2075">    }</a>
+<a name="ln2076"> </a>
+<a name="ln2077">    if (grd(pos) == DNGN_RUNED_DOOR &amp;&amp; newfeat != DNGN_RUNED_DOOR</a>
+<a name="ln2078">        || grd(pos) == DNGN_RUNED_CLEAR_DOOR</a>
+<a name="ln2079">           &amp;&amp; newfeat != DNGN_RUNED_CLEAR_DOOR)</a>
+<a name="ln2080">    {</a>
+<a name="ln2081">        explored_tracked_feature(grd(pos));</a>
+<a name="ln2082">    }</a>
+<a name="ln2083"> </a>
+<a name="ln2084">    grd(pos) = newfeat;</a>
+<a name="ln2085">    set_terrain_changed(pos);</a>
+<a name="ln2086"> </a>
+<a name="ln2087">    tile_clear_flavour(pos);</a>
+<a name="ln2088">    tile_init_flavour(pos);</a>
+<a name="ln2089"> </a>
+<a name="ln2090">    return true;</a>
+<a name="ln2091">}</a>
+<a name="ln2092"> </a>
+<a name="ln2093">bool revert_terrain_change(coord_def pos, terrain_change_type ctype)</a>
+<a name="ln2094">{</a>
+<a name="ln2095">    dungeon_feature_type newfeat = DNGN_UNSEEN;</a>
+<a name="ln2096">    int colour = BLACK;</a>
+<a name="ln2097"> </a>
+<a name="ln2098">    for (map_marker *marker : env.markers.get_markers_at(pos))</a>
+<a name="ln2099">    {</a>
+<a name="ln2100">        if (marker-&gt;get_type() == MAT_TERRAIN_CHANGE)</a>
+<a name="ln2101">        {</a>
+<a name="ln2102">            map_terrain_change_marker* tmarker =</a>
+<a name="ln2103">                    dynamic_cast&lt;map_terrain_change_marker*&gt;(marker);</a>
+<a name="ln2104"> </a>
+<a name="ln2105">            if (tmarker-&gt;change_type == ctype)</a>
+<a name="ln2106">            {</a>
+<a name="ln2107">                if (tmarker-&gt;colour != BLACK)</a>
+<a name="ln2108">                    colour = tmarker-&gt;colour;</a>
+<a name="ln2109">                if (!newfeat)</a>
+<a name="ln2110">                    newfeat = tmarker-&gt;old_feature;</a>
+<a name="ln2111">                env.markers.remove(tmarker);</a>
+<a name="ln2112">            }</a>
+<a name="ln2113">            else</a>
+<a name="ln2114">            {</a>
+<a name="ln2115">                // If we had an old colour, give it to the other marker.</a>
+<a name="ln2116">                if (colour != BLACK)</a>
+<a name="ln2117">                    tmarker-&gt;colour = colour;</a>
+<a name="ln2118">                colour = BLACK;</a>
+<a name="ln2119">                newfeat = tmarker-&gt;new_feature;</a>
+<a name="ln2120">            }</a>
+<a name="ln2121">        }</a>
+<a name="ln2122">    }</a>
+<a name="ln2123"> </a>
+<a name="ln2124">    // Don't revert opened sealed doors.</a>
+<a name="ln2125">    if (feat_is_door(newfeat) &amp;&amp; grd(pos) == DNGN_OPEN_DOOR)</a>
+<a name="ln2126">        newfeat = DNGN_UNSEEN;</a>
+<a name="ln2127"> </a>
+<a name="ln2128">    if (newfeat != DNGN_UNSEEN)</a>
+<a name="ln2129">    {</a>
+<a name="ln2130">        if (ctype == TERRAIN_CHANGE_BOG)</a>
+<a name="ln2131">            env.map_knowledge(pos).set_feature(newfeat, colour);</a>
+<a name="ln2132">        dungeon_terrain_changed(pos, newfeat, false, true);</a>
+<a name="ln2133">        env.grid_colours(pos) = colour;</a>
+<a name="ln2134">        return true;</a>
+<a name="ln2135">    }</a>
+<a name="ln2136">    else</a>
+<a name="ln2137">        return false;</a>
+<a name="ln2138">}</a>
+<a name="ln2139"> </a>
+<a name="ln2140">bool is_temp_terrain(coord_def pos)</a>
+<a name="ln2141">{</a>
+<a name="ln2142">    for (map_marker *marker : env.markers.get_markers_at(pos))</a>
+<a name="ln2143">        if (marker-&gt;get_type() == MAT_TERRAIN_CHANGE)</a>
+<a name="ln2144">            return true;</a>
+<a name="ln2145"> </a>
+<a name="ln2146">    return false;</a>
+<a name="ln2147">}</a>
+<a name="ln2148"> </a>
+<a name="ln2149">bool plant_forbidden_at(const coord_def &amp;p, bool connectivity_only)</a>
+<a name="ln2150">{</a>
+<a name="ln2151">    // .... Prevent this arrangement by never placing a plant in a way that</a>
+<a name="ln2152">    // #P##  locally disconnects two adjacent cells. We scan clockwise around</a>
+<a name="ln2153">    // ##.#  p looking for maximal contiguous sequences of traversable cells.</a>
+<a name="ln2154">    // #?##  If we find more than one (and they don't join up cyclically),</a>
+<a name="ln2155">    //       reject the configuration so the plant doesn't disconnect floor.</a>
+<a name="ln2156">    //</a>
+<a name="ln2157">    // ...   We do reject many non-problematic cases, such as this one; dpeg</a>
+<a name="ln2158">    // #P#   suggests doing a connectivity check in ruination after placing</a>
+<a name="ln2159">    // ...   plants, and removing cut-point plants then.</a>
+<a name="ln2160"> </a>
+<a name="ln2161">    // First traversable index, last consecutive traversable index, and</a>
+<a name="ln2162">    // the next traversable index after last+1.</a>
+<a name="ln2163">    int first = -1, last = -1, next = -1;</a>
+<a name="ln2164">    int passable = 0;</a>
+<a name="ln2165">    for (int i = 0; i &lt; 8; i++)</a>
+<a name="ln2166">    {</a>
+<a name="ln2167">        coord_def q = p + Compass[i];</a>
+<a name="ln2168"> </a>
+<a name="ln2169">        if (feat_is_traversable(grd(q), true))</a>
+<a name="ln2170">        {</a>
+<a name="ln2171">            ++passable;</a>
+<a name="ln2172">            if (first &lt; 0)</a>
+<a name="ln2173">                first = i;</a>
+<a name="ln2174">            else if (last &gt;= 0 &amp;&amp; next &lt; 0)</a>
+<a name="ln2175">            {</a>
+<a name="ln2176">                // Found a maybe-disconnected traversable cell. This is only</a>
+<a name="ln2177">                // acceptable if it might connect up at the end.</a>
+<a name="ln2178">                if (first == 0)</a>
+<a name="ln2179">                    next = i;</a>
+<a name="ln2180">                else</a>
+<a name="ln2181">                    return true;</a>
+<a name="ln2182">            }</a>
+<a name="ln2183">        }</a>
+<a name="ln2184">        else</a>
+<a name="ln2185">        {</a>
+<a name="ln2186">            if (first &gt;= 0 &amp;&amp; last &lt; 0)</a>
+<a name="ln2187">                last = i - 1;</a>
+<a name="ln2188">            else if (next &gt;= 0)</a>
+<a name="ln2189">                return true;</a>
+<a name="ln2190">        }</a>
+<a name="ln2191">    }</a>
+<a name="ln2192"> </a>
+<a name="ln2193">    // ?#. Forbid this arrangement when the ? squares are walls.</a>
+<a name="ln2194">    // #P#  If multiple plants conspire to do something similar, that's</a>
+<a name="ln2195">    // ##?  fine: we just want to avoid the most common occurrences.</a>
+<a name="ln2196">    //      This would be an info leak (that at least one ? is not a wall)</a>
+<a name="ln2197">    //      were it not for the previous check.</a>
+<a name="ln2198"> </a>
+<a name="ln2199">    return passable &lt;= 1 &amp;&amp; !connectivity_only;</a>
+<a name="ln2200">}</a>
+<a name="ln2201"> </a>
+<a name="ln2202">/*</a>
+<a name="ln2203"> * Find an adjacent space to displace a stack of items or a creature.</a>
+<a name="ln2204"> *</a>
+<a name="ln2205"> * @param pos the starting position to displace from.</a>
+<a name="ln2206"> * @param push_actor true if the goal is to move an actor, false if items</a>
+<a name="ln2207"> * @param excluded any spots to rule out a priori. Used for e.g. imprison and</a>
+<a name="ln2208"> *                       for multi-space doors.</a>
+<a name="ln2209"> *</a>
+<a name="ln2210"> * @return a (possibly empty) vector of positions where displacement is</a>
+<a name="ln2211"> *                       possible. If `push_actor` is true but there is no</a>
+<a name="ln2212"> *                       actor at the position, will return an empty list.</a>
+<a name="ln2213"> */</a>
+<a name="ln2214">vector&lt;coord_def&gt; get_push_spaces(const coord_def&amp; pos, bool push_actor,</a>
+<a name="ln2215">                    const vector&lt;coord_def&gt;* excluded)</a>
+<a name="ln2216">{</a>
+<a name="ln2217">    vector&lt;coord_def&gt; results;</a>
+<a name="ln2218">    actor *act = nullptr;</a>
+<a name="ln2219">    if (push_actor)</a>
+<a name="ln2220">    {</a>
+<a name="ln2221">        act = actor_at(pos);</a>
+<a name="ln2222">        if (!act || act-&gt;is_stationary())</a>
+<a name="ln2223">            return results;</a>
+<a name="ln2224">    }</a>
+<a name="ln2225"> </a>
+<a name="ln2226">    dungeon_feature_type starting_feat = grd(pos);</a>
+<a name="ln2227">    vector&lt;coord_def&gt; bad_spots; // used for items</a>
+<a name="ln2228"> </a>
+<a name="ln2229">    for (adjacent_iterator ai(pos); ai; ++ai)</a>
+<a name="ln2230">    {</a>
+<a name="ln2231">        dungeon_feature_type feat = grd(*ai);</a>
+<a name="ln2232"> </a>
+<a name="ln2233">        // Make sure the spot wasn't already vetoed. This is used e.g. for</a>
+<a name="ln2234">        // imprison, to pre-exclude all the spots where a wall will be.</a>
+<a name="ln2235">        if (excluded &amp;&amp; find(begin(*excluded), end(*excluded), *ai)</a>
+<a name="ln2236">                            != end(*excluded))</a>
+<a name="ln2237">        {</a>
+<a name="ln2238">            continue;</a>
+<a name="ln2239">        }</a>
+<a name="ln2240"> </a>
+<a name="ln2241">        // can never push to a solid space</a>
+<a name="ln2242">        if (feat_is_solid(feat))</a>
+<a name="ln2243">            continue;</a>
+<a name="ln2244"> </a>
+<a name="ln2245">        // Extra checks if we're moving a monster instead of an item</a>
+<a name="ln2246">        if (push_actor)</a>
+<a name="ln2247">        {</a>
+<a name="ln2248">            // these should get deep water and lava for cases where they matter</a>
+<a name="ln2249">            if (actor_at(*ai)</a>
+<a name="ln2250">                || !act-&gt;can_pass_through(*ai)</a>
+<a name="ln2251">                || !act-&gt;is_habitable(*ai))</a>
+<a name="ln2252">            {</a>
+<a name="ln2253">                continue;</a>
+<a name="ln2254">            }</a>
+<a name="ln2255">            results.push_back(*ai);</a>
+<a name="ln2256">        }</a>
+<a name="ln2257">        else</a>
+<a name="ln2258">        {</a>
+<a name="ln2259">            if (feat_has_solid_floor(feat))</a>
+<a name="ln2260">                results.push_back(*ai);</a>
+<a name="ln2261">            else if (starting_feat == DNGN_DEEP_WATER</a>
+<a name="ln2262">                &amp;&amp; feat == DNGN_DEEP_WATER)</a>
+<a name="ln2263">            {</a>
+<a name="ln2264">                // Dispreferentially allow pushing items from deep water to</a>
+<a name="ln2265">                // deep water. Without this, zin imprison fails over deep</a>
+<a name="ln2266">                // water if there are items, even if the player can't see</a>
+<a name="ln2267">                // them.</a>
+<a name="ln2268">                bad_spots.push_back(*ai);</a>
+<a name="ln2269">            }</a>
+<a name="ln2270">            // otherwise, can't position an item on this spot</a>
+<a name="ln2271">        }</a>
+<a name="ln2272">    }</a>
+<a name="ln2273">    if (!results.empty())</a>
+<a name="ln2274">        return results;</a>
+<a name="ln2275">    return bad_spots;</a>
+<a name="ln2276">}</a>
+<a name="ln2277"> </a>
+<a name="ln2278">bool has_push_spaces(const coord_def&amp; pos, bool push_actor,</a>
+<a name="ln2279">                    const vector&lt;coord_def&gt;* excluded)</a>
+<a name="ln2280">{</a>
+<a name="ln2281">    return !get_push_spaces(pos, push_actor, excluded).empty();</a>
+<a name="ln2282">}</a>
+<a name="ln2283"> </a>
+<a name="ln2284">/**</a>
+<a name="ln2285"> * Push items from `pos`, splashing them around whatever available spaces</a>
+<a name="ln2286"> * there are.</a>
+<a name="ln2287"> * @param pos the source position.</a>
+<a name="ln2288"> * @param excluded positions that are a priori unavailable.</a>
+<a name="ln2289"> *</a>
+<a name="ln2290"> * @return true if any items moved, false otherwise. (Will return false if there</a>
+<a name="ln2291"> *         were no items.)</a>
+<a name="ln2292"> */</a>
+<a name="ln2293">bool push_items_from(const coord_def&amp; pos, const vector&lt;coord_def&gt;* excluded)</a>
+<a name="ln2294">{</a>
+<a name="ln2295">    vector&lt;coord_def&gt; targets = get_push_spaces(pos, false, excluded);</a>
+<a name="ln2296">    bool result = false;</a>
+<a name="ln2297">    if (targets.empty())</a>
+<a name="ln2298">        return false;</a>
+<a name="ln2299">    // TODO: splashing is flavorful, but how annoying is it in practice?</a>
+<a name="ln2300">    while (igrd(pos) != NON_ITEM)</a>
+<a name="ln2301">        result |= move_top_item(pos, targets[random2(targets.size())]);</a>
+<a name="ln2302">    return result;</a>
+<a name="ln2303">}</a>
+<a name="ln2304"> </a>
+<a name="ln2305">/**</a>
+<a name="ln2306"> * Push an actor from `pos` to some available space, if possible.</a>
+<a name="ln2307"> *</a>
+<a name="ln2308"> * @param pos the source position.</a>
+<a name="ln2309"> * @param excluded excluded positions that are a priori unavailable.</a>
+<a name="ln2310"> * @param random whether to chose the position randomly, or deterministically.</a>
+<a name="ln2311"> *        (Useful for systematically moving a bunch of actors at once, when you</a>
+<a name="ln2312"> *        need to worry about domino effects.)</a>
+<a name="ln2313"> *</a>
+<a name="ln2314"> * @return the new coordinates for the actor.</a>
+<a name="ln2315"> */</a>
+<a name="ln2316">coord_def push_actor_from(const coord_def&amp; pos,</a>
+<a name="ln2317">                          const vector&lt;coord_def&gt;* excluded, bool random)</a>
+<a name="ln2318">{</a>
+<a name="ln2319">    actor* act = actor_at(pos);</a>
+<a name="ln2320">    if (!act)</a>
+<a name="ln2321">        return coord_def(0,0);</a>
+<a name="ln2322">    vector&lt;coord_def&gt; targets = get_push_spaces(pos, true, excluded);</a>
+<a name="ln2323">    if (targets.empty())</a>
+<a name="ln2324">        return coord_def(0,0);</a>
+<a name="ln2325">    const coord_def newpos = random ? targets[random2(targets.size())]</a>
+<a name="ln2326">                                    : targets.front();</a>
+<a name="ln2327">    ASSERT(!newpos.origin());</a>
+<a name="ln2328">    act-&gt;move_to_pos(newpos);</a>
+<a name="ln2329">    // The new position of the monster is now an additional veto spot for</a>
+<a name="ln2330">    // monsters.</a>
+<a name="ln2331">    return newpos;</a>
+<a name="ln2332">}</a>
+<a name="ln2333"> </a>
+<a name="ln2334">/** Close any door at the given position. Handles the grid change, but does not</a>
+<a name="ln2335"> * mark terrain or do any event handling.</a>
+<a name="ln2336"> *</a>
+<a name="ln2337"> * @param dest The location of the door.</a>
+<a name="ln2338"> */</a>
+<a name="ln2339">void dgn_close_door(const coord_def &amp;dest)</a>
+<a name="ln2340">{</a>
+<a name="ln2341">    if (!feat_is_open_door(grd(dest)))</a>
+<a name="ln2342">        return;</a>
+<a name="ln2343"> </a>
+<a name="ln2344">    if (grd(dest) == DNGN_OPEN_CLEAR_DOOR)</a>
+<a name="ln2345">        grd(dest) = DNGN_CLOSED_CLEAR_DOOR;</a>
+<a name="ln2346">    else</a>
+<a name="ln2347">        grd(dest) = DNGN_CLOSED_DOOR;</a>
+<a name="ln2348">}</a>
+<a name="ln2349"> </a>
+<a name="ln2350">/** Open any door at the given position. Handles the grid change, but does not</a>
+<a name="ln2351"> * mark terrain or do any event handling.</a>
+<a name="ln2352"> *</a>
+<a name="ln2353"> * @param dest The location of the door.</a>
+<a name="ln2354"> */</a>
+<a name="ln2355">void dgn_open_door(const coord_def &amp;dest)</a>
+<a name="ln2356">{</a>
+<a name="ln2357">    if (!feat_is_closed_door(grd(dest)))</a>
+<a name="ln2358">        return;</a>
+<a name="ln2359"> </a>
+<a name="ln2360">    if (grd(dest) == DNGN_CLOSED_CLEAR_DOOR</a>
+<a name="ln2361">        || grd(dest) == DNGN_RUNED_CLEAR_DOOR)</a>
+<a name="ln2362">    {</a>
+<a name="ln2363">        grd(dest) = DNGN_OPEN_CLEAR_DOOR;</a>
+<a name="ln2364">    }</a>
+<a name="ln2365">    else</a>
+<a name="ln2366">        grd(dest) = DNGN_OPEN_DOOR;</a>
+<a name="ln2367">}</a>
+<a name="ln2368"> </a>
+<a name="ln2369">void ice_wall_damage(monster &amp;mons, int delay)</a>
+<a name="ln2370">{</a>
+<a name="ln2371">    if (!you.duration[DUR_FROZEN_RAMPARTS]</a>
+<a name="ln2372">        || !you.see_cell_no_trans(mons.pos())</a>
+<a name="ln2373">        || mons_aligned(&amp;you, &amp;mons))</a>
+<a name="ln2374">    {</a>
+<a name="ln2375">        return;</a>
+<a name="ln2376">    }</a>
+<a name="ln2377"> </a>
+<a name="ln2378">    const int walls = count_adjacent_icy_walls(mons.pos());</a>
+<a name="ln2379">    if (!walls)</a>
+<a name="ln2380">        return;</a>
+<a name="ln2381"> </a>
+<a name="ln2382">    const int pow = calc_spell_power(SPELL_FROZEN_RAMPARTS, true);</a>
+<a name="ln2383">    const int orig_dam = div_rand_round(</a>
+<a name="ln2384">            delay * roll_dice(1, 2 + div_rand_round(pow, 5)), BASELINE_DELAY);</a>
+<a name="ln2385"> </a>
+<a name="ln2386">    bolt beam;</a>
+<a name="ln2387">    beam.flavour = BEAM_COLD;</a>
+<a name="ln2388">    beam.thrower = KILL_YOU;</a>
+<a name="ln2389">    int dam = mons_adjust_flavoured(&amp;mons, beam, orig_dam);</a>
+<a name="ln2390">    mprf(&quot;The wall freezes %s%s%s&quot;,</a>
+<a name="ln2391">         you.can_see(mons) ? mons.name(DESC_THE).c_str() : &quot;something&quot;,</a>
+<a name="ln2392">         dam ? &quot;&quot; : &quot; but do no damage&quot;,</a>
+<a name="ln2393">         attack_strength_punctuation(dam).c_str());</a>
+<a name="ln2394"> </a>
+<a name="ln2395">    if (dam &gt; 0)</a>
+<a name="ln2396">    {</a>
+<a name="ln2397">        mons.hurt(&amp;you, dam, BEAM_COLD);</a>
+<a name="ln2398"> </a>
+<a name="ln2399">        if (mons.alive())</a>
+<a name="ln2400">        {</a>
+<a name="ln2401">            behaviour_event(&amp;mons, ME_WHACK, &amp;you);</a>
+<a name="ln2402">            mons.expose_to_element(BEAM_COLD, orig_dam);</a>
+<a name="ln2403">        }</a>
+<a name="ln2404">    }</a>
+<a name="ln2405">}</a>
+
+</code></pre>
+<div class="balloon" rel="934"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1661"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'you.undead_state()' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+<div class="balloon" rel="1920"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'tmarker'.</p></div>
+<div class="balloon" rel="1998"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'tmarker'.</p></div>
+<div class="balloon" rel="2062"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'tmarker'.</p></div>
+<div class="balloon" rel="2105"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'tmarker'.</p></div>
+<div class="balloon" rel="2109"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'newfeat' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

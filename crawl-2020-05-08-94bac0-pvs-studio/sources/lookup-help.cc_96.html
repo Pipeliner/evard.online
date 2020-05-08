@@ -1,0 +1,1552 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>lookup-help.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Let the player search for descriptions of monsters, items, etc.</a>
+<a name="ln4"> **/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;lookup-help.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;functional&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;ability.h&quot;</a>
+<a name="ln13">#include &quot;branch.h&quot;</a>
+<a name="ln14">#include &quot;cio.h&quot;</a>
+<a name="ln15">#include &quot;colour.h&quot;</a>
+<a name="ln16">#include &quot;cloud.h&quot;</a>
+<a name="ln17">#include &quot;database.h&quot;</a>
+<a name="ln18">#include &quot;dbg-util.h&quot;</a>
+<a name="ln19">#include &quot;decks.h&quot;</a>
+<a name="ln20">#include &quot;describe.h&quot;</a>
+<a name="ln21">#include &quot;describe-god.h&quot;</a>
+<a name="ln22">#include &quot;directn.h&quot;</a>
+<a name="ln23">#include &quot;english.h&quot;</a>
+<a name="ln24">#include &quot;enum.h&quot;</a>
+<a name="ln25">#include &quot;env.h&quot;</a>
+<a name="ln26">#include &quot;god-menu.h&quot;</a>
+<a name="ln27">#include &quot;item-prop.h&quot;</a>
+<a name="ln28">#include &quot;item-name.h&quot;</a>
+<a name="ln29">#include &quot;items.h&quot;</a>
+<a name="ln30">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln31">#include &quot;macro.h&quot;</a>
+<a name="ln32">#include &quot;makeitem.h&quot; // item_colour</a>
+<a name="ln33">#include &quot;menu.h&quot;</a>
+<a name="ln34">#include &quot;message.h&quot;</a>
+<a name="ln35">#include &quot;mon-info.h&quot;</a>
+<a name="ln36">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln37">#include &quot;output.h&quot;</a>
+<a name="ln38">#include &quot;prompt.h&quot;</a>
+<a name="ln39">#include &quot;religion.h&quot;</a>
+<a name="ln40">#include &quot;skills.h&quot;</a>
+<a name="ln41">#include &quot;stringutil.h&quot;</a>
+<a name="ln42">#include &quot;spl-book.h&quot;</a>
+<a name="ln43">#include &quot;spl-util.h&quot;</a>
+<a name="ln44">#include &quot;terrain.h&quot;</a>
+<a name="ln45">#ifdef USE_TILE</a>
+<a name="ln46">#include &quot;tile-flags.h&quot;</a>
+<a name="ln47">#include &quot;rltiles/tiledef-main.h&quot;</a>
+<a name="ln48">#include &quot;tilepick.h&quot;</a>
+<a name="ln49">#include &quot;tileview.h&quot;</a>
+<a name="ln50">#endif</a>
+<a name="ln51">#include &quot;ui.h&quot;</a>
+<a name="ln52">#include &quot;view.h&quot;</a>
+<a name="ln53">#include &quot;viewchar.h&quot;</a>
+<a name="ln54"> </a>
+<a name="ln55"> </a>
+<a name="ln56">typedef vector&lt;string&gt; (*keys_by_glyph)(char32_t showchar);</a>
+<a name="ln57">typedef vector&lt;string&gt; (*simple_key_list)();</a>
+<a name="ln58">typedef void (*db_keys_recap)(vector&lt;string&gt;&amp;);</a>
+<a name="ln59">typedef MenuEntry* (*menu_entry_generator)(char letter, const string &amp;str,</a>
+<a name="ln60">                                           string &amp;key);</a>
+<a name="ln61">typedef function&lt;int (const string &amp;, const string &amp;, string)&gt; key_describer;</a>
+<a name="ln62"> </a>
+<a name="ln63">/// A set of optional functionality for lookup types.</a>
+<a name="ln64">enum class lookup_type</a>
+<a name="ln65">{</a>
+<a name="ln66">    none            = 0,</a>
+<a name="ln67">    /// append the 'type' to the db lookup (e.g. &quot;&lt;input&gt; spell&quot;)</a>
+<a name="ln68">    db_suffix       = 1&lt;&lt;0,</a>
+<a name="ln69">    /// whether the sorting functionality should be turned off</a>
+<a name="ln70">    disable_sort    = 1&lt;&lt;1,</a>
+<a name="ln71">    /// whether the display menu for this has toggleable sorting</a>
+<a name="ln72">    toggleable_sort = 1&lt;&lt;2,</a>
+<a name="ln73">};</a>
+<a name="ln74">DEF_BITFIELD(lookup_type_flags, lookup_type);</a>
+<a name="ln75"> </a>
+<a name="ln76">/// A description of a lookup that the player can do. (e.g. (M)onster data)</a>
+<a name="ln77">class LookupType</a>
+<a name="ln78">{</a>
+<a name="ln79">public:</a>
+<a name="ln80">    LookupType(char _symbol, string _type, db_keys_recap _recap,</a>
+<a name="ln81">               db_find_filter _filter_forbid, keys_by_glyph _glyph_fetch,</a>
+<a name="ln82">               simple_key_list _simple_key_fetch,</a>
+<a name="ln83">               menu_entry_generator _menu_gen, key_describer _describer,</a>
+<a name="ln84">               lookup_type_flags _flags)</a>
+<a name="ln85">    : symbol(_symbol), type(_type), filter_forbid(_filter_forbid),</a>
+<a name="ln86">      flags(_flags),</a>
+<a name="ln87">      simple_key_fetch(_simple_key_fetch), glyph_fetch(_glyph_fetch),</a>
+<a name="ln88">      recap(_recap), menu_gen(_menu_gen), describer(_describer)</a>
+<a name="ln89">    {</a>
+<a name="ln90">        // XXX: will crash at startup; compile-time would be better</a>
+<a name="ln91">        // also, ugh</a>
+<a name="ln92">        ASSERT(menu_gen != nullptr || type == &quot;monster&quot;);</a>
+<a name="ln93">        ASSERT(describer != nullptr);</a>
+<a name="ln94">    }</a>
+<a name="ln95"> </a>
+<a name="ln96">    string prompt_string() const;</a>
+<a name="ln97">    string suffix() const;</a>
+<a name="ln98">    vector&lt;string&gt; matching_keys(string regex) const;</a>
+<a name="ln99">    void display_keys(vector&lt;string&gt; &amp;key_list) const;</a>
+<a name="ln100"> </a>
+<a name="ln101">    /**</a>
+<a name="ln102">     * Does this lookup type have special support for single-character input</a>
+<a name="ln103">     * (looking up corresponding glyphs - e.g. 'o' for orc, '(' for ammo...)</a>
+<a name="ln104">     */</a>
+<a name="ln105">    bool supports_glyph_lookup() const { return glyph_fetch != nullptr; }</a>
+<a name="ln106"> </a>
+<a name="ln107">    /**</a>
+<a name="ln108">     * Does this lookup type return a list of keys without taking a search</a>
+<a name="ln109">     * request (e.g. branches or gods)?</a>
+<a name="ln110">     */</a>
+<a name="ln111">    bool no_search() const { return simple_key_fetch != nullptr; }</a>
+<a name="ln112"> </a>
+<a name="ln113">    int describe(const string &amp;key, bool exact_match = false) const;</a>
+<a name="ln114"> </a>
+<a name="ln115">public:</a>
+<a name="ln116">    /// The letter pressed to choose this (e.g. 'M'). case insensitive</a>
+<a name="ln117">    char symbol;</a>
+<a name="ln118">    /// A description of the lookup type (e.g. &quot;monster&quot;). case insensitive</a>
+<a name="ln119">    string type;</a>
+<a name="ln120">    /// a function returning 'true' if the search result corresponding to</a>
+<a name="ln121">    /// the corresponding search should be filtered out of the results</a>
+<a name="ln122">    db_find_filter filter_forbid;</a>
+<a name="ln123">    /// A set of optional functionality; see lookup_type for details</a>
+<a name="ln124">    lookup_type_flags flags;</a>
+<a name="ln125">private:</a>
+<a name="ln126">    MenuEntry* make_menu_entry(char letter, string &amp;key) const;</a>
+<a name="ln127">    string key_to_menu_str(const string &amp;key) const;</a>
+<a name="ln128"> </a>
+<a name="ln129">    /**</a>
+<a name="ln130">     * Does this lookup type support toggling the sort order of results?</a>
+<a name="ln131">     */</a>
+<a name="ln132">    bool toggleable_sort() const</a>
+<a name="ln133">    {</a>
+<a name="ln134">        return bool(flags &amp; lookup_type::toggleable_sort);</a>
+<a name="ln135">    }</a>
+<a name="ln136"> </a>
+<a name="ln137">private:</a>
+<a name="ln138">    /// Function that fetches a list of keys, without taking arguments.</a>
+<a name="ln139">    simple_key_list simple_key_fetch;</a>
+<a name="ln140">    /// a function taking a single character &amp; returning a list of keys</a>
+<a name="ln141">    /// corresponding to that glyph</a>
+<a name="ln142">    keys_by_glyph glyph_fetch;</a>
+<a name="ln143">    /// take the list of keys that were automatically found and fix them</a>
+<a name="ln144">    /// up if necessary</a>
+<a name="ln145">    db_keys_recap recap;</a>
+<a name="ln146">    /// take a letter &amp; a key, return a corresponding new menu entry</a>
+<a name="ln147">    menu_entry_generator menu_gen;</a>
+<a name="ln148">    /// A function to handle describing &amp; interacting with a given key.</a>
+<a name="ln149">    key_describer describer;</a>
+<a name="ln150">};</a>
+<a name="ln151"> </a>
+<a name="ln152"> </a>
+<a name="ln153"> </a>
+<a name="ln154"> </a>
+<a name="ln155">/**</a>
+<a name="ln156"> * What monster enum corresponds to the given Serpent of Hell name?</a>
+<a name="ln157"> *</a>
+<a name="ln158"> * @param soh_name  The name of the monster; e.g. &quot;the Serpent of Hell dis&quot;.</a>
+<a name="ln159"> * @return          The corresponding enum; e.g. MONS_SERPENT_OF_HELL_DIS.</a>
+<a name="ln160"> */</a>
+<a name="ln161">static monster_type _soh_type(string &amp;soh_name)</a>
+<a name="ln162">{</a>
+<a name="ln163">    const string flavour = lowercase_string(soh_name.substr(soh_name.find_last_of(' ')+1));</a>
+<a name="ln164"> </a>
+<a name="ln165">    branch_type branch = NUM_BRANCHES;</a>
+<a name="ln166">    for (int b = BRANCH_FIRST_HELL; b &lt;= BRANCH_LAST_HELL; ++b)</a>
+<a name="ln167">        if (ends_with(flavour, lowercase_string(branches[b].shortname)))</a>
+<a name="ln168">            branch = (branch_type)b;</a>
+<a name="ln169"> </a>
+<a name="ln170">    switch (branch)</a>
+<a name="ln171">    {</a>
+<a name="ln172">        case BRANCH_COCYTUS:</a>
+<a name="ln173">            return MONS_SERPENT_OF_HELL_COCYTUS;</a>
+<a name="ln174">        case BRANCH_DIS:</a>
+<a name="ln175">            return MONS_SERPENT_OF_HELL_DIS;</a>
+<a name="ln176">        case BRANCH_TARTARUS:</a>
+<a name="ln177">            return MONS_SERPENT_OF_HELL_TARTARUS;</a>
+<a name="ln178">        case BRANCH_GEHENNA:</a>
+<a name="ln179">            return MONS_SERPENT_OF_HELL;</a>
+<a name="ln180">        default:</a>
+<a name="ln181">            die(&quot;bad serpent of hell name&quot;);</a>
+<a name="ln182">    }</a>
+<a name="ln183">}</a>
+<a name="ln184"> </a>
+<a name="ln185">static bool _is_soh(string name)</a>
+<a name="ln186">{</a>
+<a name="ln187">    return starts_with(lowercase(name), &quot;the serpent of hell&quot;);</a>
+<a name="ln188">}</a>
+<a name="ln189"> </a>
+<a name="ln190">static string _soh_name(monster_type m_type)</a>
+<a name="ln191">{</a>
+<a name="ln192">    branch_type b = serpent_of_hell_branch(m_type);</a>
+<a name="ln193">    return string(&quot;The Serpent of Hell (&quot;) + branches[b].longname + &quot;)&quot;;</a>
+<a name="ln194">}</a>
+<a name="ln195"> </a>
+<a name="ln196">static monster_type _mon_by_name(string name)</a>
+<a name="ln197">{</a>
+<a name="ln198">    return _is_soh(name) ? _soh_type(name) : get_monster_by_name(name);</a>
+<a name="ln199">}</a>
+<a name="ln200"> </a>
+<a name="ln201">static bool _compare_mon_names(MenuEntry *entry_a, MenuEntry* entry_b)</a>
+<a name="ln202">{</a>
+<a name="ln203">    monster_info* a = static_cast&lt;monster_info* &gt;(entry_a-&gt;data);</a>
+<a name="ln204">    monster_info* b = static_cast&lt;monster_info* &gt;(entry_b-&gt;data);</a>
+<a name="ln205"> </a>
+<a name="ln206">    if (a-&gt;type == b-&gt;type)</a>
+<a name="ln207">        return false;</a>
+<a name="ln208"> </a>
+<a name="ln209">    string a_name = mons_type_name(a-&gt;type, DESC_PLAIN);</a>
+<a name="ln210">    string b_name = mons_type_name(b-&gt;type, DESC_PLAIN);</a>
+<a name="ln211">    return lowercase(a_name) &lt; lowercase(b_name);</a>
+<a name="ln212">}</a>
+<a name="ln213"> </a>
+<a name="ln214">// Compare monsters by location-independent level, or by hitdice if</a>
+<a name="ln215">// levels are equal, or by name if both level and hitdice are equal.</a>
+<a name="ln216">static bool _compare_mon_toughness(MenuEntry *entry_a, MenuEntry* entry_b)</a>
+<a name="ln217">{</a>
+<a name="ln218">    monster_info* a = static_cast&lt;monster_info* &gt;(entry_a-&gt;data);</a>
+<a name="ln219">    monster_info* b = static_cast&lt;monster_info* &gt;(entry_b-&gt;data);</a>
+<a name="ln220"> </a>
+<a name="ln221">    if (a-&gt;type == b-&gt;type)</a>
+<a name="ln222">        return false;</a>
+<a name="ln223"> </a>
+<a name="ln224">    int a_toughness = mons_avg_hp(a-&gt;type);</a>
+<a name="ln225">    int b_toughness = mons_avg_hp(b-&gt;type);</a>
+<a name="ln226"> </a>
+<a name="ln227">    if (a_toughness == b_toughness)</a>
+<a name="ln228">    {</a>
+<a name="ln229">        string a_name = mons_type_name(a-&gt;type, DESC_PLAIN);</a>
+<a name="ln230">        string b_name = mons_type_name(b-&gt;type, DESC_PLAIN);</a>
+<a name="ln231">        return lowercase(a_name) &lt; lowercase(b_name);</a>
+<a name="ln232">    }</a>
+<a name="ln233">    return a_toughness &gt; b_toughness;</a>
+<a name="ln234">}</a>
+<a name="ln235"> </a>
+<a name="ln236">class DescMenu : public Menu</a>
+<a name="ln237">{</a>
+<a name="ln238">public:</a>
+<a name="ln239">    DescMenu(int _flags, bool _toggleable_sort) : Menu(_flags, &quot;&quot;), sort_alpha(true),</a>
+<a name="ln240">    toggleable_sort(_toggleable_sort)</a>
+<a name="ln241">    {</a>
+<a name="ln242">        set_highlighter(nullptr);</a>
+<a name="ln243"> </a>
+<a name="ln244">        if (_toggleable_sort)</a>
+<a name="ln245">            toggle_sorting();</a>
+<a name="ln246"> </a>
+<a name="ln247">        set_prompt();</a>
+<a name="ln248">    }</a>
+<a name="ln249"> </a>
+<a name="ln250">    bool sort_alpha;</a>
+<a name="ln251">    bool toggleable_sort;</a>
+<a name="ln252"> </a>
+<a name="ln253">    void set_prompt()</a>
+<a name="ln254">    {</a>
+<a name="ln255">        string prompt = &quot;Describe which? &quot;;</a>
+<a name="ln256"> </a>
+<a name="ln257">        if (toggleable_sort)</a>
+<a name="ln258">        {</a>
+<a name="ln259">            if (sort_alpha)</a>
+<a name="ln260">                prompt += &quot;(CTRL-S to sort by monster toughness)&quot;;</a>
+<a name="ln261">            else</a>
+<a name="ln262">                prompt += &quot;(CTRL-S to sort by name)&quot;;</a>
+<a name="ln263">        }</a>
+<a name="ln264">        set_title(new MenuEntry(prompt, MEL_TITLE));</a>
+<a name="ln265">    }</a>
+<a name="ln266"> </a>
+<a name="ln267">    void sort()</a>
+<a name="ln268">    {</a>
+<a name="ln269">        if (!toggleable_sort)</a>
+<a name="ln270">            return;</a>
+<a name="ln271"> </a>
+<a name="ln272">        if (sort_alpha)</a>
+<a name="ln273">            ::sort(items.begin(), items.end(), _compare_mon_names);</a>
+<a name="ln274">        else</a>
+<a name="ln275">            ::sort(items.begin(), items.end(), _compare_mon_toughness);</a>
+<a name="ln276"> </a>
+<a name="ln277">        for (unsigned int i = 0, size = items.size(); i &lt; size; i++)</a>
+<a name="ln278">        {</a>
+<a name="ln279">            const char letter = index_to_letter(i % 52);</a>
+<a name="ln280"> </a>
+<a name="ln281">            items[i]-&gt;hotkeys.clear();</a>
+<a name="ln282">            items[i]-&gt;add_hotkey(letter);</a>
+<a name="ln283">        }</a>
+<a name="ln284">    }</a>
+<a name="ln285"> </a>
+<a name="ln286">    void toggle_sorting()</a>
+<a name="ln287">    {</a>
+<a name="ln288">        if (!toggleable_sort)</a>
+<a name="ln289">            return;</a>
+<a name="ln290"> </a>
+<a name="ln291">        sort_alpha = !sort_alpha;</a>
+<a name="ln292"> </a>
+<a name="ln293">        sort();</a>
+<a name="ln294">        set_prompt();</a>
+<a name="ln295">    }</a>
+<a name="ln296">};</a>
+<a name="ln297"> </a>
+<a name="ln298">static vector&lt;string&gt; _get_desc_keys(string regex, db_find_filter filter)</a>
+<a name="ln299">{</a>
+<a name="ln300">    vector&lt;string&gt; key_matches = getLongDescKeysByRegex(regex, filter);</a>
+<a name="ln301">    vector&lt;string&gt; body_matches = getLongDescBodiesByRegex(regex, filter);</a>
+<a name="ln302"> </a>
+<a name="ln303">    // Merge key_matches and body_matches, discarding duplicates.</a>
+<a name="ln304">    vector&lt;string&gt; tmp = key_matches;</a>
+<a name="ln305">    tmp.insert(tmp.end(), body_matches.begin(), body_matches.end());</a>
+<a name="ln306">    sort(tmp.begin(), tmp.end());</a>
+<a name="ln307">    vector&lt;string&gt; all_matches;</a>
+<a name="ln308">    for (unsigned int i = 0, size = tmp.size(); i &lt; size; i++)</a>
+<a name="ln309">        if (i == 0 || all_matches[all_matches.size() - 1] != tmp[i])</a>
+<a name="ln310">            all_matches.push_back(tmp[i]);</a>
+<a name="ln311"> </a>
+<a name="ln312">    return all_matches;</a>
+<a name="ln313">}</a>
+<a name="ln314"> </a>
+<a name="ln315">static vector&lt;string&gt; _get_monster_keys(char32_t showchar)</a>
+<a name="ln316">{</a>
+<a name="ln317">    vector&lt;string&gt; mon_keys;</a>
+<a name="ln318"> </a>
+<a name="ln319">    for (monster_type i = MONS_0; i &lt; NUM_MONSTERS; ++i)</a>
+<a name="ln320">    {</a>
+<a name="ln321">        if (i == MONS_PROGRAM_BUG)</a>
+<a name="ln322">            continue;</a>
+<a name="ln323"> </a>
+<a name="ln324">        const monsterentry *me = get_monster_data(i);</a>
+<a name="ln325"> </a>
+<a name="ln326">        if (me == nullptr || me-&gt;name == nullptr || me-&gt;name[0] == '\0')</a>
+<a name="ln327">            continue;</a>
+<a name="ln328"> </a>
+<a name="ln329">        if (me-&gt;mc != i)</a>
+<a name="ln330">            continue;</a>
+<a name="ln331"> </a>
+<a name="ln332">        if ((char32_t)me-&gt;basechar != showchar)</a>
+<a name="ln333">            continue;</a>
+<a name="ln334"> </a>
+<a name="ln335">        if (mons_species(i) == MONS_SERPENT_OF_HELL)</a>
+<a name="ln336">        {</a>
+<a name="ln337">            mon_keys.push_back(string(me-&gt;name) + &quot; &quot;</a>
+<a name="ln338">                               + serpent_of_hell_flavour(i));</a>
+<a name="ln339">            continue;</a>
+<a name="ln340">        }</a>
+<a name="ln341"> </a>
+<a name="ln342">        if (getLongDescription(me-&gt;name).empty())</a>
+<a name="ln343">            continue;</a>
+<a name="ln344"> </a>
+<a name="ln345">        mon_keys.push_back(me-&gt;name);</a>
+<a name="ln346">    }</a>
+<a name="ln347"> </a>
+<a name="ln348">    return mon_keys;</a>
+<a name="ln349">}</a>
+<a name="ln350"> </a>
+<a name="ln351"> </a>
+<a name="ln352">static vector&lt;string&gt; _get_god_keys()</a>
+<a name="ln353">{</a>
+<a name="ln354">    vector&lt;string&gt; names;</a>
+<a name="ln355"> </a>
+<a name="ln356">    for (int i = GOD_NO_GOD + 1; i &lt; NUM_GODS; i++)</a>
+<a name="ln357">    {</a>
+<a name="ln358">        god_type which_god = static_cast&lt;god_type&gt;(i);</a>
+<a name="ln359">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln360">        // XXX: currently disabled.</a>
+<a name="ln361">        if (which_god != GOD_PAKELLAS)</a>
+<a name="ln362">#endif</a>
+<a name="ln363">        names.push_back(god_name(which_god));</a>
+<a name="ln364">    }</a>
+<a name="ln365"> </a>
+<a name="ln366">    return names;</a>
+<a name="ln367">}</a>
+<a name="ln368"> </a>
+<a name="ln369">static vector&lt;string&gt; _get_branch_keys()</a>
+<a name="ln370">{</a>
+<a name="ln371">    vector&lt;string&gt; names;</a>
+<a name="ln372"> </a>
+<a name="ln373">    for (branch_iterator it; it; ++it)</a>
+<a name="ln374">    {</a>
+<a name="ln375">        // Skip unimplemented branches</a>
+<a name="ln376">        if (branch_is_unfinished(it-&gt;id))</a>
+<a name="ln377">            continue;</a>
+<a name="ln378"> </a>
+<a name="ln379">        names.push_back(it-&gt;shortname);</a>
+<a name="ln380">    }</a>
+<a name="ln381">    return names;</a>
+<a name="ln382">}</a>
+<a name="ln383"> </a>
+<a name="ln384">static vector&lt;string&gt; _get_cloud_keys()</a>
+<a name="ln385">{</a>
+<a name="ln386">    vector&lt;string&gt; names;</a>
+<a name="ln387"> </a>
+<a name="ln388">    for (int i = CLOUD_NONE + 1; i &lt; NUM_CLOUD_TYPES; i++)</a>
+<a name="ln389">        names.push_back(cloud_type_name((cloud_type) i) + &quot; cloud&quot;);</a>
+<a name="ln390"> </a>
+<a name="ln391">    return names;</a>
+<a name="ln392">}</a>
+<a name="ln393"> </a>
+<a name="ln394">/**</a>
+<a name="ln395"> * Return a list of all skill names.</a>
+<a name="ln396"> */</a>
+<a name="ln397">static vector&lt;string&gt; _get_skill_keys()</a>
+<a name="ln398">{</a>
+<a name="ln399">    vector&lt;string&gt; names;</a>
+<a name="ln400">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln401">    {</a>
+<a name="ln402">        const string name = lowercase_string(skill_name(sk));</a>
+<a name="ln403">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln404">        if (getLongDescription(name).empty())</a>
+<a name="ln405">            continue; // obsolete skills</a>
+<a name="ln406">#endif</a>
+<a name="ln407"> </a>
+<a name="ln408">        names.emplace_back(name);</a>
+<a name="ln409">    }</a>
+<a name="ln410">    return names;</a>
+<a name="ln411">}</a>
+<a name="ln412"> </a>
+<a name="ln413">static bool _monster_filter(string key, string /*body*/)</a>
+<a name="ln414">{</a>
+<a name="ln415">    const monster_type mon_num = _mon_by_name(key);</a>
+<a name="ln416">    return mons_class_flag(mon_num, M_CANT_SPAWN)</a>
+<a name="ln417">           || mons_is_tentacle_segment(mon_num);</a>
+<a name="ln418">}</a>
+<a name="ln419"> </a>
+<a name="ln420">static bool _spell_filter(string key, string /*body*/)</a>
+<a name="ln421">{</a>
+<a name="ln422">    if (!strip_suffix(key, &quot;spell&quot;))</a>
+<a name="ln423">        return true;</a>
+<a name="ln424"> </a>
+<a name="ln425">    spell_type spell = spell_by_name(key);</a>
+<a name="ln426"> </a>
+<a name="ln427">    if (spell == SPELL_NO_SPELL)</a>
+<a name="ln428">        return true;</a>
+<a name="ln429"> </a>
+<a name="ln430">    if (get_spell_flags(spell) &amp; spflag::testing)</a>
+<a name="ln431">        return !you.wizard;</a>
+<a name="ln432"> </a>
+<a name="ln433">    return false;</a>
+<a name="ln434">}</a>
+<a name="ln435"> </a>
+<a name="ln436">static bool _item_filter(string key, string /*body*/)</a>
+<a name="ln437">{</a>
+<a name="ln438">    return item_kind_by_name(key).base_type == OBJ_UNASSIGNED;</a>
+<a name="ln439">}</a>
+<a name="ln440"> </a>
+<a name="ln441">static bool _feature_filter(string key, string /*body*/)</a>
+<a name="ln442">{</a>
+<a name="ln443">    return feat_by_desc(key) == DNGN_UNSEEN;</a>
+<a name="ln444">}</a>
+<a name="ln445"> </a>
+<a name="ln446">static bool _card_filter(string key, string /*body*/)</a>
+<a name="ln447">{</a>
+<a name="ln448">    lowercase(key);</a>
+<a name="ln449"> </a>
+<a name="ln450">    // Every card description contains the keyword &quot;card&quot;.</a>
+<a name="ln451">    if (!strip_suffix(key, &quot;card&quot;))</a>
+<a name="ln452">        return true;</a>
+<a name="ln453"> </a>
+<a name="ln454">    for (int i = 0; i &lt; NUM_CARDS; ++i)</a>
+<a name="ln455">    {</a>
+<a name="ln456">        if (key == lowercase_string(card_name(static_cast&lt;card_type&gt;(i))))</a>
+<a name="ln457">            return false;</a>
+<a name="ln458">    }</a>
+<a name="ln459">    return true;</a>
+<a name="ln460">}</a>
+<a name="ln461"> </a>
+<a name="ln462">static bool _ability_filter(string key, string /*body*/)</a>
+<a name="ln463">{</a>
+<a name="ln464">    lowercase(key);</a>
+<a name="ln465"> </a>
+<a name="ln466">    if (!strip_suffix(key, &quot;ability&quot;))</a>
+<a name="ln467">        return true;</a>
+<a name="ln468"> </a>
+<a name="ln469">    return !string_matches_ability_name(key);</a>
+<a name="ln470">}</a>
+<a name="ln471"> </a>
+<a name="ln472">static bool _status_filter(string key, string /*body*/)</a>
+<a name="ln473">{</a>
+<a name="ln474">    return !strip_suffix(lowercase(key), &quot; status&quot;);</a>
+<a name="ln475">}</a>
+<a name="ln476"> </a>
+<a name="ln477"> </a>
+<a name="ln478">static void _recap_mon_keys(vector&lt;string&gt; &amp;keys)</a>
+<a name="ln479">{</a>
+<a name="ln480">    for (unsigned int i = 0, size = keys.size(); i &lt; size; i++)</a>
+<a name="ln481">    {</a>
+<a name="ln482">        if (!_is_soh(keys[i]))</a>
+<a name="ln483">        {</a>
+<a name="ln484">            monster_type type = get_monster_by_name(keys[i]);</a>
+<a name="ln485">            keys[i] = mons_type_name(type, DESC_PLAIN);</a>
+<a name="ln486">        }</a>
+<a name="ln487">    }</a>
+<a name="ln488">}</a>
+<a name="ln489"> </a>
+<a name="ln490">/**</a>
+<a name="ln491"> * Fixup spell names. (Correcting capitalization, mainly.)</a>
+<a name="ln492"> *</a>
+<a name="ln493"> * @param[in,out] keys      A lowercased list of spell names.</a>
+<a name="ln494"> */</a>
+<a name="ln495">static void _recap_spell_keys(vector&lt;string&gt; &amp;keys)</a>
+<a name="ln496">{</a>
+<a name="ln497">    for (unsigned int i = 0, size = keys.size(); i &lt; size; i++)</a>
+<a name="ln498">    {</a>
+<a name="ln499">        // first, strip &quot; spell&quot;</a>
+<a name="ln500">        const string key_name = keys[i].substr(0, keys[i].length() - 6);</a>
+<a name="ln501">        // then get the real name</a>
+<a name="ln502">        keys[i] = make_stringf(&quot;%s spell&quot;,</a>
+<a name="ln503">                               spell_title(spell_by_name(key_name)));</a>
+<a name="ln504">    }</a>
+<a name="ln505">}</a>
+<a name="ln506"> </a>
+<a name="ln507">/**</a>
+<a name="ln508"> * Fixup ability names. (Correcting capitalization, mainly.)</a>
+<a name="ln509"> *</a>
+<a name="ln510"> * @param[in,out] keys      A lowercased list of ability names.</a>
+<a name="ln511"> */</a>
+<a name="ln512">static void _recap_ability_keys(vector&lt;string&gt; &amp;keys)</a>
+<a name="ln513">{</a>
+<a name="ln514">    for (auto &amp;key : keys)</a>
+<a name="ln515">    {</a>
+<a name="ln516">        strip_suffix(key, &quot;ability&quot;);</a>
+<a name="ln517">        // get the real name</a>
+<a name="ln518">        key = make_stringf(&quot;%s ability&quot;, ability_name(ability_by_name(key)));</a>
+<a name="ln519">    }</a>
+<a name="ln520">}</a>
+<a name="ln521"> </a>
+<a name="ln522">static void _recap_feat_keys(vector&lt;string&gt; &amp;keys)</a>
+<a name="ln523">{</a>
+<a name="ln524">    for (unsigned int i = 0, size = keys.size(); i &lt; size; i++)</a>
+<a name="ln525">    {</a>
+<a name="ln526">        dungeon_feature_type type = feat_by_desc(keys[i]);</a>
+<a name="ln527">        if (type == DNGN_ENTER_SHOP)</a>
+<a name="ln528">            keys[i] = &quot;A shop&quot;;</a>
+<a name="ln529">        else</a>
+<a name="ln530">            keys[i] = feature_description(type, NUM_TRAPS, &quot;&quot;, DESC_A);</a>
+<a name="ln531">    }</a>
+<a name="ln532">}</a>
+<a name="ln533"> </a>
+<a name="ln534">static void _recap_card_keys(vector&lt;string&gt; &amp;keys)</a>
+<a name="ln535">{</a>
+<a name="ln536">    for (unsigned int i = 0, size = keys.size(); i &lt; size; i++)</a>
+<a name="ln537">    {</a>
+<a name="ln538">        lowercase(keys[i]);</a>
+<a name="ln539"> </a>
+<a name="ln540">        for (int j = 0; j &lt; NUM_CARDS; ++j)</a>
+<a name="ln541">        {</a>
+<a name="ln542">            card_type card = static_cast&lt;card_type&gt;(j);</a>
+<a name="ln543">            if (keys[i] == lowercase_string(card_name(card)) + &quot; card&quot;)</a>
+<a name="ln544">            {</a>
+<a name="ln545">                keys[i] = string(card_name(card)) + &quot; card&quot;;</a>
+<a name="ln546">                break;</a>
+<a name="ln547">            }</a>
+<a name="ln548">        }</a>
+<a name="ln549">    }</a>
+<a name="ln550">}</a>
+<a name="ln551"> </a>
+<a name="ln552">/**</a>
+<a name="ln553"> * Make a basic, no-frills ?/&lt;foo&gt; menu entry.</a>
+<a name="ln554"> *</a>
+<a name="ln555"> * @param letter    The letter for the entry. (E.g. 'e' for the fifth entry.)</a>
+<a name="ln556"> * @param str       A processed string for the entry. (E.g. &quot;Blade&quot;.)</a>
+<a name="ln557"> * @param key       The raw database key for the entry. (E.g. &quot;blade card&quot;.)</a>
+<a name="ln558"> * @return          A new menu entry.</a>
+<a name="ln559"> */</a>
+<a name="ln560">static MenuEntry* _simple_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln561">{</a>
+<a name="ln562">    MenuEntry* me = new MenuEntry(str, MEL_ITEM, 1, letter);</a>
+<a name="ln563">    me-&gt;data = &amp;key;</a>
+<a name="ln564">    return me;</a>
+<a name="ln565">}</a>
+<a name="ln566"> </a>
+<a name="ln567">/**</a>
+<a name="ln568"> * Generate a ?/M entry.</a>
+<a name="ln569"> *</a>
+<a name="ln570"> * @param letter      The letter for the entry. (E.g. 'e' for the fifth entry.)</a>
+<a name="ln571"> * @param str         A processed string for the entry. (E.g. &quot;Blade&quot;.)</a>
+<a name="ln572"> * @param mslot[out]  A space in memory to store a fake monster.</a>
+<a name="ln573"> * @return            A new menu entry.</a>
+<a name="ln574"> */</a>
+<a name="ln575">static MenuEntry* _monster_menu_gen(char letter, const string &amp;str,</a>
+<a name="ln576">                                    monster_info &amp;mslot)</a>
+<a name="ln577">{</a>
+<a name="ln578">    // Create and store fake monsters, so the menu code will</a>
+<a name="ln579">    // have something valid to refer to.</a>
+<a name="ln580">    monster_type m_type = _mon_by_name(str);</a>
+<a name="ln581">    const string name = _is_soh(str) ? _soh_name(m_type) : str;</a>
+<a name="ln582"> </a>
+<a name="ln583">    monster_type base_type = MONS_NO_MONSTER;</a>
+<a name="ln584">    // HACK: Set an arbitrary humanoid monster as base type.</a>
+<a name="ln585">    if (mons_class_is_zombified(m_type))</a>
+<a name="ln586">        base_type = MONS_GOBLIN;</a>
+<a name="ln587"> </a>
+<a name="ln588">    monster_info fake_mon(m_type, base_type);</a>
+<a name="ln589">    fake_mon.props[&quot;fake&quot;] = true;</a>
+<a name="ln590"> </a>
+<a name="ln591">    mslot = fake_mon;</a>
+<a name="ln592"> </a>
+<a name="ln593">#ifndef USE_TILE_LOCAL</a>
+<a name="ln594">    int colour = mons_class_colour(m_type);</a>
+<a name="ln595">    if (colour == BLACK)</a>
+<a name="ln596">        colour = LIGHTGREY;</a>
+<a name="ln597"> </a>
+<a name="ln598">    string prefix = &quot;(&lt;&quot;;</a>
+<a name="ln599">    prefix += colour_to_str(colour);</a>
+<a name="ln600">    prefix += &quot;&gt;&quot;;</a>
+<a name="ln601">    prefix += stringize_glyph(mons_char(m_type));</a>
+<a name="ln602">    prefix += &quot;&lt;/&quot;;</a>
+<a name="ln603">    prefix += colour_to_str(colour);</a>
+<a name="ln604">    prefix += &quot;&gt;) &quot;;</a>
+<a name="ln605"> </a>
+<a name="ln606">    const string title = prefix + name;</a>
+<a name="ln607">#else</a>
+<a name="ln608">    const string &amp;title = name;</a>
+<a name="ln609">#endif</a>
+<a name="ln610"> </a>
+<a name="ln611">    // NOTE: MonsterMenuEntry::get_tiles() takes care of setting</a>
+<a name="ln612">    // up a fake weapon when displaying a fake dancing weapon's</a>
+<a name="ln613">    // tile.</a>
+<a name="ln614">    return new MonsterMenuEntry(title, &amp;mslot, letter);</a>
+<a name="ln615">}</a>
+<a name="ln616"> </a>
+<a name="ln617">/**</a>
+<a name="ln618"> * Generate a ?/I menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln619"> */</a>
+<a name="ln620">static MenuEntry* _item_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln621">{</a>
+<a name="ln622">    MenuEntry* me = _simple_menu_gen(letter, str, key);</a>
+<a name="ln623">#ifdef USE_TILE</a>
+<a name="ln624">    item_def item;</a>
+<a name="ln625">    item_kind kind = item_kind_by_name(key);</a>
+<a name="ln626">    get_item_by_name(&amp;item, key.c_str(), kind.base_type);</a>
+<a name="ln627">    item_colour(item);</a>
+<a name="ln628">    tileidx_t idx = tileidx_item(get_item_info(item));</a>
+<a name="ln629">    tileidx_t base_item = tileidx_known_base_item(idx);</a>
+<a name="ln630">    if (base_item)</a>
+<a name="ln631">        me-&gt;add_tile(tile_def(base_item, TEX_DEFAULT));</a>
+<a name="ln632">    me-&gt;add_tile(tile_def(idx, TEX_DEFAULT));</a>
+<a name="ln633">#endif</a>
+<a name="ln634">    return me;</a>
+<a name="ln635">}</a>
+<a name="ln636"> </a>
+<a name="ln637">/**</a>
+<a name="ln638"> * Generate a ?/F menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln639"> */</a>
+<a name="ln640">static MenuEntry* _feature_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln641">{</a>
+<a name="ln642">    MenuEntry* me = new MenuEntry(str, MEL_ITEM, 1, letter);</a>
+<a name="ln643">    me-&gt;data = &amp;key;</a>
+<a name="ln644"> </a>
+<a name="ln645">#ifdef USE_TILE</a>
+<a name="ln646">    const dungeon_feature_type feat = feat_by_desc(str);</a>
+<a name="ln647">    if (feat)</a>
+<a name="ln648">    {</a>
+<a name="ln649">        const tileidx_t idx = tileidx_feature_base(feat);</a>
+<a name="ln650">        me-&gt;add_tile(tile_def(idx, get_dngn_tex(idx)));</a>
+<a name="ln651">    }</a>
+<a name="ln652">#endif</a>
+<a name="ln653"> </a>
+<a name="ln654">    return me;</a>
+<a name="ln655">}</a>
+<a name="ln656"> </a>
+<a name="ln657">/**</a>
+<a name="ln658"> * Generate a ?/G menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln659"> */</a>
+<a name="ln660">static MenuEntry* _god_menu_gen(char /*letter*/, const string &amp;/*str*/, string &amp;key)</a>
+<a name="ln661">{</a>
+<a name="ln662">    return new GodMenuEntry(str_to_god(key));</a>
+<a name="ln663">}</a>
+<a name="ln664"> </a>
+<a name="ln665">/**</a>
+<a name="ln666"> * Generate a ?/A menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln667"> */</a>
+<a name="ln668">static MenuEntry* _ability_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln669">{</a>
+<a name="ln670">    MenuEntry* me = _simple_menu_gen(letter, str, key);</a>
+<a name="ln671"> </a>
+<a name="ln672">#ifdef USE_TILE</a>
+<a name="ln673">    const ability_type ability = ability_by_name(str);</a>
+<a name="ln674">    if (ability != ABIL_NON_ABILITY)</a>
+<a name="ln675">        me-&gt;add_tile(tile_def(tileidx_ability(ability), TEX_GUI));</a>
+<a name="ln676">#endif</a>
+<a name="ln677"> </a>
+<a name="ln678">    return me;</a>
+<a name="ln679">}</a>
+<a name="ln680"> </a>
+<a name="ln681">/**</a>
+<a name="ln682"> * Generate a ?/C menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln683"> */</a>
+<a name="ln684">static MenuEntry* _card_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln685">{</a>
+<a name="ln686">    MenuEntry* me = _simple_menu_gen(letter, str, key);</a>
+<a name="ln687">#ifdef USE_TILE</a>
+<a name="ln688">    me-&gt;add_tile(tile_def(TILEG_NEMELEX_CARD, TEX_GUI));</a>
+<a name="ln689">#endif</a>
+<a name="ln690">    return me;</a>
+<a name="ln691">}</a>
+<a name="ln692"> </a>
+<a name="ln693">/**</a>
+<a name="ln694"> * Generate a ?/S menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln695"> */</a>
+<a name="ln696">static MenuEntry* _spell_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln697">{</a>
+<a name="ln698">    MenuEntry* me = _simple_menu_gen(letter, str, key);</a>
+<a name="ln699"> </a>
+<a name="ln700">    const spell_type spell = spell_by_name(str);</a>
+<a name="ln701">#ifdef USE_TILE</a>
+<a name="ln702">    if (spell != SPELL_NO_SPELL)</a>
+<a name="ln703">        me-&gt;add_tile(tile_def(tileidx_spell(spell), TEX_GUI));</a>
+<a name="ln704">#endif</a>
+<a name="ln705">    me-&gt;colour = is_player_spell(spell) ? WHITE</a>
+<a name="ln706">                                        : DARKGREY; // monster-only</a>
+<a name="ln707"> </a>
+<a name="ln708">    return me;</a>
+<a name="ln709">}</a>
+<a name="ln710"> </a>
+<a name="ln711">/**</a>
+<a name="ln712"> * Generate a ?/K menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln713"> */</a>
+<a name="ln714">static MenuEntry* _skill_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln715">{</a>
+<a name="ln716">    MenuEntry* me = _simple_menu_gen(letter, str, key);</a>
+<a name="ln717"> </a>
+<a name="ln718">#ifdef USE_TILE</a>
+<a name="ln719">    const skill_type skill = str_to_skill_safe(str);</a>
+<a name="ln720">    me-&gt;add_tile(tile_def(tileidx_skill(skill, TRAINING_ENABLED), TEX_GUI));</a>
+<a name="ln721">#endif</a>
+<a name="ln722"> </a>
+<a name="ln723">    return me;</a>
+<a name="ln724">}</a>
+<a name="ln725"> </a>
+<a name="ln726">/**</a>
+<a name="ln727"> * Generate a ?/B menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln728"> */</a>
+<a name="ln729">static MenuEntry* _branch_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln730">{</a>
+<a name="ln731">    MenuEntry* me = _simple_menu_gen(letter, str, key);</a>
+<a name="ln732"> </a>
+<a name="ln733">    const branch_type branch = branch_by_shortname(str);</a>
+<a name="ln734">    int hotkey = branches[branch].travel_shortcut;</a>
+<a name="ln735">    me-&gt;hotkeys = {hotkey, tolower_safe(hotkey)};</a>
+<a name="ln736">#ifdef USE_TILE</a>
+<a name="ln737">    me-&gt;add_tile(tile_def(tileidx_branch(branch), TEX_FEAT));</a>
+<a name="ln738">#endif</a>
+<a name="ln739"> </a>
+<a name="ln740">    return me;</a>
+<a name="ln741">}</a>
+<a name="ln742"> </a>
+<a name="ln743">/**</a>
+<a name="ln744"> * Generate a ?/L menu entry. (ref. _simple_menu_gen()).</a>
+<a name="ln745"> */</a>
+<a name="ln746">static MenuEntry* _cloud_menu_gen(char letter, const string &amp;str, string &amp;key)</a>
+<a name="ln747">{</a>
+<a name="ln748">    MenuEntry* me = _simple_menu_gen(letter, str, key);</a>
+<a name="ln749"> </a>
+<a name="ln750">    const string cloud_name = lowercase_string(str);</a>
+<a name="ln751">    const cloud_type cloud = cloud_name_to_type(cloud_name);</a>
+<a name="ln752">    ASSERT(cloud != NUM_CLOUD_TYPES);</a>
+<a name="ln753"> </a>
+<a name="ln754">    cloud_struct fake_cloud;</a>
+<a name="ln755">    fake_cloud.type = cloud;</a>
+<a name="ln756">    fake_cloud.decay = 1000;</a>
+<a name="ln757">    me-&gt;colour = element_colour(get_cloud_colour(fake_cloud));</a>
+<a name="ln758"> </a>
+<a name="ln759">#ifdef USE_TILE</a>
+<a name="ln760">    cloud_info fake_cloud_info;</a>
+<a name="ln761">    fake_cloud_info.type = cloud;</a>
+<a name="ln762">    fake_cloud_info.colour = me-&gt;colour;</a>
+<a name="ln763">    const tileidx_t idx = tileidx_cloud(fake_cloud_info) &amp; ~TILE_FLAG_FLYING;</a>
+<a name="ln764">    me-&gt;add_tile(tile_def(idx, TEX_DEFAULT));</a>
+<a name="ln765">#endif</a>
+<a name="ln766"> </a>
+<a name="ln767">    return me;</a>
+<a name="ln768">}</a>
+<a name="ln769"> </a>
+<a name="ln770"> </a>
+<a name="ln771">/**</a>
+<a name="ln772"> * How should this type be expressed in the prompt string?</a>
+<a name="ln773"> *</a>
+<a name="ln774"> * @return The 'type', with the first instance of the 'symbol' found &amp;</a>
+<a name="ln775"> *          replaced with an uppercase version surrounded by parens</a>
+<a name="ln776"> *          e.g. &quot;monster&quot;, 'm' -&gt; &quot;(M)onster&quot;</a>
+<a name="ln777"> */</a>
+<a name="ln778">string LookupType::prompt_string() const</a>
+<a name="ln779">{</a>
+<a name="ln780">    string prompt_str = lowercase_string(type);</a>
+<a name="ln781">    const size_t symbol_pos = prompt_str.find(tolower_safe(symbol));</a>
+<a name="ln782">    ASSERT(symbol_pos != string::npos);</a>
+<a name="ln783"> </a>
+<a name="ln784">    prompt_str.replace(symbol_pos, 1, make_stringf(&quot;(%c)&quot;, toupper_safe(symbol)));</a>
+<a name="ln785">    return prompt_str;</a>
+<a name="ln786">}</a>
+<a name="ln787"> </a>
+<a name="ln788">/**</a>
+<a name="ln789"> * A suffix to be appended to the provided search string when looking for</a>
+<a name="ln790"> * db info.</a>
+<a name="ln791"> *</a>
+<a name="ln792"> * @return      An appropriate suffix for types that need them (e.g.</a>
+<a name="ln793"> *              &quot; cards&quot;); otherwise &quot;&quot;.</a>
+<a name="ln794"> */</a>
+<a name="ln795">string LookupType::suffix() const</a>
+<a name="ln796">{</a>
+<a name="ln797">    if (flags &amp; lookup_type::db_suffix)</a>
+<a name="ln798">        return &quot; &quot; + type;</a>
+<a name="ln799">    return &quot;&quot;;</a>
+<a name="ln800">}</a>
+<a name="ln801"> </a>
+<a name="ln802">/**</a>
+<a name="ln803"> * Get a list of string corresponding to the given regex.</a>
+<a name="ln804"> */</a>
+<a name="ln805">vector&lt;string&gt; LookupType::matching_keys(string regex) const</a>
+<a name="ln806">{</a>
+<a name="ln807">    vector&lt;string&gt; key_list;</a>
+<a name="ln808"> </a>
+<a name="ln809">    if (no_search())</a>
+<a name="ln810">        key_list = simple_key_fetch();</a>
+<a name="ln811">    else if (regex.size() == 1 &amp;&amp; supports_glyph_lookup())</a>
+<a name="ln812">        key_list = glyph_fetch(regex[0]);</a>
+<a name="ln813">    else</a>
+<a name="ln814">        key_list = _get_desc_keys(regex, filter_forbid);</a>
+<a name="ln815"> </a>
+<a name="ln816">    if (recap != nullptr)</a>
+<a name="ln817">        (*recap)(key_list);</a>
+<a name="ln818"> </a>
+<a name="ln819">    return key_list;</a>
+<a name="ln820">}</a>
+<a name="ln821"> </a>
+<a name="ln822">static string _mons_desc_key(monster_type type)</a>
+<a name="ln823">{</a>
+<a name="ln824">    const string name = mons_type_name(type, DESC_PLAIN);</a>
+<a name="ln825">    if (mons_species(type) == MONS_SERPENT_OF_HELL)</a>
+<a name="ln826">        return name + &quot; &quot; + serpent_of_hell_flavour(type);</a>
+<a name="ln827">    return name;</a>
+<a name="ln828">}</a>
+<a name="ln829"> </a>
+<a name="ln830">/**</a>
+<a name="ln831"> * Build a menu listing the given keys, and allow the player to interact</a>
+<a name="ln832"> * with them.</a>
+<a name="ln833"> */</a>
+<a name="ln834">void LookupType::display_keys(vector&lt;string&gt; &amp;key_list) const</a>
+<a name="ln835">{</a>
+<a name="ln836">    DescMenu desc_menu(MF_SINGLESELECT | MF_ANYPRINTABLE | MF_ALLOW_FORMATTING</a>
+<a name="ln837">            | MF_NO_SELECT_QTY | MF_USE_TWO_COLUMNS , toggleable_sort());</a>
+<a name="ln838">    desc_menu.set_tag(&quot;description&quot;);</a>
+<a name="ln839"> </a>
+<a name="ln840">    // XXX: ugh</a>
+<a name="ln841">    const bool doing_mons = type == &quot;monster&quot;;</a>
+<a name="ln842">    vector&lt;monster_info&gt; monster_list(key_list.size());</a>
+<a name="ln843">    for (unsigned int i = 0, size = key_list.size(); i &lt; size; i++)</a>
+<a name="ln844">    {</a>
+<a name="ln845">        const char letter = index_to_letter(i % 52);</a>
+<a name="ln846">        string &amp;key = key_list[i];</a>
+<a name="ln847">        // XXX: double ugh</a>
+<a name="ln848">        if (doing_mons)</a>
+<a name="ln849">        {</a>
+<a name="ln850">            desc_menu.add_entry(_monster_menu_gen(letter,</a>
+<a name="ln851">                                                  key_to_menu_str(key),</a>
+<a name="ln852">                                                  monster_list[i]));</a>
+<a name="ln853">        } else</a>
+<a name="ln854">            desc_menu.add_entry(make_menu_entry(letter, key));</a>
+<a name="ln855">    }</a>
+<a name="ln856"> </a>
+<a name="ln857">    desc_menu.sort();</a>
+<a name="ln858"> </a>
+<a name="ln859">    desc_menu.on_single_selection = [this, doing_mons](const MenuEntry&amp; item)</a>
+<a name="ln860">    {</a>
+<a name="ln861">        ASSERT(item.hotkeys.size() &gt;= 1);</a>
+<a name="ln862"> </a>
+<a name="ln863">        string key;</a>
+<a name="ln864"> </a>
+<a name="ln865">        if (doing_mons)</a>
+<a name="ln866">        {</a>
+<a name="ln867">            monster_info* mon = (monster_info*) item.data;</a>
+<a name="ln868">            key = _mons_desc_key(mon-&gt;type);</a>
+<a name="ln869">        }</a>
+<a name="ln870">        else</a>
+<a name="ln871">            key = *((string*) item.data);</a>
+<a name="ln872"> </a>
+<a name="ln873">        describe(key);</a>
+<a name="ln874">        return true;</a>
+<a name="ln875">    };</a>
+<a name="ln876"> </a>
+<a name="ln877">    while (true)</a>
+<a name="ln878">    {</a>
+<a name="ln879">        desc_menu.show();</a>
+<a name="ln880">        if (toggleable_sort() &amp;&amp; desc_menu.getkey() == CONTROL('S'))</a>
+<a name="ln881">            desc_menu.toggle_sorting();</a>
+<a name="ln882">        else</a>
+<a name="ln883">            break;</a>
+<a name="ln884">    }</a>
+<a name="ln885">}</a>
+<a name="ln886"> </a>
+<a name="ln887">/**</a>
+<a name="ln888"> * Generate a description menu entry for the given key.</a>
+<a name="ln889"> *</a>
+<a name="ln890"> * @param letter    The letter with which the entry should be labeled.</a>
+<a name="ln891"> * @param key       The key for the entry.</a>
+<a name="ln892"> * @return          A pointer to a new MenuEntry object.</a>
+<a name="ln893"> */</a>
+<a name="ln894">MenuEntry* LookupType::make_menu_entry(char letter, string &amp;key) const</a>
+<a name="ln895">{</a>
+<a name="ln896">    ASSERT(menu_gen);</a>
+<a name="ln897">    return menu_gen(letter, key_to_menu_str(key), key);</a>
+<a name="ln898">}</a>
+<a name="ln899"> </a>
+<a name="ln900">/**</a>
+<a name="ln901"> * Turn a DB string into a nice menu title.</a>
+<a name="ln902"> *</a>
+<a name="ln903"> * @param key       The key in question. (E.g. &quot;blade card&quot;).</a>
+<a name="ln904"> * @return          A nicer string. (E.g. &quot;Blade&quot;).</a>
+<a name="ln905"> */</a>
+<a name="ln906">string LookupType::key_to_menu_str(const string &amp;key) const</a>
+<a name="ln907">{</a>
+<a name="ln908">    string str = uppercase_first(key);</a>
+<a name="ln909">    // perhaps we should assert this?</a>
+<a name="ln910">    strip_suffix(str, suffix());</a>
+<a name="ln911">    return str;</a>
+<a name="ln912">}</a>
+<a name="ln913"> </a>
+<a name="ln914">/**</a>
+<a name="ln915"> * Handle describing &amp; interacting with a given key.</a>
+<a name="ln916"> * @return the last key pressed.</a>
+<a name="ln917"> */</a>
+<a name="ln918">int LookupType::describe(const string &amp;key, bool exact_match) const</a>
+<a name="ln919">{</a>
+<a name="ln920">    const string footer</a>
+<a name="ln921">        = exact_match ? &quot;This entry is an exact match for '&quot; + key</a>
+<a name="ln922">        + &quot;'. To see non-exact matches, press space.&quot;</a>
+<a name="ln923">        : &quot;&quot;;</a>
+<a name="ln924">    return describer(key, suffix(), footer);</a>
+<a name="ln925">}</a>
+<a name="ln926"> </a>
+<a name="ln927">/**</a>
+<a name="ln928"> * Describe the thing with the given name.</a>
+<a name="ln929"> *</a>
+<a name="ln930"> * @param key           The name of the thing in question.</a>
+<a name="ln931"> * @param suffix        A suffix to trim from the key when making the title.</a>
+<a name="ln932"> * @param footer        A footer to append to the end of descriptions.</a>
+<a name="ln933"> * @param extra_info    Extra info to append to the database description.</a>
+<a name="ln934"> * @return              The keypress the user made to exit.</a>
+<a name="ln935"> */</a>
+<a name="ln936">static int _describe_key(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln937">                         string footer, const string &amp;extra_info,</a>
+<a name="ln938">                         const tile_def *tile = nullptr)</a>
+<a name="ln939">{</a>
+<a name="ln940">    describe_info inf;</a>
+<a name="ln941">    inf.quote = getQuoteString(key);</a>
+<a name="ln942"> </a>
+<a name="ln943">    const string desc = getLongDescription(key);</a>
+<a name="ln944"> </a>
+<a name="ln945">    inf.body &lt;&lt; desc &lt;&lt; extra_info;</a>
+<a name="ln946">    inf.title = [&amp;]() {</a>
+<a name="ln947">        string title = key;</a>
+<a name="ln948">        strip_suffix(title, suffix);</a>
+<a name="ln949">        return uppercase_first(title);</a>
+<a name="ln950">    }();</a>
+<a name="ln951">    inf.footer = footer;</a>
+<a name="ln952"> </a>
+<a name="ln953">    return show_description(inf, tile);</a>
+<a name="ln954">}</a>
+<a name="ln955"> </a>
+<a name="ln956">/**</a>
+<a name="ln957"> * Describe the thing with the given name.</a>
+<a name="ln958"> *</a>
+<a name="ln959"> * @param key       The name of the thing in question.</a>
+<a name="ln960"> * @param suffix    A suffix to trim from the key when making the title.</a>
+<a name="ln961"> * @param footer    A footer to append to the end of descriptions.</a>
+<a name="ln962"> * @return          The keypress the user made to exit.</a>
+<a name="ln963"> */</a>
+<a name="ln964">static int _describe_generic(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln965">                             string footer)</a>
+<a name="ln966">{</a>
+<a name="ln967">    return _describe_key(key, suffix, footer, &quot;&quot;);</a>
+<a name="ln968">}</a>
+<a name="ln969"> </a>
+<a name="ln970">/**</a>
+<a name="ln971"> * Describe &amp; allow examination of the monster with the given name.</a>
+<a name="ln972"> *</a>
+<a name="ln973"> * @param key       The name of the monster in question.</a>
+<a name="ln974"> * @param suffix    A suffix to trim from the key when making the title.</a>
+<a name="ln975"> * @param footer    A footer to append to the end of descriptions.</a>
+<a name="ln976"> * @return          The keypress the user made to exit.</a>
+<a name="ln977"> */</a>
+<a name="ln978">static int _describe_monster(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln979">                             string footer)</a>
+<a name="ln980">{</a>
+<a name="ln981">    const monster_type mon_num = _mon_by_name(key);</a>
+<a name="ln982">    ASSERT(mon_num != MONS_PROGRAM_BUG);</a>
+<a name="ln983">    // Don't attempt to get more information on ghost demon</a>
+<a name="ln984">    // monsters, as the ghost struct has not been initialised, which</a>
+<a name="ln985">    // will cause a crash. Similarly for zombified monsters, since</a>
+<a name="ln986">    // they require a base monster.</a>
+<a name="ln987">    if (mons_is_ghost_demon(mon_num) || mons_class_is_zombified(mon_num))</a>
+<a name="ln988">        return _describe_generic(key, suffix, footer);</a>
+<a name="ln989"> </a>
+<a name="ln990">    monster_type base_type = MONS_NO_MONSTER;</a>
+<a name="ln991">    // Might be better to show all possible combinations rather than picking</a>
+<a name="ln992">    // one at random as this does?</a>
+<a name="ln993">    if (mons_is_draconian_job(mon_num))</a>
+<a name="ln994">        base_type = random_draconian_monster_species();</a>
+<a name="ln995">    else if (mons_is_demonspawn_job(mon_num))</a>
+<a name="ln996">        base_type = random_demonspawn_monster_species();</a>
+<a name="ln997">    monster_info mi(mon_num, base_type);</a>
+<a name="ln998">    // Avoid slime creature being described as &quot;buggy&quot;</a>
+<a name="ln999">    if (mi.type == MONS_SLIME_CREATURE)</a>
+<a name="ln1000">        mi.slime_size = 1;</a>
+<a name="ln1001">    return describe_monsters(mi, footer);</a>
+<a name="ln1002">}</a>
+<a name="ln1003"> </a>
+<a name="ln1004"> </a>
+<a name="ln1005">/**</a>
+<a name="ln1006"> * Describe the spell with the given name.</a>
+<a name="ln1007"> *</a>
+<a name="ln1008"> * @param key       The name of the spell in question.</a>
+<a name="ln1009"> * @param suffix    A suffix to trim from the key when making the title.</a>
+<a name="ln1010"> * @param footer    A footer to append to the end of descriptions.</a>
+<a name="ln1011"> * @return          The keypress the user made to exit.</a>
+<a name="ln1012"> */</a>
+<a name="ln1013">static int _describe_spell(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1014">                             string /*footer*/)</a>
+<a name="ln1015">{</a>
+<a name="ln1016">    const string spell_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1017">    const spell_type spell = spell_by_name(spell_name, true);</a>
+<a name="ln1018">    ASSERT(spell != SPELL_NO_SPELL);</a>
+<a name="ln1019">    describe_spell(spell, nullptr, nullptr, true);</a>
+<a name="ln1020">    return 0;</a>
+<a name="ln1021">}</a>
+<a name="ln1022"> </a>
+<a name="ln1023">static int _describe_skill(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1024">                             string /*footer*/)</a>
+<a name="ln1025">{</a>
+<a name="ln1026">    const string skill_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1027">    const skill_type skill = skill_from_name(skill_name.c_str());</a>
+<a name="ln1028">    describe_skill(skill);</a>
+<a name="ln1029">    return 0;</a>
+<a name="ln1030">}</a>
+<a name="ln1031"> </a>
+<a name="ln1032">static int _describe_ability(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1033">                             string /*footer*/)</a>
+<a name="ln1034">{</a>
+<a name="ln1035">    const string abil_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1036">    const ability_type abil = ability_by_name(abil_name.c_str());</a>
+<a name="ln1037">    describe_ability(abil);</a>
+<a name="ln1038">    return 0;</a>
+<a name="ln1039">}</a>
+<a name="ln1040"> </a>
+<a name="ln1041">/**</a>
+<a name="ln1042"> * Describe the card with the given name.</a>
+<a name="ln1043"> *</a>
+<a name="ln1044"> * @param key       The name of the card in question.</a>
+<a name="ln1045"> * @param suffix    A suffix to trim from the key when making the title.</a>
+<a name="ln1046"> * @param footer    A footer to append to the end of descriptions.</a>
+<a name="ln1047"> * @return          The keypress the user made to exit.</a>
+<a name="ln1048"> */</a>
+<a name="ln1049">static int _describe_card(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1050">                           string footer)</a>
+<a name="ln1051">{</a>
+<a name="ln1052">    const string card_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1053">    const card_type card = name_to_card(card_name);</a>
+<a name="ln1054">    ASSERT(card != NUM_CARDS);</a>
+<a name="ln1055">#ifdef USE_TILE</a>
+<a name="ln1056">    tile_def tile = tile_def(TILEG_NEMELEX_CARD, TEX_GUI);</a>
+<a name="ln1057">    return _describe_key(key, suffix, footer, which_decks(card) + &quot;\n&quot;, &amp;tile);</a>
+<a name="ln1058">#else</a>
+<a name="ln1059">    return _describe_key(key, suffix, footer, which_decks(card) + &quot;\n&quot;);</a>
+<a name="ln1060">#endif</a>
+<a name="ln1061">}</a>
+<a name="ln1062"> </a>
+<a name="ln1063">/**</a>
+<a name="ln1064"> * Describe the cloud with the given name.</a>
+<a name="ln1065"> *</a>
+<a name="ln1066"> * @param key       The name of the cloud in question.</a>
+<a name="ln1067"> * @param suffix    A suffix to trim from the key when making the title.</a>
+<a name="ln1068"> * @param footer    A footer to append to the end of descriptions.</a>
+<a name="ln1069"> * @return          The keypress the user made to exit.</a>
+<a name="ln1070"> */</a>
+<a name="ln1071">static int _describe_cloud(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1072">                           string footer)</a>
+<a name="ln1073">{</a>
+<a name="ln1074">    const string cloud_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1075">    const cloud_type cloud = cloud_name_to_type(cloud_name);</a>
+<a name="ln1076">    ASSERT(cloud != NUM_CLOUD_TYPES);</a>
+<a name="ln1077">#ifdef USE_TILE</a>
+<a name="ln1078">    cloud_info fake_cloud_info;</a>
+<a name="ln1079">    fake_cloud_info.type = cloud;</a>
+<a name="ln1080">    const tileidx_t idx = tileidx_cloud(fake_cloud_info) &amp; ~TILE_FLAG_FLYING;</a>
+<a name="ln1081">    tile_def tile = tile_def(idx, TEX_DEFAULT);</a>
+<a name="ln1082">    return _describe_key(key, suffix, footer, extra_cloud_info(cloud), &amp;tile);</a>
+<a name="ln1083">#else</a>
+<a name="ln1084">    return _describe_key(key, suffix, footer, extra_cloud_info(cloud));</a>
+<a name="ln1085">#endif</a>
+<a name="ln1086">}</a>
+<a name="ln1087"> </a>
+<a name="ln1088">/**</a>
+<a name="ln1089"> * Describe the item with the given name.</a>
+<a name="ln1090"> *</a>
+<a name="ln1091"> * @param key       The name of the item in question.</a>
+<a name="ln1092"> * @param suffix    A suffix to trim from the key when making the title.</a>
+<a name="ln1093"> * @param footer    A footer to append to the end of descriptions.</a>
+<a name="ln1094"> * @return          The keypress the user made to exit.</a>
+<a name="ln1095"> */</a>
+<a name="ln1096">static int _describe_item(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1097">                           string /*footer*/)</a>
+<a name="ln1098">{</a>
+<a name="ln1099">    const string item_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1100">    item_def item;</a>
+<a name="ln1101">    if (!get_item_by_exact_name(item, item_name.c_str()))</a>
+<a name="ln1102">        die(&quot;Unable to get item %s by name&quot;, key.c_str());</a>
+<a name="ln1103">    describe_item(item);</a>
+<a name="ln1104">    return 0;</a>
+<a name="ln1105">}</a>
+<a name="ln1106"> </a>
+<a name="ln1107">static int _describe_feature(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1108">                             string /*footer*/)</a>
+<a name="ln1109">{</a>
+<a name="ln1110">    const string feat_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1111">    const dungeon_feature_type feat = feat_by_desc(feat_name);</a>
+<a name="ln1112">    describe_feature_type(feat);</a>
+<a name="ln1113">    return 0;</a>
+<a name="ln1114">}</a>
+<a name="ln1115"> </a>
+<a name="ln1116">/**</a>
+<a name="ln1117"> * Describe the god with the given name.</a>
+<a name="ln1118"> *</a>
+<a name="ln1119"> * @param key       The name of the god in question.</a>
+<a name="ln1120"> * @return          0.</a>
+<a name="ln1121"> */</a>
+<a name="ln1122">static int _describe_god(const string &amp;key, const string &amp;/*suffix*/,</a>
+<a name="ln1123">                          string /*footer*/)</a>
+<a name="ln1124">{</a>
+<a name="ln1125">    const god_type which_god = str_to_god(key);</a>
+<a name="ln1126">    ASSERT(which_god != GOD_NO_GOD);</a>
+<a name="ln1127">    describe_god(which_god);</a>
+<a name="ln1128"> </a>
+<a name="ln1129">    return 0; // no exact matches for gods, so output doesn't matter</a>
+<a name="ln1130">}</a>
+<a name="ln1131"> </a>
+<a name="ln1132">static string _branch_entry_runes(branch_type br)</a>
+<a name="ln1133">{</a>
+<a name="ln1134">    string desc;</a>
+<a name="ln1135">    const int num_runes = runes_for_branch(br);</a>
+<a name="ln1136"> </a>
+<a name="ln1137">    if (num_runes &gt; 0)</a>
+<a name="ln1138">    {</a>
+<a name="ln1139">        desc = make_stringf(&quot;\n\nThis %s can only be entered while carrying &quot;</a>
+<a name="ln1140">                            &quot;at least %d rune%s of Zot.&quot;,</a>
+<a name="ln1141">                            br == BRANCH_ZIGGURAT ? &quot;portal&quot; : &quot;branch&quot;,</a>
+<a name="ln1142">                            num_runes, num_runes &gt; 1 ? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln1143">    }</a>
+<a name="ln1144"> </a>
+<a name="ln1145">    return desc;</a>
+<a name="ln1146">}</a>
+<a name="ln1147"> </a>
+<a name="ln1148">static string _branch_depth(branch_type br)</a>
+<a name="ln1149">{</a>
+<a name="ln1150">    string desc;</a>
+<a name="ln1151">    const int depth = branches[br].numlevels;</a>
+<a name="ln1152"> </a>
+<a name="ln1153">    // Abyss depth is explained in the description.</a>
+<a name="ln1154">    if (depth &gt; 1 &amp;&amp; br != BRANCH_ABYSS)</a>
+<a name="ln1155">    {</a>
+<a name="ln1156">        desc = make_stringf(&quot;\n\nThis %s is %d levels deep.&quot;,</a>
+<a name="ln1157">                            br == BRANCH_ZIGGURAT ? &quot;portal&quot;</a>
+<a name="ln1158">                                                  : &quot;branch&quot;,</a>
+<a name="ln1159">                            depth);</a>
+<a name="ln1160">    }</a>
+<a name="ln1161"> </a>
+<a name="ln1162">    return desc;</a>
+<a name="ln1163">}</a>
+<a name="ln1164"> </a>
+<a name="ln1165">static string _branch_location(branch_type br)</a>
+<a name="ln1166">{</a>
+<a name="ln1167">    string desc;</a>
+<a name="ln1168">    const branch_type parent = branches[br].parent_branch;</a>
+<a name="ln1169">    const int min = branches[br].mindepth;</a>
+<a name="ln1170">    const int max = branches[br].maxdepth;</a>
+<a name="ln1171"> </a>
+<a name="ln1172">    // Ziggurat locations are explained in the description.</a>
+<a name="ln1173">    if (parent != NUM_BRANCHES &amp;&amp; br != BRANCH_ZIGGURAT)</a>
+<a name="ln1174">    {</a>
+<a name="ln1175">        desc = &quot;\n\nThe entrance to this branch can be found &quot;;</a>
+<a name="ln1176">        if (min == max)</a>
+<a name="ln1177">        {</a>
+<a name="ln1178">            if (branches[parent].numlevels == 1)</a>
+<a name="ln1179">                desc += &quot;in &quot;;</a>
+<a name="ln1180">            else</a>
+<a name="ln1181">                desc += make_stringf(&quot;on level %d of &quot;, min);</a>
+<a name="ln1182">        }</a>
+<a name="ln1183">        else</a>
+<a name="ln1184">            desc += make_stringf(&quot;between levels %d and %d of &quot;, min, max);</a>
+<a name="ln1185">        desc += branches[parent].longname;</a>
+<a name="ln1186">        desc += &quot;.&quot;;</a>
+<a name="ln1187">    }</a>
+<a name="ln1188"> </a>
+<a name="ln1189">    return desc;</a>
+<a name="ln1190">}</a>
+<a name="ln1191"> </a>
+<a name="ln1192">static string _branch_subbranches(branch_type br)</a>
+<a name="ln1193">{</a>
+<a name="ln1194">    string desc;</a>
+<a name="ln1195">    vector&lt;string&gt; subbranch_names;</a>
+<a name="ln1196"> </a>
+<a name="ln1197">    for (branch_iterator it; it; ++it)</a>
+<a name="ln1198">        if (it-&gt;parent_branch == br &amp;&amp; !branch_is_unfinished(it-&gt;id))</a>
+<a name="ln1199">            subbranch_names.push_back(it-&gt;longname);</a>
+<a name="ln1200"> </a>
+<a name="ln1201">    // Lair's random branches are explained in the description.</a>
+<a name="ln1202">    if (!subbranch_names.empty() &amp;&amp; br != BRANCH_LAIR)</a>
+<a name="ln1203">    {</a>
+<a name="ln1204">        desc += make_stringf(&quot;\n\nThis branch contains the entrance%s to %s.&quot;,</a>
+<a name="ln1205">                             subbranch_names.size() &gt; 1 ? &quot;s&quot; : &quot;&quot;,</a>
+<a name="ln1206">                             comma_separated_line(begin(subbranch_names),</a>
+<a name="ln1207">                                                  end(subbranch_names)).c_str());</a>
+<a name="ln1208">    }</a>
+<a name="ln1209"> </a>
+<a name="ln1210">    return desc;</a>
+<a name="ln1211">}</a>
+<a name="ln1212"> </a>
+<a name="ln1213">/**</a>
+<a name="ln1214"> * Describe the branch with the given name.</a>
+<a name="ln1215"> *</a>
+<a name="ln1216"> * @param key       The name of the branch in question.</a>
+<a name="ln1217"> * @param suffix    A suffix to trim from the key when making the title.</a>
+<a name="ln1218"> * @param footer    A footer to append to the end of descriptions.</a>
+<a name="ln1219"> * @return          The keypress the user made to exit.</a>
+<a name="ln1220"> */</a>
+<a name="ln1221">static int _describe_branch(const string &amp;key, const string &amp;suffix,</a>
+<a name="ln1222">                            string footer)</a>
+<a name="ln1223">{</a>
+<a name="ln1224">    const string branch_name = key.substr(0, key.size() - suffix.size());</a>
+<a name="ln1225">    const branch_type branch = branch_by_shortname(branch_name);</a>
+<a name="ln1226">    ASSERT(branch != NUM_BRANCHES);</a>
+<a name="ln1227"> </a>
+<a name="ln1228">    string info = &quot;&quot;;</a>
+<a name="ln1229">    const string noise_desc = branch_noise_desc(branch);</a>
+<a name="ln1230">    if (!noise_desc.empty())</a>
+<a name="ln1231">        info += &quot;\n\n&quot; + noise_desc;</a>
+<a name="ln1232"> </a>
+<a name="ln1233">    info += _branch_location(branch)</a>
+<a name="ln1234">            + _branch_entry_runes(branch)</a>
+<a name="ln1235">            + _branch_depth(branch)</a>
+<a name="ln1236">            + _branch_subbranches(branch)</a>
+<a name="ln1237">            + &quot;\n\n&quot;</a>
+<a name="ln1238">            + branch_rune_desc(branch, false);</a>
+<a name="ln1239"> </a>
+<a name="ln1240">#ifdef USE_TILE</a>
+<a name="ln1241">    tile_def tile = tile_def(tileidx_branch(branch), TEX_FEAT);</a>
+<a name="ln1242">    return _describe_key(key, suffix, footer, info, &amp;tile);</a>
+<a name="ln1243">#else</a>
+<a name="ln1244">    return _describe_key(key, suffix, footer, info);</a>
+<a name="ln1245">#endif</a>
+<a name="ln1246">}</a>
+<a name="ln1247"> </a>
+<a name="ln1248">/// All types of ?/ queries the player can enter.</a>
+<a name="ln1249">static const vector&lt;LookupType&gt; lookup_types = {</a>
+<a name="ln1250">    LookupType('M', &quot;monster&quot;, _recap_mon_keys, _monster_filter,</a>
+<a name="ln1251">               _get_monster_keys, nullptr, nullptr,</a>
+<a name="ln1252">               _describe_monster, lookup_type::toggleable_sort),</a>
+<a name="ln1253">    LookupType('S', &quot;spell&quot;, _recap_spell_keys, _spell_filter,</a>
+<a name="ln1254">               nullptr, nullptr, _spell_menu_gen,</a>
+<a name="ln1255">               _describe_spell, lookup_type::db_suffix),</a>
+<a name="ln1256">    LookupType('K', &quot;skill&quot;, nullptr, nullptr,</a>
+<a name="ln1257">               nullptr, _get_skill_keys, _skill_menu_gen,</a>
+<a name="ln1258">               _describe_skill, lookup_type::none),</a>
+<a name="ln1259">    LookupType('A', &quot;ability&quot;, _recap_ability_keys, _ability_filter,</a>
+<a name="ln1260">               nullptr, nullptr, _ability_menu_gen,</a>
+<a name="ln1261">               _describe_ability, lookup_type::db_suffix),</a>
+<a name="ln1262">    LookupType('C', &quot;card&quot;, _recap_card_keys, _card_filter,</a>
+<a name="ln1263">               nullptr, nullptr, _card_menu_gen,</a>
+<a name="ln1264">               _describe_card, lookup_type::db_suffix),</a>
+<a name="ln1265">    LookupType('I', &quot;item&quot;, nullptr, _item_filter,</a>
+<a name="ln1266">               item_name_list_for_glyph, nullptr, _item_menu_gen,</a>
+<a name="ln1267">               _describe_item, lookup_type::none),</a>
+<a name="ln1268">    LookupType('F', &quot;feature&quot;, _recap_feat_keys, _feature_filter,</a>
+<a name="ln1269">               nullptr, nullptr, _feature_menu_gen,</a>
+<a name="ln1270">               _describe_feature, lookup_type::none),</a>
+<a name="ln1271">    LookupType('G', &quot;god&quot;, nullptr, nullptr,</a>
+<a name="ln1272">               nullptr, _get_god_keys, _god_menu_gen,</a>
+<a name="ln1273">               _describe_god, lookup_type::none),</a>
+<a name="ln1274">    LookupType('B', &quot;branch&quot;, nullptr, nullptr,</a>
+<a name="ln1275">               nullptr, _get_branch_keys, _branch_menu_gen,</a>
+<a name="ln1276">               _describe_branch, lookup_type::disable_sort),</a>
+<a name="ln1277">    LookupType('L', &quot;cloud&quot;, nullptr, nullptr,</a>
+<a name="ln1278">               nullptr, _get_cloud_keys, _cloud_menu_gen,</a>
+<a name="ln1279">               _describe_cloud, lookup_type::db_suffix),</a>
+<a name="ln1280">    LookupType('T', &quot;status&quot;, nullptr, _status_filter,</a>
+<a name="ln1281">               nullptr, nullptr, _simple_menu_gen,</a>
+<a name="ln1282">               _describe_generic, lookup_type::db_suffix),</a>
+<a name="ln1283">};</a>
+<a name="ln1284"> </a>
+<a name="ln1285">/**</a>
+<a name="ln1286"> * Build a mapping from LookupTypes' symbols to the objects themselves.</a>
+<a name="ln1287"> */</a>
+<a name="ln1288">static map&lt;char, const LookupType*&gt; _build_lookup_type_map()</a>
+<a name="ln1289">{</a>
+<a name="ln1290">    map&lt;char, const LookupType*&gt; lookup_map;</a>
+<a name="ln1291">    for (const auto &amp;lookup : lookup_types)</a>
+<a name="ln1292">        lookup_map[lookup.symbol] = &amp;lookup;</a>
+<a name="ln1293">    return lookup_map;</a>
+<a name="ln1294">}</a>
+<a name="ln1295">static const map&lt;char, const LookupType*&gt; _lookup_types_by_symbol</a>
+<a name="ln1296">    = _build_lookup_type_map();</a>
+<a name="ln1297"> </a>
+<a name="ln1298">/**</a>
+<a name="ln1299"> * Prompt the player for a search string for the given lookup type.</a>
+<a name="ln1300"> *</a>
+<a name="ln1301"> * @param lookup_type  The LookupType in question (e.g. monsters, items...)</a>
+<a name="ln1302"> * @param err[out]     Will be set to a non-empty string if the user failed to</a>
+<a name="ln1303"> *                     provide a string.</a>
+<a name="ln1304"> * @return             A search string, if one was provided; else &quot;&quot;.</a>
+<a name="ln1305"> */</a>
+<a name="ln1306">static string _prompt_for_regex(const LookupType &amp;lookup_type, string &amp;err)</a>
+<a name="ln1307">{</a>
+<a name="ln1308">    const string type = lowercase_string(lookup_type.type);</a>
+<a name="ln1309">    const string extra = lookup_type.supports_glyph_lookup() ?</a>
+<a name="ln1310">        make_stringf(&quot; Enter a single letter to list %s displayed by that&quot;</a>
+<a name="ln1311">                     &quot; symbol.&quot;, pluralise(type).c_str()) :</a>
+<a name="ln1312">        &quot;&quot;;</a>
+<a name="ln1313">    const string prompt = make_stringf(</a>
+<a name="ln1314">         &quot;Describe a %s; partial names and regexps are fine.%s\n&quot;</a>
+<a name="ln1315">         &quot;Describe what? &quot;,</a>
+<a name="ln1316">         type.c_str(), extra.c_str());</a>
+<a name="ln1317"> </a>
+<a name="ln1318">    char buf[80];</a>
+<a name="ln1319">    if (msgwin_get_line(prompt, buf, sizeof(buf)) || buf[0] == '\0')</a>
+<a name="ln1320">    {</a>
+<a name="ln1321">        err = &quot;Okay, then.&quot;;</a>
+<a name="ln1322">        return &quot;&quot;;</a>
+<a name="ln1323">    }</a>
+<a name="ln1324"> </a>
+<a name="ln1325">    const string regex = strlen(buf) == 1 ? buf : trimmed_string(buf);</a>
+<a name="ln1326">    return regex;</a>
+<a name="ln1327">}</a>
+<a name="ln1328"> </a>
+<a name="ln1329">static bool _exact_lookup_match(const LookupType &amp;lookup_type,</a>
+<a name="ln1330">                                const string &amp;regex)</a>
+<a name="ln1331">{</a>
+<a name="ln1332">    if (lookup_type.no_search())</a>
+<a name="ln1333">        return false; // no search, no exact match</a>
+<a name="ln1334"> </a>
+<a name="ln1335">    if (lookup_type.supports_glyph_lookup() &amp;&amp; regex.size() == 1)</a>
+<a name="ln1336">        return false; // glyph search doesn't have the concept</a>
+<a name="ln1337"> </a>
+<a name="ln1338">    if (lookup_type.filter_forbid &amp;&amp; (*lookup_type.filter_forbid)(regex, &quot;&quot;))</a>
+<a name="ln1339">        return false; // match found, but incredibly illegal to display</a>
+<a name="ln1340"> </a>
+<a name="ln1341">    return !getLongDescription(regex + lookup_type.suffix()).empty();</a>
+<a name="ln1342">}</a>
+<a name="ln1343"> </a>
+<a name="ln1344">/**</a>
+<a name="ln1345"> * Check if the provided keylist is invalid; if so, return the reason why.</a>
+<a name="ln1346"> *</a>
+<a name="ln1347"> * @param key_list      The list of keys to be checked before display.</a>
+<a name="ln1348"> * @param type          The singular name of the things being listed.</a>
+<a name="ln1349"> * @param regex         The search term that was used to fetch this list.</a>
+<a name="ln1350"> * @param by_symbol     Whether the search is by regex or by glyph.</a>
+<a name="ln1351"> * @return              A reason why the list is invalid, if it is</a>
+<a name="ln1352"> *                      (e.g. &quot;No monsters with symbol '👻'.&quot;),</a>
+<a name="ln1353"> *                      or the empty string if the list is valid.</a>
+<a name="ln1354"> */</a>
+<a name="ln1355">static string _keylist_invalid_reason(const vector&lt;string&gt; &amp;key_list,</a>
+<a name="ln1356">                                      const string &amp;type,</a>
+<a name="ln1357">                                      const string &amp;regex,</a>
+<a name="ln1358">                                      bool by_symbol)</a>
+<a name="ln1359">{</a>
+<a name="ln1360">    const string plur_type = pluralise(type);</a>
+<a name="ln1361"> </a>
+<a name="ln1362">    if (key_list.empty())</a>
+<a name="ln1363">    {</a>
+<a name="ln1364">        if (by_symbol)</a>
+<a name="ln1365">            return &quot;No &quot; + plur_type + &quot; with symbol '&quot; + regex + &quot;'.&quot;;</a>
+<a name="ln1366">        return &quot;No matching &quot; + plur_type + &quot;.&quot;;</a>
+<a name="ln1367">    }</a>
+<a name="ln1368"> </a>
+<a name="ln1369">    // we're good!</a>
+<a name="ln1370">    return &quot;&quot;;</a>
+<a name="ln1371">}</a>
+<a name="ln1372"> </a>
+<a name="ln1373">static int _lookup_prompt()</a>
+<a name="ln1374">{</a>
+<a name="ln1375">    // TODO: show this + the regex prompt in the same menu?</a>
+<a name="ln1376">#ifdef TOUCH_UI</a>
+<a name="ln1377">    bool use_popup = true;</a>
+<a name="ln1378">#else</a>
+<a name="ln1379">    bool use_popup = !crawl_state.need_save || ui::has_layout();</a>
+<a name="ln1380">#endif</a>
+<a name="ln1381"> </a>
+<a name="ln1382">    int ch = -1;</a>
+<a name="ln1383">    const string lookup_type_prompts =</a>
+<a name="ln1384">        comma_separated_fn(lookup_types.begin(), lookup_types.end(),</a>
+<a name="ln1385">                           mem_fn(&amp;LookupType::prompt_string), &quot; or &quot;);</a>
+<a name="ln1386">    if (use_popup)</a>
+<a name="ln1387">    {</a>
+<a name="ln1388">        string prompt = make_stringf(&quot;Describe a %s? &quot;,</a>
+<a name="ln1389">                                                lookup_type_prompts.c_str());</a>
+<a name="ln1390">        linebreak_string(prompt, 72);</a>
+<a name="ln1391"> </a>
+<a name="ln1392">#ifdef USE_TILE_WEB</a>
+<a name="ln1393">        tiles_crt_popup show_as_popup;</a>
+<a name="ln1394">        tiles.set_ui_state(UI_CRT);</a>
+<a name="ln1395">#endif</a>
+<a name="ln1396">        auto prompt_ui =</a>
+<a name="ln1397">                make_shared&lt;ui::Text&gt;(formatted_string::parse_string(prompt));</a>
+<a name="ln1398">        auto popup = make_shared&lt;ui::Popup&gt;(prompt_ui);</a>
+<a name="ln1399">        bool done = false;</a>
+<a name="ln1400"> </a>
+<a name="ln1401">        popup-&gt;on_keydown_event([&amp;](const ui::KeyEvent&amp; ev) {</a>
+<a name="ln1402">            ch = ev.key();</a>
+<a name="ln1403">            return done = true;</a>
+<a name="ln1404">        });</a>
+<a name="ln1405"> </a>
+<a name="ln1406">        mouse_control mc(MOUSE_MODE_MORE);</a>
+<a name="ln1407">        ui::run_layout(move(popup), done);</a>
+<a name="ln1408">    }</a>
+<a name="ln1409">    else</a>
+<a name="ln1410">    {</a>
+<a name="ln1411">        mprf(MSGCH_PROMPT, &quot;Describe a %s? &quot;, lookup_type_prompts.c_str());</a>
+<a name="ln1412"> </a>
+<a name="ln1413">        {</a>
+<a name="ln1414">            cursor_control con(true);</a>
+<a name="ln1415">            ch = getchm();</a>
+<a name="ln1416">        }</a>
+<a name="ln1417">    }</a>
+<a name="ln1418">    return toupper_safe(ch);</a>
+<a name="ln1419">}</a>
+<a name="ln1420"> </a>
+<a name="ln1421">/**</a>
+<a name="ln1422"> * Run an iteration of ?/.</a>
+<a name="ln1423"> *</a>
+<a name="ln1424"> * @param response[out]   A response to input, to print before the next iter.</a>
+<a name="ln1425"> * @return                true if the ?/ loop should continue</a>
+<a name="ln1426"> *                        false if it should return control to the caller</a>
+<a name="ln1427"> */</a>
+<a name="ln1428">static bool _find_description(string &amp;response)</a>
+<a name="ln1429">{</a>
+<a name="ln1430">    int ch = _lookup_prompt();</a>
+<a name="ln1431">    const LookupType * const *lookup_type_ptr</a>
+<a name="ln1432">        = map_find(_lookup_types_by_symbol, ch);</a>
+<a name="ln1433">    if (!lookup_type_ptr)</a>
+<a name="ln1434">        return false;</a>
+<a name="ln1435"> </a>
+<a name="ln1436">    ASSERT(*lookup_type_ptr);</a>
+<a name="ln1437">    const LookupType ltype = **lookup_type_ptr;</a>
+<a name="ln1438"> </a>
+<a name="ln1439">    const bool want_regex = !(ltype.no_search());</a>
+<a name="ln1440">    const string regex = want_regex ?</a>
+<a name="ln1441">                         _prompt_for_regex(ltype, response) :</a>
+<a name="ln1442">                         &quot;&quot;;</a>
+<a name="ln1443"> </a>
+<a name="ln1444">    if (!response.empty())</a>
+<a name="ln1445">        return true;</a>
+<a name="ln1446"> </a>
+<a name="ln1447">    // not actually sure how to trigger this branch...</a>
+<a name="ln1448">    if (want_regex &amp;&amp; regex.empty())</a>
+<a name="ln1449">    {</a>
+<a name="ln1450">        response = &quot;Description must contain at least one non-space.&quot;;</a>
+<a name="ln1451">        return true;</a>
+<a name="ln1452">    }</a>
+<a name="ln1453"> </a>
+<a name="ln1454"> </a>
+<a name="ln1455">    // Try to get an exact match first.</a>
+<a name="ln1456">    const bool exact_match = _exact_lookup_match(ltype, regex);</a>
+<a name="ln1457"> </a>
+<a name="ln1458">    vector&lt;string&gt; key_list = ltype.matching_keys(regex);</a>
+<a name="ln1459"> </a>
+<a name="ln1460">    const bool by_symbol = ltype.supports_glyph_lookup()</a>
+<a name="ln1461">                           &amp;&amp; regex.size() == 1;</a>
+<a name="ln1462">    const string type = lowercase_string(ltype.type);</a>
+<a name="ln1463">    response = _keylist_invalid_reason(key_list, type, regex, by_symbol);</a>
+<a name="ln1464">    if (!response.empty())</a>
+<a name="ln1465">        return true;</a>
+<a name="ln1466"> </a>
+<a name="ln1467">    if (key_list.size() == 1)</a>
+<a name="ln1468">    {</a>
+<a name="ln1469">        ltype.describe(key_list[0]);</a>
+<a name="ln1470">        return true;</a>
+<a name="ln1471">    }</a>
+<a name="ln1472"> </a>
+<a name="ln1473">    if (exact_match &amp;&amp; ltype.describe(regex, true) != ' ')</a>
+<a name="ln1474">        return true;</a>
+<a name="ln1475"> </a>
+<a name="ln1476">    if (!(ltype.flags &amp; lookup_type::disable_sort))</a>
+<a name="ln1477">        sort(key_list.begin(), key_list.end());</a>
+<a name="ln1478"> </a>
+<a name="ln1479">    ltype.display_keys(key_list);</a>
+<a name="ln1480">    return true;</a>
+<a name="ln1481">}</a>
+<a name="ln1482"> </a>
+<a name="ln1483">/**</a>
+<a name="ln1484"> * Run the ?/ loop, repeatedly prompting the player to query for monsters,</a>
+<a name="ln1485"> * etc, until they indicate they're done.</a>
+<a name="ln1486"> */</a>
+<a name="ln1487">void keyhelp_query_descriptions()</a>
+<a name="ln1488">{</a>
+<a name="ln1489">    string response;</a>
+<a name="ln1490">    while (true)</a>
+<a name="ln1491">    {</a>
+<a name="ln1492">        redraw_screen();</a>
+<a name="ln1493"> </a>
+<a name="ln1494">        if (!response.empty())</a>
+<a name="ln1495">            mprf(MSGCH_PROMPT, &quot;%s&quot;, response.c_str());</a>
+<a name="ln1496">        response = &quot;&quot;;</a>
+<a name="ln1497"> </a>
+<a name="ln1498">        if (!_find_description(response))</a>
+<a name="ln1499">            break;</a>
+<a name="ln1500"> </a>
+<a name="ln1501">        clear_messages();</a>
+<a name="ln1502">    }</a>
+<a name="ln1503"> </a>
+<a name="ln1504">    viewwindow();</a>
+<a name="ln1505">    mpr(&quot;Okay, then.&quot;);</a>
+<a name="ln1506">}</a>
+
+</code></pre>
+<div class="balloon" rel="647"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'feat' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

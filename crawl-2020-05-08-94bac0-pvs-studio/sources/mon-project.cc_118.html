@@ -1,0 +1,735 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-project.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Slow projectiles, done as monsters.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-project.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cmath&gt;</a>
+<a name="ln11">#include &lt;cstdio&gt;</a>
+<a name="ln12">#include &lt;cstdlib&gt;</a>
+<a name="ln13">#include &lt;cstring&gt;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;act-iter.h&quot;</a>
+<a name="ln16">#include &quot;areas.h&quot;</a>
+<a name="ln17">#include &quot;cloud.h&quot;</a>
+<a name="ln18">#include &quot;directn.h&quot;</a>
+<a name="ln19">#include &quot;env.h&quot;</a>
+<a name="ln20">#include &quot;item-prop.h&quot;</a>
+<a name="ln21">#include &quot;message.h&quot;</a>
+<a name="ln22">#include &quot;mgen-data.h&quot;</a>
+<a name="ln23">#include &quot;mon-death.h&quot;</a>
+<a name="ln24">#include &quot;mon-place.h&quot;</a>
+<a name="ln25">#include &quot;ouch.h&quot;</a>
+<a name="ln26">#include &quot;shout.h&quot;</a>
+<a name="ln27">#include &quot;stepdown.h&quot;</a>
+<a name="ln28">#include &quot;terrain.h&quot;</a>
+<a name="ln29">#include &quot;viewchar.h&quot;</a>
+<a name="ln30"> </a>
+<a name="ln31">static void _fuzz_direction(const actor *caster, monster&amp; mon, int pow);</a>
+<a name="ln32"> </a>
+<a name="ln33">spret cast_iood(actor *caster, int pow, bolt *beam, float vx, float vy,</a>
+<a name="ln34">                     int foe, bool fail, bool needs_tracer)</a>
+<a name="ln35">{</a>
+<a name="ln36">    const bool is_player = caster-&gt;is_player();</a>
+<a name="ln37">    if (beam &amp;&amp; is_player &amp;&amp; needs_tracer</a>
+<a name="ln38">             &amp;&amp; !player_tracer(ZAP_IOOD, pow, *beam))</a>
+<a name="ln39">    {</a>
+<a name="ln40">        return spret::abort;</a>
+<a name="ln41">    }</a>
+<a name="ln42"> </a>
+<a name="ln43">    fail_check();</a>
+<a name="ln44"> </a>
+<a name="ln45">    int mtarg = !beam ? MHITNOT :</a>
+<a name="ln46">                beam-&gt;target == you.pos() ? int{MHITYOU} : mgrd(beam-&gt;target);</a>
+<a name="ln47"> </a>
+<a name="ln48">    monster *mon = place_monster(mgen_data(MONS_ORB_OF_DESTRUCTION,</a>
+<a name="ln49">                (is_player) ? BEH_FRIENDLY :</a>
+<a name="ln50">                    ((monster*)caster)-&gt;friendly() ? BEH_FRIENDLY : BEH_HOSTILE,</a>
+<a name="ln51">                coord_def(),</a>
+<a name="ln52">                mtarg).set_summoned(caster, 0, SPELL_IOOD), true, true);</a>
+<a name="ln53">    if (!mon)</a>
+<a name="ln54">    {</a>
+<a name="ln55">        mprf(MSGCH_ERROR, &quot;Failed to spawn projectile.&quot;);</a>
+<a name="ln56">        return spret::abort;</a>
+<a name="ln57">    }</a>
+<a name="ln58"> </a>
+<a name="ln59">    if (beam)</a>
+<a name="ln60">    {</a>
+<a name="ln61">        beam-&gt;choose_ray();</a>
+<a name="ln62">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln63">        const coord_def pos = caster-&gt;pos();</a>
+<a name="ln64">        dprf(&quot;beam (%d,%d)+t*(%d,%d)  ray (%f,%f)+t*(%f,%f)&quot;,</a>
+<a name="ln65">            pos.x, pos.y, beam-&gt;target.x - pos.x, beam-&gt;target.y - pos.y,</a>
+<a name="ln66">            beam-&gt;ray.r.start.x - 0.5, beam-&gt;ray.r.start.y - 0.5,</a>
+<a name="ln67">            beam-&gt;ray.r.dir.x, beam-&gt;ray.r.dir.y);</a>
+<a name="ln68">#endif</a>
+<a name="ln69">        mon-&gt;props[IOOD_X].get_float() = beam-&gt;ray.r.start.x - 0.5;</a>
+<a name="ln70">        mon-&gt;props[IOOD_Y].get_float() = beam-&gt;ray.r.start.y - 0.5;</a>
+<a name="ln71">        mon-&gt;props[IOOD_VX].get_float() = beam-&gt;ray.r.dir.x;</a>
+<a name="ln72">        mon-&gt;props[IOOD_VY].get_float() = beam-&gt;ray.r.dir.y;</a>
+<a name="ln73">        _fuzz_direction(caster, *mon, pow);</a>
+<a name="ln74">    }</a>
+<a name="ln75">    else</a>
+<a name="ln76">    {</a>
+<a name="ln77">        // Multi-orb: spread the orbs a bit, otherwise diagonal ones might</a>
+<a name="ln78">        // fail to leave the cardinal direction: orb A moves -0.4,+0.9 and</a>
+<a name="ln79">        // orb B +0.4,+0.9, both rounded to 0,1.</a>
+<a name="ln80">        mon-&gt;props[IOOD_X].get_float() = caster-&gt;pos().x + 0.4 * vx;</a>
+<a name="ln81">        mon-&gt;props[IOOD_Y].get_float() = caster-&gt;pos().y + 0.4 * vy;</a>
+<a name="ln82">        mon-&gt;props[IOOD_VX].get_float() = vx;</a>
+<a name="ln83">        mon-&gt;props[IOOD_VY].get_float() = vy;</a>
+<a name="ln84">    }</a>
+<a name="ln85"> </a>
+<a name="ln86">    mon-&gt;props[IOOD_KC].get_byte() = (is_player) ? KC_YOU :</a>
+<a name="ln87">        ((monster*)caster)-&gt;friendly() ? KC_FRIENDLY : KC_OTHER;</a>
+<a name="ln88">    mon-&gt;props[IOOD_POW].get_short() = pow;</a>
+<a name="ln89">    mon-&gt;flags &amp;= ~MF_JUST_SUMMONED;</a>
+<a name="ln90">    mon-&gt;props[IOOD_CASTER].get_string() = caster-&gt;as_monster()</a>
+<a name="ln91">        ? caster-&gt;name(DESC_A, true)</a>
+<a name="ln92">        : (caster-&gt;is_player()) ? &quot;you&quot; : &quot;&quot;;</a>
+<a name="ln93">    mon-&gt;summoner = caster-&gt;mid;</a>
+<a name="ln94"> </a>
+<a name="ln95">    if (caster-&gt;is_player() || caster-&gt;type == MONS_PLAYER_GHOST</a>
+<a name="ln96">        || caster-&gt;type == MONS_PLAYER_ILLUSION)</a>
+<a name="ln97">    {</a>
+<a name="ln98">        mon-&gt;props[IOOD_FLAWED].get_byte() = true;</a>
+<a name="ln99">    }</a>
+<a name="ln100"> </a>
+<a name="ln101">    // Move away from the caster's square.</a>
+<a name="ln102">    iood_act(*mon, true);</a>
+<a name="ln103"> </a>
+<a name="ln104">    // If the foe was adjacent to the caster, that might have destroyed it.</a>
+<a name="ln105">    if (mon-&gt;alive())</a>
+<a name="ln106">    {</a>
+<a name="ln107">        // We need to take at least one full move (for the above), but let's</a>
+<a name="ln108">        // randomize it and take more so players won't get guaranteed instant</a>
+<a name="ln109">        // damage.</a>
+<a name="ln110">        mon-&gt;lose_energy(EUT_MOVE, 2, random2(3)+2);</a>
+<a name="ln111"> </a>
+<a name="ln112">        // Multi-orbs don't home during the first move, they'd likely</a>
+<a name="ln113">        // immediately explode otherwise.</a>
+<a name="ln114">        if (foe != MHITNOT)</a>
+<a name="ln115">            mon-&gt;foe = foe;</a>
+<a name="ln116">    }</a>
+<a name="ln117"> </a>
+<a name="ln118">    return spret::success;</a>
+<a name="ln119">}</a>
+<a name="ln120"> </a>
+<a name="ln121">/**</a>
+<a name="ln122"> * Find a target for a bursty (non-player-targeted) IOOD.</a>
+<a name="ln123"> *</a>
+<a name="ln124"> * Try to find an enemy that's at a reasonable angle from the angle the IOOD</a>
+<a name="ln125"> * is fired at, preferring the given foe (if a non-MHITNOT foe is given) if</a>
+<a name="ln126"> * they're valid, and otherwise preferring the closest valid foe.</a>
+<a name="ln127"> *</a>
+<a name="ln128"> * @param angle             The angle that the IOOD will be fired at, relative</a>
+<a name="ln129"> *                          to the player's position.</a>
+<a name="ln130"> * @param preferred_foe     The mindex of a target to choose if possible; may</a>
+<a name="ln131"> *                          be MHITNOT (no preferred target)</a>
+<a name="ln132"> * @return                  The mindex of a valid target for the IOOD.</a>
+<a name="ln133"> */</a>
+<a name="ln134">static int _burst_iood_target(double iood_angle, int preferred_foe)</a>
+<a name="ln135">{</a>
+<a name="ln136">    int closest_foe = MHITNOT;</a>
+<a name="ln137">    int closest_dist = INT_MAX;</a>
+<a name="ln138"> </a>
+<a name="ln139">    for (monster_near_iterator mi(you.pos(), LOS_SOLID); mi; ++mi)</a>
+<a name="ln140">    {</a>
+<a name="ln141">        const monster* m = *mi;</a>
+<a name="ln142">        ASSERT(m);</a>
+<a name="ln143"> </a>
+<a name="ln144">        if (!you.can_see(*m) || mons_is_projectile(*m))</a>
+<a name="ln145">            continue;</a>
+<a name="ln146"> </a>
+<a name="ln147">        // is this position at a valid angle?</a>
+<a name="ln148">        const coord_def delta = mi-&gt;pos() - you.pos();</a>
+<a name="ln149">        const double angle = atan2(delta.x, delta.y);</a>
+<a name="ln150">        const double abs_angle_diff = abs(angle - fmod(iood_angle, PI * 2));</a>
+<a name="ln151">        const double angle_diff = (abs_angle_diff &gt; PI) ?</a>
+<a name="ln152">                                        2 * PI - abs_angle_diff :</a>
+<a name="ln153">                                        abs_angle_diff;</a>
+<a name="ln154">        if (angle_diff &gt;= PI / 3)</a>
+<a name="ln155">        {</a>
+<a name="ln156">            dprf(&quot;can't target %s; angle diff %f&quot;,</a>
+<a name="ln157">                 m-&gt;name(DESC_PLAIN).c_str(), angle_diff);</a>
+<a name="ln158">            continue;</a>
+<a name="ln159">        }</a>
+<a name="ln160"> </a>
+<a name="ln161">        // if preferred foe is valid, choose it.</a>
+<a name="ln162">        if (m-&gt;mindex() == preferred_foe)</a>
+<a name="ln163">        {</a>
+<a name="ln164">            dprf(&quot;preferred target %s is valid burst target (delta %f)&quot;,</a>
+<a name="ln165">                 m-&gt;name(DESC_PLAIN).c_str(), angle_diff);</a>
+<a name="ln166">            return preferred_foe;</a>
+<a name="ln167">        }</a>
+<a name="ln168"> </a>
+<a name="ln169">        if (mons_aligned(m, &amp;you) || mons_is_firewood(*m))</a>
+<a name="ln170">        {</a>
+<a name="ln171">            dprf(&quot;skipping invalid burst target %s (%s)&quot;,</a>
+<a name="ln172">                 m-&gt;name(DESC_PLAIN).c_str(),</a>
+<a name="ln173">                 mons_aligned(m, &amp;you) ? &quot;aligned&quot; : &quot;firewood&quot;);</a>
+<a name="ln174">            continue;</a>
+<a name="ln175">        }</a>
+<a name="ln176"> </a>
+<a name="ln177">        const int dist = grid_distance(m-&gt;pos(), you.pos());</a>
+<a name="ln178">        // on distance ties, bias by iterator order (mindex)</a>
+<a name="ln179">        if (dist &gt;= closest_dist)</a>
+<a name="ln180">        {</a>
+<a name="ln181">            dprf(&quot;%s not closer to target than closest (%d vs %d)&quot;,</a>
+<a name="ln182">                 m-&gt;name(DESC_PLAIN).c_str(), dist, closest_dist);</a>
+<a name="ln183">            continue;</a>
+<a name="ln184">        }</a>
+<a name="ln185"> </a>
+<a name="ln186">        dprf(&quot;%s is valid burst target (delta %f, dist %d)&quot;,</a>
+<a name="ln187">             m-&gt;name(DESC_PLAIN).c_str(), angle_diff, dist);</a>
+<a name="ln188">        closest_dist = dist;</a>
+<a name="ln189">        closest_foe = m-&gt;mindex();</a>
+<a name="ln190">    }</a>
+<a name="ln191"> </a>
+<a name="ln192">    const int foe = closest_foe != MHITNOT ? closest_foe : preferred_foe;</a>
+<a name="ln193">    dprf(&quot;targeting %d&quot;, foe);</a>
+<a name="ln194">    return foe;</a>
+<a name="ln195">}</a>
+<a name="ln196"> </a>
+<a name="ln197">void cast_iood_burst(int pow, coord_def target)</a>
+<a name="ln198">{</a>
+<a name="ln199">    const monster* mons = monster_at(target);</a>
+<a name="ln200">    const int preferred_foe = mons &amp;&amp; you.can_see(*mons) ?</a>
+<a name="ln201">                              mons-&gt;mindex() :</a>
+<a name="ln202">                              MHITNOT;</a>
+<a name="ln203"> </a>
+<a name="ln204">    const int n_orbs = random_range(3, 7);</a>
+<a name="ln205">    dprf(&quot;Bursting %d orbs.&quot;, n_orbs);</a>
+<a name="ln206">    const double angle0 = random2(2097152) * PI * 2 / 2097152;</a>
+<a name="ln207"> </a>
+<a name="ln208">    for (int i = 0; i &lt; n_orbs; i++)</a>
+<a name="ln209">    {</a>
+<a name="ln210">        const double angle = angle0 + i * PI * 2 / n_orbs;</a>
+<a name="ln211">        const int foe = _burst_iood_target(angle, preferred_foe);</a>
+<a name="ln212">        cast_iood(&amp;you, pow, 0, sin(angle), cos(angle), foe);</a>
+<a name="ln213">    }</a>
+<a name="ln214">}</a>
+<a name="ln215"> </a>
+<a name="ln216">static void _normalize(float &amp;x, float &amp;y)</a>
+<a name="ln217">{</a>
+<a name="ln218">    const float d = sqrt(x*x + y*y);</a>
+<a name="ln219">    if (d &lt;= 0.000001)</a>
+<a name="ln220">        return;</a>
+<a name="ln221">    x/=d;</a>
+<a name="ln222">    y/=d;</a>
+<a name="ln223">}</a>
+<a name="ln224"> </a>
+<a name="ln225">// angle measured in chord length</a>
+<a name="ln226">static bool _in_front(float vx, float vy, float dx, float dy, float angle)</a>
+<a name="ln227">{</a>
+<a name="ln228">    return (dx-vx)*(dx-vx) + (dy-vy)*(dy-vy) &lt;= (angle*angle);</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">static void _iood_stop(monster&amp; mon, bool msg = true)</a>
+<a name="ln232">{</a>
+<a name="ln233">    if (!mon.alive())</a>
+<a name="ln234">        return;</a>
+<a name="ln235"> </a>
+<a name="ln236">    if (msg)</a>
+<a name="ln237">        simple_monster_message(mon, &quot; dissipates.&quot;);</a>
+<a name="ln238">    dprf(&quot;iood: dissipating&quot;);</a>
+<a name="ln239">    monster_die(mon, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln240">}</a>
+<a name="ln241"> </a>
+<a name="ln242">static void _fuzz_direction(const actor *caster, monster&amp; mon, int pow)</a>
+<a name="ln243">{</a>
+<a name="ln244">    const float x = mon.props[IOOD_X];</a>
+<a name="ln245">    const float y = mon.props[IOOD_Y];</a>
+<a name="ln246">    float vx = mon.props[IOOD_VX];</a>
+<a name="ln247">    float vy = mon.props[IOOD_VY];</a>
+<a name="ln248"> </a>
+<a name="ln249">    _normalize(vx, vy);</a>
+<a name="ln250"> </a>
+<a name="ln251">    if (pow &lt; 10)</a>
+<a name="ln252">        pow = 10;</a>
+<a name="ln253">    const float off = random_choose(-0.25, 0.25);</a>
+<a name="ln254">    float tan = (random2(31) - 15) * 0.019; // approx from degrees</a>
+<a name="ln255">    tan *= 75.0 / pow;</a>
+<a name="ln256">    const int inaccuracy = caster ? caster-&gt;inaccuracy() : 0;</a>
+<a name="ln257">    if (inaccuracy &gt; 0)</a>
+<a name="ln258">        tan *= 2 * inaccuracy;</a>
+<a name="ln259"> </a>
+<a name="ln260">    // Cast either from left or right hand.</a>
+<a name="ln261">    mon.props[IOOD_X] = x + vy*off;</a>
+<a name="ln262">    mon.props[IOOD_Y] = y - vx*off;</a>
+<a name="ln263">    // And off the direction a bit.</a>
+<a name="ln264">    mon.props[IOOD_VX] = vx + vy*tan;</a>
+<a name="ln265">    mon.props[IOOD_VY] = vy - vx*tan;</a>
+<a name="ln266">}</a>
+<a name="ln267"> </a>
+<a name="ln268">// Alas, too much differs to reuse beam shield blocks :(</a>
+<a name="ln269">static bool _iood_shielded(monster&amp; mon, actor &amp;victim)</a>
+<a name="ln270">{</a>
+<a name="ln271">    if (!victim.shielded() || victim.incapacitated())</a>
+<a name="ln272">        return false;</a>
+<a name="ln273"> </a>
+<a name="ln274">    const int to_hit = 15 + (mons_is_projectile(mon.type) ?</a>
+<a name="ln275">        mon.props[IOOD_POW].get_short()/12 : mon.get_hit_dice()/2);</a>
+<a name="ln276">    const int con_block = random2(to_hit + victim.shield_block_penalty());</a>
+<a name="ln277">    const int pro_block = victim.shield_bonus();</a>
+<a name="ln278">    dprf(&quot;iood shield: pro %d, con %d&quot;, pro_block, con_block);</a>
+<a name="ln279">    return pro_block &gt;= con_block;</a>
+<a name="ln280">}</a>
+<a name="ln281"> </a>
+<a name="ln282">static bool _iood_hit(monster&amp; mon, const coord_def &amp;pos, bool big_boom = false)</a>
+<a name="ln283">{</a>
+<a name="ln284">    bolt beam;</a>
+<a name="ln285">    beam.name = &quot;orb of destruction&quot;;</a>
+<a name="ln286">    beam.flavour = BEAM_DEVASTATION;</a>
+<a name="ln287">    beam.attitude = mon.attitude;</a>
+<a name="ln288"> </a>
+<a name="ln289">    actor *caster = actor_by_mid(mon.summoner);</a>
+<a name="ln290">    if (!caster)        // caster is dead/gone, blame the orb itself (as its</a>
+<a name="ln291">        caster = &amp;mon;  // friendliness is correct)</a>
+<a name="ln292">    beam.set_agent(caster);</a>
+<a name="ln293">    if (mon.props.exists(IOOD_REFLECTOR))</a>
+<a name="ln294">    {</a>
+<a name="ln295">        beam.reflections = 1;</a>
+<a name="ln296"> </a>
+<a name="ln297">        const mid_t refl_mid = mon.props[IOOD_REFLECTOR].get_int64();</a>
+<a name="ln298"> </a>
+<a name="ln299">        if (refl_mid == MID_PLAYER)</a>
+<a name="ln300">            beam.reflector = MID_PLAYER;</a>
+<a name="ln301">        else</a>
+<a name="ln302">        {</a>
+<a name="ln303">            // If the reflecting monster has died, credit the original caster.</a>
+<a name="ln304">            const monster * const rmon = monster_by_mid(refl_mid);</a>
+<a name="ln305">            beam.reflector = rmon ? refl_mid : caster-&gt;mid;</a>
+<a name="ln306">        }</a>
+<a name="ln307">    }</a>
+<a name="ln308">    beam.colour = WHITE;</a>
+<a name="ln309">    beam.glyph = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln310">    beam.range = 1;</a>
+<a name="ln311">    beam.source = pos;</a>
+<a name="ln312">    beam.target = pos;</a>
+<a name="ln313">    beam.hit = AUTOMATIC_HIT;</a>
+<a name="ln314">    beam.source_name = mon.props[IOOD_CASTER].get_string();</a>
+<a name="ln315"> </a>
+<a name="ln316">    int pow = mon.props[IOOD_POW].get_short();</a>
+<a name="ln317">    pow = stepdown_value(pow, 30, 30, 200, -1);</a>
+<a name="ln318">    const int dist = mon.props[IOOD_DIST].get_int();</a>
+<a name="ln319">    ASSERT(dist &gt;= 0);</a>
+<a name="ln320">    if (dist &lt; 4)</a>
+<a name="ln321">        pow = pow * (dist*2+3) / 10;</a>
+<a name="ln322">    beam.damage = dice_def(9, pow / 4);</a>
+<a name="ln323"> </a>
+<a name="ln324">    if (dist &lt; 3)</a>
+<a name="ln325">        beam.name = &quot;wavering &quot; + beam.name;</a>
+<a name="ln326">    if (dist &lt; 2)</a>
+<a name="ln327">        beam.hit_verb = &quot;weakly hits&quot;;</a>
+<a name="ln328">    beam.ex_size = 1;</a>
+<a name="ln329">    beam.loudness = 7;</a>
+<a name="ln330"> </a>
+<a name="ln331">    monster_die(mon, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln332"> </a>
+<a name="ln333">    if (big_boom)</a>
+<a name="ln334">        beam.explode(true, false);</a>
+<a name="ln335">    else</a>
+<a name="ln336">        beam.fire();</a>
+<a name="ln337"> </a>
+<a name="ln338">    return true;</a>
+<a name="ln339">}</a>
+<a name="ln340"> </a>
+<a name="ln341">// returns true if the orb is gone</a>
+<a name="ln342">bool iood_act(monster&amp; mon, bool no_trail)</a>
+<a name="ln343">{</a>
+<a name="ln344">    ASSERT(mons_is_projectile(mon.type));</a>
+<a name="ln345"> </a>
+<a name="ln346">    float x = mon.props[IOOD_X];</a>
+<a name="ln347">    float y = mon.props[IOOD_Y];</a>
+<a name="ln348">    float vx = mon.props[IOOD_VX];</a>
+<a name="ln349">    float vy = mon.props[IOOD_VY];</a>
+<a name="ln350"> </a>
+<a name="ln351">    dprf(&quot;iood_act: pos=(%d,%d) rpos=(%f,%f) v=(%f,%f) foe=%d&quot;,</a>
+<a name="ln352">         mon.pos().x, mon.pos().y,</a>
+<a name="ln353">         x, y, vx, vy, mon.foe);</a>
+<a name="ln354"> </a>
+<a name="ln355">    if (!vx &amp;&amp; !vy) // not initialized</a>
+<a name="ln356">    {</a>
+<a name="ln357">        _iood_stop(mon);</a>
+<a name="ln358">        return true;</a>
+<a name="ln359">    }</a>
+<a name="ln360"> </a>
+<a name="ln361">    _normalize(vx, vy);</a>
+<a name="ln362"> </a>
+<a name="ln363">    const actor *foe = mon.get_foe();</a>
+<a name="ln364">    // If the target is gone, the orb continues on a ballistic course since</a>
+<a name="ln365">    // picking a new one would require intelligence.</a>
+<a name="ln366"> </a>
+<a name="ln367">    // IOODs can't home in on a submerged creature.</a>
+<a name="ln368">    if (foe &amp;&amp; !foe-&gt;submerged())</a>
+<a name="ln369">    {</a>
+<a name="ln370">        const coord_def target = foe-&gt;pos();</a>
+<a name="ln371">        float dx = target.x - x;</a>
+<a name="ln372">        float dy = target.y - y;</a>
+<a name="ln373">        _normalize(dx, dy);</a>
+<a name="ln374"> </a>
+<a name="ln375">        // Special case:</a>
+<a name="ln376">        // Moving diagonally when the orb is just about to hit you</a>
+<a name="ln377">        //      2</a>
+<a name="ln378">        //    -&gt;*1</a>
+<a name="ln379">        // (from 1 to 2) would be a guaranteed escape. This may be</a>
+<a name="ln380">        // realistic (strafing!), but since the game has no non-cheesy</a>
+<a name="ln381">        // means of waiting a small fraction of a turn, we don't want it.</a>
+<a name="ln382">        const int old_t_pos = mon.props[IOOD_TPOS].get_short();</a>
+<a name="ln383">        const coord_def rpos(static_cast&lt;int&gt;(round(x)), static_cast&lt;int&gt;(round(y)));</a>
+<a name="ln384">        if (old_t_pos &amp;&amp; old_t_pos != (256 * target.x + target.y)</a>
+<a name="ln385">            &amp;&amp; (rpos - target).rdist() &lt;= 1</a>
+<a name="ln386">            // ... but following an orb is ok.</a>
+<a name="ln387">            &amp;&amp; _in_front(vx, vy, dx, dy, 1.5)) // ~97 degrees</a>
+<a name="ln388">        {</a>
+<a name="ln389">            vx = dx;</a>
+<a name="ln390">            vy = dy;</a>
+<a name="ln391">        }</a>
+<a name="ln392">        mon.props[IOOD_TPOS].get_short() = 256 * target.x + target.y;</a>
+<a name="ln393"> </a>
+<a name="ln394">        if (!_in_front(vx, vy, dx, dy, 0.3)) // ~17 degrees</a>
+<a name="ln395">        {</a>
+<a name="ln396">            float ax, ay;</a>
+<a name="ln397">            if (dy*vx &lt; dx*vy)</a>
+<a name="ln398">                ax = vy, ay = -vx, dprf(&quot;iood: veering left&quot;);</a>
+<a name="ln399">            else</a>
+<a name="ln400">                ax = -vy, ay = vx, dprf(&quot;iood: veering right&quot;);</a>
+<a name="ln401">            vx += ax * 0.3;</a>
+<a name="ln402">            vy += ay * 0.3;</a>
+<a name="ln403">        }</a>
+<a name="ln404">        else</a>
+<a name="ln405">            dprf(&quot;iood: keeping course&quot;);</a>
+<a name="ln406"> </a>
+<a name="ln407">        _normalize(vx, vy);</a>
+<a name="ln408">        mon.props[IOOD_VX] = vx;</a>
+<a name="ln409">        mon.props[IOOD_VY] = vy;</a>
+<a name="ln410">    }</a>
+<a name="ln411"> </a>
+<a name="ln412">move_again:</a>
+<a name="ln413">    coord_def starting_pos = (mon.pos() == coord_def()) ?</a>
+<a name="ln414">                                                coord_def(x, y) : mon.pos();</a>
+<a name="ln415"> </a>
+<a name="ln416">    x += vx;</a>
+<a name="ln417">    y += vy;</a>
+<a name="ln418"> </a>
+<a name="ln419">    mon.props[IOOD_X] = x;</a>
+<a name="ln420">    mon.props[IOOD_Y] = y;</a>
+<a name="ln421">    mon.props[IOOD_DIST].get_int()++;</a>
+<a name="ln422"> </a>
+<a name="ln423">    const coord_def pos(static_cast&lt;int&gt;(round(x)), static_cast&lt;int&gt;(round(y)));</a>
+<a name="ln424">    if (!in_bounds(pos))</a>
+<a name="ln425">    {</a>
+<a name="ln426">        _iood_stop(mon);</a>
+<a name="ln427">        return true;</a>
+<a name="ln428">    }</a>
+<a name="ln429"> </a>
+<a name="ln430">    if (mon.props.exists(IOOD_FLAWED))</a>
+<a name="ln431">    {</a>
+<a name="ln432">        const actor *caster = actor_by_mid(mon.summoner);</a>
+<a name="ln433">        if (!caster || caster-&gt;pos().origin() ||</a>
+<a name="ln434">            (caster-&gt;pos() - pos).rdist() &gt; LOS_RADIUS)</a>
+<a name="ln435">        {   // not actual vision, because of the smoke trail</a>
+<a name="ln436">            _iood_stop(mon);</a>
+<a name="ln437">            return true;</a>
+<a name="ln438">        }</a>
+<a name="ln439">    }</a>
+<a name="ln440"> </a>
+<a name="ln441">    if (pos == mon.pos())</a>
+<a name="ln442">        return false;</a>
+<a name="ln443"> </a>
+<a name="ln444">    if (!no_trail)</a>
+<a name="ln445">        place_cloud(CLOUD_MAGIC_TRAIL, starting_pos, 2 + random2(3), &amp;mon);</a>
+<a name="ln446"> </a>
+<a name="ln447">    actor *victim = actor_at(pos);</a>
+<a name="ln448">    if (cell_is_solid(pos) || victim)</a>
+<a name="ln449">    {</a>
+<a name="ln450">        if (cell_is_solid(pos)</a>
+<a name="ln451">            &amp;&amp; you.see_cell(pos)</a>
+<a name="ln452">            &amp;&amp; you.see_cell(starting_pos))</a>
+<a name="ln453">        {</a>
+<a name="ln454">            mprf(&quot;%s hits %s.&quot;, mon.name(DESC_THE, true).c_str(),</a>
+<a name="ln455">                 feature_description_at(pos, false, DESC_A).c_str());</a>
+<a name="ln456">        }</a>
+<a name="ln457"> </a>
+<a name="ln458">        monster* mons = (victim &amp;&amp; victim-&gt;is_monster()) ?</a>
+<a name="ln459">            (monster*) victim : 0;</a>
+<a name="ln460"> </a>
+<a name="ln461">        if (mons &amp;&amp; mons_is_projectile(victim-&gt;type))</a>
+<a name="ln462">        {</a>
+<a name="ln463">            // Weak orbs just fizzle instead of exploding.</a>
+<a name="ln464">            if (mons-&gt;props[IOOD_DIST].get_int() &lt; 2</a>
+<a name="ln465">                || mon.props[IOOD_DIST].get_int() &lt; 2)</a>
+<a name="ln466">            {</a>
+<a name="ln467">                if (mons-&gt;props[IOOD_DIST].get_int() &lt; 2)</a>
+<a name="ln468">                {</a>
+<a name="ln469">                    if (you.see_cell(pos))</a>
+<a name="ln470">                        mpr(&quot;The orb fizzles.&quot;);</a>
+<a name="ln471">                    monster_die(*mons, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln472">                }</a>
+<a name="ln473"> </a>
+<a name="ln474">                // Return, if the acting orb fizzled.</a>
+<a name="ln475">                if (mon.props[IOOD_DIST].get_int() &lt; 2)</a>
+<a name="ln476">                {</a>
+<a name="ln477">                    if (you.see_cell(pos))</a>
+<a name="ln478">                        mpr(&quot;The orb fizzles.&quot;);</a>
+<a name="ln479">                    monster_die(mon, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln480">                    return true;</a>
+<a name="ln481">                }</a>
+<a name="ln482">            }</a>
+<a name="ln483">            else</a>
+<a name="ln484">            {</a>
+<a name="ln485">                if (mon.observable())</a>
+<a name="ln486">                    mpr(&quot;The orbs collide in a blinding explosion!&quot;);</a>
+<a name="ln487">                else</a>
+<a name="ln488">                    mpr(&quot;You hear a loud magical explosion!&quot;);</a>
+<a name="ln489">                noisy(40, pos);</a>
+<a name="ln490">                monster_die(*mons, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln491">                _iood_hit(mon, pos, true);</a>
+<a name="ln492">                return true;</a>
+<a name="ln493">            }</a>
+<a name="ln494">        }</a>
+<a name="ln495"> </a>
+<a name="ln496">        if (mons &amp;&amp; (mons-&gt;submerged() || mons-&gt;type == MONS_BATTLESPHERE))</a>
+<a name="ln497">        {</a>
+<a name="ln498">            // Try to swap with the submerged creature.</a>
+<a name="ln499">            if (mon.swap_with(mons))</a>
+<a name="ln500">            {</a>
+<a name="ln501">                dprf(&quot;iood: Swapping with a submerged monster.&quot;);</a>
+<a name="ln502">                return false;</a>
+<a name="ln503">            }</a>
+<a name="ln504">            else // if swap fails, move ahead</a>
+<a name="ln505">            {</a>
+<a name="ln506">                dprf(&quot;iood: Boosting above a submerged monster (can't swap).&quot;);</a>
+<a name="ln507">                mon.lose_energy(EUT_MOVE);</a>
+<a name="ln508">                goto move_again;</a>
+<a name="ln509">            }</a>
+<a name="ln510">        }</a>
+<a name="ln511"> </a>
+<a name="ln512">        if (victim &amp;&amp; _iood_shielded(mon, *victim))</a>
+<a name="ln513">        {</a>
+<a name="ln514">            item_def *shield = victim-&gt;shield();</a>
+<a name="ln515">            if ((!shield || !shield_reflects(*shield)) &amp;&amp; !victim-&gt;reflection())</a>
+<a name="ln516">            {</a>
+<a name="ln517">                if (victim-&gt;is_player())</a>
+<a name="ln518">                    mprf(&quot;You block %s.&quot;, mon.name(DESC_THE, true).c_str());</a>
+<a name="ln519">                else</a>
+<a name="ln520">                {</a>
+<a name="ln521">                    simple_monster_message(*mons, (&quot; blocks &quot;</a>
+<a name="ln522">                        + mon.name(DESC_THE, true) + &quot;.&quot;).c_str());</a>
+<a name="ln523">                }</a>
+<a name="ln524">                victim-&gt;shield_block_succeeded(&amp;mon);</a>
+<a name="ln525">                _iood_stop(mon);</a>
+<a name="ln526">                return true;</a>
+<a name="ln527">            }</a>
+<a name="ln528"> </a>
+<a name="ln529">            if (victim-&gt;is_player())</a>
+<a name="ln530">            {</a>
+<a name="ln531">                if (shield &amp;&amp; shield_reflects(*shield))</a>
+<a name="ln532">                {</a>
+<a name="ln533">                    mprf(&quot;Your %s reflects %s!&quot;,</a>
+<a name="ln534">                         shield-&gt;name(DESC_PLAIN).c_str(),</a>
+<a name="ln535">                         mon.name(DESC_THE, true).c_str());</a>
+<a name="ln536">                    ident_reflector(shield);</a>
+<a name="ln537">                }</a>
+<a name="ln538">                else // has reflection property not from shield</a>
+<a name="ln539">                {</a>
+<a name="ln540">                    mprf(&quot;%s reflects off an invisible shield around you!&quot;,</a>
+<a name="ln541">                         mon.name(DESC_THE, true).c_str());</a>
+<a name="ln542">                }</a>
+<a name="ln543">            }</a>
+<a name="ln544">            else if (you.see_cell(pos))</a>
+<a name="ln545">            {</a>
+<a name="ln546">                if (victim-&gt;observable())</a>
+<a name="ln547">                {</a>
+<a name="ln548">                    if (shield &amp;&amp; shield_reflects(*shield))</a>
+<a name="ln549">                    {</a>
+<a name="ln550">                        mprf(&quot;%s reflects %s off %s %s!&quot;,</a>
+<a name="ln551">                             victim-&gt;name(DESC_THE, true).c_str(),</a>
+<a name="ln552">                             mon.name(DESC_THE, true).c_str(),</a>
+<a name="ln553">                             victim-&gt;pronoun(PRONOUN_POSSESSIVE).c_str(),</a>
+<a name="ln554">                             shield-&gt;name(DESC_PLAIN).c_str());</a>
+<a name="ln555">                        ident_reflector(shield);</a>
+<a name="ln556">                    }</a>
+<a name="ln557">                    else</a>
+<a name="ln558">                    {</a>
+<a name="ln559">                        mprf(&quot;%s reflects off an invisible shield around %s!&quot;,</a>
+<a name="ln560">                             mon.name(DESC_THE, true).c_str(),</a>
+<a name="ln561">                             victim-&gt;name(DESC_THE, true).c_str());</a>
+<a name="ln562"> </a>
+<a name="ln563">                        item_def *amulet = victim-&gt;slot_item(EQ_AMULET);</a>
+<a name="ln564">                        if (amulet)</a>
+<a name="ln565">                            ident_reflector(amulet);</a>
+<a name="ln566">                    }</a>
+<a name="ln567">                }</a>
+<a name="ln568">                else</a>
+<a name="ln569">                {</a>
+<a name="ln570">                    mprf(&quot;%s bounces off of thin air!&quot;,</a>
+<a name="ln571">                         mon.name(DESC_THE, true).c_str());</a>
+<a name="ln572">                }</a>
+<a name="ln573">            }</a>
+<a name="ln574">            victim-&gt;shield_block_succeeded(&amp;mon);</a>
+<a name="ln575"> </a>
+<a name="ln576">            // mid_t is unsigned so won't fit in a plain int</a>
+<a name="ln577">            mon.props[IOOD_REFLECTOR] = (int64_t) victim-&gt;mid;</a>
+<a name="ln578">            mon.props[IOOD_VX] = vx = -vx;</a>
+<a name="ln579">            mon.props[IOOD_VY] = vy = -vy;</a>
+<a name="ln580"> </a>
+<a name="ln581">            // Need to get out of the victim's square.</a>
+<a name="ln582"> </a>
+<a name="ln583">            // If you're next to the caster and both of you wear shields of</a>
+<a name="ln584">            // reflection, this can lead to a brief game of ping-pong, but</a>
+<a name="ln585">            // rapidly increasing shield penalties will make it short.</a>
+<a name="ln586">            mon.lose_energy(EUT_MOVE);</a>
+<a name="ln587">            goto move_again;</a>
+<a name="ln588">        }</a>
+<a name="ln589"> </a>
+<a name="ln590">        if (_iood_hit(mon, pos))</a>
+<a name="ln591">            return true;</a>
+<a name="ln592">    }</a>
+<a name="ln593"> </a>
+<a name="ln594">    if (!mon.move_to_pos(pos))</a>
+<a name="ln595">    {</a>
+<a name="ln596">        _iood_stop(mon);</a>
+<a name="ln597">        return true;</a>
+<a name="ln598">    }</a>
+<a name="ln599"> </a>
+<a name="ln600">    // move_to_pos() just trashed the coords, set them again</a>
+<a name="ln601">    mon.props[IOOD_X] = x;</a>
+<a name="ln602">    mon.props[IOOD_Y] = y;</a>
+<a name="ln603"> </a>
+<a name="ln604">    return false;</a>
+<a name="ln605">}</a>
+<a name="ln606"> </a>
+<a name="ln607">// Reduced copy of iood_act to move the orb while the player is off-level.</a>
+<a name="ln608">// Just goes straight and dissipates instead of hitting anything.</a>
+<a name="ln609">static bool _iood_catchup_move(monster&amp; mon)</a>
+<a name="ln610">{</a>
+<a name="ln611">    float x = mon.props[IOOD_X];</a>
+<a name="ln612">    float y = mon.props[IOOD_Y];</a>
+<a name="ln613">    float vx = mon.props[IOOD_VX];</a>
+<a name="ln614">    float vy = mon.props[IOOD_VY];</a>
+<a name="ln615"> </a>
+<a name="ln616">    if (!vx &amp;&amp; !vy) // not initialized</a>
+<a name="ln617">    {</a>
+<a name="ln618">        _iood_stop(mon, false);</a>
+<a name="ln619">        return true;</a>
+<a name="ln620">    }</a>
+<a name="ln621"> </a>
+<a name="ln622">    _normalize(vx, vy);</a>
+<a name="ln623"> </a>
+<a name="ln624">    x += vx;</a>
+<a name="ln625">    y += vy;</a>
+<a name="ln626"> </a>
+<a name="ln627">    mon.props[IOOD_X] = x;</a>
+<a name="ln628">    mon.props[IOOD_Y] = y;</a>
+<a name="ln629">    mon.props[IOOD_DIST].get_int()++;</a>
+<a name="ln630"> </a>
+<a name="ln631">    const coord_def pos(static_cast&lt;int&gt;(round(x)), static_cast&lt;int&gt;(round(y)));</a>
+<a name="ln632">    if (!in_bounds(pos))</a>
+<a name="ln633">    {</a>
+<a name="ln634">        _iood_stop(mon, true);</a>
+<a name="ln635">        return true;</a>
+<a name="ln636">    }</a>
+<a name="ln637"> </a>
+<a name="ln638">    if (pos == mon.pos())</a>
+<a name="ln639">        return false;</a>
+<a name="ln640"> </a>
+<a name="ln641">    actor *victim = actor_at(pos);</a>
+<a name="ln642">    if (cell_is_solid(pos) || victim)</a>
+<a name="ln643">    {</a>
+<a name="ln644">        // Just dissipate instead of hitting something.</a>
+<a name="ln645">        _iood_stop(mon, true);</a>
+<a name="ln646">        return true;</a>
+<a name="ln647">    }</a>
+<a name="ln648"> </a>
+<a name="ln649">    if (!mon.move_to_pos(pos))</a>
+<a name="ln650">    {</a>
+<a name="ln651">        _iood_stop(mon);</a>
+<a name="ln652">        return true;</a>
+<a name="ln653">    }</a>
+<a name="ln654"> </a>
+<a name="ln655">    // move_to_pos() just trashed the coords, set them again</a>
+<a name="ln656">    mon.props[IOOD_X] = x;</a>
+<a name="ln657">    mon.props[IOOD_Y] = y;</a>
+<a name="ln658"> </a>
+<a name="ln659">    return false;</a>
+<a name="ln660">}</a>
+<a name="ln661"> </a>
+<a name="ln662">void iood_catchup(monster* mons, int pturns)</a>
+<a name="ln663">{</a>
+<a name="ln664">    monster&amp; mon = *mons;</a>
+<a name="ln665">    ASSERT(mons_is_projectile(*mons));</a>
+<a name="ln666"> </a>
+<a name="ln667">    const int moves = pturns * mon.speed / BASELINE_DELAY;</a>
+<a name="ln668"> </a>
+<a name="ln669">    // Handle some cases for IOOD only</a>
+<a name="ln670">    if (mons_is_projectile(*mons))</a>
+<a name="ln671">    {</a>
+<a name="ln672">        if (moves &gt; 50)</a>
+<a name="ln673">        {</a>
+<a name="ln674">            _iood_stop(mon, false);</a>
+<a name="ln675">            return;</a>
+<a name="ln676">        }</a>
+<a name="ln677"> </a>
+<a name="ln678">        if (mon.props[IOOD_KC].get_byte() == KC_YOU)</a>
+<a name="ln679">        {</a>
+<a name="ln680">            // Left player's vision.</a>
+<a name="ln681">            _iood_stop(mon, false);</a>
+<a name="ln682">            return;</a>
+<a name="ln683">        }</a>
+<a name="ln684">    }</a>
+<a name="ln685"> </a>
+<a name="ln686">    for (int i = 0; i &lt; moves; ++i)</a>
+<a name="ln687">        if (_iood_catchup_move(mon))</a>
+<a name="ln688">            return;</a>
+<a name="ln689">}</a>
+
+</code></pre>
+<div class="balloon" rel="461"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1004/" target="_blank">V1004</a> The 'victim' pointer was used unsafely after it was verified against nullptr. Check lines: 458, 461.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

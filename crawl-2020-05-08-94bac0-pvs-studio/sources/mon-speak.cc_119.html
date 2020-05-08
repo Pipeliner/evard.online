@@ -1,0 +1,877 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-speak.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions to handle speaking monsters</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-speak.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cstdio&gt;</a>
+<a name="ln12">#include &lt;cstdlib&gt;</a>
+<a name="ln13">#include &lt;cstring&gt;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;areas.h&quot;</a>
+<a name="ln16">#include &quot;branch.h&quot;</a>
+<a name="ln17">#include &quot;database.h&quot;</a>
+<a name="ln18">#include &quot;ghost.h&quot;</a>
+<a name="ln19">#include &quot;libutil.h&quot;</a>
+<a name="ln20">#include &quot;message.h&quot;</a>
+<a name="ln21">#include &quot;mon-death.h&quot;</a>
+<a name="ln22">#include &quot;monster.h&quot;</a>
+<a name="ln23">#include &quot;mon-util.h&quot;</a>
+<a name="ln24">#include &quot;religion.h&quot;</a>
+<a name="ln25">#include &quot;skills.h&quot;</a>
+<a name="ln26">#include &quot;state.h&quot;</a>
+<a name="ln27">#include &quot;stringutil.h&quot;</a>
+<a name="ln28">#include &quot;view.h&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">// Try the exact key lookup along with the entire prefix list.</a>
+<a name="ln31">// If that fails, start ignoring hostile/religion/branch/silence, in that order,</a>
+<a name="ln32">// first skipping hostile, then hostile *and* religion, then hostile, religion</a>
+<a name="ln33">// *and* branch, then finally all five.</a>
+<a name="ln34">static string __try_exact_string(const vector&lt;string&gt; &amp;prefixes,</a>
+<a name="ln35">                                 const string &amp;key,</a>
+<a name="ln36">                                 bool ignore_hostile  = false,</a>
+<a name="ln37">                                 bool ignore_related  = false,</a>
+<a name="ln38">                                 bool ignore_religion = false,</a>
+<a name="ln39">                                 bool ignore_branch   = false,</a>
+<a name="ln40">                                 bool ignore_silenced = false)</a>
+<a name="ln41">{</a>
+<a name="ln42">    bool hostile  = false;</a>
+<a name="ln43">    bool related  = false;</a>
+<a name="ln44">    bool religion = false;</a>
+<a name="ln45">    bool branch   = false;</a>
+<a name="ln46">    bool silenced = false;</a>
+<a name="ln47"> </a>
+<a name="ln48">    string prefix = &quot;&quot;;</a>
+<a name="ln49">    string msg = &quot;&quot;;</a>
+<a name="ln50">    const int size = prefixes.size();</a>
+<a name="ln51">    for (int i = 0; i &lt; size; i++)</a>
+<a name="ln52">    {</a>
+<a name="ln53">        if (prefixes[i] == &quot;hostile&quot;)</a>
+<a name="ln54">        {</a>
+<a name="ln55">            if (ignore_hostile)</a>
+<a name="ln56">                continue;</a>
+<a name="ln57">            hostile = true;</a>
+<a name="ln58">        }</a>
+<a name="ln59">        else if (prefixes[i] == &quot;related&quot;)</a>
+<a name="ln60">        {</a>
+<a name="ln61">            if (ignore_related)</a>
+<a name="ln62">                continue;</a>
+<a name="ln63">            related = true;</a>
+<a name="ln64">        }</a>
+<a name="ln65">        else if (prefixes[i] == &quot;silenced&quot;)</a>
+<a name="ln66">        {</a>
+<a name="ln67">            if (ignore_silenced)</a>
+<a name="ln68">                continue;</a>
+<a name="ln69">            silenced = true;</a>
+<a name="ln70">        }</a>
+<a name="ln71">        else if (prefixes[i] == &quot;Beogh&quot; || prefixes[i] == &quot;good god&quot;</a>
+<a name="ln72">                 || prefixes[i] == &quot;No God&quot;</a>
+<a name="ln73">                 || (str_to_god(prefixes[i]) != GOD_NO_GOD</a>
+<a name="ln74">                     &amp;&amp; prefixes[i] != &quot;random&quot;))</a>
+<a name="ln75">        {</a>
+<a name="ln76">            if (ignore_religion)</a>
+<a name="ln77">                continue;</a>
+<a name="ln78">            religion = true;</a>
+<a name="ln79">        }</a>
+<a name="ln80">        else if (branch_by_abbrevname(prefixes[i]) != NUM_BRANCHES)</a>
+<a name="ln81">        {</a>
+<a name="ln82">            if (ignore_branch)</a>
+<a name="ln83">                continue;</a>
+<a name="ln84">            branch = true;</a>
+<a name="ln85">        }</a>
+<a name="ln86">        prefix += prefixes[i];</a>
+<a name="ln87">        prefix += &quot; &quot;;</a>
+<a name="ln88">    }</a>
+<a name="ln89">    msg = getSpeakString(prefix + key);</a>
+<a name="ln90"> </a>
+<a name="ln91">    if (msg.empty())</a>
+<a name="ln92">    {</a>
+<a name="ln93">        if (hostile) // skip hostile</a>
+<a name="ln94">            msg = __try_exact_string(prefixes, key, true);</a>
+<a name="ln95">        else if (related)</a>
+<a name="ln96">        {</a>
+<a name="ln97">            if (branch) // skip hostile and branch</a>
+<a name="ln98">                msg = __try_exact_string(prefixes, key, true, false, false, true);</a>
+<a name="ln99">            else if (religion) // skip hostile and religion</a>
+<a name="ln100">            {</a>
+<a name="ln101">                msg = __try_exact_string(prefixes, key, true, false, true,</a>
+<a name="ln102">                                         ignore_branch);</a>
+<a name="ln103">            }</a>
+<a name="ln104">            else // skip hostile and related</a>
+<a name="ln105">                msg = __try_exact_string(prefixes, key, true, true);</a>
+<a name="ln106">        }</a>
+<a name="ln107">        else if (religion) // skip hostile, related and religion</a>
+<a name="ln108">        {</a>
+<a name="ln109">            if (branch &amp;&amp; coinflip()) // skip hostile, related and branch</a>
+<a name="ln110">                msg = __try_exact_string(prefixes, key, true, true, false, true);</a>
+<a name="ln111">            else // skip hostile, related and religion</a>
+<a name="ln112">                msg = __try_exact_string(prefixes, key, true, true, true);</a>
+<a name="ln113">        }</a>
+<a name="ln114">        else if (branch) // skip hostile, related, religion and branch</a>
+<a name="ln115">            msg = __try_exact_string(prefixes, key, true, true, true, true);</a>
+<a name="ln116">        // 50% use non-verbal monster speech,</a>
+<a name="ln117">        // 50% try for more general silenced monster message instead</a>
+<a name="ln118">        else if (silenced &amp;&amp; coinflip()) // skip all</a>
+<a name="ln119">            msg = __try_exact_string(prefixes, key, true, true, true, true, true);</a>
+<a name="ln120">    }</a>
+<a name="ln121">    return msg;</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">static bool _invalid_msg(const string &amp;msg, bool no_player, bool no_foe,</a>
+<a name="ln125">                         bool no_foe_name, bool no_god, bool unseen)</a>
+<a name="ln126">{</a>
+<a name="ln127">    if (no_player</a>
+<a name="ln128">        &amp;&amp; (msg.find(&quot;@player&quot;) != string::npos</a>
+<a name="ln129">            || msg.find(&quot;@Player&quot;) != string::npos</a>
+<a name="ln130">            || msg.find(&quot;:You&quot;) != string::npos))</a>
+<a name="ln131">    {</a>
+<a name="ln132">        return true;</a>
+<a name="ln133">    }</a>
+<a name="ln134"> </a>
+<a name="ln135">    if (no_player)</a>
+<a name="ln136">    {</a>
+<a name="ln137">        for (const string &amp;line : split_string(&quot;\n&quot;, msg))</a>
+<a name="ln138">            if (starts_with(line, &quot;You&quot;) || ends_with(line, &quot;you.&quot;))</a>
+<a name="ln139">                return true;</a>
+<a name="ln140">    }</a>
+<a name="ln141"> </a>
+<a name="ln142">    if (no_foe &amp;&amp; (msg.find(&quot;@foe&quot;) != string::npos</a>
+<a name="ln143">                   || msg.find(&quot;@Foe&quot;) != string::npos</a>
+<a name="ln144">                   || msg.find(&quot;foe@&quot;) != string::npos</a>
+<a name="ln145">                   || msg.find(&quot;@species&quot;) != string::npos))</a>
+<a name="ln146">    {</a>
+<a name="ln147">        return true;</a>
+<a name="ln148">    }</a>
+<a name="ln149"> </a>
+<a name="ln150">    if (no_god &amp;&amp; (msg.find(&quot;_god@&quot;) != string::npos</a>
+<a name="ln151">                   || msg.find(&quot;@god_&quot;) != string::npos))</a>
+<a name="ln152">    {</a>
+<a name="ln153">        return true;</a>
+<a name="ln154">    }</a>
+<a name="ln155"> </a>
+<a name="ln156">    if (no_foe_name &amp;&amp; msg.find(&quot;@foe_name@&quot;) != string::npos)</a>
+<a name="ln157">        return true;</a>
+<a name="ln158"> </a>
+<a name="ln159">    if (unseen &amp;&amp; msg.find(&quot;VISUAL&quot;) != string::npos)</a>
+<a name="ln160">        return true;</a>
+<a name="ln161"> </a>
+<a name="ln162">    return false;</a>
+<a name="ln163">}</a>
+<a name="ln164"> </a>
+<a name="ln165">static string _try_exact_string(const vector&lt;string&gt; &amp;prefixes,</a>
+<a name="ln166">                                const string &amp;key,</a>
+<a name="ln167">                                bool no_player, bool no_foe,</a>
+<a name="ln168">                                bool no_foe_name, bool no_god,</a>
+<a name="ln169">                                bool unseen,</a>
+<a name="ln170">                                bool ignore_hostile  = false,</a>
+<a name="ln171">                                bool ignore_related  = false,</a>
+<a name="ln172">                                bool ignore_religion = false,</a>
+<a name="ln173">                                bool ignore_branch   = false,</a>
+<a name="ln174">                                bool ignore_silenced = false)</a>
+<a name="ln175">{</a>
+<a name="ln176">    string msg;</a>
+<a name="ln177">    for (int tries = 0; tries &lt; 10; tries++)</a>
+<a name="ln178">    {</a>
+<a name="ln179">        msg =</a>
+<a name="ln180">            __try_exact_string(prefixes, key, ignore_hostile, ignore_related,</a>
+<a name="ln181">                               ignore_religion, ignore_branch, ignore_silenced);</a>
+<a name="ln182"> </a>
+<a name="ln183">        // If the first message was non-empty and discarded then discard</a>
+<a name="ln184">        // all subsequent empty messages, so as to not replace an</a>
+<a name="ln185">        // invalid non-empty message with an empty one.</a>
+<a name="ln186">        if (msg.empty())</a>
+<a name="ln187">        {</a>
+<a name="ln188">            if (tries == 0)</a>
+<a name="ln189">                return msg;</a>
+<a name="ln190">            else</a>
+<a name="ln191">            {</a>
+<a name="ln192">                tries--;</a>
+<a name="ln193">                continue;</a>
+<a name="ln194">            }</a>
+<a name="ln195">        }</a>
+<a name="ln196"> </a>
+<a name="ln197">        if (_invalid_msg(msg, no_player, no_foe, no_foe_name, no_god, unseen))</a>
+<a name="ln198">        {</a>
+<a name="ln199">            msg = &quot;&quot;;</a>
+<a name="ln200">            continue;</a>
+<a name="ln201">        }</a>
+<a name="ln202">        break;</a>
+<a name="ln203">    }</a>
+<a name="ln204"> </a>
+<a name="ln205">    return msg;</a>
+<a name="ln206">}</a>
+<a name="ln207"> </a>
+<a name="ln208">static string __get_speak_string(const vector&lt;string&gt; &amp;prefixes,</a>
+<a name="ln209">                                 const string &amp;key,</a>
+<a name="ln210">                                 bool no_player, bool no_foe,</a>
+<a name="ln211">                                 bool no_foe_name, bool no_god,</a>
+<a name="ln212">                                 bool unseen)</a>
+<a name="ln213">{</a>
+<a name="ln214">    string msg = _try_exact_string(prefixes, key, no_player, no_foe,</a>
+<a name="ln215">                                   no_foe_name, no_god, unseen);</a>
+<a name="ln216"> </a>
+<a name="ln217">    if (!msg.empty())</a>
+<a name="ln218">        return msg;</a>
+<a name="ln219"> </a>
+<a name="ln220">    // Combinations of prefixes by threes</a>
+<a name="ln221">    const int size = prefixes.size();</a>
+<a name="ln222">    string prefix = &quot;&quot;;</a>
+<a name="ln223">    if (size &gt;= 3)</a>
+<a name="ln224">    {</a>
+<a name="ln225">        for (int i = 0; i &lt; (size - 2); i++)</a>
+<a name="ln226">            for (int j = i + 1; j &lt; (size - 1); j++)</a>
+<a name="ln227">                for (int k = j + 1; k &lt; size; k++)</a>
+<a name="ln228">                {</a>
+<a name="ln229">                    prefix  = prefixes[i] + &quot; &quot;;</a>
+<a name="ln230">                    prefix += prefixes[j] + &quot; &quot;;</a>
+<a name="ln231">                    prefix += prefixes[k] + &quot; &quot;;</a>
+<a name="ln232"> </a>
+<a name="ln233">                    msg = getSpeakString(&quot;default &quot; + prefix + key);</a>
+<a name="ln234"> </a>
+<a name="ln235">                    if (!msg.empty())</a>
+<a name="ln236">                        return msg;</a>
+<a name="ln237">                }</a>
+<a name="ln238">    }</a>
+<a name="ln239"> </a>
+<a name="ln240">    // Combinations of prefixes by twos</a>
+<a name="ln241">    if (size &gt;= 2)</a>
+<a name="ln242">    {</a>
+<a name="ln243">        for (int i = 0; i &lt; (size - 1); i++)</a>
+<a name="ln244">            for (int j = i + 1; j &lt; size; j++)</a>
+<a name="ln245">            {</a>
+<a name="ln246">                prefix  = prefixes[i] + &quot; &quot;;</a>
+<a name="ln247">                prefix += prefixes[j] + &quot; &quot;;</a>
+<a name="ln248"> </a>
+<a name="ln249">                msg = getSpeakString(&quot;default &quot; + prefix + key);</a>
+<a name="ln250"> </a>
+<a name="ln251">                if (!msg.empty())</a>
+<a name="ln252">                    return msg;</a>
+<a name="ln253">            }</a>
+<a name="ln254">    }</a>
+<a name="ln255"> </a>
+<a name="ln256">    // Prefixes singly</a>
+<a name="ln257">    if (size &gt;= 1)</a>
+<a name="ln258">    {</a>
+<a name="ln259">        for (int i = 0; i &lt; size; i++)</a>
+<a name="ln260">        {</a>
+<a name="ln261">            prefix  = prefixes[i] + &quot; &quot;;</a>
+<a name="ln262"> </a>
+<a name="ln263">            msg = getSpeakString(&quot;default &quot; + prefix + key);</a>
+<a name="ln264"> </a>
+<a name="ln265">            if (!msg.empty())</a>
+<a name="ln266">                return msg;</a>
+<a name="ln267">        }</a>
+<a name="ln268">    }</a>
+<a name="ln269"> </a>
+<a name="ln270">    // No prefixes</a>
+<a name="ln271">    msg = getSpeakString(&quot;default &quot; + key);</a>
+<a name="ln272"> </a>
+<a name="ln273">    return msg;</a>
+<a name="ln274">}</a>
+<a name="ln275"> </a>
+<a name="ln276">static string _get_speak_string(const vector&lt;string&gt; &amp;prefixes,</a>
+<a name="ln277">                                string key,</a>
+<a name="ln278">                                const monster* mons,</a>
+<a name="ln279">                                bool no_player, bool no_foe,</a>
+<a name="ln280">                                bool no_foe_name, bool no_god,</a>
+<a name="ln281">                                bool unseen)</a>
+<a name="ln282">{</a>
+<a name="ln283">    int duration = 1;</a>
+<a name="ln284">    if (mons-&gt;hit_points &lt;= 0)</a>
+<a name="ln285">    {</a>
+<a name="ln286">        //separate death/permadeath lines for resurrection monsters</a>
+<a name="ln287">        if (mons_is_mons_class(mons, MONS_NATASHA)</a>
+<a name="ln288">               &amp;&amp; !mons_felid_can_revive(mons)</a>
+<a name="ln289">            || mons-&gt;type == MONS_BENNU</a>
+<a name="ln290">               &amp;&amp; !mons_bennu_can_revive(mons))</a>
+<a name="ln291">        {</a>
+<a name="ln292">            key += &quot; permanently&quot;;</a>
+<a name="ln293">        }</a>
+<a name="ln294">        key += &quot; killed&quot;;</a>
+<a name="ln295">    }</a>
+<a name="ln296">    else if ((mons-&gt;flags &amp; MF_BANISHED) &amp;&amp; !player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln297">        key += &quot; banished&quot;;</a>
+<a name="ln298">    else if (mons-&gt;is_summoned(&amp;duration) &amp;&amp; duration &lt;= 0)</a>
+<a name="ln299">        key += &quot; unsummoned&quot;;</a>
+<a name="ln300"> </a>
+<a name="ln301">    string msg;</a>
+<a name="ln302">    for (int tries = 0; tries &lt; 10; tries++)</a>
+<a name="ln303">    {</a>
+<a name="ln304">        msg =</a>
+<a name="ln305">            __get_speak_string(prefixes, key, no_player, no_foe,</a>
+<a name="ln306">                               no_foe_name, no_god, unseen);</a>
+<a name="ln307"> </a>
+<a name="ln308">        // If the first message was non-empty and discarded then discard</a>
+<a name="ln309">        // all subsequent empty messages, so as to not replace an</a>
+<a name="ln310">        // invalid non-empty message with an empty one.</a>
+<a name="ln311">        if (msg.empty())</a>
+<a name="ln312">        {</a>
+<a name="ln313">            if (tries == 0)</a>
+<a name="ln314">                return msg;</a>
+<a name="ln315">            else</a>
+<a name="ln316">            {</a>
+<a name="ln317">                tries--;</a>
+<a name="ln318">                continue;</a>
+<a name="ln319">            }</a>
+<a name="ln320">        }</a>
+<a name="ln321"> </a>
+<a name="ln322">        if (_invalid_msg(msg, no_player, no_foe, no_foe_name, no_god, unseen))</a>
+<a name="ln323">        {</a>
+<a name="ln324">            msg = &quot;&quot;;</a>
+<a name="ln325">            continue;</a>
+<a name="ln326">        }</a>
+<a name="ln327"> </a>
+<a name="ln328">        break;</a>
+<a name="ln329">    }</a>
+<a name="ln330"> </a>
+<a name="ln331">    return msg;</a>
+<a name="ln332">}</a>
+<a name="ln333"> </a>
+<a name="ln334">/**</a>
+<a name="ln335"> * Rolls a chance for a monster to speak, and calls mons_speaks as necessary.</a>
+<a name="ln336"> *</a>
+<a name="ln337"> * @param mons The monster in question.</a>
+<a name="ln338"> */</a>
+<a name="ln339">void maybe_mons_speaks(monster* mons)</a>
+<a name="ln340">{</a>
+<a name="ln341">    // Very fast wandering/patrolling monsters might, in one monster turn,</a>
+<a name="ln342">    // move into the player's LOS and then back out (or the player</a>
+<a name="ln343">    // might move into their LOS and the monster move back out before</a>
+<a name="ln344">    // the player's view has a chance to update) so prevent them</a>
+<a name="ln345">    // from speaking.</a>
+<a name="ln346">    if (mons-&gt;is_patrolling() || mons_is_wandering(*mons))</a>
+<a name="ln347">        return;</a>
+<a name="ln348"> </a>
+<a name="ln349">    // per ef44f8a14, this seems to be handled elsewhere?</a>
+<a name="ln350">    if (mons-&gt;attitude == ATT_NEUTRAL)</a>
+<a name="ln351">        return;</a>
+<a name="ln352"> </a>
+<a name="ln353">    // too annoying for a permanent companion without more thought put into it</a>
+<a name="ln354">    if (mons_is_hepliaklqana_ancestor(mons-&gt;type))</a>
+<a name="ln355">        return;</a>
+<a name="ln356"> </a>
+<a name="ln357">    int chance = 21; // this is a very old number; no idea why it was chosen</a>
+<a name="ln358"> </a>
+<a name="ln359">    // allies stick around longer, so should probably have longer to say</a>
+<a name="ln360">    // their piece; no need for them to chatter as much.</a>
+<a name="ln361">    if (mons-&gt;wont_attack())</a>
+<a name="ln362">        chance *= 15;</a>
+<a name="ln363">    else if (!mons_is_unique(mons-&gt;type)</a>
+<a name="ln364">             &amp;&amp; testbits(mons-&gt;flags, MF_BAND_MEMBER))</a>
+<a name="ln365">    {</a>
+<a name="ln366">        // Band members are a lot less likely to speak, since there's</a>
+<a name="ln367">        // a lot of them. Except for uniques.</a>
+<a name="ln368">        chance *= 10;</a>
+<a name="ln369">    }</a>
+<a name="ln370"> </a>
+<a name="ln371">    // Confused and fleeing monsters are more interesting.</a>
+<a name="ln372">    if (mons_is_fleeing(*mons))</a>
+<a name="ln373">        chance /= 2;</a>
+<a name="ln374">    if (mons-&gt;has_ench(ENCH_CONFUSION))</a>
+<a name="ln375">        chance /= 2;</a>
+<a name="ln376"> </a>
+<a name="ln377">    if ((mons_class_flag(mons-&gt;type, M_SPEAKS)</a>
+<a name="ln378">                    || !mons-&gt;mname.empty())</a>
+<a name="ln379">                &amp;&amp; one_chance_in(chance))</a>
+<a name="ln380">    {</a>
+<a name="ln381">        mons_speaks(mons);</a>
+<a name="ln382">    }</a>
+<a name="ln383">    else if ((mons-&gt;type == MONS_CRAZY_YIUF || mons-&gt;type == MONS_DONALD)</a>
+<a name="ln384">        &amp;&amp; one_chance_in(7))</a>
+<a name="ln385">    {</a>
+<a name="ln386">        // Yiuf gets an extra chance to speak!</a>
+<a name="ln387">        // So does Donald.</a>
+<a name="ln388">        mons_speaks(mons);</a>
+<a name="ln389">    }</a>
+<a name="ln390">    else if (get_mon_shape(*mons) &gt;= MON_SHAPE_QUADRUPED)</a>
+<a name="ln391">    {</a>
+<a name="ln392">        // Non-humanoid-ish monsters have a low chance of speaking</a>
+<a name="ln393">        // without the M_SPEAKS flag, to give the dungeon some</a>
+<a name="ln394">        // atmosphere/flavour.</a>
+<a name="ln395">        if (one_chance_in(chance * 4))</a>
+<a name="ln396">            mons_speaks(mons);</a>
+<a name="ln397">    }</a>
+<a name="ln398">    // Okay then, don't speak.</a>
+<a name="ln399">}</a>
+<a name="ln400"> </a>
+<a name="ln401">// Returns true if something is said.</a>
+<a name="ln402">bool mons_speaks(monster* mons)</a>
+<a name="ln403">{</a>
+<a name="ln404">    ASSERT(mons); // XXX: change to monster &amp;mons</a>
+<a name="ln405">    ASSERT(!invalid_monster_type(mons-&gt;type));</a>
+<a name="ln406"> </a>
+<a name="ln407">    // Natasha's death lines aren't physical speech.</a>
+<a name="ln408">    if ((mons-&gt;asleep() || mons-&gt;cannot_act() || mons-&gt;flags &amp; MF_EXPLODE_KILL)</a>
+<a name="ln409">        &amp;&amp; !(mons-&gt;type == MONS_NATASHA &amp;&amp; !mons-&gt;alive()))</a>
+<a name="ln410">    {</a>
+<a name="ln411">        return false;</a>
+<a name="ln412">    }</a>
+<a name="ln413"> </a>
+<a name="ln414">    // Monsters talk on death even if invisible/silenced/etc.</a>
+<a name="ln415">    int duration = 1;</a>
+<a name="ln416">    const bool force_speak = !mons-&gt;alive()</a>
+<a name="ln417">        || (mons-&gt;flags &amp; MF_BANISHED) &amp;&amp; !player_in_branch(BRANCH_ABYSS)</a>
+<a name="ln418">        || (mons-&gt;is_summoned(&amp;duration) &amp;&amp; duration &lt;= 0)</a>
+<a name="ln419">        || crawl_state.prev_cmd == CMD_LOOK_AROUND; // Wizard testing</a>
+<a name="ln420"> </a>
+<a name="ln421">    const bool unseen   = !you.can_see(*mons);</a>
+<a name="ln422">    const bool confused = mons-&gt;confused();</a>
+<a name="ln423"> </a>
+<a name="ln424">    if (!force_speak)</a>
+<a name="ln425">    {</a>
+<a name="ln426">        // Invisible monster tries to remain unnoticed. Unless they're</a>
+<a name="ln427">        // confused, since then they're too confused to realise they</a>
+<a name="ln428">        // should stay silent, but only if the player can see them, so as</a>
+<a name="ln429">        // to not have to deal with cases of speaking monsters which the</a>
+<a name="ln430">        // player can't see.</a>
+<a name="ln431">        if (unseen &amp;&amp; !confused)</a>
+<a name="ln432">            return false;</a>
+<a name="ln433"> </a>
+<a name="ln434">        // Silenced monsters only &quot;speak&quot; 1/3 as often as non-silenced,</a>
+<a name="ln435">        // unless they're normally silent (S_SILENT).</a>
+<a name="ln436">        if (mons-&gt;is_silenced() &amp;&amp; mons_can_shout(mons-&gt;type)</a>
+<a name="ln437">            &amp;&amp; !one_chance_in(3))</a>
+<a name="ln438">        {</a>
+<a name="ln439">            return false;</a>
+<a name="ln440">        }</a>
+<a name="ln441"> </a>
+<a name="ln442">        // Berserk monsters just want your hide.</a>
+<a name="ln443">        if (mons-&gt;berserk_or_insane())</a>
+<a name="ln444">            return false;</a>
+<a name="ln445"> </a>
+<a name="ln446">        // Charmed monsters aren't too expressive.</a>
+<a name="ln447">        if (mons-&gt;has_ench(ENCH_CHARM) &amp;&amp; !one_chance_in(3))</a>
+<a name="ln448">            return false;</a>
+<a name="ln449">    }</a>
+<a name="ln450"> </a>
+<a name="ln451">    vector&lt;string&gt; prefixes;</a>
+<a name="ln452">    if (mons-&gt;neutral())</a>
+<a name="ln453">    {</a>
+<a name="ln454">        if (!force_speak &amp;&amp; coinflip()) // Neutrals speak half as often.</a>
+<a name="ln455">            return false;</a>
+<a name="ln456"> </a>
+<a name="ln457">        prefixes.emplace_back(&quot;neutral&quot;);</a>
+<a name="ln458">    }</a>
+<a name="ln459">    else if (mons-&gt;friendly() &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln460">        prefixes.emplace_back(&quot;friendly&quot;);</a>
+<a name="ln461">    else</a>
+<a name="ln462">        prefixes.emplace_back(&quot;hostile&quot;);</a>
+<a name="ln463"> </a>
+<a name="ln464">    if (mons_is_fleeing(*mons))</a>
+<a name="ln465">        prefixes.emplace_back(&quot;fleeing&quot;);</a>
+<a name="ln466"> </a>
+<a name="ln467">    bool silence = silenced(you.pos());</a>
+<a name="ln468">    if (silenced(mons-&gt;pos()) || mons-&gt;has_ench(ENCH_MUTE))</a>
+<a name="ln469">    {</a>
+<a name="ln470">        silence = true;</a>
+<a name="ln471">        prefixes.emplace_back(&quot;silenced&quot;);</a>
+<a name="ln472">    }</a>
+<a name="ln473"> </a>
+<a name="ln474">    if (confused)</a>
+<a name="ln475">        prefixes.emplace_back(&quot;confused&quot;);</a>
+<a name="ln476"> </a>
+<a name="ln477">    // Allows monster speech to be altered slightly on-the-fly.</a>
+<a name="ln478">    if (mons-&gt;props.exists(&quot;speech_prefix&quot;))</a>
+<a name="ln479">        prefixes.push_back(mons-&gt;props[&quot;speech_prefix&quot;].get_string());</a>
+<a name="ln480"> </a>
+<a name="ln481">    const actor*    foe   = (!crawl_state.game_is_arena() &amp;&amp; mons-&gt;wont_attack()</a>
+<a name="ln482">                                &amp;&amp; invalid_monster_index(mons-&gt;foe)) ?</a>
+<a name="ln483">                                    &amp;you : mons-&gt;get_foe();</a>
+<a name="ln484">    const monster* m_foe = foe ? foe-&gt;as_monster() : nullptr;</a>
+<a name="ln485"> </a>
+<a name="ln486">    if (!foe || foe-&gt;is_player() || mons-&gt;wont_attack())</a>
+<a name="ln487">    {</a>
+<a name="ln488">        // Animals only look at the current player form, smart monsters at the</a>
+<a name="ln489">        // actual player genus.</a>
+<a name="ln490">        if (is_player_same_genus(mons-&gt;type))</a>
+<a name="ln491">            prefixes.emplace_back(&quot;related&quot;); // maybe overkill for Beogh?</a>
+<a name="ln492">    }</a>
+<a name="ln493">    else</a>
+<a name="ln494">    {</a>
+<a name="ln495">        if (mons_genus(mons-&gt;mons_species()) ==</a>
+<a name="ln496">            mons_genus(foe-&gt;mons_species()))</a>
+<a name="ln497">        {</a>
+<a name="ln498">            prefixes.emplace_back(&quot;related&quot;);</a>
+<a name="ln499">        }</a>
+<a name="ln500">    }</a>
+<a name="ln501"> </a>
+<a name="ln502">    const god_type god = foe               ? foe-&gt;deity() :</a>
+<a name="ln503">                         crawl_state.game_is_arena() ? GOD_NO_GOD</a>
+<a name="ln504">                                           : you.religion;</a>
+<a name="ln505"> </a>
+<a name="ln506">    // Add Beogh to list of prefixes for orcs (hostile and friendly) if you</a>
+<a name="ln507">    // worship Beogh. (This assumes your being an orc, so might have odd</a>
+<a name="ln508">    // results in wizard mode.) Don't count charmed or summoned orcs.</a>
+<a name="ln509">    if (you_worship(GOD_BEOGH) &amp;&amp; mons_genus(mons-&gt;type) == MONS_ORC)</a>
+<a name="ln510">    {</a>
+<a name="ln511">        if (!mons-&gt;has_ench(ENCH_CHARM) &amp;&amp; !mons-&gt;is_summoned())</a>
+<a name="ln512">        {</a>
+<a name="ln513">            if (mons-&gt;god == GOD_BEOGH)</a>
+<a name="ln514">                prefixes.emplace_back(&quot;Beogh&quot;);</a>
+<a name="ln515">            else</a>
+<a name="ln516">                prefixes.emplace_back(&quot;unbeliever&quot;);</a>
+<a name="ln517">        }</a>
+<a name="ln518">    }</a>
+<a name="ln519">    else if (mons-&gt;type == MONS_PLAYER_GHOST)</a>
+<a name="ln520">    {</a>
+<a name="ln521">        // Use the *ghost's* religion, to get speech about its god. Only</a>
+<a name="ln522">        // sometimes, though, so we can get skill-based messages as well.</a>
+<a name="ln523">        if (coinflip())</a>
+<a name="ln524">            prefixes.push_back(god_name(mons-&gt;ghost-&gt;religion));</a>
+<a name="ln525">    }</a>
+<a name="ln526">    else</a>
+<a name="ln527">    {</a>
+<a name="ln528">        // Include our current god's name, too. This means that uniques</a>
+<a name="ln529">        // can have speech that is tailored to your specific god.</a>
+<a name="ln530">        if (is_good_god(god) &amp;&amp; coinflip())</a>
+<a name="ln531">            prefixes.emplace_back(&quot;good god&quot;);</a>
+<a name="ln532">        else</a>
+<a name="ln533">            prefixes.push_back(god_name(you.religion));</a>
+<a name="ln534">    }</a>
+<a name="ln535"> </a>
+<a name="ln536">    // Include our current branch, too. It can make speech vary by branch for</a>
+<a name="ln537">    // uniques and other monsters! Specifically, Donald.</a>
+<a name="ln538">    prefixes.emplace_back(branches[you.where_are_you].abbrevname);</a>
+<a name="ln539"> </a>
+<a name="ln540">    // Include a prefix for the orb run.</a>
+<a name="ln541">    if (player_has_orb())</a>
+<a name="ln542">        prefixes.emplace_back(&quot;orb&quot;);</a>
+<a name="ln543"> </a>
+<a name="ln544">#ifdef DEBUG_MONSPEAK</a>
+<a name="ln545">    {</a>
+<a name="ln546">        string prefix;</a>
+<a name="ln547">        const int size = prefixes.size();</a>
+<a name="ln548">        for (int i = 0; i &lt; size; i++)</a>
+<a name="ln549">        {</a>
+<a name="ln550">            prefix += prefixes[i];</a>
+<a name="ln551">            prefix += &quot; &quot;;</a>
+<a name="ln552">        }</a>
+<a name="ln553">        dprf(DIAG_SPEECH, &quot;monster speech lookup for %s: prefix = %s&quot;,</a>
+<a name="ln554">             mons-&gt;name(DESC_PLAIN).c_str(), prefix.c_str());</a>
+<a name="ln555">    }</a>
+<a name="ln556">#endif</a>
+<a name="ln557"> </a>
+<a name="ln558">    const bool no_foe      = (foe == nullptr);</a>
+<a name="ln559">    const bool no_player   = crawl_state.game_is_arena()</a>
+<a name="ln560">                             || (!mons-&gt;wont_attack()</a>
+<a name="ln561">                                 &amp;&amp; (!foe || !foe-&gt;is_player()));</a>
+<a name="ln562">    const bool mon_foe     = (m_foe != nullptr);</a>
+<a name="ln563">    const bool no_god      = no_foe || (mon_foe &amp;&amp; foe-&gt;deity() == GOD_NO_GOD);</a>
+<a name="ln564">    const bool named_foe   = !no_foe &amp;&amp; (!mon_foe || (m_foe-&gt;is_named()</a>
+<a name="ln565">                                &amp;&amp; m_foe-&gt;type != MONS_ROYAL_JELLY));</a>
+<a name="ln566">    const bool no_foe_name = !named_foe</a>
+<a name="ln567">                             || (mon_foe &amp;&amp; (m_foe-&gt;flags &amp; MF_NAME_MASK));</a>
+<a name="ln568"> </a>
+<a name="ln569">    string msg;</a>
+<a name="ln570"> </a>
+<a name="ln571">    // First, try its exact name.</a>
+<a name="ln572">    if (mons-&gt;type == MONS_PLAYER_GHOST)</a>
+<a name="ln573">    {</a>
+<a name="ln574">        if (one_chance_in(5))</a>
+<a name="ln575">        {</a>
+<a name="ln576">            const ghost_demon &amp;ghost = *(mons-&gt;ghost);</a>
+<a name="ln577">            string ghost_skill  = skill_name(ghost.best_skill);</a>
+<a name="ln578">            vector&lt;string&gt; with_skill = prefixes;</a>
+<a name="ln579">            with_skill.push_back(ghost_skill);</a>
+<a name="ln580">            msg = _get_speak_string(with_skill, &quot;player ghost&quot;, mons,</a>
+<a name="ln581">                                    no_player, no_foe, no_foe_name, no_god,</a>
+<a name="ln582">                                    unseen);</a>
+<a name="ln583">        }</a>
+<a name="ln584">        if (msg.empty())</a>
+<a name="ln585">        {</a>
+<a name="ln586">            msg = _get_speak_string(prefixes, &quot;player ghost&quot;, mons,</a>
+<a name="ln587">                                    no_player, no_foe, no_foe_name, no_god,</a>
+<a name="ln588">                                    unseen);</a>
+<a name="ln589">        }</a>
+<a name="ln590">    }</a>
+<a name="ln591">    else if (mons-&gt;type == MONS_PANDEMONIUM_LORD)</a>
+<a name="ln592">    {</a>
+<a name="ln593">        // Pandemonium demons have randomly generated names, so use</a>
+<a name="ln594">        // &quot;pandemonium lord&quot; instead.</a>
+<a name="ln595">        msg = _get_speak_string(prefixes, &quot;pandemonium lord&quot;, mons,</a>
+<a name="ln596">                                no_player, no_foe, no_foe_name, no_god,</a>
+<a name="ln597">                                unseen);</a>
+<a name="ln598">    }</a>
+<a name="ln599">    else</a>
+<a name="ln600">    {</a>
+<a name="ln601">        if (msg.empty() &amp;&amp; mons-&gt;props.exists(&quot;dbname&quot;))</a>
+<a name="ln602">        {</a>
+<a name="ln603">            msg = _get_speak_string(prefixes,</a>
+<a name="ln604">                                     mons-&gt;props[&quot;dbname&quot;].get_string(),</a>
+<a name="ln605">                                     mons, no_player, no_foe, no_foe_name,</a>
+<a name="ln606">                                     no_god, unseen);</a>
+<a name="ln607"> </a>
+<a name="ln608">            if (msg.empty())</a>
+<a name="ln609">            {</a>
+<a name="ln610">                // Try again without the prefixes if the key is empty. Vaults</a>
+<a name="ln611">                // *really* want monsters to use the key specified, rather than</a>
+<a name="ln612">                // the key with prefixes.</a>
+<a name="ln613">                vector&lt;string&gt; faux_prefixes;</a>
+<a name="ln614">                msg = _get_speak_string(faux_prefixes,</a>
+<a name="ln615">                                     mons-&gt;props[&quot;dbname&quot;].get_string(),</a>
+<a name="ln616">                                     mons, no_player, no_foe, no_foe_name,</a>
+<a name="ln617">                                     no_god, unseen);</a>
+<a name="ln618">            }</a>
+<a name="ln619">        }</a>
+<a name="ln620"> </a>
+<a name="ln621">        // If the monster was originally a unique which has been polymorphed</a>
+<a name="ln622">        // into a non-unique, is its current monster type capable of using its</a>
+<a name="ln623">        // old speech?</a>
+<a name="ln624">        if (!mons-&gt;mname.empty() &amp;&amp; mons-&gt;can_speak() &amp;&amp; msg.empty())</a>
+<a name="ln625">        {</a>
+<a name="ln626">            msg = _get_speak_string(prefixes, mons-&gt;name(DESC_PLAIN),</a>
+<a name="ln627">                                    mons, no_player, no_foe, no_foe_name,</a>
+<a name="ln628">                                    no_god, unseen);</a>
+<a name="ln629">        }</a>
+<a name="ln630"> </a>
+<a name="ln631">        if (msg.empty())</a>
+<a name="ln632">        {</a>
+<a name="ln633">            msg = _get_speak_string(prefixes, mons-&gt;base_name(DESC_PLAIN),</a>
+<a name="ln634">                                    mons, no_player, no_foe, no_foe_name,</a>
+<a name="ln635">                                    no_god, unseen);</a>
+<a name="ln636">        }</a>
+<a name="ln637">    }</a>
+<a name="ln638"> </a>
+<a name="ln639">    // The exact name brought no results, try monster genus.</a>
+<a name="ln640">    if ((msg.empty() || msg == &quot;__NEXT&quot;)</a>
+<a name="ln641">        &amp;&amp; mons_genus(mons-&gt;type) != mons-&gt;type)</a>
+<a name="ln642">    {</a>
+<a name="ln643">        msg = _get_speak_string(prefixes,</a>
+<a name="ln644">                       mons_type_name(mons_genus(mons-&gt;type), DESC_PLAIN),</a>
+<a name="ln645">                       mons, no_player, no_foe, no_foe_name, no_god,</a>
+<a name="ln646">                       unseen);</a>
+<a name="ln647">    }</a>
+<a name="ln648"> </a>
+<a name="ln649">    // __NONE means to be silent, and __NEXT means to try the next,</a>
+<a name="ln650">    // less exact method of describing the monster to find a speech</a>
+<a name="ln651">    // string.</a>
+<a name="ln652"> </a>
+<a name="ln653">    if (msg == &quot;__NONE&quot;)</a>
+<a name="ln654">    {</a>
+<a name="ln655">#ifdef DEBUG_MONSPEAK</a>
+<a name="ln656">        dprf(DIAG_SPEECH, &quot;result: \&quot;__NONE\&quot;!&quot;);</a>
+<a name="ln657">#endif</a>
+<a name="ln658">        return false;</a>
+<a name="ln659">    }</a>
+<a name="ln660"> </a>
+<a name="ln661">    // Now that we're not dealing with a specific monster name, include</a>
+<a name="ln662">    // whether or not it can move in the prefix.</a>
+<a name="ln663">    if (mons-&gt;is_stationary())</a>
+<a name="ln664">        prefixes.insert(prefixes.begin(), &quot;stationary&quot;);</a>
+<a name="ln665"> </a>
+<a name="ln666">    // Names for the exact monster name and its genus have failed,</a>
+<a name="ln667">    // so try the monster's glyph/symbol.</a>
+<a name="ln668">    if (msg.empty() || msg == &quot;__NEXT&quot;)</a>
+<a name="ln669">    {</a>
+<a name="ln670">        string key = &quot;'&quot;;</a>
+<a name="ln671"> </a>
+<a name="ln672">        // Database keys are case-insensitve.</a>
+<a name="ln673">        if (isaupper(mons_base_char(mons-&gt;type)))</a>
+<a name="ln674">            key += &quot;cap-&quot;;</a>
+<a name="ln675"> </a>
+<a name="ln676">        key += mons_base_char(mons-&gt;type);</a>
+<a name="ln677">        key += &quot;'&quot;;</a>
+<a name="ln678">        msg = _get_speak_string(prefixes, key, mons, no_player, no_foe,</a>
+<a name="ln679">                                no_foe_name, no_god, unseen);</a>
+<a name="ln680">    }</a>
+<a name="ln681"> </a>
+<a name="ln682">    if (msg == &quot;__NONE&quot;)</a>
+<a name="ln683">    {</a>
+<a name="ln684">#ifdef DEBUG_MONSPEAK</a>
+<a name="ln685">        dprf(DIAG_SPEECH, &quot;result: \&quot;__NONE\&quot;!&quot;);</a>
+<a name="ln686">#endif</a>
+<a name="ln687">        return false;</a>
+<a name="ln688">    }</a>
+<a name="ln689"> </a>
+<a name="ln690">    if (mons_intel(*mons) &lt; I_HUMAN)</a>
+<a name="ln691">        prefixes.insert(prefixes.begin(), &quot;stupid&quot;);</a>
+<a name="ln692"> </a>
+<a name="ln693">    const mon_body_shape shape = get_mon_shape(*mons);</a>
+<a name="ln694">    if (msg.empty() || msg == &quot;__NEXT&quot;)</a>
+<a name="ln695">    {</a>
+<a name="ln696">        msg = _get_speak_string(prefixes, get_mon_shape_str(shape), mons,</a>
+<a name="ln697">                                no_player, no_foe, no_foe_name, no_god,</a>
+<a name="ln698">                                unseen);</a>
+<a name="ln699">    }</a>
+<a name="ln700"> </a>
+<a name="ln701">    if (msg == &quot;__NONE&quot;)</a>
+<a name="ln702">    {</a>
+<a name="ln703">#ifdef DEBUG_MONSPEAK</a>
+<a name="ln704">        dprf(DIAG_SPEECH, &quot;result: \&quot;__NONE\&quot;!&quot;);</a>
+<a name="ln705">#endif</a>
+<a name="ln706">        return false;</a>
+<a name="ln707">    }</a>
+<a name="ln708"> </a>
+<a name="ln709">    // If we failed to get a message with a partial/hybrid humanoid, try moving</a>
+<a name="ln710">    // closer to plain humanoid.</a>
+<a name="ln711">    if ((msg.empty() || msg == &quot;__NEXT&quot;) &amp;&amp; mon_shape_is_humanoid(shape)</a>
+<a name="ln712">        &amp;&amp; shape != MON_SHAPE_HUMANOID)</a>
+<a name="ln713">    {</a>
+<a name="ln714">        // If a humanoid monster has both wings and a tail, try removing</a>
+<a name="ln715">        // one and then the other to see if we get any results.</a>
+<a name="ln716">        if (shape == MON_SHAPE_HUMANOID_WINGED_TAILED)</a>
+<a name="ln717">        {</a>
+<a name="ln718">            msg = _get_speak_string(prefixes,</a>
+<a name="ln719">                                    get_mon_shape_str(MON_SHAPE_HUMANOID_TAILED),</a>
+<a name="ln720">                                    mons, no_player, no_foe, no_foe_name,</a>
+<a name="ln721">                                    no_god, unseen);</a>
+<a name="ln722"> </a>
+<a name="ln723">            // Only be silent if both tailed and winged return __NONE.</a>
+<a name="ln724">            if (msg.empty() || msg == &quot;__NONE&quot; || msg == &quot;__NEXT&quot;)</a>
+<a name="ln725">            {</a>
+<a name="ln726">                string msg2;</a>
+<a name="ln727">                msg2 = _get_speak_string(prefixes,</a>
+<a name="ln728">                                         get_mon_shape_str(MON_SHAPE_HUMANOID_WINGED),</a>
+<a name="ln729">                                         mons, no_player, no_foe,</a>
+<a name="ln730">                                         no_foe_name, no_god, unseen);</a>
+<a name="ln731"> </a>
+<a name="ln732">                if (msg == &quot;__NONE&quot; &amp;&amp; msg2 == &quot;__NONE&quot;)</a>
+<a name="ln733">                {</a>
+<a name="ln734">#ifdef DEBUG_MONSPEAK</a>
+<a name="ln735">                    dprf(DIAG_SPEECH, &quot;result: \&quot;__NONE\&quot;!&quot;);</a>
+<a name="ln736">#endif</a>
+<a name="ln737">                    return false;</a>
+<a name="ln738">                }</a>
+<a name="ln739"> </a>
+<a name="ln740">                if (msg2 == &quot;__NONE&quot;)</a>
+<a name="ln741">                    msg2 = &quot;&quot;;</a>
+<a name="ln742"> </a>
+<a name="ln743">                msg = msg2;</a>
+<a name="ln744">            }</a>
+<a name="ln745">        }</a>
+<a name="ln746"> </a>
+<a name="ln747">        if (msg.empty() || msg == &quot;__NONE&quot; || msg == &quot;__NEXT&quot;)</a>
+<a name="ln748">        {</a>
+<a name="ln749">            msg = _get_speak_string(prefixes,</a>
+<a name="ln750">                                    get_mon_shape_str(MON_SHAPE_HUMANOID),</a>
+<a name="ln751">                                    mons, no_player, no_foe, no_foe_name,</a>
+<a name="ln752">                                    no_god, unseen);</a>
+<a name="ln753">        }</a>
+<a name="ln754">    }</a>
+<a name="ln755">    if (msg.empty() || msg == &quot;__NONE&quot;)</a>
+<a name="ln756">    {</a>
+<a name="ln757">#ifdef DEBUG_MONSPEAK</a>
+<a name="ln758">        dprf(DIAG_SPEECH, &quot;final result: %s!&quot;,</a>
+<a name="ln759">             (msg.empty() ? &quot;empty&quot; : &quot;\&quot;__NONE\&quot;&quot;));</a>
+<a name="ln760">#endif</a>
+<a name="ln761">        return false;</a>
+<a name="ln762">    }</a>
+<a name="ln763"> </a>
+<a name="ln764">    if (msg == &quot;__NEXT&quot;)</a>
+<a name="ln765">    {</a>
+<a name="ln766">        msg::streams(MSGCH_DIAGNOSTICS)</a>
+<a name="ln767">            &lt;&lt; &quot;__NEXT used by shape-based speech string for monster '&quot;</a>
+<a name="ln768">            &lt;&lt; mons-&gt;name(DESC_PLAIN) &lt;&lt; &quot;'&quot; &lt;&lt; endl;</a>
+<a name="ln769">        return false;</a>
+<a name="ln770">    }</a>
+<a name="ln771"> </a>
+<a name="ln772">    return mons_speaks_msg(mons, msg, MSGCH_TALK, silence);</a>
+<a name="ln773">}</a>
+<a name="ln774"> </a>
+<a name="ln775">bool mons_speaks_msg(monster* mons, const string &amp;msg,</a>
+<a name="ln776">                     const msg_channel_type def_chan, bool silence)</a>
+<a name="ln777">{</a>
+<a name="ln778">    if (!you.see_cell(mons-&gt;pos()))</a>
+<a name="ln779">        return false;</a>
+<a name="ln780"> </a>
+<a name="ln781">    mon_acting mact(mons);</a>
+<a name="ln782"> </a>
+<a name="ln783">    // We have a speech string, now parse and act on it.</a>
+<a name="ln784">    const string _msg = do_mon_str_replacements(msg, *mons);</a>
+<a name="ln785">    const vector&lt;string&gt; lines = split_string(&quot;\n&quot;, _msg);</a>
+<a name="ln786"> </a>
+<a name="ln787">    bool noticed = false;       // Any messages actually printed?</a>
+<a name="ln788"> </a>
+<a name="ln789">    if (mons-&gt;has_ench(ENCH_MUTE))</a>
+<a name="ln790">        silence = true;</a>
+<a name="ln791"> </a>
+<a name="ln792">    for (string line : lines)</a>
+<a name="ln793">    {</a>
+<a name="ln794">        // This function is a little bit of a problem for the message</a>
+<a name="ln795">        // channels since some of the messages it generates are &quot;fake&quot;</a>
+<a name="ln796">        // warning to scare the player. In order to accommodate this</a>
+<a name="ln797">        // intent, we're falsely categorizing various things in the</a>
+<a name="ln798">        // function as spells and danger warning... everything else</a>
+<a name="ln799">        // just goes into the talk channel -- bwr</a>
+<a name="ln800">        // [jpeg] Added MSGCH_TALK_VISUAL for silent &quot;chatter&quot;.</a>
+<a name="ln801">        msg_channel_type msg_type = def_chan;</a>
+<a name="ln802"> </a>
+<a name="ln803">        if (strip_channel_prefix(line, msg_type, silence))</a>
+<a name="ln804">        {</a>
+<a name="ln805">            if (msg_type == MSGCH_MONSTER_SPELL &amp;&amp; mons-&gt;friendly())</a>
+<a name="ln806">                msg_type = MSGCH_FRIEND_SPELL;</a>
+<a name="ln807">            if (msg_type == MSGCH_MONSTER_ENCHANT &amp;&amp; mons-&gt;friendly())</a>
+<a name="ln808">                msg_type = MSGCH_FRIEND_ENCHANT;</a>
+<a name="ln809">            if (line.empty())</a>
+<a name="ln810">                continue;</a>
+<a name="ln811">        }</a>
+<a name="ln812"> </a>
+<a name="ln813">        const bool old_noticed = noticed;</a>
+<a name="ln814">        noticed = true;         // Only one case is different.</a>
+<a name="ln815"> </a>
+<a name="ln816">        // Except for VISUAL, none of the above influence these.</a>
+<a name="ln817">        if (msg_type == MSGCH_TALK_VISUAL)</a>
+<a name="ln818">            silence = false;</a>
+<a name="ln819"> </a>
+<a name="ln820">        if (msg_type == MSGCH_TALK_VISUAL &amp;&amp; !you.can_see(*mons))</a>
+<a name="ln821">            noticed = old_noticed;</a>
+<a name="ln822">        else</a>
+<a name="ln823">        {</a>
+<a name="ln824">            if (you.can_see(*mons))</a>
+<a name="ln825">                handle_seen_interrupt(mons);</a>
+<a name="ln826">            mprf(msg_type, &quot;%s&quot;, line.c_str());</a>
+<a name="ln827">        }</a>
+<a name="ln828">    }</a>
+<a name="ln829">    return noticed;</a>
+<a name="ln830">}</a>
+
+</code></pre>
+<div class="balloon" rel="417"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="601"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: msg.empty().</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

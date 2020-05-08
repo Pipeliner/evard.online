@@ -1,0 +1,498 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>sqldbm.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief dbm wrapper for SQLite</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;sqldbm.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cstring&gt;</a>
+<a name="ln11">#include &lt;fcntl.h&gt;</a>
+<a name="ln12">#include &lt;unistd.h&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;end.h&quot;</a>
+<a name="ln15">#include &quot;syscalls.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">#ifdef USE_SQLITE_DBM</a>
+<a name="ln18"> </a>
+<a name="ln19">class sqlite_retry_iterator</a>
+<a name="ln20">{</a>
+<a name="ln21">public:</a>
+<a name="ln22">    sqlite_retry_iterator(int _nretries = 50)</a>
+<a name="ln23">        : nretries(_nretries)</a>
+<a name="ln24">    {</a>
+<a name="ln25">    }</a>
+<a name="ln26"> </a>
+<a name="ln27">    operator bool () const</a>
+<a name="ln28">    {</a>
+<a name="ln29">        return nretries &gt; 0;</a>
+<a name="ln30">    }</a>
+<a name="ln31"> </a>
+<a name="ln32">    void check(int err)</a>
+<a name="ln33">    {</a>
+<a name="ln34">        if (err == SQLITE_BUSY)</a>
+<a name="ln35">        {</a>
+<a name="ln36">            --nretries;</a>
+<a name="ln37">            // Give the annoying process locking the db a little time</a>
+<a name="ln38">            // to finish whatever it's up to before we retry.</a>
+<a name="ln39">            usleep(1000);</a>
+<a name="ln40">        }</a>
+<a name="ln41">        else</a>
+<a name="ln42">            nretries = 0;</a>
+<a name="ln43">    }</a>
+<a name="ln44">private:</a>
+<a name="ln45">    int nretries;</a>
+<a name="ln46">};</a>
+<a name="ln47"> </a>
+<a name="ln48">SQL_DBM::SQL_DBM(const string &amp;dbname, bool _readonly, bool do_open)</a>
+<a name="ln49">    : error(), errc(SQLITE_OK), db(nullptr), s_insert(nullptr), s_remove(nullptr),</a>
+<a name="ln50">      s_query(nullptr), s_iterator(nullptr), dbfile(dbname), readonly(_readonly)</a>
+<a name="ln51">{</a>
+<a name="ln52">    if (do_open &amp;&amp; !dbfile.empty())</a>
+<a name="ln53">        open();</a>
+<a name="ln54">}</a>
+<a name="ln55"> </a>
+<a name="ln56">SQL_DBM::~SQL_DBM()</a>
+<a name="ln57">{</a>
+<a name="ln58">    close();</a>
+<a name="ln59">}</a>
+<a name="ln60"> </a>
+<a name="ln61">int SQL_DBM::ec(int err)</a>
+<a name="ln62">{</a>
+<a name="ln63">    if (err == SQLITE_OK)</a>
+<a name="ln64">        error.clear();</a>
+<a name="ln65">    else if (db)</a>
+<a name="ln66">        error = sqlite3_errmsg(db);</a>
+<a name="ln67">    else</a>
+<a name="ln68">        error = &quot;Unknown error&quot;;</a>
+<a name="ln69"> </a>
+<a name="ln70">    return errc = err;</a>
+<a name="ln71">}</a>
+<a name="ln72"> </a>
+<a name="ln73">bool SQL_DBM::is_open() const</a>
+<a name="ln74">{</a>
+<a name="ln75">    return !!db;</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">int SQL_DBM::open(const string &amp;s)</a>
+<a name="ln79">{</a>
+<a name="ln80">    close();</a>
+<a name="ln81"> </a>
+<a name="ln82">    if (!s.empty())</a>
+<a name="ln83">        dbfile = s;</a>
+<a name="ln84"> </a>
+<a name="ln85">    if (dbfile.empty())</a>
+<a name="ln86">    {</a>
+<a name="ln87">        error = &quot;No filename!&quot;;</a>
+<a name="ln88">        return SQLITE_ERROR; // &quot;... or missing database&quot;</a>
+<a name="ln89">    }</a>
+<a name="ln90"> </a>
+<a name="ln91">    if (dbfile.find(&quot;.db&quot;) != dbfile.length() - 3)</a>
+<a name="ln92">        dbfile += &quot;.db&quot;;</a>
+<a name="ln93"> </a>
+<a name="ln94">/*</a>
+<a name="ln95">From SQLite's documentation:</a>
+<a name="ln96"> </a>
+<a name="ln97"># Note to Windows users: The encoding used for the filename argument of</a>
+<a name="ln98"># sqlite3_open() and sqlite3_open_v2() must be UTF-8, not whatever codepage</a>
+<a name="ln99"># is currently defined. Filenames containing international characters must</a>
+<a name="ln100"># be converted to UTF-8 prior to passing them into sqlite3_open() or</a>
+<a name="ln101"># sqlite3_open_v2().</a>
+<a name="ln102"> </a>
+<a name="ln103">... which saves us a lot of trouble.</a>
+<a name="ln104">*/</a>
+<a name="ln105">    if (ec(sqlite3_open_v2(</a>
+<a name="ln106">                dbfile.c_str(), &amp;db,</a>
+<a name="ln107">                readonly ? SQLITE_OPEN_READONLY :</a>
+<a name="ln108">                (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),</a>
+<a name="ln109">                nullptr</a>
+<a name="ln110">              )) != SQLITE_OK)</a>
+<a name="ln111">    {</a>
+<a name="ln112">        const string saveerr = error;</a>
+<a name="ln113">        const int serrc = errc;</a>
+<a name="ln114">        close();</a>
+<a name="ln115">        error = saveerr;</a>
+<a name="ln116">        errc  = serrc;</a>
+<a name="ln117">        return errc;</a>
+<a name="ln118">    }</a>
+<a name="ln119"> </a>
+<a name="ln120">    init_schema();</a>
+<a name="ln121">    return errc;</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">int SQL_DBM::init_schema()</a>
+<a name="ln125">{</a>
+<a name="ln126">    int err = ec(sqlite3_exec(</a>
+<a name="ln127">                  db,</a>
+<a name="ln128">                  &quot;CREATE TABLE dbm (key STRING UNIQUE PRIMARY KEY,&quot;</a>
+<a name="ln129">                  &quot;                  value STRING);&quot;,</a>
+<a name="ln130">                  nullptr,</a>
+<a name="ln131">                  nullptr,</a>
+<a name="ln132">                  nullptr));</a>
+<a name="ln133"> </a>
+<a name="ln134">    // Turn off auto-commit</a>
+<a name="ln135">    if (!readonly)</a>
+<a name="ln136">    {</a>
+<a name="ln137">        for (sqlite_retry_iterator ri; ri;</a>
+<a name="ln138">             ri.check(ec(sqlite3_exec(db, &quot;BEGIN;&quot;, nullptr, nullptr,</a>
+<a name="ln139">                                      nullptr))))</a>
+<a name="ln140">        {}</a>
+<a name="ln141">    }</a>
+<a name="ln142">    return err;</a>
+<a name="ln143">}</a>
+<a name="ln144"> </a>
+<a name="ln145">void SQL_DBM::close()</a>
+<a name="ln146">{</a>
+<a name="ln147">    if (db)</a>
+<a name="ln148">    {</a>
+<a name="ln149">        if (!readonly)</a>
+<a name="ln150">            sqlite3_exec(db, &quot;COMMIT;&quot;, nullptr, nullptr, nullptr);</a>
+<a name="ln151">        finalise_query(&amp;s_insert);</a>
+<a name="ln152">        finalise_query(&amp;s_remove);</a>
+<a name="ln153">        finalise_query(&amp;s_query);</a>
+<a name="ln154">        finalise_query(&amp;s_iterator);</a>
+<a name="ln155">        sqlite3_close(db);</a>
+<a name="ln156">        db = nullptr;</a>
+<a name="ln157">    }</a>
+<a name="ln158">}</a>
+<a name="ln159"> </a>
+<a name="ln160">int SQL_DBM::try_insert(const string &amp;key, const string &amp;value)</a>
+<a name="ln161">{</a>
+<a name="ln162">    if (init_insert() != SQLITE_OK)</a>
+<a name="ln163">        return errc;</a>
+<a name="ln164"> </a>
+<a name="ln165">    ec(sqlite3_bind_text(s_insert, 1, key.c_str(), -1, SQLITE_TRANSIENT));</a>
+<a name="ln166">    if (errc != SQLITE_OK)</a>
+<a name="ln167">        return errc;</a>
+<a name="ln168">    ec(sqlite3_bind_text(s_insert, 2, value.c_str(), -1, SQLITE_TRANSIENT));</a>
+<a name="ln169">    if (errc != SQLITE_OK)</a>
+<a name="ln170">        return errc;</a>
+<a name="ln171"> </a>
+<a name="ln172">    ec(sqlite3_step(s_insert));</a>
+<a name="ln173">    sqlite3_reset(s_insert);</a>
+<a name="ln174"> </a>
+<a name="ln175">    return errc;</a>
+<a name="ln176">}</a>
+<a name="ln177"> </a>
+<a name="ln178">int SQL_DBM::insert(const string &amp;key, const string &amp;value)</a>
+<a name="ln179">{</a>
+<a name="ln180">    for (sqlite_retry_iterator ri; ri;</a>
+<a name="ln181">         ri.check(do_insert(key, value)))</a>
+<a name="ln182">    {}</a>
+<a name="ln183">    return errc;</a>
+<a name="ln184">}</a>
+<a name="ln185"> </a>
+<a name="ln186">int SQL_DBM::do_insert(const string &amp;key, const string &amp;value)</a>
+<a name="ln187">{</a>
+<a name="ln188">    try_insert(key, value);</a>
+<a name="ln189">    if (errc != SQLITE_OK)</a>
+<a name="ln190">    {</a>
+<a name="ln191">        remove(key);</a>
+<a name="ln192">        try_insert(key, value);</a>
+<a name="ln193">    }</a>
+<a name="ln194">    return errc;</a>
+<a name="ln195">}</a>
+<a name="ln196"> </a>
+<a name="ln197">int SQL_DBM::init_insert()</a>
+<a name="ln198">{</a>
+<a name="ln199">    return s_insert ? SQLITE_OK :</a>
+<a name="ln200">        prepare_query(&amp;s_insert, &quot;INSERT INTO dbm VALUES (?, ?)&quot;);</a>
+<a name="ln201">}</a>
+<a name="ln202"> </a>
+<a name="ln203">int SQL_DBM::remove(const string &amp;key)</a>
+<a name="ln204">{</a>
+<a name="ln205">    if (init_remove() != SQLITE_OK)</a>
+<a name="ln206">        return errc;</a>
+<a name="ln207"> </a>
+<a name="ln208">    ec(sqlite3_bind_text(s_remove, 1, key.c_str(), -1, SQLITE_TRANSIENT));</a>
+<a name="ln209">    if (errc != SQLITE_OK)</a>
+<a name="ln210">        return errc;</a>
+<a name="ln211"> </a>
+<a name="ln212">    ec(sqlite3_step(s_remove));</a>
+<a name="ln213">    sqlite3_reset(s_remove);</a>
+<a name="ln214"> </a>
+<a name="ln215">    return errc;</a>
+<a name="ln216">}</a>
+<a name="ln217"> </a>
+<a name="ln218">int SQL_DBM::init_remove()</a>
+<a name="ln219">{</a>
+<a name="ln220">    return s_remove ? SQLITE_OK :</a>
+<a name="ln221">        prepare_query(&amp;s_remove, &quot;DELETE FROM dbm WHERE key = ?&quot;);</a>
+<a name="ln222">}</a>
+<a name="ln223"> </a>
+<a name="ln224">int SQL_DBM::do_query(const string &amp;key, string *result)</a>
+<a name="ln225">{</a>
+<a name="ln226">    if (init_query() != SQLITE_OK)</a>
+<a name="ln227">        return errc;</a>
+<a name="ln228"> </a>
+<a name="ln229">    if (ec(sqlite3_bind_text(s_query, 1, key.c_str(), -1, SQLITE_TRANSIENT))</a>
+<a name="ln230">        != SQLITE_OK)</a>
+<a name="ln231">    {</a>
+<a name="ln232">        return errc;</a>
+<a name="ln233">    }</a>
+<a name="ln234"> </a>
+<a name="ln235">    int err = SQLITE_OK;</a>
+<a name="ln236">    while ((err = ec(sqlite3_step(s_query))) == SQLITE_ROW)</a>
+<a name="ln237">        *result = (const char *) sqlite3_column_text(s_query, 0);</a>
+<a name="ln238"> </a>
+<a name="ln239">    sqlite3_reset(s_query);</a>
+<a name="ln240"> </a>
+<a name="ln241">    if (err == SQLITE_DONE)</a>
+<a name="ln242">        err = SQLITE_OK;</a>
+<a name="ln243"> </a>
+<a name="ln244">    return ec(err);</a>
+<a name="ln245">}</a>
+<a name="ln246"> </a>
+<a name="ln247">string SQL_DBM::query(const string &amp;key)</a>
+<a name="ln248">{</a>
+<a name="ln249">    string result;</a>
+<a name="ln250">    for (sqlite_retry_iterator ri; ri;</a>
+<a name="ln251">         ri.check(do_query(key, &amp;result)))</a>
+<a name="ln252">    {}</a>
+<a name="ln253">    return result;</a>
+<a name="ln254">}</a>
+<a name="ln255"> </a>
+<a name="ln256">unique_ptr&lt;string&gt; SQL_DBM::firstkey()</a>
+<a name="ln257">{</a>
+<a name="ln258">    if (init_iterator() != SQLITE_OK)</a>
+<a name="ln259">    {</a>
+<a name="ln260">        unique_ptr&lt;string&gt; result;</a>
+<a name="ln261">        return result;</a>
+<a name="ln262">    }</a>
+<a name="ln263"> </a>
+<a name="ln264">    return nextkey();</a>
+<a name="ln265">}</a>
+<a name="ln266"> </a>
+<a name="ln267">unique_ptr&lt;string&gt; SQL_DBM::nextkey()</a>
+<a name="ln268">{</a>
+<a name="ln269">    unique_ptr&lt;string&gt; result;</a>
+<a name="ln270">    if (s_iterator)</a>
+<a name="ln271">    {</a>
+<a name="ln272">        if (ec(sqlite3_step(s_iterator)) == SQLITE_ROW)</a>
+<a name="ln273">        {</a>
+<a name="ln274">            result.reset(</a>
+<a name="ln275">                new string((const char *) sqlite3_column_text(s_iterator, 0)));</a>
+<a name="ln276">        }</a>
+<a name="ln277">        else</a>
+<a name="ln278">            sqlite3_reset(s_iterator);</a>
+<a name="ln279">    }</a>
+<a name="ln280">    return result;</a>
+<a name="ln281">}</a>
+<a name="ln282"> </a>
+<a name="ln283">int SQL_DBM::init_query()</a>
+<a name="ln284">{</a>
+<a name="ln285">    return s_query ? SQLITE_OK :</a>
+<a name="ln286">        prepare_query(&amp;s_query, &quot;SELECT value FROM dbm WHERE key = ?&quot;);</a>
+<a name="ln287">}</a>
+<a name="ln288"> </a>
+<a name="ln289">int SQL_DBM::init_iterator()</a>
+<a name="ln290">{</a>
+<a name="ln291">    return s_iterator ? SQLITE_OK :</a>
+<a name="ln292">        prepare_query(&amp;s_iterator, &quot;SELECT key FROM dbm&quot;);</a>
+<a name="ln293">}</a>
+<a name="ln294"> </a>
+<a name="ln295">int SQL_DBM::finalise_query(sqlite3_stmt **q)</a>
+<a name="ln296">{</a>
+<a name="ln297">    if (!*q)</a>
+<a name="ln298">        return SQLITE_OK;</a>
+<a name="ln299"> </a>
+<a name="ln300">    sqlite3_reset(*q);</a>
+<a name="ln301">    int ret = ec(sqlite3_finalize(*q));</a>
+<a name="ln302">    *q = nullptr;</a>
+<a name="ln303"> </a>
+<a name="ln304">    return ret;</a>
+<a name="ln305">}</a>
+<a name="ln306"> </a>
+<a name="ln307">int SQL_DBM::prepare_query(sqlite3_stmt **q, const char *sql)</a>
+<a name="ln308">{</a>
+<a name="ln309">    if (*q)</a>
+<a name="ln310">        finalise_query(q);</a>
+<a name="ln311"> </a>
+<a name="ln312">    const char *query_tail;</a>
+<a name="ln313">#ifdef ANCIENT_SQLITE</a>
+<a name="ln314">    return ec(sqlite3_prepare(db, sql, -1, q, &amp;query_tail));</a>
+<a name="ln315">#else</a>
+<a name="ln316">    return ec(sqlite3_prepare_v2(db, sql, -1, q, &amp;query_tail));</a>
+<a name="ln317">#endif</a>
+<a name="ln318">}</a>
+<a name="ln319"> </a>
+<a name="ln320">////////////////////////////////////////////////////////////////////////</a>
+<a name="ln321"> </a>
+<a name="ln322">sql_datum::sql_datum() : dptr(nullptr), dsize(0), need_free(false)</a>
+<a name="ln323">{</a>
+<a name="ln324">}</a>
+<a name="ln325"> </a>
+<a name="ln326">sql_datum::sql_datum(const string &amp;s) : dptr(nullptr), dsize(s.length()),</a>
+<a name="ln327">                                        need_free(false)</a>
+<a name="ln328">{</a>
+<a name="ln329">    if ((dptr = new char [dsize]))</a>
+<a name="ln330">    {</a>
+<a name="ln331">        if (dsize)</a>
+<a name="ln332">            memcpy(dptr, s.c_str(), dsize);</a>
+<a name="ln333">        need_free = true;</a>
+<a name="ln334">    }</a>
+<a name="ln335">}</a>
+<a name="ln336"> </a>
+<a name="ln337">sql_datum::sql_datum(const sql_datum &amp;dat) : dptr(nullptr), dsize(0),</a>
+<a name="ln338">                     need_free(false)</a>
+<a name="ln339">{</a>
+<a name="ln340">    init_from(dat);</a>
+<a name="ln341">}</a>
+<a name="ln342"> </a>
+<a name="ln343">sql_datum::~sql_datum()</a>
+<a name="ln344">{</a>
+<a name="ln345">    reset();</a>
+<a name="ln346">}</a>
+<a name="ln347"> </a>
+<a name="ln348">sql_datum &amp;sql_datum::operator = (const sql_datum &amp;d)</a>
+<a name="ln349">{</a>
+<a name="ln350">    if (&amp;d != this)</a>
+<a name="ln351">    {</a>
+<a name="ln352">        reset();</a>
+<a name="ln353">        init_from(d);</a>
+<a name="ln354">    }</a>
+<a name="ln355">    return *this;</a>
+<a name="ln356">}</a>
+<a name="ln357"> </a>
+<a name="ln358">void sql_datum::reset()</a>
+<a name="ln359">{</a>
+<a name="ln360">    if (need_free)</a>
+<a name="ln361">        delete [] dptr;</a>
+<a name="ln362"> </a>
+<a name="ln363">    dptr = nullptr;</a>
+<a name="ln364">    dsize = 0;</a>
+<a name="ln365">}</a>
+<a name="ln366"> </a>
+<a name="ln367">void sql_datum::init_from(const sql_datum &amp;d)</a>
+<a name="ln368">{</a>
+<a name="ln369">    dsize = d.dsize;</a>
+<a name="ln370">    need_free = false;</a>
+<a name="ln371">    if (d.need_free)</a>
+<a name="ln372">    {</a>
+<a name="ln373">        if ((dptr = new char [dsize]))</a>
+<a name="ln374">        {</a>
+<a name="ln375">            if (dsize)</a>
+<a name="ln376">                memcpy(dptr, d.dptr, dsize);</a>
+<a name="ln377">            need_free = true;</a>
+<a name="ln378">        }</a>
+<a name="ln379">    }</a>
+<a name="ln380">    else</a>
+<a name="ln381">    {</a>
+<a name="ln382">        need_free = false;</a>
+<a name="ln383">        dptr      = d.dptr;</a>
+<a name="ln384">    }</a>
+<a name="ln385">}</a>
+<a name="ln386"> </a>
+<a name="ln387">string sql_datum::to_str() const</a>
+<a name="ln388">{</a>
+<a name="ln389">    return string(dptr, dsize);</a>
+<a name="ln390">}</a>
+<a name="ln391"> </a>
+<a name="ln392">////////////////////////////////////////////////////////////////////////</a>
+<a name="ln393"> </a>
+<a name="ln394">SQL_DBM *dbm_open(const char *filename, int mode, int)</a>
+<a name="ln395">{</a>
+<a name="ln396">    SQL_DBM *n = new SQL_DBM(filename, mode == O_RDONLY, true);</a>
+<a name="ln397">    if (!n-&gt;is_open())</a>
+<a name="ln398">    {</a>
+<a name="ln399">        delete n;</a>
+<a name="ln400">        return nullptr;</a>
+<a name="ln401">    }</a>
+<a name="ln402"> </a>
+<a name="ln403">    return n;</a>
+<a name="ln404">}</a>
+<a name="ln405"> </a>
+<a name="ln406">int dbm_close(SQL_DBM *db)</a>
+<a name="ln407">{</a>
+<a name="ln408">    delete db;</a>
+<a name="ln409">    return 0;</a>
+<a name="ln410">}</a>
+<a name="ln411"> </a>
+<a name="ln412">sql_datum dbm_fetch(SQL_DBM *db, const sql_datum &amp;key)</a>
+<a name="ln413">{</a>
+<a name="ln414">    string ans = db-&gt;query(string(key.dptr, key.dsize));</a>
+<a name="ln415">    return sql_datum(ans);</a>
+<a name="ln416">}</a>
+<a name="ln417"> </a>
+<a name="ln418">static sql_datum dbm_key(SQL_DBM *db, unique_ptr&lt;string&gt; (SQL_DBM::*key)())</a>
+<a name="ln419">{</a>
+<a name="ln420">    unique_ptr&lt;string&gt; res = (db-&gt;*key)();</a>
+<a name="ln421">    if (res)</a>
+<a name="ln422">        return sql_datum(*res);</a>
+<a name="ln423">    else</a>
+<a name="ln424">    {</a>
+<a name="ln425">        sql_datum dummy;</a>
+<a name="ln426">        return dummy;</a>
+<a name="ln427">    }</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">sql_datum dbm_firstkey(SQL_DBM *db)</a>
+<a name="ln431">{</a>
+<a name="ln432">    return dbm_key(db, &amp;SQL_DBM::firstkey);</a>
+<a name="ln433">}</a>
+<a name="ln434"> </a>
+<a name="ln435">sql_datum dbm_nextkey(SQL_DBM *db)</a>
+<a name="ln436">{</a>
+<a name="ln437">    return dbm_key(db, &amp;SQL_DBM::nextkey);</a>
+<a name="ln438">}</a>
+<a name="ln439"> </a>
+<a name="ln440">int dbm_store(SQL_DBM *db, const sql_datum &amp;key, const sql_datum &amp;value, int)</a>
+<a name="ln441">{</a>
+<a name="ln442">    int err = db-&gt;insert(key.to_str(), value.to_str());</a>
+<a name="ln443">    if (err == SQLITE_DONE || err == SQLITE_CONSTRAINT)</a>
+<a name="ln444">        err = SQLITE_OK;</a>
+<a name="ln445">    else</a>
+<a name="ln446">        end(1, false, &quot;%d: %s&quot;, db-&gt;errc, db-&gt;error.c_str());</a>
+<a name="ln447">    return err;</a>
+<a name="ln448">}</a>
+<a name="ln449"> </a>
+<a name="ln450">#endif // USE_SQLITE_DBM</a>
+
+</code></pre>
+<div class="balloon" rel="261"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v614/" target="_blank">V614</a> The 'result' smart pointer is utilized immediately after being declared or reset. It is suspicious that no value was assigned to it.</p></div>
+<div class="balloon" rel="329"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v668/" target="_blank">V668</a> There is no sense in testing the 'dptr' pointer against null, as the memory was allocated using the 'new' operator. The exception will be generated in the case of memory allocation error.</p></div>
+<div class="balloon" rel="373"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v668/" target="_blank">V668</a> There is no sense in testing the 'dptr' pointer against null, as the memory was allocated using the 'new' operator. The exception will be generated in the case of memory allocation error.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

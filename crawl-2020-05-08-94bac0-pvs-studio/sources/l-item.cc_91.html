@@ -1,0 +1,1738 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>l-item.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*** Item handling functions and type.</a>
+<a name="ln2"> * @module items</a>
+<a name="ln3"> */</a>
+<a name="ln4">#include &quot;AppHdr.h&quot;</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;l-libs.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &lt;algorithm&gt;</a>
+<a name="ln9">#include &lt;sstream&gt;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &quot;adjust.h&quot;</a>
+<a name="ln12">#include &quot;artefact.h&quot;</a>
+<a name="ln13">#include &quot;cluautil.h&quot;</a>
+<a name="ln14">#include &quot;colour.h&quot;</a>
+<a name="ln15">#include &quot;coord.h&quot;</a>
+<a name="ln16">#include &quot;env.h&quot;</a>
+<a name="ln17">#include &quot;food.h&quot;</a>
+<a name="ln18">#include &quot;invent.h&quot;</a>
+<a name="ln19">#include &quot;item-prop.h&quot;</a>
+<a name="ln20">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln21">#include &quot;items.h&quot;</a>
+<a name="ln22">#include &quot;item-use.h&quot;</a>
+<a name="ln23">#include &quot;libutil.h&quot;</a>
+<a name="ln24">#include &quot;mon-util.h&quot;</a>
+<a name="ln25">#include &quot;output.h&quot;</a>
+<a name="ln26">#include &quot;player.h&quot;</a>
+<a name="ln27">#include &quot;prompt.h&quot;</a>
+<a name="ln28">#include &quot;shopping.h&quot;</a>
+<a name="ln29">#include &quot;skills.h&quot;</a>
+<a name="ln30">#include &quot;spl-book.h&quot;</a>
+<a name="ln31">#include &quot;spl-util.h&quot;</a>
+<a name="ln32">#include &quot;stash.h&quot;</a>
+<a name="ln33">#include &quot;stringutil.h&quot;</a>
+<a name="ln34">#include &quot;throw.h&quot;</a>
+<a name="ln35"> </a>
+<a name="ln36">struct item_wrapper</a>
+<a name="ln37">{</a>
+<a name="ln38">    item_def *item;</a>
+<a name="ln39">    bool temp; // whether `item` is being memory managed by this object or</a>
+<a name="ln40">               // elsewhere; if true, will be deleted on gc.</a>
+<a name="ln41">    int turn;</a>
+<a name="ln42"> </a>
+<a name="ln43">    bool valid(lua_State *ls) const</a>
+<a name="ln44">    {</a>
+<a name="ln45">        // TODO: under what circumstances will dlua actually need to deal with</a>
+<a name="ln46">        // wrapped items that were created on a different turn?</a>
+<a name="ln47">        return item &amp;&amp; (!CLua::get_vm(ls).managed_vm || turn == you.num_turns);</a>
+<a name="ln48">    }</a>
+<a name="ln49">};</a>
+<a name="ln50"> </a>
+<a name="ln51">void clua_push_item(lua_State *ls, item_def *item)</a>
+<a name="ln52">{</a>
+<a name="ln53">    item_wrapper *iw = clua_new_userdata&lt;item_wrapper&gt;(ls, ITEM_METATABLE);</a>
+<a name="ln54">    iw-&gt;item = item;</a>
+<a name="ln55">    iw-&gt;temp = false;</a>
+<a name="ln56">    iw-&gt;turn = you.num_turns;</a>
+<a name="ln57">}</a>
+<a name="ln58"> </a>
+<a name="ln59">// Push a (wrapped) temporary item_def. A copy of the item will be allocated,</a>
+<a name="ln60">// then deleted when the wrapper is GCed.</a>
+<a name="ln61">static void _clua_push_item_temp(lua_State *ls, const item_def &amp;item)</a>
+<a name="ln62">{</a>
+<a name="ln63">    item_wrapper *iw = clua_new_userdata&lt;item_wrapper&gt;(ls, ITEM_METATABLE);</a>
+<a name="ln64">    iw-&gt;item = new item_def(item);</a>
+<a name="ln65">    iw-&gt;temp = true;</a>
+<a name="ln66">    iw-&gt;turn = you.num_turns;</a>
+<a name="ln67">}</a>
+<a name="ln68"> </a>
+<a name="ln69">item_def *clua_get_item(lua_State *ls, int ndx)</a>
+<a name="ln70">{</a>
+<a name="ln71">    item_wrapper *iwrap =</a>
+<a name="ln72">        clua_get_userdata&lt;item_wrapper&gt;(ls, ITEM_METATABLE, ndx);</a>
+<a name="ln73">    if (!iwrap-&gt;valid(ls))</a>
+<a name="ln74">        luaL_error(ls, &quot;Invalid item&quot;);</a>
+<a name="ln75">    return iwrap-&gt;item;</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">void lua_push_floor_items(lua_State *ls, int link)</a>
+<a name="ln79">{</a>
+<a name="ln80">    lua_newtable(ls);</a>
+<a name="ln81">    int index = 0;</a>
+<a name="ln82">    for (; link != NON_ITEM; link = mitm[link].link)</a>
+<a name="ln83">    {</a>
+<a name="ln84">        clua_push_item(ls, &amp;mitm[link]);</a>
+<a name="ln85">        lua_rawseti(ls, -2, ++index);</a>
+<a name="ln86">    }</a>
+<a name="ln87">}</a>
+<a name="ln88"> </a>
+<a name="ln89">static void _lua_push_inv_items(lua_State *ls = nullptr)</a>
+<a name="ln90">{</a>
+<a name="ln91">    if (!ls)</a>
+<a name="ln92">        ls = clua.state();</a>
+<a name="ln93">    lua_newtable(ls);</a>
+<a name="ln94">    int index = 0;</a>
+<a name="ln95">    for (item_def &amp;item : you.inv)</a>
+<a name="ln96">    {</a>
+<a name="ln97">        if (item.defined())</a>
+<a name="ln98">        {</a>
+<a name="ln99">            clua_push_item(ls, &amp;item);</a>
+<a name="ln100">            lua_rawseti(ls, -2, ++index);</a>
+<a name="ln101">        }</a>
+<a name="ln102">    }</a>
+<a name="ln103">}</a>
+<a name="ln104"> </a>
+<a name="ln105">#define IDEF(name)                                                      \</a>
+<a name="ln106">    static int l_item_##name(lua_State *ls, item_def *item)             \</a>
+<a name="ln107"> </a>
+<a name="ln108">#define IDEFN(name, closure)                    \</a>
+<a name="ln109">    static int l_item_##name(lua_State *ls, item_def *item) \</a>
+<a name="ln110">    {                                                                   \</a>
+<a name="ln111">        clua_push_item(ls, item);                                            \</a>
+<a name="ln112">        lua_pushcclosure(ls, l_item_##closure, 1);                      \</a>
+<a name="ln113">        return 1;                                                     \</a>
+<a name="ln114">    }</a>
+<a name="ln115"> </a>
+<a name="ln116">#define ITEM(name, ndx) \</a>
+<a name="ln117">    item_def *name = clua_get_item(ls, ndx)</a>
+<a name="ln118"> </a>
+<a name="ln119">#define UDATA_ITEM(name) ITEM(name, lua_upvalueindex(1))</a>
+<a name="ln120"> </a>
+<a name="ln121">/*** Information and interaction with a single item.</a>
+<a name="ln122"> * @type Item</a>
+<a name="ln123"> */</a>
+<a name="ln124"> </a>
+<a name="ln125">static int l_item_do_wield(lua_State *ls)</a>
+<a name="ln126">{</a>
+<a name="ln127">    if (you.turn_is_over)</a>
+<a name="ln128">        return 0;</a>
+<a name="ln129"> </a>
+<a name="ln130">    UDATA_ITEM(item);</a>
+<a name="ln131"> </a>
+<a name="ln132">    int slot = -1;</a>
+<a name="ln133">    if (item &amp;&amp; item-&gt;defined() &amp;&amp; in_inventory(*item))</a>
+<a name="ln134">        slot = item-&gt;link;</a>
+<a name="ln135">    bool res = wield_weapon(true, slot);</a>
+<a name="ln136">    lua_pushboolean(ls, res);</a>
+<a name="ln137">    return 1;</a>
+<a name="ln138">}</a>
+<a name="ln139"> </a>
+<a name="ln140">/*** Wield this item.</a>
+<a name="ln141"> * @treturn boolean successfuly wielded</a>
+<a name="ln142"> * @function wield</a>
+<a name="ln143"> */</a>
+<a name="ln144">IDEFN(wield, do_wield)</a>
+<a name="ln145"> </a>
+<a name="ln146">static int l_item_do_wear(lua_State *ls)</a>
+<a name="ln147">{</a>
+<a name="ln148">    if (you.turn_is_over)</a>
+<a name="ln149">        return 0;</a>
+<a name="ln150"> </a>
+<a name="ln151">    UDATA_ITEM(item);</a>
+<a name="ln152"> </a>
+<a name="ln153">    if (!item || !in_inventory(*item))</a>
+<a name="ln154">        return 0;</a>
+<a name="ln155"> </a>
+<a name="ln156">    bool success = wear_armour(item-&gt;link);</a>
+<a name="ln157">    lua_pushboolean(ls, success);</a>
+<a name="ln158">    return 1;</a>
+<a name="ln159">}</a>
+<a name="ln160"> </a>
+<a name="ln161">/*** Wear this item (as armour).</a>
+<a name="ln162"> * @treturn boolean successfuly worn</a>
+<a name="ln163"> * @function wear</a>
+<a name="ln164"> */</a>
+<a name="ln165">IDEFN(wear, do_wear)</a>
+<a name="ln166"> </a>
+<a name="ln167">static int l_item_do_puton(lua_State *ls)</a>
+<a name="ln168">{</a>
+<a name="ln169">    if (you.turn_is_over)</a>
+<a name="ln170">        return 0;</a>
+<a name="ln171"> </a>
+<a name="ln172">    UDATA_ITEM(item);</a>
+<a name="ln173"> </a>
+<a name="ln174">    if (!item || !in_inventory(*item))</a>
+<a name="ln175">        return 0;</a>
+<a name="ln176"> </a>
+<a name="ln177">    lua_pushboolean(ls, puton_ring(item-&gt;link));</a>
+<a name="ln178">    return 1;</a>
+<a name="ln179">}</a>
+<a name="ln180"> </a>
+<a name="ln181">/*** Put this item on (as jewellry).</a>
+<a name="ln182"> * @treturn boolean successfuly put on</a>
+<a name="ln183"> * @function puton</a>
+<a name="ln184"> */</a>
+<a name="ln185">IDEFN(puton, do_puton)</a>
+<a name="ln186"> </a>
+<a name="ln187">static int l_item_do_remove(lua_State *ls)</a>
+<a name="ln188">{</a>
+<a name="ln189">    if (you.turn_is_over)</a>
+<a name="ln190">    {</a>
+<a name="ln191">        mpr(&quot;Turn is over&quot;);</a>
+<a name="ln192">        return 0;</a>
+<a name="ln193">    }</a>
+<a name="ln194"> </a>
+<a name="ln195">    UDATA_ITEM(item);</a>
+<a name="ln196"> </a>
+<a name="ln197">    if (!item || !in_inventory(*item))</a>
+<a name="ln198">    {</a>
+<a name="ln199">        mpr(&quot;Bad item&quot;);</a>
+<a name="ln200">        return 0;</a>
+<a name="ln201">    }</a>
+<a name="ln202"> </a>
+<a name="ln203">    int eq = get_equip_slot(item);</a>
+<a name="ln204">    if (eq &lt; EQ_FIRST_EQUIP || eq &gt;= NUM_EQUIP)</a>
+<a name="ln205">    {</a>
+<a name="ln206">        mpr(&quot;Item is not equipped&quot;);</a>
+<a name="ln207">        return 0;</a>
+<a name="ln208">    }</a>
+<a name="ln209"> </a>
+<a name="ln210">    bool result = false;</a>
+<a name="ln211">    if (eq == EQ_WEAPON)</a>
+<a name="ln212">        result = wield_weapon(true, SLOT_BARE_HANDS);</a>
+<a name="ln213">    else if (eq &gt;= EQ_FIRST_JEWELLERY &amp;&amp; eq &lt;= EQ_LAST_JEWELLERY)</a>
+<a name="ln214">        result = remove_ring(item-&gt;link);</a>
+<a name="ln215">    else</a>
+<a name="ln216">        result = takeoff_armour(item-&gt;link);</a>
+<a name="ln217">    lua_pushboolean(ls, result);</a>
+<a name="ln218">    return 1;</a>
+<a name="ln219">}</a>
+<a name="ln220"> </a>
+<a name="ln221">/*** Remove this item from our body.</a>
+<a name="ln222"> * @treturn boolean|nil successfully removed something; nil if nothing to</a>
+<a name="ln223"> * remove</a>
+<a name="ln224"> * @function remove</a>
+<a name="ln225"> */</a>
+<a name="ln226">IDEFN(remove, do_remove)</a>
+<a name="ln227"> </a>
+<a name="ln228">static int l_item_do_drop(lua_State *ls)</a>
+<a name="ln229">{</a>
+<a name="ln230">    if (you.turn_is_over)</a>
+<a name="ln231">        return 0;</a>
+<a name="ln232"> </a>
+<a name="ln233">    UDATA_ITEM(item);</a>
+<a name="ln234"> </a>
+<a name="ln235">    if (!item || !in_inventory(*item))</a>
+<a name="ln236">        return 0;</a>
+<a name="ln237"> </a>
+<a name="ln238">    int eq = get_equip_slot(item);</a>
+<a name="ln239">    if (eq &gt;= EQ_FIRST_EQUIP &amp;&amp; eq &lt; NUM_EQUIP)</a>
+<a name="ln240">    {</a>
+<a name="ln241">        lua_pushboolean(ls, false);</a>
+<a name="ln242">        lua_pushstring(ls, &quot;Can't drop worn items&quot;);</a>
+<a name="ln243">        return 2;</a>
+<a name="ln244">    }</a>
+<a name="ln245"> </a>
+<a name="ln246">    int qty = item-&gt;quantity;</a>
+<a name="ln247">    if (lua_isnumber(ls, 1))</a>
+<a name="ln248">    {</a>
+<a name="ln249">        int q = luaL_safe_checkint(ls, 1);</a>
+<a name="ln250">        if (q &gt;= 1 &amp;&amp; q &lt;= item-&gt;quantity)</a>
+<a name="ln251">            qty = q;</a>
+<a name="ln252">    }</a>
+<a name="ln253">    lua_pushboolean(ls, drop_item(item-&gt;link, qty));</a>
+<a name="ln254">    return 1;</a>
+<a name="ln255">}</a>
+<a name="ln256"> </a>
+<a name="ln257">/*** Drop this.</a>
+<a name="ln258"> * Optionally specify how many for partially dropping a stack.</a>
+<a name="ln259"> * @tparam[opt] int qty</a>
+<a name="ln260"> * @treturn boolean successfully dropped</a>
+<a name="ln261"> * @function drop</a>
+<a name="ln262"> */</a>
+<a name="ln263">IDEFN(drop, do_drop)</a>
+<a name="ln264"> </a>
+<a name="ln265">/*** Is this equipped?</a>
+<a name="ln266"> * @field equipped boolean</a>
+<a name="ln267"> */</a>
+<a name="ln268">IDEF(equipped)</a>
+<a name="ln269">{</a>
+<a name="ln270">    if (!item || !in_inventory(*item))</a>
+<a name="ln271">        lua_pushboolean(ls, false);</a>
+<a name="ln272"> </a>
+<a name="ln273">    int eq = get_equip_slot(item);</a>
+<a name="ln274">    if (eq &lt; EQ_FIRST_EQUIP || eq &gt;= NUM_EQUIP)</a>
+<a name="ln275">        lua_pushboolean(ls, false);</a>
+<a name="ln276">    else</a>
+<a name="ln277">        lua_pushboolean(ls, true);</a>
+<a name="ln278"> </a>
+<a name="ln279">    return 1;</a>
+<a name="ln280">}</a>
+<a name="ln281"> </a>
+<a name="ln282">static int l_item_do_class(lua_State *ls)</a>
+<a name="ln283">{</a>
+<a name="ln284">    UDATA_ITEM(item);</a>
+<a name="ln285"> </a>
+<a name="ln286">    if (item)</a>
+<a name="ln287">    {</a>
+<a name="ln288">        bool terse = false;</a>
+<a name="ln289">        if (lua_isboolean(ls, 1))</a>
+<a name="ln290">            terse = lua_toboolean(ls, 1);</a>
+<a name="ln291"> </a>
+<a name="ln292">        string s = item_class_name(item-&gt;base_type, terse);</a>
+<a name="ln293">        lua_pushstring(ls, s.c_str());</a>
+<a name="ln294">    }</a>
+<a name="ln295">    else</a>
+<a name="ln296">        lua_pushnil(ls);</a>
+<a name="ln297">    return 1;</a>
+<a name="ln298">}</a>
+<a name="ln299"> </a>
+<a name="ln300">/*** What is the item class?</a>
+<a name="ln301"> * @tparam[opt=false] boolean terse</a>
+<a name="ln302"> * @treturn string</a>
+<a name="ln303"> * @function class</a>
+<a name="ln304"> */</a>
+<a name="ln305">IDEFN(class, do_class)</a>
+<a name="ln306"> </a>
+<a name="ln307">static int l_item_do_subtype(lua_State *ls)</a>
+<a name="ln308">{</a>
+<a name="ln309">    UDATA_ITEM(item);</a>
+<a name="ln310"> </a>
+<a name="ln311">    if (!item)</a>
+<a name="ln312">    {</a>
+<a name="ln313">        lua_pushnil(ls);</a>
+<a name="ln314">        return 1;</a>
+<a name="ln315">    }</a>
+<a name="ln316"> </a>
+<a name="ln317">    const char *s = nullptr;</a>
+<a name="ln318">    string saved;</a>
+<a name="ln319"> </a>
+<a name="ln320">    // Special-case OBJ_ARMOUR behavior to maintain compatibility with</a>
+<a name="ln321">    // existing scripts.</a>
+<a name="ln322">    if (item-&gt;base_type == OBJ_ARMOUR)</a>
+<a name="ln323">        s = item_slot_name(get_armour_slot(*item));</a>
+<a name="ln324">    else if (item_type_known(*item))</a>
+<a name="ln325">    {</a>
+<a name="ln326">        // must keep around the string until we call lua_pushstring</a>
+<a name="ln327">        saved = sub_type_string(*item);</a>
+<a name="ln328">        s = saved.c_str();</a>
+<a name="ln329">    }</a>
+<a name="ln330"> </a>
+<a name="ln331">    if (s)</a>
+<a name="ln332">        lua_pushstring(ls, s);</a>
+<a name="ln333">    else</a>
+<a name="ln334">        lua_pushnil(ls);</a>
+<a name="ln335"> </a>
+<a name="ln336">    return 1;</a>
+<a name="ln337">}</a>
+<a name="ln338"> </a>
+<a name="ln339">/*** What is the subtype?</a>
+<a name="ln340"> * @treturn string|nil the item's subtype, if any</a>
+<a name="ln341"> * @function subtype</a>
+<a name="ln342"> */</a>
+<a name="ln343">IDEFN(subtype, do_subtype)</a>
+<a name="ln344"> </a>
+<a name="ln345">static int l_item_do_ego(lua_State *ls)</a>
+<a name="ln346">{</a>
+<a name="ln347">    UDATA_ITEM(item);</a>
+<a name="ln348">    if (!item)</a>
+<a name="ln349">    {</a>
+<a name="ln350">        lua_pushnil(ls);</a>
+<a name="ln351">        return 1;</a>
+<a name="ln352">    }</a>
+<a name="ln353"> </a>
+<a name="ln354">    bool terse = false;</a>
+<a name="ln355">    if (lua_isboolean(ls, 1))</a>
+<a name="ln356">        terse = lua_toboolean(ls, 1);</a>
+<a name="ln357"> </a>
+<a name="ln358">    if (item_type_known(*item) || item-&gt;base_type == OBJ_MISSILES)</a>
+<a name="ln359">    {</a>
+<a name="ln360">        const string s = ego_type_string(*item, terse);</a>
+<a name="ln361">        if (!s.empty())</a>
+<a name="ln362">        {</a>
+<a name="ln363">            lua_pushstring(ls, s.c_str());</a>
+<a name="ln364">            return 1;</a>
+<a name="ln365">        }</a>
+<a name="ln366">    }</a>
+<a name="ln367"> </a>
+<a name="ln368">    lua_pushnil(ls);</a>
+<a name="ln369">    return 1;</a>
+<a name="ln370">}</a>
+<a name="ln371"> </a>
+<a name="ln372">/*** What is the ego?</a>
+<a name="ln373"> * @tparam[opt=false] boolean terse</a>
+<a name="ln374"> * @treturn string|nil the item's ego, if any</a>
+<a name="ln375"> * @function ego</a>
+<a name="ln376"> */</a>
+<a name="ln377">IDEFN(ego, do_ego)</a>
+<a name="ln378"> </a>
+<a name="ln379">/*** Is this item cursed?</a>
+<a name="ln380"> * @field cursed boolean</a>
+<a name="ln381"> */</a>
+<a name="ln382">IDEF(cursed)</a>
+<a name="ln383">{</a>
+<a name="ln384">    bool cursed = item &amp;&amp; item_ident(*item, ISFLAG_KNOW_CURSE)</a>
+<a name="ln385">                       &amp;&amp; item-&gt;cursed();</a>
+<a name="ln386">    lua_pushboolean(ls, cursed);</a>
+<a name="ln387">    return 1;</a>
+<a name="ln388">}</a>
+<a name="ln389"> </a>
+<a name="ln390">/*** Are we wearing this item?</a>
+<a name="ln391"> * @field worn slot index</a>
+<a name="ln392"> */</a>
+<a name="ln393">// XXX: this should be defined by IDEFN so that it can have multiple returns.</a>
+<a name="ln394">IDEF(worn)</a>
+<a name="ln395">{</a>
+<a name="ln396">    int worn = get_equip_slot(item);</a>
+<a name="ln397">    if (worn != -1)</a>
+<a name="ln398">        lua_pushnumber(ls, worn);</a>
+<a name="ln399">    else</a>
+<a name="ln400">        lua_pushnil(ls);</a>
+<a name="ln401">    if (worn != -1)</a>
+<a name="ln402">        lua_pushstring(ls, equip_slot_to_name(worn));</a>
+<a name="ln403">    else</a>
+<a name="ln404">        lua_pushnil(ls);</a>
+<a name="ln405">    return 2;</a>
+<a name="ln406">}</a>
+<a name="ln407"> </a>
+<a name="ln408">static string _item_name(lua_State *ls, item_def* item)</a>
+<a name="ln409">{</a>
+<a name="ln410">    description_level_type ndesc = DESC_PLAIN;</a>
+<a name="ln411">    if (lua_isstring(ls, 1))</a>
+<a name="ln412">        ndesc = description_type_by_name(lua_tostring(ls, 1));</a>
+<a name="ln413">    else if (lua_isnumber(ls, 1))</a>
+<a name="ln414">        ndesc = static_cast&lt;description_level_type&gt;(luaL_safe_checkint(ls, 1));</a>
+<a name="ln415">    const bool terse = lua_toboolean(ls, 2);</a>
+<a name="ln416">    return item-&gt;name(ndesc, terse);</a>
+<a name="ln417">}</a>
+<a name="ln418"> </a>
+<a name="ln419">static int l_item_do_name(lua_State *ls)</a>
+<a name="ln420">{</a>
+<a name="ln421">    UDATA_ITEM(item);</a>
+<a name="ln422"> </a>
+<a name="ln423">    if (item)</a>
+<a name="ln424">        lua_pushstring(ls, _item_name(ls, item).c_str());</a>
+<a name="ln425">    else</a>
+<a name="ln426">        lua_pushnil(ls);</a>
+<a name="ln427">    return 1;</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">/*** Get this item's name.</a>
+<a name="ln431"> * For the levels of item descriptions see @{crawl.grammar}</a>
+<a name="ln432"> * @tparam[opt=&quot;plain&quot;] string desc description type</a>
+<a name="ln433"> * @tparam[opt=&quot;false&quot;] boolean terse</a>
+<a name="ln434"> * @treturn string</a>
+<a name="ln435"> * @function name</a>
+<a name="ln436"> */</a>
+<a name="ln437">IDEFN(name, do_name)</a>
+<a name="ln438"> </a>
+<a name="ln439">static int l_item_do_name_coloured(lua_State *ls)</a>
+<a name="ln440">{</a>
+<a name="ln441">    UDATA_ITEM(item);</a>
+<a name="ln442"> </a>
+<a name="ln443">    if (item)</a>
+<a name="ln444">    {</a>
+<a name="ln445">        string name   = _item_name(ls, item);</a>
+<a name="ln446">        int    col    = menu_colour(name, item_prefix(*item));</a>
+<a name="ln447">        string colstr = colour_to_str(col);</a>
+<a name="ln448"> </a>
+<a name="ln449">        ostringstream out;</a>
+<a name="ln450"> </a>
+<a name="ln451">        out &lt;&lt; &quot;&lt;&quot; &lt;&lt; colstr &lt;&lt; &quot;&gt;&quot; &lt;&lt; name &lt;&lt; &quot;&lt;/&quot; &lt;&lt; colstr &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln452"> </a>
+<a name="ln453">        lua_pushstring(ls, out.str().c_str());</a>
+<a name="ln454">    }</a>
+<a name="ln455">    else</a>
+<a name="ln456">        lua_pushnil(ls);</a>
+<a name="ln457">    return 1;</a>
+<a name="ln458">}</a>
+<a name="ln459"> </a>
+<a name="ln460">/*** Get this item's name as a colour-formatted string.</a>
+<a name="ln461"> * Adds item colouring suitable for @{crawl.formatted_mpr}.</a>
+<a name="ln462"> * @tparam[opt=&quot;plain&quot;] string desc description type</a>
+<a name="ln463"> * @tparam[opt=&quot;false&quot;] boolean terse</a>
+<a name="ln464"> * @treturn string</a>
+<a name="ln465"> * @function name_coloured</a>
+<a name="ln466"> */</a>
+<a name="ln467">IDEFN(name_coloured, do_name_coloured)</a>
+<a name="ln468"> </a>
+<a name="ln469">static int l_item_do_stacks(lua_State *ls)</a>
+<a name="ln470">{</a>
+<a name="ln471">    UDATA_ITEM(first);</a>
+<a name="ln472"> </a>
+<a name="ln473">    if (!first)</a>
+<a name="ln474">        lua_pushnil(ls);</a>
+<a name="ln475">    else if (lua_gettop(ls) == 0 || lua_isnil(ls, 1))</a>
+<a name="ln476">    {</a>
+<a name="ln477">        const bool any_stack =</a>
+<a name="ln478">            is_stackable_item(*first)</a>
+<a name="ln479">            &amp;&amp; any_of(begin(you.inv), end(you.inv),</a>
+<a name="ln480">                      [first] (const item_def &amp;item) -&gt; bool</a>
+<a name="ln481">                      {</a>
+<a name="ln482">                          return items_stack(*first, item);</a>
+<a name="ln483">                      })</a>
+<a name="ln484">         || first-&gt;base_type == OBJ_WANDS</a>
+<a name="ln485">            &amp;&amp; any_of(begin(you.inv), end(you.inv),</a>
+<a name="ln486">                      [first] (const item_def &amp;item) -&gt; bool</a>
+<a name="ln487">                      {</a>
+<a name="ln488">                          return item.is_type(OBJ_WANDS, first-&gt;sub_type);</a>
+<a name="ln489">                      });</a>
+<a name="ln490">        lua_pushboolean(ls, any_stack);</a>
+<a name="ln491">    }</a>
+<a name="ln492">    else if (ITEM(second, 1))</a>
+<a name="ln493">        lua_pushboolean(ls, items_stack(*first, *second));</a>
+<a name="ln494">    else</a>
+<a name="ln495">        lua_pushnil(ls);</a>
+<a name="ln496">    return 1;</a>
+<a name="ln497">}</a>
+<a name="ln498"> </a>
+<a name="ln499">IDEFN(stacks, do_stacks)</a>
+<a name="ln500"> </a>
+<a name="ln501">/*** How many do we have in a stack?</a>
+<a name="ln502"> * @field quantity int</a>
+<a name="ln503"> */</a>
+<a name="ln504">IDEF(quantity)</a>
+<a name="ln505">{</a>
+<a name="ln506">    PLUARET(number, item? item-&gt;quantity : 0);</a>
+<a name="ln507">}</a>
+<a name="ln508"> </a>
+<a name="ln509">/*** This item's inventory slot.</a>
+<a name="ln510"> * @field slot index or nil</a>
+<a name="ln511"> */</a>
+<a name="ln512">IDEF(slot)</a>
+<a name="ln513">{</a>
+<a name="ln514">    if (item &amp;&amp; in_inventory(*item))</a>
+<a name="ln515">        lua_pushnumber(ls, item-&gt;link);</a>
+<a name="ln516">    else</a>
+<a name="ln517">        lua_pushnil(ls);</a>
+<a name="ln518">    return 1;</a>
+<a name="ln519">}</a>
+<a name="ln520"> </a>
+<a name="ln521">/*** Is this item in the inventory?</a>
+<a name="ln522"> * @field ininventory boolean</a>
+<a name="ln523"> */</a>
+<a name="ln524">IDEF(ininventory)</a>
+<a name="ln525">{</a>
+<a name="ln526">    PLUARET(boolean, item &amp;&amp; in_inventory(*item));</a>
+<a name="ln527">}</a>
+<a name="ln528"> </a>
+<a name="ln529">/*** The slot number this item goes in.</a>
+<a name="ln530"> * @field equip_type int</a>
+<a name="ln531"> */</a>
+<a name="ln532">// XXX: another multiple return dropped by lua</a>
+<a name="ln533">IDEF(equip_type)</a>
+<a name="ln534">{</a>
+<a name="ln535">    if (!item || !item-&gt;defined())</a>
+<a name="ln536">        return 0;</a>
+<a name="ln537"> </a>
+<a name="ln538">    equipment_type eq = EQ_NONE;</a>
+<a name="ln539"> </a>
+<a name="ln540">    if (is_weapon(*item))</a>
+<a name="ln541">        eq = EQ_WEAPON;</a>
+<a name="ln542">    else if (item-&gt;base_type == OBJ_ARMOUR)</a>
+<a name="ln543">        eq = get_armour_slot(*item);</a>
+<a name="ln544">    else if (item-&gt;base_type == OBJ_JEWELLERY)</a>
+<a name="ln545">        eq = item-&gt;sub_type &gt;= AMU_RAGE ? EQ_AMULET : EQ_RINGS;</a>
+<a name="ln546"> </a>
+<a name="ln547">    if (eq != EQ_NONE)</a>
+<a name="ln548">    {</a>
+<a name="ln549">        lua_pushnumber(ls, eq);</a>
+<a name="ln550">        lua_pushstring(ls, equip_slot_to_name(eq));</a>
+<a name="ln551">    }</a>
+<a name="ln552">    else</a>
+<a name="ln553">    {</a>
+<a name="ln554">        lua_pushnil(ls);</a>
+<a name="ln555">        lua_pushnil(ls);</a>
+<a name="ln556">    }</a>
+<a name="ln557">    return 2;</a>
+<a name="ln558">}</a>
+<a name="ln559"> </a>
+<a name="ln560">/*** The weapon skill this item requires.</a>
+<a name="ln561"> * @field weap_skill string|nil nil for non-weapons</a>
+<a name="ln562"> */</a>
+<a name="ln563">IDEF(weap_skill)</a>
+<a name="ln564">{</a>
+<a name="ln565">    if (!item || !item-&gt;defined())</a>
+<a name="ln566">        return 0;</a>
+<a name="ln567"> </a>
+<a name="ln568">    const skill_type skill = item_attack_skill(*item);</a>
+<a name="ln569">    if (skill == SK_FIGHTING)</a>
+<a name="ln570">        return 0;</a>
+<a name="ln571"> </a>
+<a name="ln572">    lua_pushstring(ls, skill_name(skill));</a>
+<a name="ln573">    lua_pushnumber(ls, skill);</a>
+<a name="ln574">    return 2;</a>
+<a name="ln575">}</a>
+<a name="ln576"> </a>
+<a name="ln577">/*** The reach range of this item.</a>
+<a name="ln578"> * @field reach_range int</a>
+<a name="ln579"> */</a>
+<a name="ln580">IDEF(reach_range)</a>
+<a name="ln581">{</a>
+<a name="ln582">    if (!item || !item-&gt;defined())</a>
+<a name="ln583">        return 0;</a>
+<a name="ln584"> </a>
+<a name="ln585">    reach_type rt = weapon_reach(*item);</a>
+<a name="ln586">    lua_pushnumber(ls, rt);</a>
+<a name="ln587">    return 1;</a>
+<a name="ln588">}</a>
+<a name="ln589"> </a>
+<a name="ln590">/*** Is this a ranged weapon?</a>
+<a name="ln591"> * @field is_ranged boolean</a>
+<a name="ln592"> */</a>
+<a name="ln593">IDEF(is_ranged)</a>
+<a name="ln594">{</a>
+<a name="ln595">    if (!item || !item-&gt;defined())</a>
+<a name="ln596">        return 0;</a>
+<a name="ln597"> </a>
+<a name="ln598">    lua_pushboolean(ls, is_range_weapon(*item));</a>
+<a name="ln599"> </a>
+<a name="ln600">    return 1;</a>
+<a name="ln601">}</a>
+<a name="ln602"> </a>
+<a name="ln603">/*** Can this be thrown effectively?</a>
+<a name="ln604"> * @field is_throwable boolean</a>
+<a name="ln605"> */</a>
+<a name="ln606">IDEF(is_throwable)</a>
+<a name="ln607">{</a>
+<a name="ln608">    if (!item || !item-&gt;defined())</a>
+<a name="ln609">        return 0;</a>
+<a name="ln610"> </a>
+<a name="ln611">    lua_pushboolean(ls, is_throwable(&amp;you, *item));</a>
+<a name="ln612"> </a>
+<a name="ln613">    return 1;</a>
+<a name="ln614">}</a>
+<a name="ln615"> </a>
+<a name="ln616">/*** Did we drop this?</a>
+<a name="ln617"> * @field dropped boolean</a>
+<a name="ln618"> */</a>
+<a name="ln619">IDEF(dropped)</a>
+<a name="ln620">{</a>
+<a name="ln621">    if (!item || !item-&gt;defined())</a>
+<a name="ln622">        return 0;</a>
+<a name="ln623"> </a>
+<a name="ln624">    lua_pushboolean(ls, item-&gt;flags &amp; ISFLAG_DROPPED);</a>
+<a name="ln625"> </a>
+<a name="ln626">    return 1;</a>
+<a name="ln627">}</a>
+<a name="ln628"> </a>
+<a name="ln629">/*** Is this item currently melded to us?</a>
+<a name="ln630"> * @field is_melded boolean</a>
+<a name="ln631"> */</a>
+<a name="ln632">IDEF(is_melded)</a>
+<a name="ln633">{</a>
+<a name="ln634">    if (!item || !item-&gt;defined())</a>
+<a name="ln635">        return 0;</a>
+<a name="ln636"> </a>
+<a name="ln637">    lua_pushboolean(ls, item_is_melded(*item));</a>
+<a name="ln638"> </a>
+<a name="ln639">    return 1;</a>
+<a name="ln640">}</a>
+<a name="ln641"> </a>
+<a name="ln642">/*** Is this a corpse?</a>
+<a name="ln643"> * @field is_corpse boolean</a>
+<a name="ln644"> */</a>
+<a name="ln645">IDEF(is_corpse)</a>
+<a name="ln646">{</a>
+<a name="ln647">    if (!item || !item-&gt;defined())</a>
+<a name="ln648">        return 0;</a>
+<a name="ln649"> </a>
+<a name="ln650">    lua_pushboolean(ls, item-&gt;is_type(OBJ_CORPSES, CORPSE_BODY));</a>
+<a name="ln651"> </a>
+<a name="ln652">    return 1;</a>
+<a name="ln653">}</a>
+<a name="ln654"> </a>
+<a name="ln655">/*** Is this a skeleton?</a>
+<a name="ln656"> * @field is_skeleton boolean</a>
+<a name="ln657"> */</a>
+<a name="ln658">IDEF(is_skeleton)</a>
+<a name="ln659">{</a>
+<a name="ln660">    if (!item || !item-&gt;defined())</a>
+<a name="ln661">        return 0;</a>
+<a name="ln662"> </a>
+<a name="ln663">    lua_pushboolean(ls, item-&gt;is_type(OBJ_CORPSES, CORPSE_SKELETON));</a>
+<a name="ln664"> </a>
+<a name="ln665">    return 1;</a>
+<a name="ln666">}</a>
+<a name="ln667"> </a>
+<a name="ln668">/*** Does this have a skeleton?</a>
+<a name="ln669"> * @field has_skeleton boolean false if it's not even a corpse</a>
+<a name="ln670"> */</a>
+<a name="ln671">IDEF(has_skeleton)</a>
+<a name="ln672">{</a>
+<a name="ln673">    if (!item || !item-&gt;defined())</a>
+<a name="ln674">        return 0;</a>
+<a name="ln675"> </a>
+<a name="ln676">    lua_pushboolean(ls, item-&gt;is_type(OBJ_CORPSES, CORPSE_BODY)</a>
+<a name="ln677">                         &amp;&amp; mons_skeleton(item-&gt;mon_type)</a>
+<a name="ln678">                        || item-&gt;is_type(OBJ_CORPSES, CORPSE_SKELETON));</a>
+<a name="ln679"> </a>
+<a name="ln680">    return 1;</a>
+<a name="ln681">}</a>
+<a name="ln682"> </a>
+<a name="ln683">/*** Can this be a zombie?</a>
+<a name="ln684"> * @field can_zombify boolean</a>
+<a name="ln685"> */</a>
+<a name="ln686">IDEF(can_zombify)</a>
+<a name="ln687">{</a>
+<a name="ln688">    if (!item || !item-&gt;defined())</a>
+<a name="ln689">        return 0;</a>
+<a name="ln690"> </a>
+<a name="ln691">    lua_pushboolean(ls, item-&gt;is_type(OBJ_CORPSES, CORPSE_BODY)</a>
+<a name="ln692">                        &amp;&amp; mons_zombifiable(item-&gt;mon_type));</a>
+<a name="ln693"> </a>
+<a name="ln694">    return 1;</a>
+<a name="ln695">}</a>
+<a name="ln696"> </a>
+<a name="ln697">/*** Do we prefer eating this?</a>
+<a name="ln698"> * @field is_preferred_food boolean</a>
+<a name="ln699"> */</a>
+<a name="ln700">IDEF(is_preferred_food)</a>
+<a name="ln701">{</a>
+<a name="ln702">    if (!item || !item-&gt;defined())</a>
+<a name="ln703">        return 0;</a>
+<a name="ln704"> </a>
+<a name="ln705">    lua_pushboolean(ls, is_preferred_food(*item));</a>
+<a name="ln706"> </a>
+<a name="ln707">    return 1;</a>
+<a name="ln708">}</a>
+<a name="ln709"> </a>
+<a name="ln710">/*** Is this bad food?</a>
+<a name="ln711"> * @field is_bad_food boolean</a>
+<a name="ln712"> */</a>
+<a name="ln713">// XXX: does this matter anymore?</a>
+<a name="ln714">IDEF(is_bad_food)</a>
+<a name="ln715">{</a>
+<a name="ln716">    if (!item || !item-&gt;defined())</a>
+<a name="ln717">        return 0;</a>
+<a name="ln718"> </a>
+<a name="ln719">    lua_pushboolean(ls, is_bad_food(*item));</a>
+<a name="ln720"> </a>
+<a name="ln721">    return 1;</a>
+<a name="ln722">}</a>
+<a name="ln723"> </a>
+<a name="ln724">/*** Is this useless?</a>
+<a name="ln725"> * @field is_useless boolean</a>
+<a name="ln726"> */</a>
+<a name="ln727">IDEF(is_useless)</a>
+<a name="ln728">{</a>
+<a name="ln729">    if (!item || !item-&gt;defined())</a>
+<a name="ln730">        return 0;</a>
+<a name="ln731"> </a>
+<a name="ln732">    lua_pushboolean(ls, is_useless_item(*item));</a>
+<a name="ln733"> </a>
+<a name="ln734">    return 1;</a>
+<a name="ln735">}</a>
+<a name="ln736"> </a>
+<a name="ln737">/*** Is this an artefact?</a>
+<a name="ln738"> * @field artefact boolean</a>
+<a name="ln739"> */</a>
+<a name="ln740">IDEF(artefact)</a>
+<a name="ln741">{</a>
+<a name="ln742">    if (!item || !item-&gt;defined())</a>
+<a name="ln743">        return 0;</a>
+<a name="ln744"> </a>
+<a name="ln745">    lua_pushboolean(ls, is_artefact(*item));</a>
+<a name="ln746"> </a>
+<a name="ln747">    return 1;</a>
+<a name="ln748">}</a>
+<a name="ln749"> </a>
+<a name="ln750">/*** Is this branded?</a>
+<a name="ln751"> * @field branded</a>
+<a name="ln752"> */</a>
+<a name="ln753">IDEF(branded)</a>
+<a name="ln754">{</a>
+<a name="ln755">    if (!item || !item-&gt;defined())</a>
+<a name="ln756">        return 0;</a>
+<a name="ln757"> </a>
+<a name="ln758">    lua_pushboolean(ls, item_is_branded(*item)</a>
+<a name="ln759">                        || item-&gt;flags &amp; ISFLAG_COSMETIC_MASK</a>
+<a name="ln760">                           &amp;&amp; !item_type_known(*item));</a>
+<a name="ln761">    return 1;</a>
+<a name="ln762">}</a>
+<a name="ln763"> </a>
+<a name="ln764">IDEF(hands)</a>
+<a name="ln765">{</a>
+<a name="ln766">    if (!item || !item-&gt;defined())</a>
+<a name="ln767">        return 0;</a>
+<a name="ln768"> </a>
+<a name="ln769">    int hands = you.hands_reqd(*item) == HANDS_TWO ? 2 : 1;</a>
+<a name="ln770">    lua_pushnumber(ls, hands);</a>
+<a name="ln771"> </a>
+<a name="ln772">    return 1;</a>
+<a name="ln773">}</a>
+<a name="ln774"> </a>
+<a name="ln775">/*** Is this a god gift?</a>
+<a name="ln776"> * @field god_gift boolean</a>
+<a name="ln777"> */</a>
+<a name="ln778">IDEF(god_gift)</a>
+<a name="ln779">{</a>
+<a name="ln780">    if (!item || !item-&gt;defined())</a>
+<a name="ln781">        return 0;</a>
+<a name="ln782"> </a>
+<a name="ln783">    lua_pushboolean(ls, origin_as_god_gift(*item) != GOD_NO_GOD);</a>
+<a name="ln784"> </a>
+<a name="ln785">    return 1;</a>
+<a name="ln786">}</a>
+<a name="ln787"> </a>
+<a name="ln788">/*** Is this fully identified?</a>
+<a name="ln789"> * @field fully_identified boolean</a>
+<a name="ln790"> */</a>
+<a name="ln791">IDEF(fully_identified)</a>
+<a name="ln792">{</a>
+<a name="ln793">    if (!item || !item-&gt;defined())</a>
+<a name="ln794">        return 0;</a>
+<a name="ln795"> </a>
+<a name="ln796">    lua_pushboolean(ls, fully_identified(*item));</a>
+<a name="ln797"> </a>
+<a name="ln798">    return 1;</a>
+<a name="ln799">}</a>
+<a name="ln800"> </a>
+<a name="ln801">/*** Item plus.</a>
+<a name="ln802"> * @field plus int</a>
+<a name="ln803"> */</a>
+<a name="ln804">IDEF(plus)</a>
+<a name="ln805">{</a>
+<a name="ln806">    if (!item || !item-&gt;defined())</a>
+<a name="ln807">        return 0;</a>
+<a name="ln808"> </a>
+<a name="ln809">    if (item_ident(*item, ISFLAG_KNOW_PLUSES)</a>
+<a name="ln810">        &amp;&amp; (item-&gt;base_type == OBJ_WEAPONS || item-&gt;base_type == OBJ_ARMOUR</a>
+<a name="ln811">            || item-&gt;base_type == OBJ_WANDS</a>
+<a name="ln812">            || item-&gt;base_type == OBJ_JEWELLERY</a>
+<a name="ln813">               &amp;&amp; (item-&gt;sub_type == RING_PROTECTION</a>
+<a name="ln814">                   || item-&gt;sub_type == RING_STRENGTH</a>
+<a name="ln815">                   || item-&gt;sub_type == RING_SLAYING</a>
+<a name="ln816">                   || item-&gt;sub_type == RING_EVASION</a>
+<a name="ln817">                   || item-&gt;sub_type == RING_DEXTERITY</a>
+<a name="ln818">                   || item-&gt;sub_type == RING_INTELLIGENCE</a>
+<a name="ln819">                   || item-&gt;sub_type == AMU_REFLECTION)))</a>
+<a name="ln820">    {</a>
+<a name="ln821">        lua_pushnumber(ls, item-&gt;plus);</a>
+<a name="ln822">    }</a>
+<a name="ln823">    else</a>
+<a name="ln824">        lua_pushnil(ls);</a>
+<a name="ln825"> </a>
+<a name="ln826">    return 1;</a>
+<a name="ln827">}</a>
+<a name="ln828"> </a>
+<a name="ln829">IDEF(plus2)</a>
+<a name="ln830">{</a>
+<a name="ln831">    if (!item || !item-&gt;defined())</a>
+<a name="ln832">        return 0;</a>
+<a name="ln833"> </a>
+<a name="ln834">    lua_pushnil(ls);</a>
+<a name="ln835"> </a>
+<a name="ln836">    return 1;</a>
+<a name="ln837">}</a>
+<a name="ln838"> </a>
+<a name="ln839">/*** What spells are in this?</a>
+<a name="ln840"> * @field spells array of spell names</a>
+<a name="ln841"> */</a>
+<a name="ln842">IDEF(spells)</a>
+<a name="ln843">{</a>
+<a name="ln844">    if (!item || !item-&gt;defined() || !item-&gt;has_spells())</a>
+<a name="ln845">        return 0;</a>
+<a name="ln846"> </a>
+<a name="ln847">    int index = 0;</a>
+<a name="ln848">    lua_newtable(ls);</a>
+<a name="ln849"> </a>
+<a name="ln850">    for (spell_type stype : spells_in_book(*item))</a>
+<a name="ln851">    {</a>
+<a name="ln852">        lua_pushstring(ls, spell_title(stype));</a>
+<a name="ln853">        lua_rawseti(ls, -2, ++index);</a>
+<a name="ln854">    }</a>
+<a name="ln855"> </a>
+<a name="ln856">    return 1;</a>
+<a name="ln857">}</a>
+<a name="ln858"> </a>
+<a name="ln859">/*** Artefact properties</a>
+<a name="ln860"> * Full list in `artefact-prop-type.h`</a>
+<a name="ln861"> * @field artprops table artefact property table</a>
+<a name="ln862"> */</a>
+<a name="ln863">IDEF(artprops)</a>
+<a name="ln864">{</a>
+<a name="ln865">    if (!item || !item-&gt;defined() || !is_artefact(*item)</a>
+<a name="ln866">        || !item_ident(*item, ISFLAG_KNOW_PROPERTIES))</a>
+<a name="ln867">    {</a>
+<a name="ln868">        return 0;</a>
+<a name="ln869">    }</a>
+<a name="ln870"> </a>
+<a name="ln871">    lua_newtable(ls);</a>
+<a name="ln872"> </a>
+<a name="ln873">    for (int i = 0; i &lt; ARTP_NUM_PROPERTIES; ++i)</a>
+<a name="ln874">    {</a>
+<a name="ln875">        int value = artefact_property(*item, (artefact_prop_type)i);</a>
+<a name="ln876">        if (value)</a>
+<a name="ln877">        {</a>
+<a name="ln878">            lua_pushstring(ls, artp_name((artefact_prop_type)i));</a>
+<a name="ln879">            lua_pushnumber(ls, value);</a>
+<a name="ln880">            lua_settable(ls, -3);</a>
+<a name="ln881">        }</a>
+<a name="ln882">    }</a>
+<a name="ln883"> </a>
+<a name="ln884">    return 1;</a>
+<a name="ln885">}</a>
+<a name="ln886"> </a>
+<a name="ln887">/*** Item base damage.</a>
+<a name="ln888"> * @field damage int</a>
+<a name="ln889"> */</a>
+<a name="ln890">IDEF(damage)</a>
+<a name="ln891">{</a>
+<a name="ln892">    if (!item || !item-&gt;defined())</a>
+<a name="ln893">        return 0;</a>
+<a name="ln894"> </a>
+<a name="ln895">    if (is_weapon(*item)</a>
+<a name="ln896">        || item-&gt;base_type == OBJ_MISSILES)</a>
+<a name="ln897">    {</a>
+<a name="ln898">        lua_pushnumber(ls, property(*item, PWPN_DAMAGE));</a>
+<a name="ln899">    }</a>
+<a name="ln900">    else</a>
+<a name="ln901">        lua_pushnil(ls);</a>
+<a name="ln902"> </a>
+<a name="ln903">    return 1;</a>
+<a name="ln904">}</a>
+<a name="ln905"> </a>
+<a name="ln906">/*** Item base accuracy.</a>
+<a name="ln907"> * @field accuracy int</a>
+<a name="ln908"> */</a>
+<a name="ln909">IDEF(accuracy)</a>
+<a name="ln910">{</a>
+<a name="ln911">    if (!item || !item-&gt;defined())</a>
+<a name="ln912">        return 0;</a>
+<a name="ln913"> </a>
+<a name="ln914">    if (is_weapon(*item))</a>
+<a name="ln915">        lua_pushnumber(ls, property(*item, PWPN_HIT));</a>
+<a name="ln916">    else</a>
+<a name="ln917">        lua_pushnil(ls);</a>
+<a name="ln918"> </a>
+<a name="ln919">    return 1;</a>
+<a name="ln920">}</a>
+<a name="ln921"> </a>
+<a name="ln922">/*** Item base delay.</a>
+<a name="ln923"> * @field delay int</a>
+<a name="ln924"> */</a>
+<a name="ln925">IDEF(delay)</a>
+<a name="ln926">{</a>
+<a name="ln927">    if (!item || !item-&gt;defined())</a>
+<a name="ln928">        return 0;</a>
+<a name="ln929"> </a>
+<a name="ln930">    if (is_weapon(*item))</a>
+<a name="ln931">        lua_pushnumber(ls, property(*item, PWPN_SPEED));</a>
+<a name="ln932">    else</a>
+<a name="ln933">        lua_pushnil(ls);</a>
+<a name="ln934"> </a>
+<a name="ln935">    return 1;</a>
+<a name="ln936">}</a>
+<a name="ln937"> </a>
+<a name="ln938">/*** Item base AC.</a>
+<a name="ln939"> * @field ac int</a>
+<a name="ln940"> */</a>
+<a name="ln941">IDEF(ac)</a>
+<a name="ln942">{</a>
+<a name="ln943">    if (!item || !item-&gt;defined())</a>
+<a name="ln944">        return 0;</a>
+<a name="ln945"> </a>
+<a name="ln946">    if (item-&gt;base_type == OBJ_ARMOUR)</a>
+<a name="ln947">        lua_pushnumber(ls, property(*item, PARM_AC));</a>
+<a name="ln948">    else</a>
+<a name="ln949">        lua_pushnil(ls);</a>
+<a name="ln950"> </a>
+<a name="ln951">    return 1;</a>
+<a name="ln952">}</a>
+<a name="ln953"> </a>
+<a name="ln954">/*** Item encumbrance rating.</a>
+<a name="ln955"> * @field encumbrance int</a>
+<a name="ln956"> */</a>
+<a name="ln957">IDEF(encumbrance)</a>
+<a name="ln958">{</a>
+<a name="ln959">    if (!item || !item-&gt;defined())</a>
+<a name="ln960">        return 0;</a>
+<a name="ln961"> </a>
+<a name="ln962">    if (item-&gt;base_type == OBJ_ARMOUR)</a>
+<a name="ln963">        lua_pushnumber(ls, -property(*item, PARM_EVASION) / 10);</a>
+<a name="ln964">    else</a>
+<a name="ln965">        lua_pushnil(ls);</a>
+<a name="ln966"> </a>
+<a name="ln967">    return 1;</a>
+<a name="ln968">}</a>
+<a name="ln969"> </a>
+<a name="ln970">/*** Item is for sale.</a>
+<a name="ln971"> * @field is_in_shop boolean</a>
+<a name="ln972"> */</a>
+<a name="ln973">IDEF(is_in_shop)</a>
+<a name="ln974">{</a>
+<a name="ln975">    if (!item || !item-&gt;defined())</a>
+<a name="ln976">        return 0;</a>
+<a name="ln977"> </a>
+<a name="ln978">    lua_pushboolean(ls, is_shop_item(*item));</a>
+<a name="ln979"> </a>
+<a name="ln980">    return 1;</a>
+<a name="ln981">}</a>
+<a name="ln982"> </a>
+<a name="ln983">/*** Item inscription string.</a>
+<a name="ln984"> * @field inscription string</a>
+<a name="ln985"> */</a>
+<a name="ln986">IDEF(inscription)</a>
+<a name="ln987">{</a>
+<a name="ln988">    if (!item || !item-&gt;defined())</a>
+<a name="ln989">        return 0;</a>
+<a name="ln990"> </a>
+<a name="ln991">    lua_pushstring(ls, item-&gt;inscription.c_str());</a>
+<a name="ln992"> </a>
+<a name="ln993">    return 1;</a>
+<a name="ln994">}</a>
+<a name="ln995"> </a>
+<a name="ln996">// DLUA-only functions</a>
+<a name="ln997">static int l_item_do_pluses(lua_State *ls)</a>
+<a name="ln998">{</a>
+<a name="ln999">    ASSERT_DLUA;</a>
+<a name="ln1000"> </a>
+<a name="ln1001">    UDATA_ITEM(item);</a>
+<a name="ln1002"> </a>
+<a name="ln1003">    if (!item || !item-&gt;defined() || !item_ident(*item, ISFLAG_KNOW_PLUSES))</a>
+<a name="ln1004">    {</a>
+<a name="ln1005">        lua_pushboolean(ls, false);</a>
+<a name="ln1006">        return 1;</a>
+<a name="ln1007">    }</a>
+<a name="ln1008"> </a>
+<a name="ln1009">    lua_pushnumber(ls, item-&gt;plus);</a>
+<a name="ln1010"> </a>
+<a name="ln1011">    return 1;</a>
+<a name="ln1012">}</a>
+<a name="ln1013"> </a>
+<a name="ln1014">IDEFN(pluses, do_pluses)</a>
+<a name="ln1015"> </a>
+<a name="ln1016">static int l_item_do_destroy(lua_State *ls)</a>
+<a name="ln1017">{</a>
+<a name="ln1018">    ASSERT_DLUA;</a>
+<a name="ln1019"> </a>
+<a name="ln1020">    UDATA_ITEM(item);</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    if (!item || !item-&gt;defined())</a>
+<a name="ln1023">    {</a>
+<a name="ln1024">        lua_pushboolean(ls, false);</a>
+<a name="ln1025">        return 0;</a>
+<a name="ln1026">    }</a>
+<a name="ln1027"> </a>
+<a name="ln1028">    item_was_destroyed(*item);</a>
+<a name="ln1029">    destroy_item(item-&gt;index());</a>
+<a name="ln1030"> </a>
+<a name="ln1031">    lua_pushboolean(ls, true);</a>
+<a name="ln1032">    return 1;</a>
+<a name="ln1033">}</a>
+<a name="ln1034"> </a>
+<a name="ln1035">IDEFN(destroy, do_destroy)</a>
+<a name="ln1036"> </a>
+<a name="ln1037">static int l_item_do_dec_quantity(lua_State *ls)</a>
+<a name="ln1038">{</a>
+<a name="ln1039">    ASSERT_DLUA;</a>
+<a name="ln1040"> </a>
+<a name="ln1041">    UDATA_ITEM(item);</a>
+<a name="ln1042"> </a>
+<a name="ln1043">    if (!item || !item-&gt;defined())</a>
+<a name="ln1044">    {</a>
+<a name="ln1045">        lua_pushboolean(ls, false);</a>
+<a name="ln1046">        return 1;</a>
+<a name="ln1047">    }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">    // The quantity to reduce by.</a>
+<a name="ln1050">    int quantity = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1051"> </a>
+<a name="ln1052">    bool destroyed = false;</a>
+<a name="ln1053"> </a>
+<a name="ln1054">    if (in_inventory(*item))</a>
+<a name="ln1055">        destroyed = dec_inv_item_quantity(item-&gt;link, quantity);</a>
+<a name="ln1056">    else</a>
+<a name="ln1057">        destroyed = dec_mitm_item_quantity(item-&gt;index(), quantity);</a>
+<a name="ln1058"> </a>
+<a name="ln1059">    lua_pushboolean(ls, destroyed);</a>
+<a name="ln1060">    return 1;</a>
+<a name="ln1061">}</a>
+<a name="ln1062"> </a>
+<a name="ln1063">IDEFN(dec_quantity, do_dec_quantity)</a>
+<a name="ln1064"> </a>
+<a name="ln1065">static int l_item_do_inc_quantity(lua_State *ls)</a>
+<a name="ln1066">{</a>
+<a name="ln1067">    ASSERT_DLUA;</a>
+<a name="ln1068"> </a>
+<a name="ln1069">    UDATA_ITEM(item);</a>
+<a name="ln1070"> </a>
+<a name="ln1071">    if (!item || !item-&gt;defined())</a>
+<a name="ln1072">    {</a>
+<a name="ln1073">        lua_pushboolean(ls, false);</a>
+<a name="ln1074">        return 1;</a>
+<a name="ln1075">    }</a>
+<a name="ln1076"> </a>
+<a name="ln1077">    // The quantity to increase by.</a>
+<a name="ln1078">    int quantity = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1079"> </a>
+<a name="ln1080">    if (in_inventory(*item))</a>
+<a name="ln1081">        inc_inv_item_quantity(item-&gt;link, quantity);</a>
+<a name="ln1082">    else</a>
+<a name="ln1083">        inc_mitm_item_quantity(item-&gt;index(), quantity);</a>
+<a name="ln1084"> </a>
+<a name="ln1085">    return 0;</a>
+<a name="ln1086">}</a>
+<a name="ln1087"> </a>
+<a name="ln1088">IDEFN(inc_quantity, do_inc_quantity)</a>
+<a name="ln1089"> </a>
+<a name="ln1090">static iflags_t _str_to_item_status_flags(string flag)</a>
+<a name="ln1091">{</a>
+<a name="ln1092">    iflags_t flags = 0;</a>
+<a name="ln1093">    if (flag.find(&quot;curse&quot;) != string::npos)</a>
+<a name="ln1094">        flags &amp;= ISFLAG_KNOW_CURSE;</a>
+<a name="ln1095">    // type is dealt with using item_type_known.</a>
+<a name="ln1096">    //if (flag.find(&quot;type&quot;) != string::npos)</a>
+<a name="ln1097">    //    flags &amp;= ISFLAG_KNOW_TYPE;</a>
+<a name="ln1098">    if (flag.find(&quot;pluses&quot;) != string::npos)</a>
+<a name="ln1099">        flags &amp;= ISFLAG_KNOW_PLUSES;</a>
+<a name="ln1100">    if (flag.find(&quot;properties&quot;) != string::npos)</a>
+<a name="ln1101">        flags &amp;= ISFLAG_KNOW_PROPERTIES;</a>
+<a name="ln1102">    if (flag == &quot;any&quot;)</a>
+<a name="ln1103">        flags = ISFLAG_IDENT_MASK;</a>
+<a name="ln1104"> </a>
+<a name="ln1105">    return flags;</a>
+<a name="ln1106">}</a>
+<a name="ln1107"> </a>
+<a name="ln1108">static int l_item_do_identified(lua_State *ls)</a>
+<a name="ln1109">{</a>
+<a name="ln1110">    ASSERT_DLUA;</a>
+<a name="ln1111"> </a>
+<a name="ln1112">    UDATA_ITEM(item);</a>
+<a name="ln1113"> </a>
+<a name="ln1114">    if (!item || !item-&gt;defined())</a>
+<a name="ln1115">    {</a>
+<a name="ln1116">        lua_pushnil(ls);</a>
+<a name="ln1117">        return 1;</a>
+<a name="ln1118">    }</a>
+<a name="ln1119"> </a>
+<a name="ln1120">    bool known_status = false;</a>
+<a name="ln1121">    if (lua_isstring(ls, 1))</a>
+<a name="ln1122">    {</a>
+<a name="ln1123">        string flags = luaL_checkstring(ls, 1);</a>
+<a name="ln1124">        if (trimmed_string(flags).empty())</a>
+<a name="ln1125">            known_status = item_ident(*item, ISFLAG_IDENT_MASK);</a>
+<a name="ln1126">        else</a>
+<a name="ln1127">        {</a>
+<a name="ln1128">            const bool check_type = strip_tag(flags, &quot;type&quot;);</a>
+<a name="ln1129">            iflags_t item_flags = _str_to_item_status_flags(flags);</a>
+<a name="ln1130">            known_status = ((item_flags || check_type)</a>
+<a name="ln1131">                            &amp;&amp; (!item_flags || item_ident(*item, item_flags))</a>
+<a name="ln1132">                            &amp;&amp; (!check_type || item_type_known(*item)));</a>
+<a name="ln1133">        }</a>
+<a name="ln1134">    }</a>
+<a name="ln1135">    else</a>
+<a name="ln1136">        known_status = item_ident(*item, ISFLAG_IDENT_MASK);</a>
+<a name="ln1137"> </a>
+<a name="ln1138">    lua_pushboolean(ls, known_status);</a>
+<a name="ln1139">    return 1;</a>
+<a name="ln1140">}</a>
+<a name="ln1141"> </a>
+<a name="ln1142">IDEFN(identified, do_identified)</a>
+<a name="ln1143"> </a>
+<a name="ln1144">// Some dLua convenience functions.</a>
+<a name="ln1145">IDEF(base_type)</a>
+<a name="ln1146">{</a>
+<a name="ln1147">    ASSERT_DLUA;</a>
+<a name="ln1148"> </a>
+<a name="ln1149">    lua_pushstring(ls, base_type_string(*item));</a>
+<a name="ln1150">    return 1;</a>
+<a name="ln1151">}</a>
+<a name="ln1152"> </a>
+<a name="ln1153">IDEF(sub_type)</a>
+<a name="ln1154">{</a>
+<a name="ln1155">    ASSERT_DLUA;</a>
+<a name="ln1156"> </a>
+<a name="ln1157">    lua_pushstring(ls, sub_type_string(*item).c_str());</a>
+<a name="ln1158">    return 1;</a>
+<a name="ln1159">}</a>
+<a name="ln1160"> </a>
+<a name="ln1161">IDEF(ego_type)</a>
+<a name="ln1162">{</a>
+<a name="ln1163">    if (CLua::get_vm(ls).managed_vm &amp;&amp; !item_type_known(*item)</a>
+<a name="ln1164">        &amp;&amp; item-&gt;base_type != OBJ_MISSILES)</a>
+<a name="ln1165">    {</a>
+<a name="ln1166">        lua_pushstring(ls, &quot;unknown&quot;);</a>
+<a name="ln1167">        return 1;</a>
+<a name="ln1168">    }</a>
+<a name="ln1169"> </a>
+<a name="ln1170">    lua_pushstring(ls, ego_type_string(*item).c_str());</a>
+<a name="ln1171">    return 1;</a>
+<a name="ln1172">}</a>
+<a name="ln1173"> </a>
+<a name="ln1174">IDEF(ego_type_terse)</a>
+<a name="ln1175">{</a>
+<a name="ln1176">    if (CLua::get_vm(ls).managed_vm &amp;&amp; !item_type_known(*item)</a>
+<a name="ln1177">        &amp;&amp; item-&gt;base_type != OBJ_MISSILES)</a>
+<a name="ln1178">    {</a>
+<a name="ln1179">        lua_pushstring(ls, &quot;unknown&quot;);</a>
+<a name="ln1180">        return 1;</a>
+<a name="ln1181">    }</a>
+<a name="ln1182"> </a>
+<a name="ln1183">    lua_pushstring(ls, ego_type_string(*item, true).c_str());</a>
+<a name="ln1184">    return 1;</a>
+<a name="ln1185">}</a>
+<a name="ln1186"> </a>
+<a name="ln1187">IDEF(artefact_name)</a>
+<a name="ln1188">{</a>
+<a name="ln1189">    ASSERT_DLUA;</a>
+<a name="ln1190"> </a>
+<a name="ln1191">    if (is_artefact(*item))</a>
+<a name="ln1192">        lua_pushstring(ls, get_artefact_name(*item, true).c_str());</a>
+<a name="ln1193">    else</a>
+<a name="ln1194">        lua_pushnil(ls);</a>
+<a name="ln1195"> </a>
+<a name="ln1196">    return 1;</a>
+<a name="ln1197">}</a>
+<a name="ln1198"> </a>
+<a name="ln1199">IDEF(is_cursed)</a>
+<a name="ln1200">{</a>
+<a name="ln1201">    ASSERT_DLUA;</a>
+<a name="ln1202"> </a>
+<a name="ln1203">    bool cursed = item-&gt;cursed();</a>
+<a name="ln1204"> </a>
+<a name="ln1205">    lua_pushboolean(ls, cursed);</a>
+<a name="ln1206">    return 1;</a>
+<a name="ln1207">}</a>
+<a name="ln1208"> </a>
+<a name="ln1209">/***</a>
+<a name="ln1210"> * @section end</a>
+<a name="ln1211"> */</a>
+<a name="ln1212"> </a>
+<a name="ln1213">/*** Get the current inventory.</a>
+<a name="ln1214"> * @treturn array An array of @{Item} objects for the current inventory</a>
+<a name="ln1215"> * @function inventory</a>
+<a name="ln1216"> */</a>
+<a name="ln1217">static int l_item_inventory(lua_State *ls)</a>
+<a name="ln1218">{</a>
+<a name="ln1219">    _lua_push_inv_items(ls);</a>
+<a name="ln1220">    return 1;</a>
+<a name="ln1221">}</a>
+<a name="ln1222"> </a>
+<a name="ln1223">/*** Get the inventory letter of a slot number.</a>
+<a name="ln1224"> * @tparam int idx</a>
+<a name="ln1225"> * @treturn string</a>
+<a name="ln1226"> * @function index_to_letter</a>
+<a name="ln1227"> */</a>
+<a name="ln1228">static int l_item_index_to_letter(lua_State *ls)</a>
+<a name="ln1229">{</a>
+<a name="ln1230">    int index = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1231">    char sletter[2] = &quot;?&quot;;</a>
+<a name="ln1232">    if (index &gt;= 0 &amp;&amp; index &lt;= ENDOFPACK)</a>
+<a name="ln1233">        *sletter = index_to_letter(index);</a>
+<a name="ln1234">    lua_pushstring(ls, sletter);</a>
+<a name="ln1235">    return 1;</a>
+<a name="ln1236">}</a>
+<a name="ln1237"> </a>
+<a name="ln1238">/*** Get the index of an inventory letter.</a>
+<a name="ln1239"> * @tparam string let</a>
+<a name="ln1240"> * @treturn int</a>
+<a name="ln1241"> * @function letter_to_index</a>
+<a name="ln1242"> */</a>
+<a name="ln1243">static int l_item_letter_to_index(lua_State *ls)</a>
+<a name="ln1244">{</a>
+<a name="ln1245">    const char *s = luaL_checkstring(ls, 1);</a>
+<a name="ln1246">    if (!s || !*s || s[1])</a>
+<a name="ln1247">        return 0;</a>
+<a name="ln1248">    lua_pushnumber(ls, isaalpha(*s) ? letter_to_index(*s) : -1);</a>
+<a name="ln1249">    return 1;</a>
+<a name="ln1250">}</a>
+<a name="ln1251"> </a>
+<a name="ln1252">/*** Swap item slots.</a>
+<a name="ln1253"> * Requires item indexes, use @{letter_to_index} if you want to swap letters.</a>
+<a name="ln1254"> * @tparam int idx1</a>
+<a name="ln1255"> * @tparam int idx2</a>
+<a name="ln1256"> * @function swap_slots</a>
+<a name="ln1257"> */</a>
+<a name="ln1258">static int l_item_swap_slots(lua_State *ls)</a>
+<a name="ln1259">{</a>
+<a name="ln1260">    int slot1 = luaL_safe_checkint(ls, 1),</a>
+<a name="ln1261">        slot2 = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1262">    bool verbose = lua_toboolean(ls, 3);</a>
+<a name="ln1263">    if (slot1 &lt; 0 || slot1 &gt;= ENDOFPACK</a>
+<a name="ln1264">        || slot2 &lt; 0 || slot2 &gt;= ENDOFPACK</a>
+<a name="ln1265">        || slot1 == slot2 || !you.inv[slot1].defined())</a>
+<a name="ln1266">    {</a>
+<a name="ln1267">        return 0;</a>
+<a name="ln1268">    }</a>
+<a name="ln1269"> </a>
+<a name="ln1270">    swap_inv_slots(slot1, slot2, verbose);</a>
+<a name="ln1271"> </a>
+<a name="ln1272">    return 0;</a>
+<a name="ln1273">}</a>
+<a name="ln1274"> </a>
+<a name="ln1275">static item_def *dmx_get_item(lua_State *ls, int ndx, int subndx)</a>
+<a name="ln1276">{</a>
+<a name="ln1277">    if (lua_istable(ls, ndx))</a>
+<a name="ln1278">    {</a>
+<a name="ln1279">        lua_rawgeti(ls, ndx, subndx);</a>
+<a name="ln1280">        ITEM(item, -1);</a>
+<a name="ln1281">        lua_pop(ls, 1);</a>
+<a name="ln1282">        return item;</a>
+<a name="ln1283">    }</a>
+<a name="ln1284">    ITEM(item, ndx);</a>
+<a name="ln1285">    return item;</a>
+<a name="ln1286">}</a>
+<a name="ln1287"> </a>
+<a name="ln1288">static int dmx_get_qty(lua_State *ls, int ndx, int subndx)</a>
+<a name="ln1289">{</a>
+<a name="ln1290">    int qty = -1;</a>
+<a name="ln1291">    if (lua_istable(ls, ndx))</a>
+<a name="ln1292">    {</a>
+<a name="ln1293">        lua_rawgeti(ls, ndx, subndx);</a>
+<a name="ln1294">        if (lua_isnumber(ls, -1))</a>
+<a name="ln1295">            qty = luaL_safe_checkint(ls, -1);</a>
+<a name="ln1296">        lua_pop(ls, 1);</a>
+<a name="ln1297">    }</a>
+<a name="ln1298">    else if (lua_isnumber(ls, ndx))</a>
+<a name="ln1299">        qty = luaL_safe_checkint(ls, ndx);</a>
+<a name="ln1300">    return qty;</a>
+<a name="ln1301">}</a>
+<a name="ln1302"> </a>
+<a name="ln1303">static bool l_item_pickup2(item_def *item, int qty)</a>
+<a name="ln1304">{</a>
+<a name="ln1305">    if (!item || in_inventory(*item))</a>
+<a name="ln1306">        return false;</a>
+<a name="ln1307"> </a>
+<a name="ln1308">    int floor_link = item_on_floor(*item, you.pos());</a>
+<a name="ln1309">    if (floor_link == NON_ITEM)</a>
+<a name="ln1310">        return false;</a>
+<a name="ln1311"> </a>
+<a name="ln1312">    return pickup_single_item(floor_link, qty);</a>
+<a name="ln1313">}</a>
+<a name="ln1314"> </a>
+<a name="ln1315">/*** Pick up items.</a>
+<a name="ln1316"> * Accepts either a single Item object, and optionally a quantity (for picking</a>
+<a name="ln1317"> * up part of a stack), defaulting to the whole stack, or a table of (Item,qty)</a>
+<a name="ln1318"> * pairs.</a>
+<a name="ln1319"> *</a>
+<a name="ln1320"> * In the first usage returns how many of the single Item were picked up. In</a>
+<a name="ln1321"> * the second usage returns how many keys were successfully picked up.</a>
+<a name="ln1322"> * @tparam Item|table what</a>
+<a name="ln1323"> * @tparam[opt] int qty how many; defaults to the whole stack</a>
+<a name="ln1324"> * @treturn int</a>
+<a name="ln1325"> * @function pickup</a>
+<a name="ln1326"> */</a>
+<a name="ln1327">static int l_item_pickup(lua_State *ls)</a>
+<a name="ln1328">{</a>
+<a name="ln1329">    if (you.turn_is_over)</a>
+<a name="ln1330">        return 0;</a>
+<a name="ln1331"> </a>
+<a name="ln1332">    if (lua_isuserdata(ls, 1))</a>
+<a name="ln1333">    {</a>
+<a name="ln1334">        ITEM(item, 1);</a>
+<a name="ln1335">        int qty = item-&gt;quantity;</a>
+<a name="ln1336">        if (lua_isnumber(ls, 2))</a>
+<a name="ln1337">            qty = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1338"> </a>
+<a name="ln1339">        if (l_item_pickup2(item, qty))</a>
+<a name="ln1340">            lua_pushnumber(ls, 1);</a>
+<a name="ln1341">        else</a>
+<a name="ln1342">            lua_pushnil(ls);</a>
+<a name="ln1343">        return 1;</a>
+<a name="ln1344">    }</a>
+<a name="ln1345">    else if (lua_istable(ls, 1))</a>
+<a name="ln1346">    {</a>
+<a name="ln1347">        int dropped = 0;</a>
+<a name="ln1348">        for (int i = 1; ; ++i)</a>
+<a name="ln1349">        {</a>
+<a name="ln1350">            lua_rawgeti(ls, 1, i);</a>
+<a name="ln1351">            item_def *item = dmx_get_item(ls, -1, 1);</a>
+<a name="ln1352">            int qty = dmx_get_qty(ls, -1, 2);</a>
+<a name="ln1353">            lua_pop(ls, 1);</a>
+<a name="ln1354"> </a>
+<a name="ln1355">            if (l_item_pickup2(item, qty))</a>
+<a name="ln1356">                dropped++;</a>
+<a name="ln1357">            else</a>
+<a name="ln1358">            {</a>
+<a name="ln1359">                // Yes, we bail out on first failure.</a>
+<a name="ln1360">                break;</a>
+<a name="ln1361">            }</a>
+<a name="ln1362">        }</a>
+<a name="ln1363">        if (dropped)</a>
+<a name="ln1364">            lua_pushnumber(ls, dropped);</a>
+<a name="ln1365">        else</a>
+<a name="ln1366">            lua_pushnil(ls);</a>
+<a name="ln1367">        return 1;</a>
+<a name="ln1368">    }</a>
+<a name="ln1369">    return 0;</a>
+<a name="ln1370">}</a>
+<a name="ln1371"> </a>
+<a name="ln1372">/*** Get the Item in a given equipment slot.</a>
+<a name="ln1373"> * Takes either a slot name or a slot number.</a>
+<a name="ln1374"> * @tparam string|int where</a>
+<a name="ln1375"> * @treturn Item|nil returns nil for nothing equiped or invalid slot</a>
+<a name="ln1376"> * @function equipped_at</a>
+<a name="ln1377"> */</a>
+<a name="ln1378">static int l_item_equipped_at(lua_State *ls)</a>
+<a name="ln1379">{</a>
+<a name="ln1380">    int eq = -1;</a>
+<a name="ln1381">    if (lua_isnumber(ls, 1))</a>
+<a name="ln1382">        eq = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1383">    else if (lua_isstring(ls, 1))</a>
+<a name="ln1384">    {</a>
+<a name="ln1385">        const char *eqname = lua_tostring(ls, 1);</a>
+<a name="ln1386">        if (!eqname)</a>
+<a name="ln1387">            return 0;</a>
+<a name="ln1388">        eq = equip_name_to_slot(eqname);</a>
+<a name="ln1389">    }</a>
+<a name="ln1390"> </a>
+<a name="ln1391">    if (eq &lt; EQ_FIRST_EQUIP || eq &gt;= NUM_EQUIP)</a>
+<a name="ln1392">        return 0;</a>
+<a name="ln1393"> </a>
+<a name="ln1394">    if (you.equip[eq] != -1)</a>
+<a name="ln1395">        clua_push_item(ls, &amp;you.inv[you.equip[eq]]);</a>
+<a name="ln1396">    else</a>
+<a name="ln1397">        lua_pushnil(ls);</a>
+<a name="ln1398"> </a>
+<a name="ln1399">    return 1;</a>
+<a name="ln1400">}</a>
+<a name="ln1401"> </a>
+<a name="ln1402">/*** Get the Item we should fire by default.</a>
+<a name="ln1403"> * @treturn Item|nil returns nil if there is no default quiver item</a>
+<a name="ln1404"> * @function fired_item</a>
+<a name="ln1405"> */</a>
+<a name="ln1406">static int l_item_fired_item(lua_State *ls)</a>
+<a name="ln1407">{</a>
+<a name="ln1408">    int q = you.m_quiver.get_fire_item();</a>
+<a name="ln1409"> </a>
+<a name="ln1410">    if (q &lt; 0 || q &gt;= ENDOFPACK)</a>
+<a name="ln1411">        return 0;</a>
+<a name="ln1412"> </a>
+<a name="ln1413">    if (q != -1 &amp;&amp; !fire_warn_if_impossible(true))</a>
+<a name="ln1414">        clua_push_item(ls, &amp;you.inv[q]);</a>
+<a name="ln1415">    else</a>
+<a name="ln1416">        lua_pushnil(ls);</a>
+<a name="ln1417"> </a>
+<a name="ln1418">    return 1;</a>
+<a name="ln1419">}</a>
+<a name="ln1420"> </a>
+<a name="ln1421">/*** What item is in this slot?</a>
+<a name="ln1422"> * Uses numeric slot index, use @{letter_to_index} to look up the index from</a>
+<a name="ln1423"> * the number.</a>
+<a name="ln1424"> * @tparam int idx slot index</a>
+<a name="ln1425"> * @treturn Item|nil the item in that slot, nil if none</a>
+<a name="ln1426"> * @function inslot</a>
+<a name="ln1427"> */</a>
+<a name="ln1428">static int l_item_inslot(lua_State *ls)</a>
+<a name="ln1429">{</a>
+<a name="ln1430">    int index = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1431">    if (index &gt;= 0 &amp;&amp; index &lt; 52 &amp;&amp; you.inv[index].defined())</a>
+<a name="ln1432">        clua_push_item(ls, &amp;you.inv[index]);</a>
+<a name="ln1433">    else</a>
+<a name="ln1434">        lua_pushnil(ls);</a>
+<a name="ln1435">    return 1;</a>
+<a name="ln1436">}</a>
+<a name="ln1437"> </a>
+<a name="ln1438">/*** List the seen items at a grid cell.</a>
+<a name="ln1439"> * This function uses player centered coordinates.</a>
+<a name="ln1440"> * @tparam int x</a>
+<a name="ln1441"> * @tparam int y</a>
+<a name="ln1442"> * @treturn array An array of @{Item} objects</a>
+<a name="ln1443"> * @function get_items_at</a>
+<a name="ln1444"> */</a>
+<a name="ln1445">static int l_item_get_items_at(lua_State *ls)</a>
+<a name="ln1446">{</a>
+<a name="ln1447">    coord_def s;</a>
+<a name="ln1448">    s.x = luaL_safe_checkint(ls, 1);</a>
+<a name="ln1449">    s.y = luaL_safe_checkint(ls, 2);</a>
+<a name="ln1450">    coord_def p = player2grid(s);</a>
+<a name="ln1451"> </a>
+<a name="ln1452">    if (!query_map_knowledge(false, p, [](const map_cell&amp; cell) {</a>
+<a name="ln1453">          return cell.item() &amp;&amp; cell.item()-&gt;defined();</a>
+<a name="ln1454">        }))</a>
+<a name="ln1455">    {</a>
+<a name="ln1456">        return 0;</a>
+<a name="ln1457">    }</a>
+<a name="ln1458"> </a>
+<a name="ln1459">    lua_newtable(ls);</a>
+<a name="ln1460"> </a>
+<a name="ln1461">    const vector&lt;item_def&gt; items = item_list_in_stash(p);</a>
+<a name="ln1462">    int index = 0;</a>
+<a name="ln1463">    for (const auto &amp;item : items)</a>
+<a name="ln1464">    {</a>
+<a name="ln1465">        _clua_push_item_temp(ls, item);</a>
+<a name="ln1466">        lua_rawseti(ls, -2, ++index);</a>
+<a name="ln1467">    }</a>
+<a name="ln1468"> </a>
+<a name="ln1469">    return 1;</a>
+<a name="ln1470">}</a>
+<a name="ln1471"> </a>
+<a name="ln1472">int lua_push_shop_items_at(lua_State *ls, const coord_def &amp;s)</a>
+<a name="ln1473">{</a>
+<a name="ln1474">    // also used in l-dgnit.cc</a>
+<a name="ln1475">    shop_struct *shop = shop_at(s);</a>
+<a name="ln1476">    if (!shop)</a>
+<a name="ln1477">        return 0;</a>
+<a name="ln1478">    shopping_list.refresh(); // prevent crash if called during tests</a>
+<a name="ln1479"> </a>
+<a name="ln1480">    lua_newtable(ls);</a>
+<a name="ln1481"> </a>
+<a name="ln1482">    const vector&lt;item_def&gt; items = shop-&gt;stock;</a>
+<a name="ln1483">    int index = 0;</a>
+<a name="ln1484">    for (const auto &amp;item : items)</a>
+<a name="ln1485">    {</a>
+<a name="ln1486">        lua_newtable(ls);</a>
+<a name="ln1487">        _clua_push_item_temp(ls, item);</a>
+<a name="ln1488">        lua_rawseti(ls, -2, 1);</a>
+<a name="ln1489">        lua_pushnumber(ls, item_price(item, *shop));</a>
+<a name="ln1490">        lua_rawseti(ls, -2, 2);</a>
+<a name="ln1491">        lua_pushboolean(ls, shopping_list.is_on_list(item));</a>
+<a name="ln1492">        lua_rawseti(ls, -2, 3);</a>
+<a name="ln1493">        lua_rawseti(ls, -2, ++index);</a>
+<a name="ln1494">    }</a>
+<a name="ln1495"> </a>
+<a name="ln1496">    return 1;</a>
+<a name="ln1497">}</a>
+<a name="ln1498"> </a>
+<a name="ln1499">/*** See what a shop has for sale.</a>
+<a name="ln1500"> * Only works when standing at a shop.</a>
+<a name="ln1501"> * @treturn array|nil An array of @{Item} objects or nil if not on a shop</a>
+<a name="ln1502"> * @function shop_inventory</a>
+<a name="ln1503"> */</a>
+<a name="ln1504">static int l_item_shop_inventory(lua_State *ls)</a>
+<a name="ln1505">{</a>
+<a name="ln1506">    return lua_push_shop_items_at(ls, you.pos());</a>
+<a name="ln1507">}</a>
+<a name="ln1508"> </a>
+<a name="ln1509">/*** Look at the shopping list.</a>
+<a name="ln1510"> * @treturn array|nil Array of @{Item}s on the shopping list or nil if the</a>
+<a name="ln1511"> * shopping list is empty</a>
+<a name="ln1512"> * @function shopping_list</a>
+<a name="ln1513"> */</a>
+<a name="ln1514">static int l_item_shopping_list(lua_State *ls)</a>
+<a name="ln1515">{</a>
+<a name="ln1516">    if (shopping_list.empty())</a>
+<a name="ln1517">        return 0;</a>
+<a name="ln1518"> </a>
+<a name="ln1519">    lua_newtable(ls);</a>
+<a name="ln1520"> </a>
+<a name="ln1521">    const vector&lt;shoplist_entry&gt; items = shopping_list.entries();</a>
+<a name="ln1522">    int index = 0;</a>
+<a name="ln1523">    for (const auto &amp;item : items)</a>
+<a name="ln1524">    {</a>
+<a name="ln1525">        lua_newtable(ls);</a>
+<a name="ln1526">        lua_pushstring(ls, item.first.c_str());</a>
+<a name="ln1527">        lua_rawseti(ls, -2, 1);</a>
+<a name="ln1528">        lua_pushnumber(ls, item.second);</a>
+<a name="ln1529">        lua_rawseti(ls, -2, 2);</a>
+<a name="ln1530">        lua_rawseti(ls, -2, ++index);</a>
+<a name="ln1531">    }</a>
+<a name="ln1532"> </a>
+<a name="ln1533">    return 1;</a>
+<a name="ln1534">}</a>
+<a name="ln1535"> </a>
+<a name="ln1536">/*** See the items offered by acquirement.</a>
+<a name="ln1537"> * Only works when the acquirement menu is active.</a>
+<a name="ln1538"> * @treturn array|nil An array of @{Item} objects or nil if not acquiring.</a>
+<a name="ln1539"> * @function shop_inventory</a>
+<a name="ln1540"> */</a>
+<a name="ln1541">static int l_item_acquirement_items(lua_State *ls)</a>
+<a name="ln1542">{</a>
+<a name="ln1543">    if (!you.props.exists(ACQUIRE_ITEMS_KEY))</a>
+<a name="ln1544">        return 0;</a>
+<a name="ln1545"> </a>
+<a name="ln1546">    auto &amp;acq_items = you.props[ACQUIRE_ITEMS_KEY].get_vector();</a>
+<a name="ln1547"> </a>
+<a name="ln1548">    lua_newtable(ls);</a>
+<a name="ln1549"> </a>
+<a name="ln1550">    int index = 0;</a>
+<a name="ln1551">    for (const item_def &amp;item : acq_items)</a>
+<a name="ln1552">    {</a>
+<a name="ln1553">        _clua_push_item_temp(ls, item);</a>
+<a name="ln1554">        lua_rawseti(ls, -2, ++index);</a>
+<a name="ln1555">    }</a>
+<a name="ln1556"> </a>
+<a name="ln1557">    return 1;</a>
+<a name="ln1558">}</a>
+<a name="ln1559"> </a>
+<a name="ln1560">struct ItemAccessor</a>
+<a name="ln1561">{</a>
+<a name="ln1562">    const char *attribute;</a>
+<a name="ln1563">    int (*accessor)(lua_State *ls, item_def *item);</a>
+<a name="ln1564">};</a>
+<a name="ln1565"> </a>
+<a name="ln1566">static ItemAccessor item_attrs[] =</a>
+<a name="ln1567">{</a>
+<a name="ln1568">    { &quot;artefact&quot;,          l_item_artefact },</a>
+<a name="ln1569">    { &quot;branded&quot;,           l_item_branded },</a>
+<a name="ln1570">    { &quot;god_gift&quot;,          l_item_god_gift },</a>
+<a name="ln1571">    { &quot;fully_identified&quot;,  l_item_fully_identified },</a>
+<a name="ln1572">    { &quot;plus&quot;,              l_item_plus },</a>
+<a name="ln1573">    { &quot;plus2&quot;,             l_item_plus2 },</a>
+<a name="ln1574">    { &quot;class&quot;,             l_item_class },</a>
+<a name="ln1575">    { &quot;subtype&quot;,           l_item_subtype },</a>
+<a name="ln1576">    { &quot;ego&quot;,               l_item_ego },</a>
+<a name="ln1577">    { &quot;cursed&quot;,            l_item_cursed },</a>
+<a name="ln1578">    { &quot;worn&quot;,              l_item_worn },</a>
+<a name="ln1579">    { &quot;name&quot;,              l_item_name },</a>
+<a name="ln1580">    { &quot;name_coloured&quot;,     l_item_name_coloured },</a>
+<a name="ln1581">    { &quot;stacks&quot;,            l_item_stacks },</a>
+<a name="ln1582">    { &quot;quantity&quot;,          l_item_quantity },</a>
+<a name="ln1583">    { &quot;slot&quot;,              l_item_slot },</a>
+<a name="ln1584">    { &quot;ininventory&quot;,       l_item_ininventory },</a>
+<a name="ln1585">    { &quot;wield&quot;,             l_item_wield },</a>
+<a name="ln1586">    { &quot;wear&quot;,              l_item_wear },</a>
+<a name="ln1587">    { &quot;puton&quot;,             l_item_puton },</a>
+<a name="ln1588">    { &quot;remove&quot;,            l_item_remove },</a>
+<a name="ln1589">    { &quot;drop&quot;,              l_item_drop },</a>
+<a name="ln1590">    { &quot;equipped&quot;,          l_item_equipped },</a>
+<a name="ln1591">    { &quot;equip_type&quot;,        l_item_equip_type },</a>
+<a name="ln1592">    { &quot;weap_skill&quot;,        l_item_weap_skill },</a>
+<a name="ln1593">    { &quot;reach_range&quot;,       l_item_reach_range },</a>
+<a name="ln1594">    { &quot;is_ranged&quot;,         l_item_is_ranged },</a>
+<a name="ln1595">    { &quot;is_throwable&quot;,      l_item_is_throwable },</a>
+<a name="ln1596">    { &quot;dropped&quot;,           l_item_dropped },</a>
+<a name="ln1597">    { &quot;is_melded&quot;,         l_item_is_melded },</a>
+<a name="ln1598">    { &quot;is_skeleton&quot;,       l_item_is_skeleton },</a>
+<a name="ln1599">    { &quot;is_corpse&quot;,         l_item_is_corpse },</a>
+<a name="ln1600">    { &quot;has_skeleton&quot;,      l_item_has_skeleton },</a>
+<a name="ln1601">    { &quot;can_zombify&quot;,       l_item_can_zombify },</a>
+<a name="ln1602">    { &quot;is_preferred_food&quot;, l_item_is_preferred_food },</a>
+<a name="ln1603">    { &quot;is_bad_food&quot;,       l_item_is_bad_food },</a>
+<a name="ln1604">    { &quot;is_useless&quot;,        l_item_is_useless },</a>
+<a name="ln1605">    { &quot;spells&quot;,            l_item_spells },</a>
+<a name="ln1606">    { &quot;artprops&quot;,          l_item_artprops },</a>
+<a name="ln1607">    { &quot;damage&quot;,            l_item_damage },</a>
+<a name="ln1608">    { &quot;accuracy&quot;,          l_item_accuracy },</a>
+<a name="ln1609">    { &quot;delay&quot;,             l_item_delay },</a>
+<a name="ln1610">    { &quot;ac&quot;,                l_item_ac },</a>
+<a name="ln1611">    { &quot;encumbrance&quot;,       l_item_encumbrance },</a>
+<a name="ln1612">    { &quot;is_in_shop&quot;,        l_item_is_in_shop },</a>
+<a name="ln1613">    { &quot;inscription&quot;,       l_item_inscription },</a>
+<a name="ln1614"> </a>
+<a name="ln1615">    // dlua only past this point</a>
+<a name="ln1616">    { &quot;pluses&quot;,            l_item_pluses },</a>
+<a name="ln1617">    { &quot;destroy&quot;,           l_item_destroy },</a>
+<a name="ln1618">    { &quot;dec_quantity&quot;,      l_item_dec_quantity },</a>
+<a name="ln1619">    { &quot;inc_quantity&quot;,      l_item_inc_quantity },</a>
+<a name="ln1620">    { &quot;identified&quot;,        l_item_identified },</a>
+<a name="ln1621">    { &quot;base_type&quot;,         l_item_base_type },</a>
+<a name="ln1622">    { &quot;sub_type&quot;,          l_item_sub_type },</a>
+<a name="ln1623">    { &quot;ego_type&quot;,          l_item_ego_type },</a>
+<a name="ln1624">    { &quot;ego_type_terse&quot;,    l_item_ego_type_terse },</a>
+<a name="ln1625">    { &quot;artefact_name&quot;,     l_item_artefact_name },</a>
+<a name="ln1626">    { &quot;is_cursed&quot;,         l_item_is_cursed },</a>
+<a name="ln1627">    { &quot;hands&quot;,             l_item_hands },</a>
+<a name="ln1628">};</a>
+<a name="ln1629"> </a>
+<a name="ln1630">static int item_get(lua_State *ls)</a>
+<a name="ln1631">{</a>
+<a name="ln1632">    ITEM(iw, 1);</a>
+<a name="ln1633">    if (!iw)</a>
+<a name="ln1634">        return 0;</a>
+<a name="ln1635"> </a>
+<a name="ln1636">    const char *attr = luaL_checkstring(ls, 2);</a>
+<a name="ln1637">    if (!attr)</a>
+<a name="ln1638">        return 0;</a>
+<a name="ln1639"> </a>
+<a name="ln1640">    for (const ItemAccessor &amp;ia : item_attrs)</a>
+<a name="ln1641">        if (!strcmp(attr, ia.attribute))</a>
+<a name="ln1642">            return ia.accessor(ls, iw);</a>
+<a name="ln1643"> </a>
+<a name="ln1644">    return 0;</a>
+<a name="ln1645">}</a>
+<a name="ln1646"> </a>
+<a name="ln1647">static const struct luaL_reg item_lib[] =</a>
+<a name="ln1648">{</a>
+<a name="ln1649">    { &quot;inventory&quot;,         l_item_inventory },</a>
+<a name="ln1650">    { &quot;letter_to_index&quot;,   l_item_letter_to_index },</a>
+<a name="ln1651">    { &quot;index_to_letter&quot;,   l_item_index_to_letter },</a>
+<a name="ln1652">    { &quot;swap_slots&quot;,        l_item_swap_slots },</a>
+<a name="ln1653">    { &quot;pickup&quot;,            l_item_pickup },</a>
+<a name="ln1654">    { &quot;equipped_at&quot;,       l_item_equipped_at },</a>
+<a name="ln1655">    { &quot;fired_item&quot;,        l_item_fired_item },</a>
+<a name="ln1656">    { &quot;inslot&quot;,            l_item_inslot },</a>
+<a name="ln1657">    { &quot;get_items_at&quot;,      l_item_get_items_at },</a>
+<a name="ln1658">    { &quot;shop_inventory&quot;,    l_item_shop_inventory },</a>
+<a name="ln1659">    { &quot;shopping_list&quot;,     l_item_shopping_list },</a>
+<a name="ln1660">    { &quot;acquirement_items&quot;, l_item_acquirement_items },</a>
+<a name="ln1661">    { nullptr, nullptr },</a>
+<a name="ln1662">};</a>
+<a name="ln1663"> </a>
+<a name="ln1664">static int _delete_wrapped_item(lua_State *ls)</a>
+<a name="ln1665">{</a>
+<a name="ln1666">    item_wrapper *iw = static_cast&lt;item_wrapper*&gt;(lua_touserdata(ls, 1));</a>
+<a name="ln1667">    if (iw &amp;&amp; iw-&gt;temp &amp;&amp; iw-&gt;item)</a>
+<a name="ln1668">    {</a>
+<a name="ln1669">        delete iw-&gt;item;</a>
+<a name="ln1670">        iw-&gt;item = nullptr;</a>
+<a name="ln1671">    }</a>
+<a name="ln1672">    return 0;</a>
+<a name="ln1673">}</a>
+<a name="ln1674"> </a>
+<a name="ln1675">void cluaopen_item(lua_State *ls)</a>
+<a name="ln1676">{</a>
+<a name="ln1677">    luaL_newmetatable(ls, ITEM_METATABLE);</a>
+<a name="ln1678">    lua_pushstring(ls, &quot;__index&quot;);</a>
+<a name="ln1679">    lua_pushcfunction(ls, item_get);</a>
+<a name="ln1680">    lua_settable(ls, -3);</a>
+<a name="ln1681"> </a>
+<a name="ln1682">    lua_pushstring(ls, &quot;__gc&quot;);</a>
+<a name="ln1683">    lua_pushcfunction(ls, _delete_wrapped_item);</a>
+<a name="ln1684">    lua_settable(ls, -3);</a>
+<a name="ln1685"> </a>
+<a name="ln1686">    // Pop the metatable off the stack.</a>
+<a name="ln1687">    lua_pop(ls, 1);</a>
+<a name="ln1688"> </a>
+<a name="ln1689">    luaL_openlib(ls, &quot;items&quot;, item_lib, 0);</a>
+<a name="ln1690">}</a>
+
+</code></pre>
+<div class="balloon" rel="759"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="812"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1413"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: q != - 1.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1749 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>wiz-item.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Item related wizard functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;wiz-item.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cerrno&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;acquire.h&quot;</a>
+<a name="ln13">#include &quot;act-iter.h&quot;</a>
+<a name="ln14">#include &quot;artefact.h&quot;</a>
+<a name="ln15">#include &quot;art-enum.h&quot;</a>
+<a name="ln16">#include &quot;cio.h&quot;</a>
+<a name="ln17">#include &quot;coordit.h&quot;</a>
+<a name="ln18">#include &quot;decks.h&quot;</a>
+<a name="ln19">#include &quot;dbg-util.h&quot;</a>
+<a name="ln20">#include &quot;env.h&quot;</a>
+<a name="ln21">#include &quot;god-passive.h&quot;</a>
+<a name="ln22">#include &quot;invent.h&quot;</a>
+<a name="ln23">#include &quot;item-prop.h&quot;</a>
+<a name="ln24">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln25">#include &quot;items.h&quot;</a>
+<a name="ln26">#include &quot;jobs.h&quot;</a>
+<a name="ln27">#include &quot;libutil.h&quot;</a>
+<a name="ln28">#include &quot;macro.h&quot;</a>
+<a name="ln29">#include &quot;makeitem.h&quot;</a>
+<a name="ln30">#include &quot;mapdef.h&quot;</a>
+<a name="ln31">#include &quot;message.h&quot;</a>
+<a name="ln32">#include &quot;mon-death.h&quot;</a>
+<a name="ln33">#include &quot;options.h&quot;</a>
+<a name="ln34">#include &quot;orb-type.h&quot;</a>
+<a name="ln35">#include &quot;output.h&quot;</a>
+<a name="ln36">#include &quot;player-equip.h&quot;</a>
+<a name="ln37">#include &quot;prompt.h&quot;</a>
+<a name="ln38">#include &quot;randbook.h&quot;</a>
+<a name="ln39">#include &quot;religion.h&quot;</a>
+<a name="ln40">#include &quot;skills.h&quot;</a>
+<a name="ln41">#include &quot;spl-book.h&quot;</a>
+<a name="ln42">#include &quot;spl-util.h&quot;</a>
+<a name="ln43">#include &quot;stash.h&quot;</a>
+<a name="ln44">#include &quot;stringutil.h&quot;</a>
+<a name="ln45">#include &quot;terrain.h&quot;</a>
+<a name="ln46">#include &quot;unicode.h&quot;</a>
+<a name="ln47">#include &quot;view.h&quot;</a>
+<a name="ln48"> </a>
+<a name="ln49">#ifdef WIZARD</a>
+<a name="ln50">static void _make_all_books()</a>
+<a name="ln51">{</a>
+<a name="ln52">    for (int i = 0; i &lt; NUM_FIXED_BOOKS; ++i)</a>
+<a name="ln53">    {</a>
+<a name="ln54">        if (item_type_removed(OBJ_BOOKS, i))</a>
+<a name="ln55">            continue;</a>
+<a name="ln56">        int thing = items(false, OBJ_BOOKS, i, 0, 0, AQ_WIZMODE);</a>
+<a name="ln57">        if (thing == NON_ITEM)</a>
+<a name="ln58">            continue;</a>
+<a name="ln59"> </a>
+<a name="ln60">        move_item_to_grid(&amp;thing, you.pos());</a>
+<a name="ln61"> </a>
+<a name="ln62">        if (thing == NON_ITEM)</a>
+<a name="ln63">            continue;</a>
+<a name="ln64"> </a>
+<a name="ln65">        item_def book(mitm[thing]);</a>
+<a name="ln66"> </a>
+<a name="ln67">        set_ident_flags(book, ISFLAG_KNOW_TYPE);</a>
+<a name="ln68">        set_ident_flags(book, ISFLAG_IDENT_MASK);</a>
+<a name="ln69"> </a>
+<a name="ln70">        mpr(book.name(DESC_PLAIN));</a>
+<a name="ln71">    }</a>
+<a name="ln72">}</a>
+<a name="ln73"> </a>
+<a name="ln74">void wizard_create_spec_object_by_name()</a>
+<a name="ln75">{</a>
+<a name="ln76">    char buf[1024];</a>
+<a name="ln77">    mprf(MSGCH_PROMPT, &quot;Enter name of item (or ITEM spec): &quot;);</a>
+<a name="ln78">    if (cancellable_get_line_autohist(buf, sizeof buf) || !*buf)</a>
+<a name="ln79">    {</a>
+<a name="ln80">        canned_msg(MSG_OK);</a>
+<a name="ln81">        return;</a>
+<a name="ln82">    }</a>
+<a name="ln83"> </a>
+<a name="ln84">    string error;</a>
+<a name="ln85">    create_item_named(buf, you.pos(), &amp;error);</a>
+<a name="ln86">    if (!error.empty())</a>
+<a name="ln87">    {</a>
+<a name="ln88">        mprf(MSGCH_ERROR, &quot;Error: %s&quot;, error.c_str());</a>
+<a name="ln89">        return;</a>
+<a name="ln90">    }</a>
+<a name="ln91">}</a>
+<a name="ln92"> </a>
+<a name="ln93">void wizard_create_spec_object()</a>
+<a name="ln94">{</a>
+<a name="ln95">    char specs[80];</a>
+<a name="ln96">    char32_t keyin;</a>
+<a name="ln97">    object_class_type class_wanted;</a>
+<a name="ln98"> </a>
+<a name="ln99">    do</a>
+<a name="ln100">    {</a>
+<a name="ln101">        mprf(MSGCH_PROMPT, &quot;) - weapons     ( - missiles  [ - armour  / - wands    ?  - scrolls&quot;);</a>
+<a name="ln102">        mprf(MSGCH_PROMPT, &quot;= - jewellery   ! - potions   : - books   | - staves   }  - miscellany&quot;);</a>
+<a name="ln103">        mprf(MSGCH_PROMPT, &quot;X - corpses     %% - food      $ - gold    0  - the Orb&quot;);</a>
+<a name="ln104">        mprf(MSGCH_PROMPT, &quot;ESC - exit&quot;);</a>
+<a name="ln105"> </a>
+<a name="ln106">        msgwin_prompt(&quot;What class of item? &quot;);</a>
+<a name="ln107"> </a>
+<a name="ln108">        keyin = towupper(get_ch());</a>
+<a name="ln109"> </a>
+<a name="ln110">        class_wanted = item_class_by_sym(keyin);</a>
+<a name="ln111">        if (key_is_escape(keyin) || keyin == ' '</a>
+<a name="ln112">                || keyin == '\r' || keyin == '\n')</a>
+<a name="ln113">        {</a>
+<a name="ln114">            msgwin_reply(&quot;&quot;);</a>
+<a name="ln115">            canned_msg(MSG_OK);</a>
+<a name="ln116">            return;</a>
+<a name="ln117">        }</a>
+<a name="ln118">    } while (class_wanted == NUM_OBJECT_CLASSES);</a>
+<a name="ln119"> </a>
+<a name="ln120">    // XXX: hope item_class_by_sym never returns a real class for non-ascii.</a>
+<a name="ln121">    msgwin_reply(string(1, (char) keyin));</a>
+<a name="ln122"> </a>
+<a name="ln123">    // Allocate an item to play with.</a>
+<a name="ln124">    int thing_created = get_mitm_slot();</a>
+<a name="ln125">    if (thing_created == NON_ITEM)</a>
+<a name="ln126">    {</a>
+<a name="ln127">        mpr(&quot;Could not allocate item.&quot;);</a>
+<a name="ln128">        return;</a>
+<a name="ln129">    }</a>
+<a name="ln130">    item_def&amp; item(mitm[thing_created]);</a>
+<a name="ln131"> </a>
+<a name="ln132">    // turn item into appropriate kind:</a>
+<a name="ln133">    if (class_wanted == OBJ_ORBS)</a>
+<a name="ln134">    {</a>
+<a name="ln135">        item.base_type = OBJ_ORBS;</a>
+<a name="ln136">        item.sub_type  = ORB_ZOT;</a>
+<a name="ln137">        item.quantity  = 1;</a>
+<a name="ln138">    }</a>
+<a name="ln139">    else if (class_wanted == OBJ_GOLD)</a>
+<a name="ln140">    {</a>
+<a name="ln141">        int amount = prompt_for_int(&quot;How much gold? &quot;, true);</a>
+<a name="ln142">        if (amount &lt;= 0)</a>
+<a name="ln143">        {</a>
+<a name="ln144">            canned_msg(MSG_OK);</a>
+<a name="ln145">            return;</a>
+<a name="ln146">        }</a>
+<a name="ln147"> </a>
+<a name="ln148">        item.base_type = OBJ_GOLD;</a>
+<a name="ln149">        item.sub_type  = 0;</a>
+<a name="ln150">        item.quantity  = amount;</a>
+<a name="ln151">    }</a>
+<a name="ln152">    // in this case, place_monster_corpse will allocate an item for us, and we</a>
+<a name="ln153">    // don't use item/thing_created.</a>
+<a name="ln154">    else if (class_wanted == OBJ_CORPSES)</a>
+<a name="ln155">    {</a>
+<a name="ln156">        monster_type mon = debug_prompt_for_monster();</a>
+<a name="ln157"> </a>
+<a name="ln158">        if (mon == MONS_NO_MONSTER || mon == MONS_PROGRAM_BUG)</a>
+<a name="ln159">        {</a>
+<a name="ln160">            mpr(&quot;No such monster.&quot;);</a>
+<a name="ln161">            return;</a>
+<a name="ln162">        }</a>
+<a name="ln163"> </a>
+<a name="ln164">        if (!mons_class_can_leave_corpse(mon))</a>
+<a name="ln165">        {</a>
+<a name="ln166">            mpr(&quot;That monster doesn't leave corpses.&quot;);</a>
+<a name="ln167">            return;</a>
+<a name="ln168">        }</a>
+<a name="ln169"> </a>
+<a name="ln170">        if (mons_is_draconian_job(mon))</a>
+<a name="ln171">        {</a>
+<a name="ln172">            mpr(&quot;You can't make a draconian corpse by its background.&quot;);</a>
+<a name="ln173">            mon = MONS_DRACONIAN;</a>
+<a name="ln174">        }</a>
+<a name="ln175"> </a>
+<a name="ln176">        monster dummy;</a>
+<a name="ln177">        dummy.type = mon;</a>
+<a name="ln178">        dummy.position = you.pos();</a>
+<a name="ln179"> </a>
+<a name="ln180">        if (mons_genus(mon) == MONS_HYDRA)</a>
+<a name="ln181">        {</a>
+<a name="ln182">            dummy.num_heads</a>
+<a name="ln183">                =  max(1, min(27, prompt_for_int(&quot;How many heads? &quot;, false)));</a>
+<a name="ln184">        }</a>
+<a name="ln185"> </a>
+<a name="ln186">        if (!place_monster_corpse(dummy, false, true))</a>
+<a name="ln187">        {</a>
+<a name="ln188">            mpr(&quot;Failed to create corpse.&quot;);</a>
+<a name="ln189">            return;</a>
+<a name="ln190">        }</a>
+<a name="ln191">    }</a>
+<a name="ln192">    else</a>
+<a name="ln193">    {</a>
+<a name="ln194">        string prompt = &quot;What type of item? &quot;;</a>
+<a name="ln195">        if (class_wanted == OBJ_BOOKS)</a>
+<a name="ln196">            prompt += &quot;(\&quot;all\&quot; for all) &quot;;</a>
+<a name="ln197">        msgwin_get_line_autohist(prompt, specs, sizeof(specs));</a>
+<a name="ln198"> </a>
+<a name="ln199">        string temp = specs;</a>
+<a name="ln200">        trim_string(temp);</a>
+<a name="ln201">        lowercase(temp);</a>
+<a name="ln202">        strlcpy(specs, temp.c_str(), sizeof(specs));</a>
+<a name="ln203"> </a>
+<a name="ln204">        if (class_wanted == OBJ_BOOKS &amp;&amp; temp == &quot;all&quot;)</a>
+<a name="ln205">        {</a>
+<a name="ln206">            _make_all_books();</a>
+<a name="ln207">            return;</a>
+<a name="ln208">        }</a>
+<a name="ln209"> </a>
+<a name="ln210">        if (specs[0] == '\0')</a>
+<a name="ln211">        {</a>
+<a name="ln212">            canned_msg(MSG_OK);</a>
+<a name="ln213">            return;</a>
+<a name="ln214">        }</a>
+<a name="ln215"> </a>
+<a name="ln216">        if (!get_item_by_name(&amp;item, specs, class_wanted, true))</a>
+<a name="ln217">        {</a>
+<a name="ln218">            mpr(&quot;No such item.&quot;);</a>
+<a name="ln219"> </a>
+<a name="ln220">            // Clean up item</a>
+<a name="ln221">            destroy_item(thing_created);</a>
+<a name="ln222">            return;</a>
+<a name="ln223">        }</a>
+<a name="ln224">    }</a>
+<a name="ln225"> </a>
+<a name="ln226">    item_colour(item);</a>
+<a name="ln227"> </a>
+<a name="ln228">    move_item_to_grid(&amp;thing_created, you.pos());</a>
+<a name="ln229"> </a>
+<a name="ln230">    if (thing_created != NON_ITEM)</a>
+<a name="ln231">    {</a>
+<a name="ln232">        // orig_monnum is used in corpses for things like the Animate</a>
+<a name="ln233">        // Dead spell, so leave it alone.</a>
+<a name="ln234">        if (class_wanted != OBJ_CORPSES)</a>
+<a name="ln235">            origin_acquired(mitm[thing_created], AQ_WIZMODE);</a>
+<a name="ln236">        canned_msg(MSG_SOMETHING_APPEARS);</a>
+<a name="ln237"> </a>
+<a name="ln238">        // Tell the stash tracker.</a>
+<a name="ln239">        maybe_update_stashes();</a>
+<a name="ln240">    }</a>
+<a name="ln241">}</a>
+<a name="ln242"> </a>
+<a name="ln243">static void _tweak_randart(item_def &amp;item)</a>
+<a name="ln244">{</a>
+<a name="ln245">    if (item_is_equipped(item))</a>
+<a name="ln246">    {</a>
+<a name="ln247">        mprf(MSGCH_PROMPT, &quot;You can't tweak the randart properties of an equipped item.&quot;);</a>
+<a name="ln248">        return;</a>
+<a name="ln249">    }</a>
+<a name="ln250">    else</a>
+<a name="ln251">        clear_messages();</a>
+<a name="ln252"> </a>
+<a name="ln253">    artefact_properties_t props;</a>
+<a name="ln254">    artefact_properties(item, props);</a>
+<a name="ln255"> </a>
+<a name="ln256">    string prompt = &quot;&quot;;</a>
+<a name="ln257"> </a>
+<a name="ln258">    vector&lt;unsigned int&gt; choice_to_prop;</a>
+<a name="ln259">    for (unsigned int i = 0, choice_num = 0; i &lt; ARTP_NUM_PROPERTIES; ++i)</a>
+<a name="ln260">    {</a>
+<a name="ln261">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln262">        if (i == ARTP_METABOLISM || i == ARTP_ACCURACY || i == ARTP_TWISTER)</a>
+<a name="ln263">            continue;</a>
+<a name="ln264">#endif</a>
+<a name="ln265">        choice_to_prop.push_back(i);</a>
+<a name="ln266">        if (choice_num % 8 == 0 &amp;&amp; choice_num != 0)</a>
+<a name="ln267">            prompt.back() = '\n'; // Replace the space</a>
+<a name="ln268"> </a>
+<a name="ln269">        char choice;</a>
+<a name="ln270">        char buf[80];</a>
+<a name="ln271"> </a>
+<a name="ln272">        if (choice_num &lt; 26)</a>
+<a name="ln273">            choice = 'a' + choice_num;</a>
+<a name="ln274">        else if (choice_num &lt; 52)</a>
+<a name="ln275">            choice = 'A' + choice_num - 26;</a>
+<a name="ln276">        else if (choice_num &lt; 'A' - '0' + 52)</a>
+<a name="ln277">        {</a>
+<a name="ln278">            // 0-9 then :;&lt;=&gt;?@ . Any higher would collide with letters.</a>
+<a name="ln279">            choice = '0' + choice_num - 52;</a>
+<a name="ln280">        }</a>
+<a name="ln281">        else</a>
+<a name="ln282">            choice = '-'; // Too many choices!</a>
+<a name="ln283"> </a>
+<a name="ln284">        snprintf(buf, sizeof(buf), &quot;%s) %s%-6s%s &quot;,</a>
+<a name="ln285">                choice == '&lt;' ? &quot;&lt;&lt;&quot; : string(1, choice).c_str(),</a>
+<a name="ln286">                 props[i] ? &quot;&lt;w&gt;&quot; : &quot;&quot;,</a>
+<a name="ln287">                 artp_name((artefact_prop_type)choice_to_prop[choice_num]),</a>
+<a name="ln288">                 props[i] ? &quot;&lt;/w&gt;&quot; : &quot;&quot;);</a>
+<a name="ln289"> </a>
+<a name="ln290">        prompt += buf;</a>
+<a name="ln291"> </a>
+<a name="ln292">        choice_num++;</a>
+<a name="ln293">    }</a>
+<a name="ln294">    mprf_nocap(MSGCH_PROMPT, &quot;%s&quot;, prompt.c_str());</a>
+<a name="ln295"> </a>
+<a name="ln296">    mprf(MSGCH_PROMPT, &quot;Change which field? &quot;);</a>
+<a name="ln297"> </a>
+<a name="ln298">    int keyin = get_ch();</a>
+<a name="ln299">    unsigned int  choice;</a>
+<a name="ln300"> </a>
+<a name="ln301">    if (isaalpha(keyin) &amp;&amp; islower(keyin))</a>
+<a name="ln302">        choice = keyin - 'a';</a>
+<a name="ln303">    else if (isaalpha(keyin) &amp;&amp; isupper(keyin))</a>
+<a name="ln304">        choice = keyin - 'A' + 26;</a>
+<a name="ln305">    else if (keyin &gt;= '0' &amp;&amp; keyin &lt; 'A')</a>
+<a name="ln306">        choice = keyin - '0' + 52;</a>
+<a name="ln307">    else</a>
+<a name="ln308">    {</a>
+<a name="ln309">        canned_msg(MSG_OK);</a>
+<a name="ln310">        return;</a>
+<a name="ln311">    }</a>
+<a name="ln312"> </a>
+<a name="ln313">    if (choice &gt;= choice_to_prop.size())</a>
+<a name="ln314">    {</a>
+<a name="ln315">        canned_msg(MSG_HUH);</a>
+<a name="ln316">        return;</a>
+<a name="ln317">    }</a>
+<a name="ln318"> </a>
+<a name="ln319">    const artefact_prop_type prop = (artefact_prop_type)choice_to_prop[choice];</a>
+<a name="ln320">    switch (artp_potential_value_types(prop))</a>
+<a name="ln321">    {</a>
+<a name="ln322">    case ARTP_VAL_BOOL:</a>
+<a name="ln323">        mprf(MSGCH_PROMPT, &quot;Toggling %s to %s.&quot;, artp_name(prop),</a>
+<a name="ln324">             props[prop] ? &quot;off&quot; : &quot;on&quot;);</a>
+<a name="ln325">        artefact_set_property(item, static_cast&lt;artefact_prop_type&gt;(prop),</a>
+<a name="ln326">                             !props[prop]);</a>
+<a name="ln327">        break;</a>
+<a name="ln328"> </a>
+<a name="ln329">    case ARTP_VAL_POS:</a>
+<a name="ln330">    {</a>
+<a name="ln331">        mprf(MSGCH_PROMPT, &quot;%s was %d.&quot;, artp_name(prop), props[prop]);</a>
+<a name="ln332">        const int val = prompt_for_int(&quot;New value? &quot;, true);</a>
+<a name="ln333"> </a>
+<a name="ln334">        if (val &lt; 0)</a>
+<a name="ln335">        {</a>
+<a name="ln336">            mprf(MSGCH_PROMPT, &quot;Value for %s must be non-negative&quot;,</a>
+<a name="ln337">                 artp_name(prop));</a>
+<a name="ln338">            return;</a>
+<a name="ln339">        }</a>
+<a name="ln340">        artefact_set_property(item, static_cast&lt;artefact_prop_type&gt;(prop),</a>
+<a name="ln341">                             val);</a>
+<a name="ln342">        break;</a>
+<a name="ln343">    }</a>
+<a name="ln344">    case ARTP_VAL_ANY:</a>
+<a name="ln345">    {</a>
+<a name="ln346">        mprf(MSGCH_PROMPT, &quot;%s was %d.&quot;, artp_name(prop), props[prop]);</a>
+<a name="ln347">        const int val = prompt_for_int(&quot;New value? &quot;, false);</a>
+<a name="ln348">        artefact_set_property(item, static_cast&lt;artefact_prop_type&gt;(prop),</a>
+<a name="ln349">                             val);</a>
+<a name="ln350">        break;</a>
+<a name="ln351">    }</a>
+<a name="ln352"> </a>
+<a name="ln353">    case ARTP_VAL_BRAND:</a>
+<a name="ln354">    {</a>
+<a name="ln355">        mprf(MSGCH_PROMPT, &quot;%s was %s.&quot;, artp_name(prop),</a>
+<a name="ln356">             props[prop] ? ego_type_string(item, false).c_str() : &quot;normal&quot;);</a>
+<a name="ln357"> </a>
+<a name="ln358">        char specs[80];</a>
+<a name="ln359">        msgwin_get_line(&quot;New ego? &quot;, specs, sizeof(specs));</a>
+<a name="ln360">        if (specs[0] == '\0')</a>
+<a name="ln361">        {</a>
+<a name="ln362">            canned_msg(MSG_OK);</a>
+<a name="ln363">            break;</a>
+<a name="ln364">        }</a>
+<a name="ln365"> </a>
+<a name="ln366">        const int ego = str_to_ego(item.base_type, specs);</a>
+<a name="ln367"> </a>
+<a name="ln368">        if (ego == 0 &amp;&amp; string(specs) != &quot;normal&quot;) // this is secretly a hack</a>
+<a name="ln369">        {</a>
+<a name="ln370">            mprf(&quot;No such ego as: %s&quot;, specs);</a>
+<a name="ln371">            break;</a>
+<a name="ln372">        }</a>
+<a name="ln373">        if (ego == -1)</a>
+<a name="ln374">        {</a>
+<a name="ln375">            mprf(&quot;Ego '%s' is invalid for %s.&quot;,</a>
+<a name="ln376">                 specs, item.name(DESC_A).c_str());</a>
+<a name="ln377">            break;</a>
+<a name="ln378">        }</a>
+<a name="ln379"> </a>
+<a name="ln380">        // XXX: validate ego further? (is_weapon_brand_ok etc)</a>
+<a name="ln381"> </a>
+<a name="ln382">        artefact_set_property(item, static_cast&lt;artefact_prop_type&gt;(prop),</a>
+<a name="ln383">                              ego);</a>
+<a name="ln384">        break;</a>
+<a name="ln385">    }</a>
+<a name="ln386">    }</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389">void wizard_tweak_object()</a>
+<a name="ln390">{</a>
+<a name="ln391">    char specs[50];</a>
+<a name="ln392">    int keyin;</a>
+<a name="ln393"> </a>
+<a name="ln394">    int item = prompt_invent_item(&quot;Tweak which item? &quot;, menu_type::invlist, OSEL_ANY);</a>
+<a name="ln395"> </a>
+<a name="ln396">    if (prompt_failed(item))</a>
+<a name="ln397">        return;</a>
+<a name="ln398"> </a>
+<a name="ln399">    if (item == you.equip[EQ_WEAPON])</a>
+<a name="ln400">        you.wield_change = true;</a>
+<a name="ln401"> </a>
+<a name="ln402">    const bool is_art = is_artefact(you.inv[item]);</a>
+<a name="ln403"> </a>
+<a name="ln404">    while (true)</a>
+<a name="ln405">    {</a>
+<a name="ln406">        int64_t old_val = 0; // flags are uint64_t, but they don't care</a>
+<a name="ln407"> </a>
+<a name="ln408">        while (true)</a>
+<a name="ln409">        {</a>
+<a name="ln410">            mprf_nocap(&quot;%s&quot;, you.inv[item].name(DESC_INVENTORY_EQUIP).c_str());</a>
+<a name="ln411"> </a>
+<a name="ln412">            mprf_nocap(MSGCH_PROMPT, &quot;a - plus  b - plus2  c - %s  &quot;</a>
+<a name="ln413">                                     &quot;d - quantity  e - flags  ESC - exit&quot;,</a>
+<a name="ln414">                                     is_art ? &quot;art props&quot; : &quot;special&quot;);</a>
+<a name="ln415"> </a>
+<a name="ln416">            mprf(MSGCH_PROMPT, &quot;Which field? &quot;);</a>
+<a name="ln417"> </a>
+<a name="ln418">            keyin = toalower(get_ch());</a>
+<a name="ln419"> </a>
+<a name="ln420">            if (keyin == 'a')</a>
+<a name="ln421">                old_val = you.inv[item].plus;</a>
+<a name="ln422">            else if (keyin == 'b')</a>
+<a name="ln423">                old_val = you.inv[item].plus2;</a>
+<a name="ln424">            else if (keyin == 'c')</a>
+<a name="ln425">                old_val = you.inv[item].special;</a>
+<a name="ln426">            else if (keyin == 'd')</a>
+<a name="ln427">                old_val = you.inv[item].quantity;</a>
+<a name="ln428">            else if (keyin == 'e')</a>
+<a name="ln429">                old_val = you.inv[item].flags;</a>
+<a name="ln430">            else if (key_is_escape(keyin) || keyin == ' '</a>
+<a name="ln431">                    || keyin == '\r' || keyin == '\n')</a>
+<a name="ln432">            {</a>
+<a name="ln433">                canned_msg(MSG_OK);</a>
+<a name="ln434">                return;</a>
+<a name="ln435">            }</a>
+<a name="ln436"> </a>
+<a name="ln437">            if (keyin &gt;= 'a' &amp;&amp; keyin &lt;= 'e')</a>
+<a name="ln438">                break;</a>
+<a name="ln439">        }</a>
+<a name="ln440"> </a>
+<a name="ln441">        if (is_art &amp;&amp; keyin == 'c')</a>
+<a name="ln442">        {</a>
+<a name="ln443">            _tweak_randart(you.inv[item]);</a>
+<a name="ln444">            continue;</a>
+<a name="ln445">        }</a>
+<a name="ln446"> </a>
+<a name="ln447">        if (keyin != 'e')</a>
+<a name="ln448">            mprf(&quot;Old value: %&quot; PRId64&quot; (0x%04&quot; PRIx64&quot;)&quot;, old_val, old_val);</a>
+<a name="ln449">        else</a>
+<a name="ln450">            mprf(&quot;Old value: 0x%08&quot; PRIx64, old_val);</a>
+<a name="ln451"> </a>
+<a name="ln452">        msgwin_get_line(&quot;New value? &quot;, specs, sizeof(specs));</a>
+<a name="ln453">        if (specs[0] == '\0')</a>
+<a name="ln454">        {</a>
+<a name="ln455">            canned_msg(MSG_OK);</a>
+<a name="ln456">            return;</a>
+<a name="ln457">        }</a>
+<a name="ln458"> </a>
+<a name="ln459">        char *end;</a>
+<a name="ln460">        const bool hex = (keyin == 'e');</a>
+<a name="ln461">        int64_t new_val = strtoll(specs, &amp;end, hex ? 16 : 0);</a>
+<a name="ln462"> </a>
+<a name="ln463">        if (keyin == 'e' &amp;&amp; new_val &amp; ISFLAG_ARTEFACT_MASK</a>
+<a name="ln464">            &amp;&amp; (!you.inv[item].props.exists(KNOWN_PROPS_KEY)</a>
+<a name="ln465">             || !you.inv[item].props.exists(ARTEFACT_PROPS_KEY)))</a>
+<a name="ln466">        {</a>
+<a name="ln467">            mpr(&quot;You can't set this flag on a non-artefact.&quot;);</a>
+<a name="ln468">            continue;</a>
+<a name="ln469">        }</a>
+<a name="ln470"> </a>
+<a name="ln471">        if (end == specs)</a>
+<a name="ln472">        {</a>
+<a name="ln473">            canned_msg(MSG_OK);</a>
+<a name="ln474">            return;</a>
+<a name="ln475">        }</a>
+<a name="ln476"> </a>
+<a name="ln477">        if (keyin == 'a')</a>
+<a name="ln478">            you.inv[item].plus = new_val;</a>
+<a name="ln479">        else if (keyin == 'b')</a>
+<a name="ln480">            you.inv[item].plus2 = new_val;</a>
+<a name="ln481">        else if (keyin == 'c')</a>
+<a name="ln482">            you.inv[item].special = new_val;</a>
+<a name="ln483">        else if (keyin == 'd')</a>
+<a name="ln484">            you.inv[item].quantity = new_val;</a>
+<a name="ln485">        else if (keyin == 'e')</a>
+<a name="ln486">            you.inv[item].flags = new_val;</a>
+<a name="ln487">        else</a>
+<a name="ln488">            die(&quot;unhandled keyin&quot;);</a>
+<a name="ln489"> </a>
+<a name="ln490">        // cursedness might have changed</a>
+<a name="ln491">        ash_check_bondage();</a>
+<a name="ln492">        auto_id_inventory();</a>
+<a name="ln493">    }</a>
+<a name="ln494">}</a>
+<a name="ln495"> </a>
+<a name="ln496">// Returns whether an item of this type can be an artefact.</a>
+<a name="ln497">static bool _item_type_can_be_artefact(int type)</a>
+<a name="ln498">{</a>
+<a name="ln499">    return type == OBJ_WEAPONS || type == OBJ_ARMOUR || type == OBJ_JEWELLERY</a>
+<a name="ln500">           || type == OBJ_BOOKS;</a>
+<a name="ln501">}</a>
+<a name="ln502"> </a>
+<a name="ln503">static bool _make_book_randart(item_def &amp;book)</a>
+<a name="ln504">{</a>
+<a name="ln505">    int type;</a>
+<a name="ln506"> </a>
+<a name="ln507">    do</a>
+<a name="ln508">    {</a>
+<a name="ln509">        mprf(MSGCH_PROMPT, &quot;Make book fixed [t]heme or fixed [l]evel? &quot;);</a>
+<a name="ln510">        type = toalower(getch_ck());</a>
+<a name="ln511">    }</a>
+<a name="ln512">    while (type != 't' &amp;&amp; type != 'l');</a>
+<a name="ln513"> </a>
+<a name="ln514">    if (type == 'l')</a>
+<a name="ln515">        return make_book_level_randart(book);</a>
+<a name="ln516">    build_themed_book(book);</a>
+<a name="ln517">    return true;</a>
+<a name="ln518">}</a>
+<a name="ln519"> </a>
+<a name="ln520">/// Prompt for an item in inventory &amp; print its base shop value.</a>
+<a name="ln521">void wizard_value_item()</a>
+<a name="ln522">{</a>
+<a name="ln523">    const int i = prompt_invent_item(&quot;Value of which item?&quot;,</a>
+<a name="ln524">                                     menu_type::invlist, OSEL_ANY);</a>
+<a name="ln525"> </a>
+<a name="ln526">    if (prompt_failed(i))</a>
+<a name="ln527">        return;</a>
+<a name="ln528"> </a>
+<a name="ln529">    const item_def&amp; item(you.inv[i]);</a>
+<a name="ln530">    const int real_value = item_value(item, true);</a>
+<a name="ln531">    const int known_value = item_value(item, false);</a>
+<a name="ln532">    if (real_value != known_value)</a>
+<a name="ln533">        mprf(&quot;Real value: %d (known: %d)&quot;, real_value, known_value);</a>
+<a name="ln534">    else</a>
+<a name="ln535">        mprf(&quot;Value: %d&quot;, real_value);</a>
+<a name="ln536">}</a>
+<a name="ln537"> </a>
+<a name="ln538">/**</a>
+<a name="ln539"> * Generate every unrand (including removed ones).</a>
+<a name="ln540"> *</a>
+<a name="ln541"> * @param override_unique if true, will generate unrands that have alread</a>
+<a name="ln542"> * placed in the game. If false, will generate fallback randarts for any</a>
+<a name="ln543"> * unrands that have already placed.</a>
+<a name="ln544"> */</a>
+<a name="ln545">void wizard_create_all_artefacts(bool override_unique)</a>
+<a name="ln546">{</a>
+<a name="ln547">    you.octopus_king_rings = 0x00;</a>
+<a name="ln548">    int octorings = 8;</a>
+<a name="ln549"> </a>
+<a name="ln550">    // Create all unrandarts.</a>
+<a name="ln551">    for (int i = 0; i &lt; NUM_UNRANDARTS; ++i)</a>
+<a name="ln552">    {</a>
+<a name="ln553">        const int              index = i + UNRAND_START;</a>
+<a name="ln554">        const unrandart_entry* entry = get_unrand_entry(index);</a>
+<a name="ln555"> </a>
+<a name="ln556">        // Skip dummy entries.</a>
+<a name="ln557">        if (entry-&gt;base_type == OBJ_UNASSIGNED)</a>
+<a name="ln558">            continue;</a>
+<a name="ln559"> </a>
+<a name="ln560">        int islot;</a>
+<a name="ln561"> </a>
+<a name="ln562">        if (override_unique)</a>
+<a name="ln563">        {</a>
+<a name="ln564">            // force create: use make_item_unrandart to override a bunch of the</a>
+<a name="ln565">            // usual checks on getting randarts.</a>
+<a name="ln566">            islot = get_mitm_slot();</a>
+<a name="ln567">            if (islot == NON_ITEM)</a>
+<a name="ln568">                break;</a>
+<a name="ln569"> </a>
+<a name="ln570">            item_def &amp;tmp_item = mitm[islot];</a>
+<a name="ln571">            make_item_unrandart(tmp_item, index);</a>
+<a name="ln572">            tmp_item.quantity = 1;</a>
+<a name="ln573">        }</a>
+<a name="ln574">        else</a>
+<a name="ln575">        {</a>
+<a name="ln576">            // mimic the way unrands are created normally, and respect</a>
+<a name="ln577">            // uniqueness. If an unrand has already generated, this will place</a>
+<a name="ln578">            // a relevant fallback randart instead. Useful for testing fallback</a>
+<a name="ln579">            // properties, since various error conditions will print.</a>
+<a name="ln580">            islot = items(true, entry-&gt;base_type, 0, 0, -index, -1);</a>
+<a name="ln581">            if (islot == NON_ITEM)</a>
+<a name="ln582">            {</a>
+<a name="ln583">                mprf(MSGCH_ERROR, &quot;Failed to generate item for '%s'&quot;,</a>
+<a name="ln584">                    entry-&gt;name);</a>
+<a name="ln585">                continue;</a>
+<a name="ln586">            }</a>
+<a name="ln587">        }</a>
+<a name="ln588">        item_def &amp;item = mitm[islot];</a>
+<a name="ln589">        set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln590"> </a>
+<a name="ln591">        if (!is_artefact(item))</a>
+<a name="ln592">        {</a>
+<a name="ln593">            // for now, staves are ok...</a>
+<a name="ln594">            mprf(item.base_type == OBJ_STAVES ? MSGCH_DIAGNOSTICS : MSGCH_ERROR,</a>
+<a name="ln595">                &quot;Made non-artefact '%s' when trying to make '%s'&quot;,</a>
+<a name="ln596">                item.name(DESC_A).c_str(), entry-&gt;name);</a>
+<a name="ln597">        }</a>
+<a name="ln598">        else</a>
+<a name="ln599">        {</a>
+<a name="ln600">            msg::streams(MSGCH_DIAGNOSTICS) &lt;&lt; &quot;Made &quot; &lt;&lt; item.name(DESC_A)</a>
+<a name="ln601">                                            &lt;&lt; &quot; (&quot; &lt;&lt; debug_art_val_str(item)</a>
+<a name="ln602">                                            &lt;&lt; &quot;)&quot; &lt;&lt; endl;</a>
+<a name="ln603">        }</a>
+<a name="ln604">        move_item_to_grid(&amp;islot, you.pos());</a>
+<a name="ln605"> </a>
+<a name="ln606">        // Make all eight.</a>
+<a name="ln607">        if (index == UNRAND_OCTOPUS_KING_RING &amp;&amp; --octorings)</a>
+<a name="ln608">            i--;</a>
+<a name="ln609">    }</a>
+<a name="ln610"> </a>
+<a name="ln611">    // Create Horn of Geryon</a>
+<a name="ln612">    int islot = get_mitm_slot();</a>
+<a name="ln613">    if (islot != NON_ITEM)</a>
+<a name="ln614">    {</a>
+<a name="ln615">        item_def&amp; item = mitm[islot];</a>
+<a name="ln616">        item.clear();</a>
+<a name="ln617">        item.base_type = OBJ_MISCELLANY;</a>
+<a name="ln618">        item.sub_type  = MISC_HORN_OF_GERYON;</a>
+<a name="ln619">        item.quantity  = 1;</a>
+<a name="ln620">        item_colour(item);</a>
+<a name="ln621"> </a>
+<a name="ln622">        set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln623">        move_item_to_grid(&amp;islot, you.pos());</a>
+<a name="ln624"> </a>
+<a name="ln625">        msg::streams(MSGCH_DIAGNOSTICS) &lt;&lt; &quot;Made &quot; &lt;&lt; item.name(DESC_A)</a>
+<a name="ln626">                                        &lt;&lt; endl;</a>
+<a name="ln627">    }</a>
+<a name="ln628">}</a>
+<a name="ln629"> </a>
+<a name="ln630">void wizard_make_object_randart()</a>
+<a name="ln631">{</a>
+<a name="ln632">    int i = prompt_invent_item(&quot;Make an artefact out of which item?&quot;,</a>
+<a name="ln633">                                menu_type::invlist, OSEL_ANY);</a>
+<a name="ln634"> </a>
+<a name="ln635">    if (prompt_failed(i))</a>
+<a name="ln636">        return;</a>
+<a name="ln637"> </a>
+<a name="ln638">    item_def &amp;item(you.inv[i]);</a>
+<a name="ln639"> </a>
+<a name="ln640">    if (is_unrandom_artefact(item))</a>
+<a name="ln641">    {</a>
+<a name="ln642">        mpr(&quot;That item is already an unrandom artefact.&quot;);</a>
+<a name="ln643">        return;</a>
+<a name="ln644">    }</a>
+<a name="ln645"> </a>
+<a name="ln646">    if (!_item_type_can_be_artefact(item.base_type))</a>
+<a name="ln647">    {</a>
+<a name="ln648">        mpr(&quot;That item cannot be turned into an artefact.&quot;);</a>
+<a name="ln649">        return;</a>
+<a name="ln650">    }</a>
+<a name="ln651"> </a>
+<a name="ln652">    const equipment_type eq = item_equip_slot(item);</a>
+<a name="ln653">    int invslot = 0;</a>
+<a name="ln654">    if (eq != EQ_NONE)</a>
+<a name="ln655">    {</a>
+<a name="ln656">        invslot = you.equip[eq];</a>
+<a name="ln657">        unequip_item(eq);</a>
+<a name="ln658">    }</a>
+<a name="ln659"> </a>
+<a name="ln660">    if (is_random_artefact(item))</a>
+<a name="ln661">    {</a>
+<a name="ln662">        if (!yesno(&quot;Is already a randart; wipe and re-use?&quot;, true, 'n'))</a>
+<a name="ln663">        {</a>
+<a name="ln664">            canned_msg(MSG_OK);</a>
+<a name="ln665">            return;</a>
+<a name="ln666">        }</a>
+<a name="ln667"> </a>
+<a name="ln668">        item.unrand_idx = 0;</a>
+<a name="ln669">        item.flags  &amp;= ~ISFLAG_RANDART;</a>
+<a name="ln670">        item.props.clear();</a>
+<a name="ln671">    }</a>
+<a name="ln672"> </a>
+<a name="ln673">    mprf(MSGCH_PROMPT, &quot;Fake item as gift from which god (ENTER to leave alone): &quot;);</a>
+<a name="ln674">    char name[80];</a>
+<a name="ln675">    if (!cancellable_get_line(name, sizeof(name)) &amp;&amp; name[0])</a>
+<a name="ln676">    {</a>
+<a name="ln677">        god_type god = str_to_god(name, false);</a>
+<a name="ln678">        if (god == GOD_NO_GOD)</a>
+<a name="ln679">            mpr(&quot;No such god, leaving item origin alone.&quot;);</a>
+<a name="ln680">        else</a>
+<a name="ln681">        {</a>
+<a name="ln682">            mprf(&quot;God gift of %s.&quot;, god_name(god, false).c_str());</a>
+<a name="ln683">            item.orig_monnum = -god;</a>
+<a name="ln684">        }</a>
+<a name="ln685">    }</a>
+<a name="ln686"> </a>
+<a name="ln687">    if (item.base_type == OBJ_BOOKS)</a>
+<a name="ln688">    {</a>
+<a name="ln689">        if (!_make_book_randart(item))</a>
+<a name="ln690">        {</a>
+<a name="ln691">            mpr(&quot;Failed to turn book into randart.&quot;);</a>
+<a name="ln692">            return;</a>
+<a name="ln693">        }</a>
+<a name="ln694">    }</a>
+<a name="ln695">    else if (!make_item_randart(item, true))</a>
+<a name="ln696">    {</a>
+<a name="ln697">        mpr(&quot;Failed to turn item into randart.&quot;);</a>
+<a name="ln698">        return;</a>
+<a name="ln699">    }</a>
+<a name="ln700"> </a>
+<a name="ln701">    // Remove curse flag from item, unless worshipping Ashenzari.</a>
+<a name="ln702">    if (have_passive(passive_t::want_curses))</a>
+<a name="ln703">        do_curse_item(item, true);</a>
+<a name="ln704">    else</a>
+<a name="ln705">        do_uncurse_item(item);</a>
+<a name="ln706"> </a>
+<a name="ln707">    // If it was equipped, requip the item.</a>
+<a name="ln708">    if (eq != EQ_NONE)</a>
+<a name="ln709">        equip_item(eq, invslot);</a>
+<a name="ln710"> </a>
+<a name="ln711">    mprf_nocap(&quot;%s&quot;, item.name(DESC_INVENTORY_EQUIP).c_str());</a>
+<a name="ln712">}</a>
+<a name="ln713"> </a>
+<a name="ln714">// Returns whether an item of this type can be cursed.</a>
+<a name="ln715">static bool _item_type_can_be_cursed(int type)</a>
+<a name="ln716">{</a>
+<a name="ln717">    return type == OBJ_WEAPONS || type == OBJ_ARMOUR || type == OBJ_JEWELLERY</a>
+<a name="ln718">           || type == OBJ_STAVES;</a>
+<a name="ln719">}</a>
+<a name="ln720"> </a>
+<a name="ln721">void wizard_uncurse_item()</a>
+<a name="ln722">{</a>
+<a name="ln723">    const int i = prompt_invent_item(&quot;(Un)curse which item?&quot;,</a>
+<a name="ln724">                                     menu_type::invlist, OSEL_ANY);</a>
+<a name="ln725"> </a>
+<a name="ln726">    if (!prompt_failed(i))</a>
+<a name="ln727">    {</a>
+<a name="ln728">        item_def&amp; item(you.inv[i]);</a>
+<a name="ln729"> </a>
+<a name="ln730">        if (item.cursed())</a>
+<a name="ln731">            do_uncurse_item(item);</a>
+<a name="ln732">        else</a>
+<a name="ln733">        {</a>
+<a name="ln734">            if (!_item_type_can_be_cursed(item.base_type))</a>
+<a name="ln735">            {</a>
+<a name="ln736">                mpr(&quot;That type of item cannot be cursed.&quot;);</a>
+<a name="ln737">                return;</a>
+<a name="ln738">            }</a>
+<a name="ln739">            do_curse_item(item);</a>
+<a name="ln740">        }</a>
+<a name="ln741">        mprf_nocap(&quot;%s&quot;, item.name(DESC_INVENTORY_EQUIP).c_str());</a>
+<a name="ln742">    }</a>
+<a name="ln743">}</a>
+<a name="ln744"> </a>
+<a name="ln745">void wizard_identify_pack()</a>
+<a name="ln746">{</a>
+<a name="ln747">    mpr(&quot;You feel a rush of knowledge.&quot;);</a>
+<a name="ln748">    identify_inventory();</a>
+<a name="ln749">    you.wield_change  = true;</a>
+<a name="ln750">    you.redraw_quiver = true;</a>
+<a name="ln751">}</a>
+<a name="ln752"> </a>
+<a name="ln753">static void _forget_item(item_def &amp;item)</a>
+<a name="ln754">{</a>
+<a name="ln755">    set_ident_type(item, false);</a>
+<a name="ln756">    unset_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln757">    item.flags &amp;= ~(ISFLAG_SEEN | ISFLAG_HANDLED | ISFLAG_THROWN</a>
+<a name="ln758">                    | ISFLAG_DROPPED | ISFLAG_NOTED_ID | ISFLAG_NOTED_GET);</a>
+<a name="ln759">    if (is_artefact(item) &amp;&amp; item.props.exists(KNOWN_PROPS_KEY))</a>
+<a name="ln760">    {</a>
+<a name="ln761">        ASSERT(item.props.exists(KNOWN_PROPS_KEY));</a>
+<a name="ln762">        CrawlVector &amp;known = item.props[KNOWN_PROPS_KEY].get_vector();</a>
+<a name="ln763">        ASSERT(known.size() == ART_PROPERTIES);</a>
+<a name="ln764">        for (vec_size i = 0; i &lt; ART_PROPERTIES; i++)</a>
+<a name="ln765">            known[i] = static_cast&lt;bool&gt;(false);</a>
+<a name="ln766">    }</a>
+<a name="ln767">}</a>
+<a name="ln768"> </a>
+<a name="ln769">void wizard_unidentify_pack()</a>
+<a name="ln770">{</a>
+<a name="ln771">    mpr(&quot;You feel a rush of antiknowledge.&quot;);</a>
+<a name="ln772">    for (auto &amp;item : you.inv)</a>
+<a name="ln773">        if (item.defined())</a>
+<a name="ln774">            _forget_item(item);</a>
+<a name="ln775"> </a>
+<a name="ln776">    you.wield_change  = true;</a>
+<a name="ln777">    you.redraw_quiver = true;</a>
+<a name="ln778"> </a>
+<a name="ln779">    // Forget things that nearby monsters are carrying, as well.</a>
+<a name="ln780">    // (For use with the &quot;give monster an item&quot; wizard targeting</a>
+<a name="ln781">    // command.)</a>
+<a name="ln782">    for (monster_near_iterator mon(&amp;you); mon; ++mon)</a>
+<a name="ln783">        for (mon_inv_iterator ii(**mon); ii; ++ii)</a>
+<a name="ln784">            _forget_item(*ii);</a>
+<a name="ln785">}</a>
+<a name="ln786"> </a>
+<a name="ln787">void wizard_list_items()</a>
+<a name="ln788">{</a>
+<a name="ln789">    mpr(&quot;Item stacks (by location and top item):&quot;);</a>
+<a name="ln790">    for (const auto &amp;item : mitm)</a>
+<a name="ln791">    {</a>
+<a name="ln792">        if (item.defined() &amp;&amp; !item.held_by_monster() &amp;&amp; item.link != NON_ITEM)</a>
+<a name="ln793">        {</a>
+<a name="ln794">            mprf(&quot;(%2d,%2d): %s%s&quot;, item.pos.x, item.pos.y,</a>
+<a name="ln795">                 item.name(DESC_PLAIN, false, false, false).c_str(),</a>
+<a name="ln796">                 item.flags &amp; ISFLAG_MIMIC ? &quot; mimic&quot; : &quot;&quot;);</a>
+<a name="ln797">        }</a>
+<a name="ln798">    }</a>
+<a name="ln799"> </a>
+<a name="ln800">    mpr(&quot;&quot;);</a>
+<a name="ln801">    mpr(&quot;Floor items (stacks only show top item):&quot;);</a>
+<a name="ln802"> </a>
+<a name="ln803">    const coord_def start(1,1), end(GXM-1, GYM-1);</a>
+<a name="ln804">    for (rectangle_iterator ri(start, end); ri; ++ri)</a>
+<a name="ln805">    {</a>
+<a name="ln806">        int item = igrd(*ri);</a>
+<a name="ln807">        if (item != NON_ITEM)</a>
+<a name="ln808">        {</a>
+<a name="ln809">            mprf(&quot;%3d at (%2d,%2d): %s%s&quot;, item, ri-&gt;x, ri-&gt;y,</a>
+<a name="ln810">                 mitm[item].name(DESC_PLAIN, false, false, false).c_str(),</a>
+<a name="ln811">                 mitm[item].flags &amp; ISFLAG_MIMIC ? &quot; mimic&quot; : &quot;&quot;);</a>
+<a name="ln812">        }</a>
+<a name="ln813">    }</a>
+<a name="ln814">}</a>
+<a name="ln815"> </a>
+<a name="ln816">static int _subtype_index(int acq_type, const item_def &amp;item)</a>
+<a name="ln817">{</a>
+<a name="ln818">    // Certain acquirement types can acquire different classes of items than</a>
+<a name="ln819">    // they claim to, so... pack them in at the end, as a hack.</a>
+<a name="ln820">    switch (acq_type)</a>
+<a name="ln821">    {</a>
+<a name="ln822">        case OBJ_MISCELLANY:</a>
+<a name="ln823">            if (item.base_type == OBJ_WANDS)</a>
+<a name="ln824">                return NUM_MISCELLANY + item.sub_type;</a>
+<a name="ln825">            break;</a>
+<a name="ln826">        case OBJ_STAVES:</a>
+<a name="ln827">            if (item.base_type == OBJ_WEAPONS) // unrand staff</a>
+<a name="ln828">                return NUM_STAVES;</a>
+<a name="ln829">            break;</a>
+<a name="ln830">        default:</a>
+<a name="ln831">            break;</a>
+<a name="ln832">    }</a>
+<a name="ln833"> </a>
+<a name="ln834">    return item.sub_type;</a>
+<a name="ln835">}</a>
+<a name="ln836"> </a>
+<a name="ln837">/// Reverse the _subtype_index() hack.</a>
+<a name="ln838">static void _fill_item_from_subtype(object_class_type acq_type, int subtype,</a>
+<a name="ln839">                                    item_def &amp;item)</a>
+<a name="ln840">{</a>
+<a name="ln841">    switch (acq_type)</a>
+<a name="ln842">    {</a>
+<a name="ln843">        case OBJ_MISCELLANY:</a>
+<a name="ln844">            if (subtype &gt;= NUM_MISCELLANY)</a>
+<a name="ln845">            {</a>
+<a name="ln846">                item.base_type = OBJ_WANDS;</a>
+<a name="ln847">                item.sub_type = subtype - NUM_MISCELLANY;</a>
+<a name="ln848">                return;</a>
+<a name="ln849">            }</a>
+<a name="ln850">            break;</a>
+<a name="ln851">        case OBJ_STAVES:</a>
+<a name="ln852">            if (subtype == NUM_STAVES) // unrand staff</a>
+<a name="ln853">            {</a>
+<a name="ln854">                item.base_type = OBJ_WEAPONS;</a>
+<a name="ln855">                item.sub_type = WPN_STAFF;</a>
+<a name="ln856">                return;</a>
+<a name="ln857">            }</a>
+<a name="ln858">            break;</a>
+<a name="ln859">        default:</a>
+<a name="ln860">            break;</a>
+<a name="ln861">    }</a>
+<a name="ln862"> </a>
+<a name="ln863">    item.base_type = acq_type;</a>
+<a name="ln864">    item.sub_type = subtype;</a>
+<a name="ln865">}</a>
+<a name="ln866"> </a>
+<a name="ln867">static void _debug_acquirement_stats(FILE *ostat)</a>
+<a name="ln868">{</a>
+<a name="ln869">    int p = get_mitm_slot(11);</a>
+<a name="ln870">    if (p == NON_ITEM)</a>
+<a name="ln871">    {</a>
+<a name="ln872">        mpr(&quot;Too many items on level.&quot;);</a>
+<a name="ln873">        return;</a>
+<a name="ln874">    }</a>
+<a name="ln875">    mitm[p].base_type = OBJ_UNASSIGNED;</a>
+<a name="ln876"> </a>
+<a name="ln877">    clear_messages();</a>
+<a name="ln878">    mpr(&quot;[a] Weapons [b] Armours   [c] Jewellery [d] Books&quot;);</a>
+<a name="ln879">    mpr(&quot;[e] Staves  [f] Evocables [g] Food&quot;);</a>
+<a name="ln880">    mprf(MSGCH_PROMPT, &quot;What kind of item would you like to get acquirement stats on? &quot;);</a>
+<a name="ln881"> </a>
+<a name="ln882">    object_class_type type;</a>
+<a name="ln883">    const int keyin = toalower(get_ch());</a>
+<a name="ln884">    switch (keyin)</a>
+<a name="ln885">    {</a>
+<a name="ln886">    case 'a': type = OBJ_WEAPONS;    break;</a>
+<a name="ln887">    case 'b': type = OBJ_ARMOUR;     break;</a>
+<a name="ln888">    case 'c': type = OBJ_JEWELLERY;  break;</a>
+<a name="ln889">    case 'd': type = OBJ_BOOKS;      break;</a>
+<a name="ln890">    case 'e': type = OBJ_STAVES;     break;</a>
+<a name="ln891">    case 'f': type = OBJ_MISCELLANY; break;</a>
+<a name="ln892">    case 'g': type = OBJ_FOOD;       break;</a>
+<a name="ln893">    default:</a>
+<a name="ln894">        canned_msg(MSG_OK);</a>
+<a name="ln895">        return;</a>
+<a name="ln896">    }</a>
+<a name="ln897"> </a>
+<a name="ln898">    const int num_itrs = prompt_for_int(&quot;How many iterations? &quot;, true);</a>
+<a name="ln899"> </a>
+<a name="ln900">    if (num_itrs == 0)</a>
+<a name="ln901">    {</a>
+<a name="ln902">        canned_msg(MSG_OK);</a>
+<a name="ln903">        return;</a>
+<a name="ln904">    }</a>
+<a name="ln905"> </a>
+<a name="ln906">    int last_percent = 0;</a>
+<a name="ln907">    int acq_calls    = 0;</a>
+<a name="ln908">    int total_quant  = 0;</a>
+<a name="ln909">    short max_plus   = -127;</a>
+<a name="ln910">    int total_plus   = 0;</a>
+<a name="ln911">    int num_arts     = 0;</a>
+<a name="ln912">    int randbook_spells = 0;</a>
+<a name="ln913"> </a>
+<a name="ln914">    int subtype_quants[256];</a>
+<a name="ln915">    int ego_quants[NUM_SPECIAL_WEAPONS];</a>
+<a name="ln916"> </a>
+<a name="ln917">    memset(subtype_quants, 0, sizeof(subtype_quants));</a>
+<a name="ln918">    memset(ego_quants, 0, sizeof(ego_quants));</a>
+<a name="ln919"> </a>
+<a name="ln920">    for (int i = 0; i &lt; num_itrs; ++i)</a>
+<a name="ln921">    {</a>
+<a name="ln922">        if (kbhit())</a>
+<a name="ln923">        {</a>
+<a name="ln924">            getch_ck();</a>
+<a name="ln925">            mpr(&quot;Stopping early due to keyboard input.&quot;);</a>
+<a name="ln926">            break;</a>
+<a name="ln927">        }</a>
+<a name="ln928"> </a>
+<a name="ln929">        const int item_index = acquirement_create_item(type, AQ_WIZMODE, true,</a>
+<a name="ln930">                you.pos());</a>
+<a name="ln931"> </a>
+<a name="ln932">        if (item_index == NON_ITEM || !mitm[item_index].defined())</a>
+<a name="ln933">        {</a>
+<a name="ln934">            mpr(&quot;Acquirement failed, stopping early.&quot;);</a>
+<a name="ln935">            break;</a>
+<a name="ln936">        }</a>
+<a name="ln937"> </a>
+<a name="ln938">        item_def &amp;item(mitm[item_index]);</a>
+<a name="ln939"> </a>
+<a name="ln940">        acq_calls++;</a>
+<a name="ln941">        total_quant += item.quantity;</a>
+<a name="ln942">        // hack alert: put unrands into the end of staff acq</a>
+<a name="ln943">        // and wands into the end of misc acq</a>
+<a name="ln944">        const int subtype_index = _subtype_index(type, item);</a>
+<a name="ln945">        subtype_quants[subtype_index] += item.quantity;</a>
+<a name="ln946"> </a>
+<a name="ln947">        max_plus    = max(max_plus, item.plus);</a>
+<a name="ln948">        total_plus += item.plus;</a>
+<a name="ln949"> </a>
+<a name="ln950">        if (is_artefact(item))</a>
+<a name="ln951">        {</a>
+<a name="ln952">            num_arts++;</a>
+<a name="ln953">            if (type == OBJ_BOOKS)</a>
+<a name="ln954">            {</a>
+<a name="ln955">                randbook_spells += spells_in_book(item).size();</a>
+<a name="ln956">                if (item.sub_type == BOOK_RANDART_THEME)</a>
+<a name="ln957">                {</a>
+<a name="ln958">                    const int disc1 = item.plus &amp; 0xFF;</a>
+<a name="ln959">                    ego_quants[disc1]++;</a>
+<a name="ln960">                }</a>
+<a name="ln961">                else if (item.sub_type == BOOK_RANDART_LEVEL)</a>
+<a name="ln962">                {</a>
+<a name="ln963">                    const int level = item.plus;</a>
+<a name="ln964">                    ego_quants[SPSCHOOL_LAST_EXPONENT + level]++;</a>
+<a name="ln965">                }</a>
+<a name="ln966">            }</a>
+<a name="ln967">        }</a>
+<a name="ln968">        else if (type == OBJ_ARMOUR) // Exclude artefacts when counting egos.</a>
+<a name="ln969">            ego_quants[get_armour_ego_type(item)]++;</a>
+<a name="ln970">        else if (type == OBJ_BOOKS &amp;&amp; item.sub_type == BOOK_MANUAL)</a>
+<a name="ln971">        {</a>
+<a name="ln972">            // Store skills in subtype array, so as not to overlap</a>
+<a name="ln973">            // with artefact spell disciplines/levels.</a>
+<a name="ln974">            const int skill = item.plus;</a>
+<a name="ln975">            subtype_quants[200 + skill]++;</a>
+<a name="ln976">        }</a>
+<a name="ln977"> </a>
+<a name="ln978">        // Include artefacts for weapon brands.</a>
+<a name="ln979">        if (type == OBJ_WEAPONS)</a>
+<a name="ln980">            ego_quants[get_weapon_brand(item)]++;</a>
+<a name="ln981"> </a>
+<a name="ln982">        destroy_item(item_index, true);</a>
+<a name="ln983"> </a>
+<a name="ln984">        int curr_percent = acq_calls * 100 / num_itrs;</a>
+<a name="ln985">        if (curr_percent &gt; last_percent)</a>
+<a name="ln986">        {</a>
+<a name="ln987">            clear_messages();</a>
+<a name="ln988">            mprf(&quot;%2d%% done.&quot;, curr_percent);</a>
+<a name="ln989">            last_percent = curr_percent;</a>
+<a name="ln990">        }</a>
+<a name="ln991">    }</a>
+<a name="ln992"> </a>
+<a name="ln993">    if (total_quant == 0 || acq_calls == 0)</a>
+<a name="ln994">    {</a>
+<a name="ln995">        mpr(&quot;No items generated.&quot;);</a>
+<a name="ln996">        return;</a>
+<a name="ln997">    }</a>
+<a name="ln998"> </a>
+<a name="ln999">    // Print acquirement base type.</a>
+<a name="ln1000">    fprintf(ostat, &quot;Acquiring %s for:\n\n&quot;,</a>
+<a name="ln1001">            type == OBJ_WEAPONS    ? &quot;weapons&quot; :</a>
+<a name="ln1002">            type == OBJ_ARMOUR     ? &quot;armour&quot;  :</a>
+<a name="ln1003">            type == OBJ_JEWELLERY  ? &quot;jewellery&quot; :</a>
+<a name="ln1004">            type == OBJ_BOOKS      ? &quot;books&quot; :</a>
+<a name="ln1005">            type == OBJ_STAVES     ? &quot;staves&quot; :</a>
+<a name="ln1006">            type == OBJ_WANDS      ? &quot;wands&quot; :</a>
+<a name="ln1007">            type == OBJ_MISCELLANY ? &quot;misc. items&quot; :</a>
+<a name="ln1008">            type == OBJ_FOOD       ? &quot;food&quot;</a>
+<a name="ln1009">                                   : &quot;buggy items&quot;);</a>
+<a name="ln1010"> </a>
+<a name="ln1011">    // Print player species/profession.</a>
+<a name="ln1012">    string godname = &quot;&quot;;</a>
+<a name="ln1013">    if (!you_worship(GOD_NO_GOD))</a>
+<a name="ln1014">        godname += &quot; of &quot; + god_name(you.religion);</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    fprintf(ostat, &quot;%s %s, Level %d %s %s%s\n\n&quot;,</a>
+<a name="ln1017">            you.your_name.c_str(), player_title().c_str(),</a>
+<a name="ln1018">            you.experience_level,</a>
+<a name="ln1019">            species_name(you.species).c_str(),</a>
+<a name="ln1020">            get_job_name(you.char_class), godname.c_str());</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    // Print player equipment.</a>
+<a name="ln1023">    const int e_order[] =</a>
+<a name="ln1024">    {</a>
+<a name="ln1025">        EQ_WEAPON, EQ_BODY_ARMOUR, EQ_SHIELD, EQ_HELMET, EQ_CLOAK,</a>
+<a name="ln1026">        EQ_GLOVES, EQ_BOOTS, EQ_AMULET, EQ_RIGHT_RING, EQ_LEFT_RING,</a>
+<a name="ln1027">        EQ_RING_ONE, EQ_RING_TWO, EQ_RING_THREE, EQ_RING_FOUR,</a>
+<a name="ln1028">        EQ_RING_FIVE, EQ_RING_SIX, EQ_RING_SEVEN, EQ_RING_EIGHT,</a>
+<a name="ln1029">        EQ_RING_AMULET</a>
+<a name="ln1030">    };</a>
+<a name="ln1031"> </a>
+<a name="ln1032">    bool naked = true;</a>
+<a name="ln1033">    for (int i = EQ_FIRST_EQUIP; i &lt; NUM_EQUIP; i++)</a>
+<a name="ln1034">    {</a>
+<a name="ln1035">        int eqslot = e_order[i];</a>
+<a name="ln1036"> </a>
+<a name="ln1037">        // Only output filled slots.</a>
+<a name="ln1038">        if (you.equip[ e_order[i] ] != -1)</a>
+<a name="ln1039">        {</a>
+<a name="ln1040">            // The player has something equipped.</a>
+<a name="ln1041">            const int item_idx   = you.equip[e_order[i]];</a>
+<a name="ln1042">            const item_def&amp; item = you.inv[item_idx];</a>
+<a name="ln1043"> </a>
+<a name="ln1044">            fprintf(ostat, &quot;%-7s: %s %s\n&quot;, equip_slot_to_name(eqslot),</a>
+<a name="ln1045">                    item.name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln1046">                    you.melded[i] ? &quot;(melded)&quot; : &quot;&quot;);</a>
+<a name="ln1047">            naked = false;</a>
+<a name="ln1048">        }</a>
+<a name="ln1049">    }</a>
+<a name="ln1050">    if (naked)</a>
+<a name="ln1051">        fprintf(ostat, &quot;Not wearing or wielding anything.\n&quot;);</a>
+<a name="ln1052"> </a>
+<a name="ln1053">    // Also print the skills, in case they matter.</a>
+<a name="ln1054">    string skills = &quot;\nSkills:\n&quot;;</a>
+<a name="ln1055">    dump_skills(skills);</a>
+<a name="ln1056">    fprintf(ostat, &quot;%s\n\n&quot;, skills.c_str());</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    if (type == OBJ_BOOKS &amp;&amp; you.skills[SK_SPELLCASTING])</a>
+<a name="ln1059">    {</a>
+<a name="ln1060">        // For spellbooks, for each spell discipline, list the number of</a>
+<a name="ln1061">        // unseen and total spells available.</a>
+<a name="ln1062">        vector&lt;int&gt; total_spells(SPSCHOOL_LAST_EXPONENT + 1);</a>
+<a name="ln1063">        vector&lt;int&gt; unseen_spells(SPSCHOOL_LAST_EXPONENT + 1);</a>
+<a name="ln1064"> </a>
+<a name="ln1065">        for (int i = 0; i &lt; NUM_SPELLS; ++i)</a>
+<a name="ln1066">        {</a>
+<a name="ln1067">            const spell_type spell = (spell_type) i;</a>
+<a name="ln1068"> </a>
+<a name="ln1069">            if (!is_valid_spell(spell))</a>
+<a name="ln1070">                continue;</a>
+<a name="ln1071"> </a>
+<a name="ln1072">            if (!you_can_memorise(spell))</a>
+<a name="ln1073">                continue;</a>
+<a name="ln1074"> </a>
+<a name="ln1075">            // Only use spells available in books you might find lying about</a>
+<a name="ln1076">            // the dungeon.</a>
+<a name="ln1077">            if (spell_rarity(spell) == -1)</a>
+<a name="ln1078">                continue;</a>
+<a name="ln1079"> </a>
+<a name="ln1080">            const bool seen = you.spell_library[spell];</a>
+<a name="ln1081"> </a>
+<a name="ln1082">            const spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln1083">            for (int d = 0; d &lt;= SPSCHOOL_LAST_EXPONENT; ++d)</a>
+<a name="ln1084">            {</a>
+<a name="ln1085">                const auto disc = spschools_type::exponent(d);</a>
+<a name="ln1086"> </a>
+<a name="ln1087">                if (disciplines &amp; disc)</a>
+<a name="ln1088">                {</a>
+<a name="ln1089">                    total_spells[d]++;</a>
+<a name="ln1090">                    if (!seen)</a>
+<a name="ln1091">                        unseen_spells[d]++;</a>
+<a name="ln1092">                }</a>
+<a name="ln1093">            }</a>
+<a name="ln1094">        }</a>
+<a name="ln1095">        for (int d = 0; d &lt;= SPSCHOOL_LAST_EXPONENT; ++d)</a>
+<a name="ln1096">        {</a>
+<a name="ln1097">            const auto disc = spschools_type::exponent(d);</a>
+<a name="ln1098"> </a>
+<a name="ln1099">            fprintf(ostat, &quot;%-13s:  %2d/%2d spells unseen\n&quot;,</a>
+<a name="ln1100">                    spelltype_long_name(disc),</a>
+<a name="ln1101">                    unseen_spells[d], total_spells[d]);</a>
+<a name="ln1102">        }</a>
+<a name="ln1103">    }</a>
+<a name="ln1104"> </a>
+<a name="ln1105">    fprintf(ostat, &quot;\nAcquirement called %d times, total quantity = %d\n\n&quot;,</a>
+<a name="ln1106">            acq_calls, total_quant);</a>
+<a name="ln1107"> </a>
+<a name="ln1108">    fprintf(ostat, &quot;%5.2f%% artefacts.\n&quot;,</a>
+<a name="ln1109">            100.0 * (float) num_arts / (float) acq_calls);</a>
+<a name="ln1110"> </a>
+<a name="ln1111">    if (type == OBJ_WEAPONS)</a>
+<a name="ln1112">    {</a>
+<a name="ln1113">        fprintf(ostat, &quot;Maximum combined pluses: %d\n&quot;, max_plus);</a>
+<a name="ln1114">        fprintf(ostat, &quot;Average combined pluses: %5.2f\n\n&quot;,</a>
+<a name="ln1115">                (float) total_plus / (float) acq_calls);</a>
+<a name="ln1116"> </a>
+<a name="ln1117">        fprintf(ostat, &quot;Egos (including artefacts):\n&quot;);</a>
+<a name="ln1118"> </a>
+<a name="ln1119">        const char* names[] =</a>
+<a name="ln1120">        {</a>
+<a name="ln1121">            &quot;normal&quot;,</a>
+<a name="ln1122">            &quot;flaming&quot;,</a>
+<a name="ln1123">            &quot;freezing&quot;,</a>
+<a name="ln1124">            &quot;holy wrath&quot;,</a>
+<a name="ln1125">            &quot;electrocution&quot;,</a>
+<a name="ln1126">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1127">            &quot;orc slaying&quot;,</a>
+<a name="ln1128">            &quot;dragon slaying&quot;,</a>
+<a name="ln1129">#endif</a>
+<a name="ln1130">            &quot;venom&quot;,</a>
+<a name="ln1131">            &quot;protection&quot;,</a>
+<a name="ln1132">            &quot;draining&quot;,</a>
+<a name="ln1133">            &quot;speed&quot;,</a>
+<a name="ln1134">            &quot;vorpal&quot;,</a>
+<a name="ln1135">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1136">            &quot;flame&quot;,</a>
+<a name="ln1137">            &quot;frost&quot;,</a>
+<a name="ln1138">#endif</a>
+<a name="ln1139">            &quot;vampirism&quot;,</a>
+<a name="ln1140">            &quot;pain&quot;,</a>
+<a name="ln1141">            &quot;antimagic&quot;,</a>
+<a name="ln1142">            &quot;distortion&quot;,</a>
+<a name="ln1143">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1144">            &quot;reaching&quot;,</a>
+<a name="ln1145">            &quot;returning&quot;,</a>
+<a name="ln1146">#endif</a>
+<a name="ln1147">            &quot;chaos&quot;,</a>
+<a name="ln1148">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1149">            &quot;evasion&quot;,</a>
+<a name="ln1150">            &quot;confusion&quot;,</a>
+<a name="ln1151">#endif</a>
+<a name="ln1152">            &quot;penetration&quot;,</a>
+<a name="ln1153">            &quot;reaping&quot;,</a>
+<a name="ln1154">            &quot;INVALID&quot;,</a>
+<a name="ln1155">            &quot;acid&quot;,</a>
+<a name="ln1156">#if TAG_MAJOR_VERSION &gt; 34</a>
+<a name="ln1157">            &quot;confuse&quot;,</a>
+<a name="ln1158">#endif</a>
+<a name="ln1159">            &quot;debug randart&quot;,</a>
+<a name="ln1160">        };</a>
+<a name="ln1161">        COMPILE_CHECK(ARRAYSZ(names) == NUM_SPECIAL_WEAPONS);</a>
+<a name="ln1162"> </a>
+<a name="ln1163">        for (int i = 0; i &lt; NUM_SPECIAL_WEAPONS; ++i)</a>
+<a name="ln1164">            if (ego_quants[i] &gt; 0)</a>
+<a name="ln1165">            {</a>
+<a name="ln1166">                fprintf(ostat, &quot;%14s: %5.2f\n&quot;, names[i],</a>
+<a name="ln1167">                        100.0 * (float) ego_quants[i] / (float) acq_calls);</a>
+<a name="ln1168">            }</a>
+<a name="ln1169"> </a>
+<a name="ln1170">        fprintf(ostat, &quot;\n\n&quot;);</a>
+<a name="ln1171">    }</a>
+<a name="ln1172">    else if (type == OBJ_ARMOUR)</a>
+<a name="ln1173">    {</a>
+<a name="ln1174">        fprintf(ostat, &quot;Maximum plus: %d\n&quot;, max_plus);</a>
+<a name="ln1175">        fprintf(ostat, &quot;Average plus: %5.2f\n\n&quot;,</a>
+<a name="ln1176">                (float) total_plus / (float) acq_calls);</a>
+<a name="ln1177"> </a>
+<a name="ln1178">        fprintf(ostat, &quot;Egos (excluding artefacts):\n&quot;);</a>
+<a name="ln1179"> </a>
+<a name="ln1180">        const char* names[] =</a>
+<a name="ln1181">        {</a>
+<a name="ln1182">            &quot;normal&quot;,</a>
+<a name="ln1183">            &quot;running&quot;,</a>
+<a name="ln1184">            &quot;fire resistance&quot;,</a>
+<a name="ln1185">            &quot;cold resistance&quot;,</a>
+<a name="ln1186">            &quot;poison resistance&quot;,</a>
+<a name="ln1187">            &quot;see invis&quot;,</a>
+<a name="ln1188">            &quot;invisibility&quot;,</a>
+<a name="ln1189">            &quot;strength&quot;,</a>
+<a name="ln1190">            &quot;dexterity&quot;,</a>
+<a name="ln1191">            &quot;intelligence&quot;,</a>
+<a name="ln1192">            &quot;ponderous&quot;,</a>
+<a name="ln1193">            &quot;flight&quot;,</a>
+<a name="ln1194">            &quot;magic resistance&quot;,</a>
+<a name="ln1195">            &quot;protection&quot;,</a>
+<a name="ln1196">            &quot;stealth&quot;,</a>
+<a name="ln1197">            &quot;resistance&quot;,</a>
+<a name="ln1198">            &quot;positive energy&quot;,</a>
+<a name="ln1199">            &quot;archmagi&quot;,</a>
+<a name="ln1200">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1201">            &quot;preservation&quot;,</a>
+<a name="ln1202">#endif</a>
+<a name="ln1203">            &quot;reflection&quot;,</a>
+<a name="ln1204">            &quot;spirit shield&quot;,</a>
+<a name="ln1205">            &quot;archery&quot;,</a>
+<a name="ln1206">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1207">            &quot;jumping&quot;,</a>
+<a name="ln1208">#endif</a>
+<a name="ln1209">            &quot;repulsion&quot;,</a>
+<a name="ln1210">            &quot;cloud immunity&quot;,</a>
+<a name="ln1211">        };</a>
+<a name="ln1212"> </a>
+<a name="ln1213">        const int non_art = acq_calls - num_arts;</a>
+<a name="ln1214">        for (int i = 0; i &lt; NUM_SPECIAL_ARMOURS; ++i)</a>
+<a name="ln1215">        {</a>
+<a name="ln1216">            if (ego_quants[i] &gt; 0)</a>
+<a name="ln1217">            {</a>
+<a name="ln1218">                fprintf(ostat, &quot;%17s: %5.2f\n&quot;, names[i],</a>
+<a name="ln1219">                        100.0 * (float) ego_quants[i] / (float) non_art);</a>
+<a name="ln1220">            }</a>
+<a name="ln1221">        }</a>
+<a name="ln1222">        fprintf(ostat, &quot;\n\n&quot;);</a>
+<a name="ln1223">    }</a>
+<a name="ln1224">    else if (type == OBJ_BOOKS)</a>
+<a name="ln1225">    {</a>
+<a name="ln1226">        // Print disciplines of artefact spellbooks.</a>
+<a name="ln1227">        if (subtype_quants[BOOK_RANDART_THEME]</a>
+<a name="ln1228">            + subtype_quants[BOOK_RANDART_LEVEL] &gt; 0)</a>
+<a name="ln1229">        {</a>
+<a name="ln1230">            fprintf(ostat, &quot;Primary disciplines/levels of randart books:\n&quot;);</a>
+<a name="ln1231"> </a>
+<a name="ln1232">            const char* names[] =</a>
+<a name="ln1233">            {</a>
+<a name="ln1234">                &quot;none&quot;,</a>
+<a name="ln1235">                &quot;conjuration&quot;,</a>
+<a name="ln1236">                &quot;enchantment&quot;,</a>
+<a name="ln1237">                &quot;fire magic&quot;,</a>
+<a name="ln1238">                &quot;ice magic&quot;,</a>
+<a name="ln1239">                &quot;transmutation&quot;,</a>
+<a name="ln1240">                &quot;necromancy&quot;,</a>
+<a name="ln1241">                &quot;summoning&quot;,</a>
+<a name="ln1242">                &quot;translocation&quot;,</a>
+<a name="ln1243">                &quot;poison magic&quot;,</a>
+<a name="ln1244">                &quot;earth magic&quot;,</a>
+<a name="ln1245">                &quot;air magic&quot;,</a>
+<a name="ln1246">            };</a>
+<a name="ln1247">            COMPILE_CHECK(ARRAYSZ(names) == SPSCHOOL_LAST_EXPONENT + 1);</a>
+<a name="ln1248"> </a>
+<a name="ln1249">            for (int i = 0; i &lt;= SPSCHOOL_LAST_EXPONENT; ++i)</a>
+<a name="ln1250">            {</a>
+<a name="ln1251">                if (ego_quants[i] &gt; 0)</a>
+<a name="ln1252">                {</a>
+<a name="ln1253">                    fprintf(ostat, &quot;%17s: %5.2f\n&quot;, names[i],</a>
+<a name="ln1254">                            100.0 * (float) ego_quants[i] / (float) num_arts);</a>
+<a name="ln1255">                }</a>
+<a name="ln1256">            }</a>
+<a name="ln1257">            // List levels for fixed level randarts.</a>
+<a name="ln1258">            for (int i = 1; i &lt; 9; ++i)</a>
+<a name="ln1259">            {</a>
+<a name="ln1260">                const int k = SPSCHOOL_LAST_EXPONENT + i;</a>
+<a name="ln1261">                if (ego_quants[k] &gt; 0)</a>
+<a name="ln1262">                {</a>
+<a name="ln1263">                    fprintf(ostat, &quot;%15s %d: %5.2f\n&quot;, &quot;level&quot;, i,</a>
+<a name="ln1264">                            100.0 * (float) ego_quants[i] / (float) num_arts);</a>
+<a name="ln1265">                }</a>
+<a name="ln1266">            }</a>
+<a name="ln1267"> </a>
+<a name="ln1268">            fprintf(ostat, &quot;Avg. spells per randbook: %4.3f&quot;,</a>
+<a name="ln1269">                    (float)randbook_spells / num_arts);</a>
+<a name="ln1270">        }</a>
+<a name="ln1271"> </a>
+<a name="ln1272">        // Also list skills for manuals.</a>
+<a name="ln1273">        if (subtype_quants[BOOK_MANUAL] &gt; 0)</a>
+<a name="ln1274">        {</a>
+<a name="ln1275">            const int mannum = subtype_quants[BOOK_MANUAL];</a>
+<a name="ln1276">            fprintf(ostat, &quot;\nManuals:\n&quot;);</a>
+<a name="ln1277">            for (skill_type sk = SK_FIRST_SKILL; sk &lt;= SK_LAST_SKILL; ++sk)</a>
+<a name="ln1278">            {</a>
+<a name="ln1279">                const int k = 200 + sk;</a>
+<a name="ln1280">                if (subtype_quants[k] &gt; 0)</a>
+<a name="ln1281">                {</a>
+<a name="ln1282">                    fprintf(ostat, &quot;%17s: %5.2f\n&quot;, skill_name(sk),</a>
+<a name="ln1283">                            100.0 * (float) subtype_quants[k] / (float) mannum);</a>
+<a name="ln1284">                }</a>
+<a name="ln1285">            }</a>
+<a name="ln1286">        }</a>
+<a name="ln1287">        fprintf(ostat, &quot;\n\n&quot;);</a>
+<a name="ln1288">    }</a>
+<a name="ln1289"> </a>
+<a name="ln1290">    item_def item;</a>
+<a name="ln1291">    item.quantity  = 1;</a>
+<a name="ln1292">    item.base_type = type;</a>
+<a name="ln1293"> </a>
+<a name="ln1294">    const bool terse = (type == OBJ_BOOKS ? false : true);</a>
+<a name="ln1295"> </a>
+<a name="ln1296">    // First, get the maximum name length.</a>
+<a name="ln1297">    int max_width = 0;</a>
+<a name="ln1298">    for (int i = 0; i &lt; 256; ++i)</a>
+<a name="ln1299">    {</a>
+<a name="ln1300">        if (type == OBJ_BOOKS &amp;&amp; i &gt;= 200)</a>
+<a name="ln1301">            break;</a>
+<a name="ln1302"> </a>
+<a name="ln1303">        if (subtype_quants[i] == 0)</a>
+<a name="ln1304">            continue;</a>
+<a name="ln1305"> </a>
+<a name="ln1306">        item.sub_type = i;</a>
+<a name="ln1307">        string name = item.name(DESC_DBNAME, terse, true);</a>
+<a name="ln1308"> </a>
+<a name="ln1309">        max_width = max(max_width, strwidth(name));</a>
+<a name="ln1310">    }</a>
+<a name="ln1311"> </a>
+<a name="ln1312">    // Now output the sub types.</a>
+<a name="ln1313">    char format_str[80];</a>
+<a name="ln1314">    sprintf(format_str, &quot;%%%ds: %%6.2f\n&quot;, max_width);</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    for (int i = 0; i &lt; 256; ++i)</a>
+<a name="ln1317">    {</a>
+<a name="ln1318">        if (type == OBJ_BOOKS &amp;&amp; i &gt;= 200)</a>
+<a name="ln1319">            break;</a>
+<a name="ln1320"> </a>
+<a name="ln1321">        if (subtype_quants[i] == 0)</a>
+<a name="ln1322">            continue;</a>
+<a name="ln1323"> </a>
+<a name="ln1324">        _fill_item_from_subtype(type, i, item);</a>
+<a name="ln1325"> </a>
+<a name="ln1326">        const string name = item.name(DESC_DBNAME, terse, true);</a>
+<a name="ln1327"> </a>
+<a name="ln1328">        fprintf(ostat, format_str, name.c_str(),</a>
+<a name="ln1329">                (float) subtype_quants[i] * 100.0 / (float) total_quant);</a>
+<a name="ln1330">    }</a>
+<a name="ln1331">    fprintf(ostat, &quot;-----------------------------------------\n\n&quot;);</a>
+<a name="ln1332"> </a>
+<a name="ln1333">    mpr(&quot;Results written into 'items.stat'.&quot;);</a>
+<a name="ln1334">}</a>
+<a name="ln1335"> </a>
+<a name="ln1336">/**</a>
+<a name="ln1337"> * Take the median of the provided dataset. Mutates it for efficiency.</a>
+<a name="ln1338"> */</a>
+<a name="ln1339">static int _median(vector&lt;int&gt; &amp;counts)</a>
+<a name="ln1340">{</a>
+<a name="ln1341">    nth_element(counts.begin(), counts.begin() + counts.size()/2, counts.end());</a>
+<a name="ln1342">    return counts[counts.size()/2];</a>
+<a name="ln1343">}</a>
+<a name="ln1344"> </a>
+<a name="ln1345">#define MAX_TRIES 27272</a>
+<a name="ln1346">static void _debug_rap_stats(FILE *ostat)</a>
+<a name="ln1347">{</a>
+<a name="ln1348">    const int inv_index</a>
+<a name="ln1349">        = prompt_invent_item(&quot;Generate randart stats on which item?&quot;,</a>
+<a name="ln1350">                             menu_type::invlist, OSEL_ANY);</a>
+<a name="ln1351"> </a>
+<a name="ln1352">    if (prompt_failed(inv_index))</a>
+<a name="ln1353">        return;</a>
+<a name="ln1354"> </a>
+<a name="ln1355">    // A copy of the item, rather than a reference to the inventory item,</a>
+<a name="ln1356">    // so we can fiddle with the item at will.</a>
+<a name="ln1357">    item_def item(you.inv[inv_index]);</a>
+<a name="ln1358"> </a>
+<a name="ln1359">    // Start off with a non-artefact item.</a>
+<a name="ln1360">    item.flags  &amp;= ~ISFLAG_ARTEFACT_MASK;</a>
+<a name="ln1361">    item.unrand_idx = 0;</a>
+<a name="ln1362">    item.props.clear();</a>
+<a name="ln1363"> </a>
+<a name="ln1364">    if (!make_item_randart(item))</a>
+<a name="ln1365">    {</a>
+<a name="ln1366">        mpr(&quot;Can't make a randart out of that type of item.&quot;);</a>
+<a name="ln1367">        return;</a>
+<a name="ln1368">    }</a>
+<a name="ln1369"> </a>
+<a name="ln1370">    FixedVector&lt;int, ARTP_NUM_PROPERTIES&gt; good_props(0);</a>
+<a name="ln1371">    FixedVector&lt;int, ARTP_NUM_PROPERTIES&gt; bad_props(0);</a>
+<a name="ln1372"> </a>
+<a name="ln1373">    FixedVector&lt;int, ARTP_NUM_PROPERTIES&gt; max_prop_vals(0);</a>
+<a name="ln1374">    FixedVector&lt;int, ARTP_NUM_PROPERTIES&gt; min_prop_vals(0);</a>
+<a name="ln1375">    FixedVector&lt;int, ARTP_NUM_PROPERTIES&gt; total_good_prop_vals(0);</a>
+<a name="ln1376">    FixedVector&lt;int, ARTP_NUM_PROPERTIES&gt; total_bad_prop_vals(0);</a>
+<a name="ln1377"> </a>
+<a name="ln1378">    vector&lt;int&gt; good_prop_counts;</a>
+<a name="ln1379">    vector&lt;int&gt; bad_prop_counts;</a>
+<a name="ln1380">    vector&lt;int&gt; total_prop_counts;</a>
+<a name="ln1381"> </a>
+<a name="ln1382">    int max_props         = 0;</a>
+<a name="ln1383">    int max_good_props    = 0;</a>
+<a name="ln1384">    int max_bad_props     = 0;</a>
+<a name="ln1385">    int max_balance_props = 0, total_balance_props = 0;</a>
+<a name="ln1386"> </a>
+<a name="ln1387">    int num_randarts = 0, bad_randarts = 0;</a>
+<a name="ln1388"> </a>
+<a name="ln1389">    artefact_properties_t proprt;</a>
+<a name="ln1390"> </a>
+<a name="ln1391">    for (int i = 0; i &lt; MAX_TRIES; ++i)</a>
+<a name="ln1392">    {</a>
+<a name="ln1393">        if (kbhit())</a>
+<a name="ln1394">        {</a>
+<a name="ln1395">            getch_ck();</a>
+<a name="ln1396">            mpr(&quot;Stopping early due to keyboard input.&quot;);</a>
+<a name="ln1397">            break;</a>
+<a name="ln1398">        }</a>
+<a name="ln1399"> </a>
+<a name="ln1400">        // Generate proprt once and hand it off to randart_is_bad(),</a>
+<a name="ln1401">        // so that randart_is_bad() doesn't generate it a second time.</a>
+<a name="ln1402">        item.flags  &amp;= ~ISFLAG_ARTEFACT_MASK;</a>
+<a name="ln1403">        item.unrand_idx = 0;</a>
+<a name="ln1404">        item.props.clear();</a>
+<a name="ln1405">        make_item_randart(item);</a>
+<a name="ln1406">        artefact_properties(item, proprt);</a>
+<a name="ln1407"> </a>
+<a name="ln1408">        if (randart_is_bad(item, proprt))</a>
+<a name="ln1409">        {</a>
+<a name="ln1410">            bad_randarts++;</a>
+<a name="ln1411">            continue;</a>
+<a name="ln1412">        }</a>
+<a name="ln1413"> </a>
+<a name="ln1414">        num_randarts++;</a>
+<a name="ln1415"> </a>
+<a name="ln1416">        int num_good_props = 0, num_bad_props = 0;</a>
+<a name="ln1417">        for (int j = 0; j &lt; ARTP_NUM_PROPERTIES; ++j)</a>
+<a name="ln1418">        {</a>
+<a name="ln1419">            const artefact_prop_type prop = (artefact_prop_type)j;</a>
+<a name="ln1420">            const int val = proprt[prop];</a>
+<a name="ln1421">            if (!val)</a>
+<a name="ln1422">                continue;</a>
+<a name="ln1423"> </a>
+<a name="ln1424">            // assumption: all mixed good/bad props are good iff positive</a>
+<a name="ln1425">            const bool good = !artp_potentially_bad(prop)</a>
+<a name="ln1426">                              || (artp_potentially_good(prop) &amp;&amp; val &gt; 0);</a>
+<a name="ln1427">            if (good)</a>
+<a name="ln1428">            {</a>
+<a name="ln1429">                good_props[prop]++;</a>
+<a name="ln1430">                num_good_props++;</a>
+<a name="ln1431">                total_good_prop_vals[prop] += val;</a>
+<a name="ln1432">                max_prop_vals[prop] = max(max_prop_vals[prop], val);</a>
+<a name="ln1433">            }</a>
+<a name="ln1434">            else</a>
+<a name="ln1435">            {</a>
+<a name="ln1436">                bad_props[prop]++;</a>
+<a name="ln1437">                num_bad_props++;</a>
+<a name="ln1438">                total_bad_prop_vals[prop] += val;</a>
+<a name="ln1439">                min_prop_vals[prop] = min(min_prop_vals[prop], val);</a>
+<a name="ln1440">            }</a>
+<a name="ln1441">        }</a>
+<a name="ln1442"> </a>
+<a name="ln1443">        const int num_props = num_good_props + num_bad_props;</a>
+<a name="ln1444">        const int balance   = num_good_props - num_bad_props;</a>
+<a name="ln1445"> </a>
+<a name="ln1446">        good_prop_counts.push_back(num_good_props);</a>
+<a name="ln1447">        bad_prop_counts.push_back(num_bad_props);</a>
+<a name="ln1448">        total_prop_counts.push_back(num_props);</a>
+<a name="ln1449"> </a>
+<a name="ln1450">        max_props         = max(max_props, num_props);</a>
+<a name="ln1451">        max_good_props    = max(max_good_props, num_good_props);</a>
+<a name="ln1452">        max_bad_props     = max(max_bad_props, num_bad_props);</a>
+<a name="ln1453">        max_balance_props = max(max_balance_props, balance);</a>
+<a name="ln1454"> </a>
+<a name="ln1455">        total_balance_props += balance;</a>
+<a name="ln1456"> </a>
+<a name="ln1457">        if (i % (MAX_TRIES / 100) == 0)</a>
+<a name="ln1458">        {</a>
+<a name="ln1459">            clear_messages();</a>
+<a name="ln1460">            float curr_percent = (float) i * 1000.0</a>
+<a name="ln1461">                / (float) MAX_TRIES;</a>
+<a name="ln1462">            mprf(&quot;%4.1f%% done.&quot;, curr_percent / 10.0);</a>
+<a name="ln1463">            viewwindow();</a>
+<a name="ln1464">        }</a>
+<a name="ln1465"> </a>
+<a name="ln1466">    }</a>
+<a name="ln1467"> </a>
+<a name="ln1468">    fprintf(ostat, &quot;Randarts generated: %d valid, %d invalid\n\n&quot;,</a>
+<a name="ln1469">            num_randarts, bad_randarts);</a>
+<a name="ln1470"> </a>
+<a name="ln1471">    int total_good_props = 0, total_bad_props = 0;</a>
+<a name="ln1472">    for (int i = 0; i &lt; ARTP_NUM_PROPERTIES; ++i)</a>
+<a name="ln1473">    {</a>
+<a name="ln1474">        total_good_props += good_props[i];</a>
+<a name="ln1475">        total_bad_props += bad_props[i];</a>
+<a name="ln1476">    }</a>
+<a name="ln1477"> </a>
+<a name="ln1478">    // assumption: all props are good or bad</a>
+<a name="ln1479">    const int total_props = total_good_props + total_bad_props;</a>
+<a name="ln1480"> </a>
+<a name="ln1481">    fprintf(ostat, &quot;max # of props = %d, mean = %5.2f, median = %d\n&quot;,</a>
+<a name="ln1482">            max_props, (float) total_props / (float) num_randarts,</a>
+<a name="ln1483">            _median(total_prop_counts));</a>
+<a name="ln1484">    fprintf(ostat, &quot;max # of good props = %d, mean = %5.2f, median = %d\n&quot;,</a>
+<a name="ln1485">            max_good_props, (float) total_good_props / (float) num_randarts,</a>
+<a name="ln1486">            _median(good_prop_counts));</a>
+<a name="ln1487">    fprintf(ostat, &quot;max # of bad props = %d, mean = %5.2f, median = %d\n&quot;,</a>
+<a name="ln1488">            max_bad_props, (float) total_bad_props / (float) num_randarts,</a>
+<a name="ln1489">            _median(bad_prop_counts));</a>
+<a name="ln1490">    fprintf(ostat, &quot;max (good - bad) props = %d, avg # = %5.2f\n\n&quot;,</a>
+<a name="ln1491">            max_balance_props,</a>
+<a name="ln1492">            (float) total_balance_props / (float) num_randarts);</a>
+<a name="ln1493"> </a>
+<a name="ln1494">    const char* rap_names[] =</a>
+<a name="ln1495">    {</a>
+<a name="ln1496">        &quot;ARTP_BRAND&quot;,</a>
+<a name="ln1497">        &quot;ARTP_AC&quot;,</a>
+<a name="ln1498">        &quot;ARTP_EVASION&quot;,</a>
+<a name="ln1499">        &quot;ARTP_STRENGTH&quot;,</a>
+<a name="ln1500">        &quot;ARTP_INTELLIGENCE&quot;,</a>
+<a name="ln1501">        &quot;ARTP_DEXTERITY&quot;,</a>
+<a name="ln1502">        &quot;ARTP_FIRE&quot;,</a>
+<a name="ln1503">        &quot;ARTP_COLD&quot;,</a>
+<a name="ln1504">        &quot;ARTP_ELECTRICITY&quot;,</a>
+<a name="ln1505">        &quot;ARTP_POISON&quot;,</a>
+<a name="ln1506">        &quot;ARTP_NEGATIVE_ENERGY&quot;,</a>
+<a name="ln1507">        &quot;ARTP_MAGIC_RESISTANCE&quot;,</a>
+<a name="ln1508">        &quot;ARTP_SEE_INVISIBLE&quot;,</a>
+<a name="ln1509">        &quot;ARTP_INVISIBLE&quot;,</a>
+<a name="ln1510">        &quot;ARTP_FLY&quot;,</a>
+<a name="ln1511">#if TAG_MAJOR_VERSION &gt; 34</a>
+<a name="ln1512">        &quot;ARTP_FOG&quot;,</a>
+<a name="ln1513">#endif</a>
+<a name="ln1514">        &quot;ARTP_BLINK&quot;,</a>
+<a name="ln1515">        &quot;ARTP_BERSERK&quot;,</a>
+<a name="ln1516">        &quot;ARTP_NOISE&quot;,</a>
+<a name="ln1517">        &quot;ARTP_PREVENT_SPELLCASTING&quot;,</a>
+<a name="ln1518">        &quot;ARTP_CAUSE_TELEPORTATION&quot;,</a>
+<a name="ln1519">        &quot;ARTP_PREVENT_TELEPORTATION&quot;,</a>
+<a name="ln1520">        &quot;ARTP_ANGRY&quot;,</a>
+<a name="ln1521">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1522">        &quot;ARTP_METABOLISM&quot;,</a>
+<a name="ln1523">#endif</a>
+<a name="ln1524">        &quot;ARTP_CONTAM&quot;,</a>
+<a name="ln1525">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1526">        &quot;ARTP_ACCURACY&quot;,</a>
+<a name="ln1527">#endif</a>
+<a name="ln1528">        &quot;ARTP_SLAYING&quot;,</a>
+<a name="ln1529">        &quot;ARTP_CURSE&quot;,</a>
+<a name="ln1530">        &quot;ARTP_STEALTH&quot;,</a>
+<a name="ln1531">        &quot;ARTP_MAGICAL_POWER&quot;,</a>
+<a name="ln1532">        &quot;ARTP_BASE_DELAY&quot;,</a>
+<a name="ln1533">        &quot;ARTP_HP&quot;,</a>
+<a name="ln1534">        &quot;ARTP_CLARITY&quot;,</a>
+<a name="ln1535">        &quot;ARTP_BASE_ACC&quot;,</a>
+<a name="ln1536">        &quot;ARTP_BASE_DAM&quot;,</a>
+<a name="ln1537">        &quot;ARTP_RMSL&quot;,</a>
+<a name="ln1538">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1539">        &quot;ARTP_FOG&quot;,</a>
+<a name="ln1540">#endif</a>
+<a name="ln1541">        &quot;ARTP_REGENERATION&quot;,</a>
+<a name="ln1542">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1543">        &quot;ARTP_SUSTAT&quot;,</a>
+<a name="ln1544">#endif</a>
+<a name="ln1545">        &quot;ARTP_NO_UPGRADE&quot;,</a>
+<a name="ln1546">        &quot;ARTP_RCORR&quot;,</a>
+<a name="ln1547">        &quot;ARTP_RMUT&quot;,</a>
+<a name="ln1548">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1549">        &quot;ARTP_TWISTER&quot;,</a>
+<a name="ln1550">#endif</a>
+<a name="ln1551">        &quot;ARTP_CORRODE&quot;,</a>
+<a name="ln1552">        &quot;ARTP_DRAIN&quot;,</a>
+<a name="ln1553">        &quot;ARTP_SLOW&quot;,</a>
+<a name="ln1554">        &quot;ARTP_FRAGILE&quot;,</a>
+<a name="ln1555">        &quot;ARTP_SHIELDING&quot;,</a>
+<a name="ln1556">        &quot;ARTP_HARM&quot;,</a>
+<a name="ln1557">    };</a>
+<a name="ln1558">    COMPILE_CHECK(ARRAYSZ(rap_names) == ARTP_NUM_PROPERTIES);</a>
+<a name="ln1559"> </a>
+<a name="ln1560">    fprintf(ostat, &quot;                                 All    Good   Bad   Max AvgGood Min AvgBad\n&quot;);</a>
+<a name="ln1561">    fprintf(ostat, &quot;                           ------------------------------------------------\n&quot;);</a>
+<a name="ln1562">    fprintf(ostat, &quot;%-27s: %6.2f%% %6.2f%% %6.2f%%\n&quot;, &quot;Overall&quot;, 100.0,</a>
+<a name="ln1563">            (float) total_good_props * 100.0 / (float) total_props,</a>
+<a name="ln1564">            (float) total_bad_props * 100.0 / (float) total_props);</a>
+<a name="ln1565"> </a>
+<a name="ln1566">    for (int i = 0; i &lt; ARTP_NUM_PROPERTIES; ++i)</a>
+<a name="ln1567">    {</a>
+<a name="ln1568">        const int total_props_of_type = good_props[i] + bad_props[i];</a>
+<a name="ln1569">        if (!total_props_of_type)</a>
+<a name="ln1570">            continue;</a>
+<a name="ln1571"> </a>
+<a name="ln1572">        const float avg_good = good_props[i] ?</a>
+<a name="ln1573">            (float) total_good_prop_vals[i] / (float) good_props[i] :</a>
+<a name="ln1574">            0.0;</a>
+<a name="ln1575">        const float avg_bad = bad_props[i] ?</a>
+<a name="ln1576">            (float) total_bad_prop_vals[i] / (float) bad_props[i] :</a>
+<a name="ln1577">            0.0;</a>
+<a name="ln1578">        fprintf(ostat, &quot;%-27s: %6.2f%% %6.2f%% %6.2f%% %3d %5.2f %5d %5.2f\n&quot;,</a>
+<a name="ln1579">                rap_names[i],</a>
+<a name="ln1580">                (float) total_props_of_type * 100.0 / (float) num_randarts,</a>
+<a name="ln1581">                (float) good_props[i] * 100.0 / (float) num_randarts,</a>
+<a name="ln1582">                (float) bad_props[i] * 100.0 / (float) num_randarts,</a>
+<a name="ln1583">                max_prop_vals[i], avg_good,</a>
+<a name="ln1584">                min_prop_vals[i], avg_bad);</a>
+<a name="ln1585">    }</a>
+<a name="ln1586"> </a>
+<a name="ln1587">    fprintf(ostat, &quot;\n-----------------------------------------\n\n&quot;);</a>
+<a name="ln1588">    mpr(&quot;Results written into 'items.stat'.&quot;);</a>
+<a name="ln1589">}</a>
+<a name="ln1590"> </a>
+<a name="ln1591">void debug_item_statistics()</a>
+<a name="ln1592">{</a>
+<a name="ln1593">    FILE *ostat = fopen(&quot;items.stat&quot;, &quot;a&quot;);</a>
+<a name="ln1594"> </a>
+<a name="ln1595">    if (!ostat)</a>
+<a name="ln1596">    {</a>
+<a name="ln1597">        mprf(MSGCH_ERROR, &quot;Can't write items.stat: %s&quot;, strerror(errno));</a>
+<a name="ln1598">        return;</a>
+<a name="ln1599">    }</a>
+<a name="ln1600"> </a>
+<a name="ln1601">    mpr(&quot;Generate stats for: [a] acquirement [b] randart properties&quot;);</a>
+<a name="ln1602">    flush_prev_message();</a>
+<a name="ln1603"> </a>
+<a name="ln1604">    const int keyin = toalower(get_ch());</a>
+<a name="ln1605">    switch (keyin)</a>
+<a name="ln1606">    {</a>
+<a name="ln1607">    case 'a': _debug_acquirement_stats(ostat); break;</a>
+<a name="ln1608">    case 'b': _debug_rap_stats(ostat); break;</a>
+<a name="ln1609">    default:</a>
+<a name="ln1610">        canned_msg(MSG_OK);</a>
+<a name="ln1611">        break;</a>
+<a name="ln1612">    }</a>
+<a name="ln1613"> </a>
+<a name="ln1614">    fclose(ostat);</a>
+<a name="ln1615">}</a>
+<a name="ln1616"> </a>
+<a name="ln1617">void wizard_draw_card()</a>
+<a name="ln1618">{</a>
+<a name="ln1619">    msg::streams(MSGCH_PROMPT) &lt;&lt; &quot;Which card? &quot; &lt;&lt; endl;</a>
+<a name="ln1620">    char buf[80];</a>
+<a name="ln1621">    if (cancellable_get_line_autohist(buf, sizeof buf))</a>
+<a name="ln1622">    {</a>
+<a name="ln1623">        mpr(&quot;Unknown card.&quot;);</a>
+<a name="ln1624">        return;</a>
+<a name="ln1625">    }</a>
+<a name="ln1626"> </a>
+<a name="ln1627">    string wanted = buf;</a>
+<a name="ln1628">    lowercase(wanted);</a>
+<a name="ln1629"> </a>
+<a name="ln1630">    bool found_card = false;</a>
+<a name="ln1631">    for (int i = 0; i &lt; NUM_CARDS; ++i)</a>
+<a name="ln1632">    {</a>
+<a name="ln1633">        const card_type c = static_cast&lt;card_type&gt;(i);</a>
+<a name="ln1634">        string card = card_name(c);</a>
+<a name="ln1635">        lowercase(card);</a>
+<a name="ln1636">        if (card.find(wanted) != string::npos)</a>
+<a name="ln1637">        {</a>
+<a name="ln1638">            card_effect(c);</a>
+<a name="ln1639">            found_card = true;</a>
+<a name="ln1640">            break;</a>
+<a name="ln1641">        }</a>
+<a name="ln1642">    }</a>
+<a name="ln1643">    if (!found_card)</a>
+<a name="ln1644">        mpr(&quot;Unknown card.&quot;);</a>
+<a name="ln1645">}</a>
+<a name="ln1646"> </a>
+<a name="ln1647">void wizard_identify_all_items()</a>
+<a name="ln1648">{</a>
+<a name="ln1649">    wizard_identify_pack();</a>
+<a name="ln1650">    for (auto &amp;item : mitm)</a>
+<a name="ln1651">        if (item.defined())</a>
+<a name="ln1652">            set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln1653">    for (auto&amp; entry : env.shop)</a>
+<a name="ln1654">        for (auto &amp;item : entry.second.stock)</a>
+<a name="ln1655">            set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln1656">    for (int ii = 0; ii &lt; NUM_OBJECT_CLASSES; ii++)</a>
+<a name="ln1657">    {</a>
+<a name="ln1658">        object_class_type i = (object_class_type)ii;</a>
+<a name="ln1659">        if (!item_type_has_ids(i))</a>
+<a name="ln1660">            continue;</a>
+<a name="ln1661">        for (const auto j : all_item_subtypes(i))</a>
+<a name="ln1662">            set_ident_type(i, j, true);</a>
+<a name="ln1663">    }</a>
+<a name="ln1664">}</a>
+<a name="ln1665"> </a>
+<a name="ln1666">void wizard_unidentify_all_items()</a>
+<a name="ln1667">{</a>
+<a name="ln1668">    wizard_unidentify_pack();</a>
+<a name="ln1669">    for (auto &amp;item : mitm)</a>
+<a name="ln1670">        if (item.defined())</a>
+<a name="ln1671">            _forget_item(item);</a>
+<a name="ln1672">    for (auto&amp; entry : env.shop)</a>
+<a name="ln1673">        for (auto &amp;item : entry.second.stock)</a>
+<a name="ln1674">            _forget_item(item);</a>
+<a name="ln1675">    for (int ii = 0; ii &lt; NUM_OBJECT_CLASSES; ii++)</a>
+<a name="ln1676">    {</a>
+<a name="ln1677">        object_class_type i = (object_class_type)ii;</a>
+<a name="ln1678">        if (!item_type_has_ids(i))</a>
+<a name="ln1679">            continue;</a>
+<a name="ln1680">        for (const auto j : all_item_subtypes(i))</a>
+<a name="ln1681">            set_ident_type(i, j, false);</a>
+<a name="ln1682">    }</a>
+<a name="ln1683">}</a>
+<a name="ln1684"> </a>
+<a name="ln1685">void wizard_recharge_evokers()</a>
+<a name="ln1686">{</a>
+<a name="ln1687">    for (int i = 0; i &lt; NUM_MISCELLANY; ++i)</a>
+<a name="ln1688">    {</a>
+<a name="ln1689">        item_def dummy;</a>
+<a name="ln1690">        dummy.base_type = OBJ_MISCELLANY;</a>
+<a name="ln1691">        dummy.sub_type = i;</a>
+<a name="ln1692"> </a>
+<a name="ln1693">        if (!is_xp_evoker(dummy))</a>
+<a name="ln1694">            continue;</a>
+<a name="ln1695"> </a>
+<a name="ln1696">        evoker_debt(dummy.sub_type) = 0;</a>
+<a name="ln1697">    }</a>
+<a name="ln1698">    mpr(&quot;Evokers recharged.&quot;);</a>
+<a name="ln1699">}</a>
+<a name="ln1700">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="485"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'keyin == 'e'' is always true.</p></div>
+<div class="balloon" rel="1006"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'type == OBJ_WANDS' is always false.</p></div>
+<div class="balloon" rel="1008"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'type == OBJ_FOOD' is always true.</p></div>
+<div class="balloon" rel="1218"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v557/" target="_blank">V557</a> Array overrun is possible. The value of 'i' index could reach 25.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,732 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>tiledoll.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#ifdef USE_TILE</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &quot;tiledoll.h&quot;</a>
+<a name="ln6"> </a>
+<a name="ln7">#include &lt;sys/stat.h&gt;</a>
+<a name="ln8"> </a>
+<a name="ln9">#include &quot;files.h&quot;</a>
+<a name="ln10">#include &quot;jobs.h&quot;</a>
+<a name="ln11">#include &quot;makeitem.h&quot;</a>
+<a name="ln12">#include &quot;mon-info.h&quot;</a>
+<a name="ln13">#include &quot;newgame.h&quot;</a>
+<a name="ln14">#include &quot;ng-setup.h&quot;</a>
+<a name="ln15">#include &quot;options.h&quot;</a>
+<a name="ln16">#include &quot;syscalls.h&quot;</a>
+<a name="ln17">#include &quot;tile-player-flag-cut.h&quot;</a>
+<a name="ln18">#ifdef USE_TILE_LOCAL</a>
+<a name="ln19"> #include &quot;tilebuf.h&quot;</a>
+<a name="ln20">#endif</a>
+<a name="ln21">#include &quot;rltiles/tiledef-player.h&quot;</a>
+<a name="ln22">#include &quot;tilemcache.h&quot;</a>
+<a name="ln23">#include &quot;tilepick.h&quot;</a>
+<a name="ln24">#include &quot;tilepick-p.h&quot;</a>
+<a name="ln25">#include &quot;transform.h&quot;</a>
+<a name="ln26">#include &quot;unwind.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">dolls_data::dolls_data()</a>
+<a name="ln29">{</a>
+<a name="ln30">    parts = new tileidx_t[TILEP_PART_MAX];</a>
+<a name="ln31">    memset(parts, 0, TILEP_PART_MAX * sizeof(tileidx_t));</a>
+<a name="ln32">}</a>
+<a name="ln33"> </a>
+<a name="ln34">dolls_data::dolls_data(const dolls_data&amp; _orig)</a>
+<a name="ln35">{</a>
+<a name="ln36">    parts = new tileidx_t[TILEP_PART_MAX];</a>
+<a name="ln37">    memcpy(parts, _orig.parts, TILEP_PART_MAX * sizeof(tileidx_t));</a>
+<a name="ln38">}</a>
+<a name="ln39"> </a>
+<a name="ln40">const dolls_data&amp; dolls_data::operator=(const dolls_data&amp; other)</a>
+<a name="ln41">{</a>
+<a name="ln42">    if (this != &amp;other)</a>
+<a name="ln43">        memcpy(parts, other.parts, TILEP_PART_MAX * sizeof(tileidx_t));</a>
+<a name="ln44">    return *this;</a>
+<a name="ln45">}</a>
+<a name="ln46"> </a>
+<a name="ln47">dolls_data::~dolls_data()</a>
+<a name="ln48">{</a>
+<a name="ln49">    delete[] parts;</a>
+<a name="ln50">    parts = nullptr;</a>
+<a name="ln51">}</a>
+<a name="ln52"> </a>
+<a name="ln53">bool dolls_data::operator==(const dolls_data&amp; other) const</a>
+<a name="ln54">{</a>
+<a name="ln55">    for (unsigned int i = 0; i &lt; TILEP_PART_MAX; i++)</a>
+<a name="ln56">        if (parts[i] != other.parts[i]) return false;</a>
+<a name="ln57">    return true;</a>
+<a name="ln58">}</a>
+<a name="ln59"> </a>
+<a name="ln60">dolls_data player_doll;</a>
+<a name="ln61"> </a>
+<a name="ln62">bool save_doll_data(int mode, int num, const dolls_data* dolls)</a>
+<a name="ln63">{</a>
+<a name="ln64">    // Save mode, num, and all dolls into dolls.txt.</a>
+<a name="ln65">    string dollsTxtString = datafile_path(&quot;dolls.txt&quot;, false, true);</a>
+<a name="ln66"> </a>
+<a name="ln67">    struct stat stFileInfo;</a>
+<a name="ln68">    stat(dollsTxtString.c_str(), &amp;stFileInfo);</a>
+<a name="ln69"> </a>
+<a name="ln70">    // Write into the current directory instead if we didn't find the file</a>
+<a name="ln71">    // or don't have write permissions.</a>
+<a name="ln72">    const char *dollsTxt = (dollsTxtString.c_str()[0] == 0</a>
+<a name="ln73">                              || !(stFileInfo.st_mode &amp; S_IWUSR)) ? &quot;dolls.txt&quot;</a>
+<a name="ln74">                            : dollsTxtString.c_str();</a>
+<a name="ln75"> </a>
+<a name="ln76">    FILE *fp = nullptr;</a>
+<a name="ln77">    if ((fp = fopen_u(dollsTxt, &quot;w+&quot;)) != nullptr)</a>
+<a name="ln78">    {</a>
+<a name="ln79">        fprintf(fp, &quot;MODE=%s\n&quot;,</a>
+<a name="ln80">                    (mode == TILEP_MODE_EQUIP)   ? &quot;EQUIP&quot; :</a>
+<a name="ln81">                    (mode == TILEP_MODE_LOADING) ? &quot;LOADING&quot;</a>
+<a name="ln82">                                                 : &quot;DEFAULT&quot;);</a>
+<a name="ln83"> </a>
+<a name="ln84">        fprintf(fp, &quot;NUM=%02d\n&quot;, num == -1 ? 0 : num);</a>
+<a name="ln85"> </a>
+<a name="ln86">        // Print some explanatory comments. May contain no spaces!</a>
+<a name="ln87">        fprintf(fp, &quot;#Legend:\n&quot;);</a>
+<a name="ln88">        fprintf(fp, &quot;#***:equipment/123:index/000:none\n&quot;);</a>
+<a name="ln89">        fprintf(fp, &quot;#Shadow/Base/Cloak/Boots/Legs/Body/Gloves/Weapon/Shield/&quot;</a>
+<a name="ln90">                    &quot;Hair/Beard/Helmet/Halo/Enchant/DrcHead/DrcWing\n&quot;);</a>
+<a name="ln91">        fprintf(fp, &quot;#Sh:Bse:Clk:Bts:Leg:Bdy:Glv:Wpn:Shd:Hai:Brd:Hlm:Hal:Enc:Drc:Wng\n&quot;);</a>
+<a name="ln92">        char fbuf[80];</a>
+<a name="ln93">        for (unsigned int i = 0; i &lt; NUM_MAX_DOLLS; ++i)</a>
+<a name="ln94">        {</a>
+<a name="ln95">            tilep_print_parts(fbuf, dolls[i]);</a>
+<a name="ln96">            fprintf(fp, &quot;%s&quot;, fbuf);</a>
+<a name="ln97">        }</a>
+<a name="ln98">        fclose(fp);</a>
+<a name="ln99"> </a>
+<a name="ln100">        return true;</a>
+<a name="ln101">    }</a>
+<a name="ln102"> </a>
+<a name="ln103">    return false;</a>
+<a name="ln104">}</a>
+<a name="ln105"> </a>
+<a name="ln106">bool load_doll_data(const char *fn, dolls_data *dolls, int max,</a>
+<a name="ln107">                    tile_doll_mode *mode, int *cur)</a>
+<a name="ln108">{</a>
+<a name="ln109">    char fbuf[1024];</a>
+<a name="ln110">    FILE *fp  = nullptr;</a>
+<a name="ln111"> </a>
+<a name="ln112">    string dollsTxtString = datafile_path(fn, false, true);</a>
+<a name="ln113"> </a>
+<a name="ln114">    struct stat stFileInfo;</a>
+<a name="ln115">    stat(dollsTxtString.c_str(), &amp;stFileInfo);</a>
+<a name="ln116"> </a>
+<a name="ln117">    // Try to read from the current directory instead if we didn't find the</a>
+<a name="ln118">    // file or don't have reading permissions.</a>
+<a name="ln119">    const char *dollsTxt = (dollsTxtString.c_str()[0] == 0</a>
+<a name="ln120">                              || !(stFileInfo.st_mode &amp; S_IRUSR)) ? &quot;dolls.txt&quot;</a>
+<a name="ln121">                            : dollsTxtString.c_str();</a>
+<a name="ln122"> </a>
+<a name="ln123">    if ((fp = fopen_u(dollsTxt, &quot;r&quot;)) == nullptr)</a>
+<a name="ln124">    {</a>
+<a name="ln125">        // File doesn't exist. By default, use equipment settings.</a>
+<a name="ln126">        *mode = TILEP_MODE_EQUIP;</a>
+<a name="ln127">        return false;</a>
+<a name="ln128">    }</a>
+<a name="ln129">    else</a>
+<a name="ln130">    {</a>
+<a name="ln131">        memset(fbuf, 0, sizeof(fbuf));</a>
+<a name="ln132">        // Read mode from file.</a>
+<a name="ln133">        if (fscanf(fp, &quot;%1023s&quot;, fbuf) != EOF)</a>
+<a name="ln134">        {</a>
+<a name="ln135">            if (strcmp(fbuf, &quot;MODE=DEFAULT&quot;) == 0)</a>
+<a name="ln136">                *mode = TILEP_MODE_DEFAULT;</a>
+<a name="ln137">            else if (strcmp(fbuf, &quot;MODE=EQUIP&quot;) == 0)</a>
+<a name="ln138">                *mode = TILEP_MODE_EQUIP; // Nothing else to be done.</a>
+<a name="ln139">        }</a>
+<a name="ln140">        // Read current doll from file.</a>
+<a name="ln141">        if (fscanf(fp, &quot;%1023s&quot;, fbuf) != EOF)</a>
+<a name="ln142">        {</a>
+<a name="ln143">            if (strncmp(fbuf, &quot;NUM=&quot;, 4) == 0)</a>
+<a name="ln144">            {</a>
+<a name="ln145">                sscanf(fbuf, &quot;NUM=%d&quot;, cur);</a>
+<a name="ln146">                if (*cur &lt; 0 || *cur &gt;= NUM_MAX_DOLLS)</a>
+<a name="ln147">                    *cur = 0;</a>
+<a name="ln148">            }</a>
+<a name="ln149">        }</a>
+<a name="ln150"> </a>
+<a name="ln151">        if (max == 1)</a>
+<a name="ln152">        {</a>
+<a name="ln153">            // Load only one doll, either the one defined by NUM or</a>
+<a name="ln154">            // use the default/equipment setting.</a>
+<a name="ln155">            if (*mode != TILEP_MODE_LOADING)</a>
+<a name="ln156">            {</a>
+<a name="ln157">                if (*mode == TILEP_MODE_DEFAULT)</a>
+<a name="ln158">                    tilep_job_default(you.char_class, &amp;dolls[0]);</a>
+<a name="ln159"> </a>
+<a name="ln160">                // If we don't need to load a doll, return now.</a>
+<a name="ln161">                fclose(fp);</a>
+<a name="ln162">                return true;</a>
+<a name="ln163">            }</a>
+<a name="ln164"> </a>
+<a name="ln165">            int count = 0;</a>
+<a name="ln166">            while (fscanf(fp, &quot;%1023s&quot;, fbuf) != EOF)</a>
+<a name="ln167">            {</a>
+<a name="ln168">                if (fbuf[0] == '#') // Skip comment lines.</a>
+<a name="ln169">                    continue;</a>
+<a name="ln170"> </a>
+<a name="ln171">                if (*cur == count++)</a>
+<a name="ln172">                {</a>
+<a name="ln173">                    tilep_scan_parts(fbuf, dolls[0], you.species,</a>
+<a name="ln174">                                     you.experience_level);</a>
+<a name="ln175">                    break;</a>
+<a name="ln176">                }</a>
+<a name="ln177">            }</a>
+<a name="ln178">        }</a>
+<a name="ln179">        else // Load up to max dolls from file.</a>
+<a name="ln180">        {</a>
+<a name="ln181">            for (int count = 0; count &lt; max &amp;&amp; fscanf(fp, &quot;%1023s&quot;, fbuf) != EOF;)</a>
+<a name="ln182">            {</a>
+<a name="ln183">                if (fbuf[0] == '#') // Skip comment lines.</a>
+<a name="ln184">                    continue;</a>
+<a name="ln185"> </a>
+<a name="ln186">                tilep_scan_parts(fbuf, dolls[count++], you.species,</a>
+<a name="ln187">                                 you.experience_level);</a>
+<a name="ln188">            }</a>
+<a name="ln189">        }</a>
+<a name="ln190"> </a>
+<a name="ln191">        fclose(fp);</a>
+<a name="ln192">        return true;</a>
+<a name="ln193">    }</a>
+<a name="ln194">}</a>
+<a name="ln195"> </a>
+<a name="ln196">void init_player_doll()</a>
+<a name="ln197">{</a>
+<a name="ln198">    dolls_data dolls[NUM_MAX_DOLLS];</a>
+<a name="ln199"> </a>
+<a name="ln200">    for (int i = 0; i &lt; NUM_MAX_DOLLS; i++)</a>
+<a name="ln201">        for (int j = 0; j &lt; TILEP_PART_MAX; j++)</a>
+<a name="ln202">            dolls[i].parts[j] = TILEP_SHOW_EQUIP;</a>
+<a name="ln203"> </a>
+<a name="ln204">    tile_doll_mode mode = TILEP_MODE_LOADING;</a>
+<a name="ln205">    int cur = 0;</a>
+<a name="ln206">    load_doll_data(&quot;dolls.txt&quot;, dolls, NUM_MAX_DOLLS, &amp;mode, &amp;cur);</a>
+<a name="ln207"> </a>
+<a name="ln208">    if (mode == TILEP_MODE_LOADING)</a>
+<a name="ln209">    {</a>
+<a name="ln210">        player_doll = dolls[cur];</a>
+<a name="ln211">        tilep_race_default(you.species, you.experience_level, &amp;player_doll);</a>
+<a name="ln212">        return;</a>
+<a name="ln213">    }</a>
+<a name="ln214"> </a>
+<a name="ln215">    for (int i = 0; i &lt; TILEP_PART_MAX; i++)</a>
+<a name="ln216">        player_doll.parts[i] = TILEP_SHOW_EQUIP;</a>
+<a name="ln217">    tilep_race_default(you.species, you.experience_level, &amp;player_doll);</a>
+<a name="ln218"> </a>
+<a name="ln219">    if (mode == TILEP_MODE_EQUIP)</a>
+<a name="ln220">        return;</a>
+<a name="ln221"> </a>
+<a name="ln222">    tilep_job_default(you.char_class, &amp;player_doll);</a>
+<a name="ln223">}</a>
+<a name="ln224"> </a>
+<a name="ln225">static int _get_random_doll_part(int p)</a>
+<a name="ln226">{</a>
+<a name="ln227">    ASSERT_RANGE(p, 0, TILEP_PART_MAX + 1);</a>
+<a name="ln228">    return tile_player_part_start[p]</a>
+<a name="ln229">           + random2(tile_player_part_count[p]);</a>
+<a name="ln230">}</a>
+<a name="ln231"> </a>
+<a name="ln232">static void _fill_doll_part(dolls_data &amp;doll, int p)</a>
+<a name="ln233">{</a>
+<a name="ln234">    ASSERT_RANGE(p, 0, TILEP_PART_MAX + 1);</a>
+<a name="ln235">    doll.parts[p] = _get_random_doll_part(p);</a>
+<a name="ln236">}</a>
+<a name="ln237"> </a>
+<a name="ln238">void create_random_doll(dolls_data &amp;rdoll)</a>
+<a name="ln239">{</a>
+<a name="ln240">    // All dolls roll for these.</a>
+<a name="ln241">    _fill_doll_part(rdoll, TILEP_PART_BODY);</a>
+<a name="ln242">    _fill_doll_part(rdoll, TILEP_PART_HAND1);</a>
+<a name="ln243">    _fill_doll_part(rdoll, TILEP_PART_LEG);</a>
+<a name="ln244">    _fill_doll_part(rdoll, TILEP_PART_BOOTS);</a>
+<a name="ln245">    _fill_doll_part(rdoll, TILEP_PART_HAIR);</a>
+<a name="ln246"> </a>
+<a name="ln247">    // The following are only rolled with 50% chance.</a>
+<a name="ln248">    if (coinflip())</a>
+<a name="ln249">        _fill_doll_part(rdoll, TILEP_PART_CLOAK);</a>
+<a name="ln250">    if (coinflip())</a>
+<a name="ln251">        _fill_doll_part(rdoll, TILEP_PART_ARM);</a>
+<a name="ln252">    if (coinflip())</a>
+<a name="ln253">        _fill_doll_part(rdoll, TILEP_PART_HAND2);</a>
+<a name="ln254">    if (coinflip())</a>
+<a name="ln255">        _fill_doll_part(rdoll, TILEP_PART_HELM);</a>
+<a name="ln256"> </a>
+<a name="ln257">    if (one_chance_in(4))</a>
+<a name="ln258">        _fill_doll_part(rdoll, TILEP_PART_BEARD);</a>
+<a name="ln259">}</a>
+<a name="ln260"> </a>
+<a name="ln261">// Deterministically pick a pair of trousers for this character to use</a>
+<a name="ln262">// for SHOW_EQUIP, as there's no corresponding item slot for this.</a>
+<a name="ln263">static tileidx_t _random_trousers()</a>
+<a name="ln264">{</a>
+<a name="ln265">    int offset = static_cast&lt;int&gt;(you.species) * 9887</a>
+<a name="ln266">                 + static_cast&lt;int&gt;(you.char_class) * 8719;</a>
+<a name="ln267">    const char *name = you.your_name.c_str();</a>
+<a name="ln268">    for (int i = 0; i &lt; 8 &amp;&amp; *name; ++i, ++name)</a>
+<a name="ln269">        offset += *name * 4643;</a>
+<a name="ln270"> </a>
+<a name="ln271">    const int range = TILEP_LEG_LAST_NORM - TILEP_LEG_FIRST_NORM + 1;</a>
+<a name="ln272">    return TILEP_LEG_FIRST_NORM + offset % range;</a>
+<a name="ln273">}</a>
+<a name="ln274"> </a>
+<a name="ln275">void fill_doll_equipment(dolls_data &amp;result)</a>
+<a name="ln276">{</a>
+<a name="ln277">    // Equipment-using forms</a>
+<a name="ln278">    switch (you.form)</a>
+<a name="ln279">    {</a>
+<a name="ln280">    case transformation::tree:</a>
+<a name="ln281">        result.parts[TILEP_PART_BASE]    = TILEP_TRAN_TREE;</a>
+<a name="ln282">        result.parts[TILEP_PART_HELM]    = 0; // fixme, should show up</a>
+<a name="ln283">        result.parts[TILEP_PART_DRCHEAD] = 0;</a>
+<a name="ln284">        result.parts[TILEP_PART_DRCWING] = 0;</a>
+<a name="ln285">        result.parts[TILEP_PART_HAIR]    = 0;</a>
+<a name="ln286">        result.parts[TILEP_PART_BEARD]   = 0;</a>
+<a name="ln287">        result.parts[TILEP_PART_LEG]     = 0;</a>
+<a name="ln288">        result.parts[TILEP_PART_SHADOW]  = 0;</a>
+<a name="ln289">        break;</a>
+<a name="ln290">    case transformation::statue:</a>
+<a name="ln291">        tileidx_t ch;</a>
+<a name="ln292">        switch (you.species)</a>
+<a name="ln293">        {</a>
+<a name="ln294">        case SP_CENTAUR: ch = TILEP_TRAN_STATUE_CENTAUR;  break;</a>
+<a name="ln295">        case SP_NAGA:    ch = TILEP_TRAN_STATUE_NAGA;     break;</a>
+<a name="ln296">        case SP_FELID:   ch = TILEP_TRAN_STATUE_FELID;    break;</a>
+<a name="ln297">        case SP_OCTOPODE:ch = TILEP_TRAN_STATUE_OCTOPODE; break;</a>
+<a name="ln298">        default:         ch = TILEP_TRAN_STATUE_HUMANOID; break;</a>
+<a name="ln299">        }</a>
+<a name="ln300">        result.parts[TILEP_PART_BASE]    = ch;</a>
+<a name="ln301">        result.parts[TILEP_PART_DRCHEAD] = 0;</a>
+<a name="ln302">        result.parts[TILEP_PART_HAIR]    = 0;</a>
+<a name="ln303">        result.parts[TILEP_PART_LEG]     = 0;</a>
+<a name="ln304">        break;</a>
+<a name="ln305">    case transformation::lich:</a>
+<a name="ln306">        switch (you.species)</a>
+<a name="ln307">        {</a>
+<a name="ln308">        case SP_CENTAUR: ch = TILEP_TRAN_LICH_CENTAUR;  break;</a>
+<a name="ln309">        case SP_NAGA:    ch = TILEP_TRAN_LICH_NAGA;     break;</a>
+<a name="ln310">        case SP_FELID:   ch = TILEP_TRAN_LICH_FELID;    break;</a>
+<a name="ln311">        case SP_OCTOPODE:ch = TILEP_TRAN_LICH_OCTOPODE; break;</a>
+<a name="ln312">        default:         ch = TILEP_TRAN_LICH_HUMANOID; break;</a>
+<a name="ln313">        }</a>
+<a name="ln314">        result.parts[TILEP_PART_BASE]    = ch;</a>
+<a name="ln315">        result.parts[TILEP_PART_DRCHEAD] = 0;</a>
+<a name="ln316">        result.parts[TILEP_PART_HAIR]    = 0;</a>
+<a name="ln317">        result.parts[TILEP_PART_BEARD]   = 0;</a>
+<a name="ln318">        result.parts[TILEP_PART_LEG]     = 0;</a>
+<a name="ln319"> </a>
+<a name="ln320">        // fixme: these should show up, but look ugly with the lich tile</a>
+<a name="ln321">        result.parts[TILEP_PART_HELM]    = 0;</a>
+<a name="ln322">        result.parts[TILEP_PART_BOOTS]   = 0;</a>
+<a name="ln323">        result.parts[TILEP_PART_BODY]    = 0;</a>
+<a name="ln324">        result.parts[TILEP_PART_ARM]     = 0;</a>
+<a name="ln325">        result.parts[TILEP_PART_CLOAK]   = 0;</a>
+<a name="ln326">        break;</a>
+<a name="ln327">    default:</a>
+<a name="ln328">        // A monster tile is being used for the player.</a>
+<a name="ln329">        if (Options.tile_use_monster != MONS_0)</a>
+<a name="ln330">        {</a>
+<a name="ln331">            result.parts[TILEP_PART_BASE]    = tileidx_player_mons();</a>
+<a name="ln332">            result.parts[TILEP_PART_DRCHEAD] = 0;</a>
+<a name="ln333">            result.parts[TILEP_PART_HAIR]    = 0;</a>
+<a name="ln334">            result.parts[TILEP_PART_BEARD]   = 0;</a>
+<a name="ln335">            result.parts[TILEP_PART_LEG]     = 0;</a>
+<a name="ln336">            result.parts[TILEP_PART_HELM]    = 0;</a>
+<a name="ln337">            result.parts[TILEP_PART_BOOTS]   = 0;</a>
+<a name="ln338">            result.parts[TILEP_PART_BODY]    = 0;</a>
+<a name="ln339">            result.parts[TILEP_PART_ARM]     = 0;</a>
+<a name="ln340">            result.parts[TILEP_PART_CLOAK]   = 0;</a>
+<a name="ln341">        }</a>
+<a name="ln342">        break;</a>
+<a name="ln343">    }</a>
+<a name="ln344"> </a>
+<a name="ln345">    // Base tile.</a>
+<a name="ln346">    if (result.parts[TILEP_PART_BASE] == TILEP_SHOW_EQUIP)</a>
+<a name="ln347">        tilep_race_default(you.species, you.experience_level, &amp;result);</a>
+<a name="ln348"> </a>
+<a name="ln349">    // Main hand.</a>
+<a name="ln350">    if (result.parts[TILEP_PART_HAND1] == TILEP_SHOW_EQUIP)</a>
+<a name="ln351">    {</a>
+<a name="ln352">        const int item = you.melded[EQ_WEAPON] ? -1 : you.equip[EQ_WEAPON];</a>
+<a name="ln353">        if (you.form == transformation::blade_hands)</a>
+<a name="ln354">        {</a>
+<a name="ln355">            if (is_player_tile(result.parts[TILEP_PART_BASE], TILEP_BASE_OCTOPODE))</a>
+<a name="ln356">                result.parts[TILEP_PART_HAND1] = TILEP_HAND1_BLADEHAND_OP;</a>
+<a name="ln357">            else if (is_player_tile(result.parts[TILEP_PART_BASE], TILEP_BASE_FELID)</a>
+<a name="ln358">                     || Options.tile_use_monster == MONS_NATASHA)</a>
+<a name="ln359">                result.parts[TILEP_PART_HAND1] = TILEP_HAND1_BLADEHAND_FE;</a>
+<a name="ln360">            else result.parts[TILEP_PART_HAND1] = TILEP_HAND1_BLADEHAND;</a>
+<a name="ln361">        }</a>
+<a name="ln362">        else if (item == -1)</a>
+<a name="ln363">            result.parts[TILEP_PART_HAND1] = 0;</a>
+<a name="ln364">        else</a>
+<a name="ln365">            result.parts[TILEP_PART_HAND1] = tilep_equ_weapon(you.inv[item]);</a>
+<a name="ln366">    }</a>
+<a name="ln367">    // Off hand.</a>
+<a name="ln368">    if (result.parts[TILEP_PART_HAND2] == TILEP_SHOW_EQUIP)</a>
+<a name="ln369">    {</a>
+<a name="ln370">        const int item = you.melded[EQ_SHIELD] ? -1 : you.equip[EQ_SHIELD];</a>
+<a name="ln371">        if (you.form == transformation::blade_hands)</a>
+<a name="ln372">        {</a>
+<a name="ln373">            if (is_player_tile(result.parts[TILEP_PART_BASE], TILEP_BASE_OCTOPODE))</a>
+<a name="ln374">                result.parts[TILEP_PART_HAND2] = TILEP_HAND1_BLADEHAND_OP;</a>
+<a name="ln375">            else if (is_player_tile(result.parts[TILEP_PART_BASE], TILEP_BASE_FELID)</a>
+<a name="ln376">                     || Options.tile_use_monster == MONS_NATASHA)</a>
+<a name="ln377">                result.parts[TILEP_PART_HAND2] = TILEP_HAND1_BLADEHAND_FE;</a>
+<a name="ln378">            else result.parts[TILEP_PART_HAND2] = TILEP_HAND1_BLADEHAND;</a>
+<a name="ln379">        }</a>
+<a name="ln380">        else if (item == -1)</a>
+<a name="ln381">            result.parts[TILEP_PART_HAND2] = 0;</a>
+<a name="ln382">        else</a>
+<a name="ln383">            result.parts[TILEP_PART_HAND2] = tilep_equ_shield(you.inv[item]);</a>
+<a name="ln384">    }</a>
+<a name="ln385">    // Body armour.</a>
+<a name="ln386">    if (result.parts[TILEP_PART_BODY] == TILEP_SHOW_EQUIP)</a>
+<a name="ln387">    {</a>
+<a name="ln388">        const int item = you.melded[EQ_BODY_ARMOUR] ? -1 : you.equip[EQ_BODY_ARMOUR];</a>
+<a name="ln389">        if (item == -1)</a>
+<a name="ln390">            result.parts[TILEP_PART_BODY] = 0;</a>
+<a name="ln391">        else</a>
+<a name="ln392">            result.parts[TILEP_PART_BODY] = tilep_equ_armour(you.inv[item]);</a>
+<a name="ln393">    }</a>
+<a name="ln394">    // Cloak.</a>
+<a name="ln395">    if (result.parts[TILEP_PART_CLOAK] == TILEP_SHOW_EQUIP)</a>
+<a name="ln396">    {</a>
+<a name="ln397">        const int item = you.melded[EQ_CLOAK] ? -1 : you.equip[EQ_CLOAK];</a>
+<a name="ln398">        if (item == -1)</a>
+<a name="ln399">            result.parts[TILEP_PART_CLOAK] = 0;</a>
+<a name="ln400">        else</a>
+<a name="ln401">            result.parts[TILEP_PART_CLOAK] = tilep_equ_cloak(you.inv[item]);</a>
+<a name="ln402">    }</a>
+<a name="ln403">    // Helmet.</a>
+<a name="ln404">    if (result.parts[TILEP_PART_HELM] == TILEP_SHOW_EQUIP)</a>
+<a name="ln405">    {</a>
+<a name="ln406">        const int item = you.melded[EQ_HELMET] ? -1 : you.equip[EQ_HELMET];</a>
+<a name="ln407">        if (item != -1)</a>
+<a name="ln408">            result.parts[TILEP_PART_HELM] = tilep_equ_helm(you.inv[item]);</a>
+<a name="ln409">        else if (you.get_mutation_level(MUT_HORNS) &gt; 0)</a>
+<a name="ln410">        {</a>
+<a name="ln411">            if (you.species == SP_FELID)</a>
+<a name="ln412">            {</a>
+<a name="ln413">                if (is_player_tile(result.parts[TILEP_PART_BASE],</a>
+<a name="ln414">                                  TILEP_BASE_FELID))</a>
+<a name="ln415">                {</a>
+<a name="ln416">                    // Felid horns are offset by the tile variant.</a>
+<a name="ln417">                    result.parts[TILEP_PART_HELM] = TILEP_HELM_HORNS_CAT</a>
+<a name="ln418">                        + result.parts[TILEP_PART_BASE] - TILEP_BASE_FELID;</a>
+<a name="ln419">                }</a>
+<a name="ln420">                else if (is_player_tile(result.parts[TILEP_PART_BASE],</a>
+<a name="ln421">                                  TILEP_TRAN_STATUE_FELID))</a>
+<a name="ln422">                {</a>
+<a name="ln423">                    result.parts[TILEP_PART_HELM] = TILEP_HELM_HORNS_CAT;</a>
+<a name="ln424">                }</a>
+<a name="ln425">            }</a>
+<a name="ln426">            else if (species_is_draconian(you.species))</a>
+<a name="ln427">                result.parts[TILEP_PART_HELM] = TILEP_HELM_HORNS_DRAC;</a>
+<a name="ln428">            else</a>
+<a name="ln429">                switch (you.get_mutation_level(MUT_HORNS))</a>
+<a name="ln430">                {</a>
+<a name="ln431">                    case 1:</a>
+<a name="ln432">                        result.parts[TILEP_PART_HELM] = TILEP_HELM_HORNS1;</a>
+<a name="ln433">                        break;</a>
+<a name="ln434">                    case 2:</a>
+<a name="ln435">                        result.parts[TILEP_PART_HELM] = TILEP_HELM_HORNS2;</a>
+<a name="ln436">                        break;</a>
+<a name="ln437">                    case 3:</a>
+<a name="ln438">                        result.parts[TILEP_PART_HELM] = TILEP_HELM_HORNS3;</a>
+<a name="ln439">                        break;</a>
+<a name="ln440">                }</a>
+<a name="ln441">        }</a>
+<a name="ln442">        else</a>
+<a name="ln443">            result.parts[TILEP_PART_HELM] = 0;</a>
+<a name="ln444">    }</a>
+<a name="ln445">    // Leg.</a>
+<a name="ln446">    if (result.parts[TILEP_PART_LEG] == TILEP_SHOW_EQUIP)</a>
+<a name="ln447">        result.parts[TILEP_PART_LEG] = _random_trousers();</a>
+<a name="ln448"> </a>
+<a name="ln449">    // Boots.</a>
+<a name="ln450">    if (result.parts[TILEP_PART_BOOTS] == TILEP_SHOW_EQUIP)</a>
+<a name="ln451">    {</a>
+<a name="ln452">        const int item = you.melded[EQ_BOOTS] ? -1 : you.equip[EQ_BOOTS];</a>
+<a name="ln453">        if (item != -1)</a>
+<a name="ln454">            result.parts[TILEP_PART_BOOTS] = tilep_equ_boots(you.inv[item]);</a>
+<a name="ln455">        else if (you.get_mutation_level(MUT_HOOVES) &gt;= 3)</a>
+<a name="ln456">            result.parts[TILEP_PART_BOOTS] = TILEP_BOOTS_HOOVES;</a>
+<a name="ln457">        else</a>
+<a name="ln458">            result.parts[TILEP_PART_BOOTS] = 0;</a>
+<a name="ln459">    }</a>
+<a name="ln460">    // Gloves.</a>
+<a name="ln461">    if (result.parts[TILEP_PART_ARM] == TILEP_SHOW_EQUIP)</a>
+<a name="ln462">    {</a>
+<a name="ln463">        const int item = you.melded[EQ_GLOVES] ? -1 : you.equip[EQ_GLOVES];</a>
+<a name="ln464">        if (item != -1)</a>
+<a name="ln465">            result.parts[TILEP_PART_ARM] = tilep_equ_gloves(you.inv[item]);</a>
+<a name="ln466">        else if (you.has_mutation(MUT_TENTACLE_SPIKE))</a>
+<a name="ln467">            result.parts[TILEP_PART_ARM] = TILEP_ARM_OCTOPODE_SPIKE;</a>
+<a name="ln468">        else if (you.has_claws(false) &gt;= 3)</a>
+<a name="ln469">            result.parts[TILEP_PART_ARM] = TILEP_ARM_CLAWS;</a>
+<a name="ln470">        else</a>
+<a name="ln471">            result.parts[TILEP_PART_ARM] = 0;</a>
+<a name="ln472">    }</a>
+<a name="ln473">    // Halo.</a>
+<a name="ln474">    if (result.parts[TILEP_PART_HALO] == TILEP_SHOW_EQUIP)</a>
+<a name="ln475">    {</a>
+<a name="ln476">        const bool halo = you.haloed();</a>
+<a name="ln477">        result.parts[TILEP_PART_HALO] = halo ? TILEP_HALO_TSO : 0;</a>
+<a name="ln478">    }</a>
+<a name="ln479">    // Enchantments.</a>
+<a name="ln480">    if (result.parts[TILEP_PART_ENCH] == TILEP_SHOW_EQUIP)</a>
+<a name="ln481">    {</a>
+<a name="ln482">        result.parts[TILEP_PART_ENCH] =</a>
+<a name="ln483">            (you.duration[DUR_LIQUID_FLAMES] ? TILEP_ENCH_STICKY_FLAME : 0);</a>
+<a name="ln484">    }</a>
+<a name="ln485">    // Draconian head/wings.</a>
+<a name="ln486">    if (species_is_draconian(you.species))</a>
+<a name="ln487">    {</a>
+<a name="ln488">        tileidx_t base = 0;</a>
+<a name="ln489">        tileidx_t head = 0;</a>
+<a name="ln490">        tileidx_t wing = 0;</a>
+<a name="ln491">        tilep_draconian_init(you.species, you.experience_level,</a>
+<a name="ln492">                             &amp;base, &amp;head, &amp;wing);</a>
+<a name="ln493"> </a>
+<a name="ln494">        if (result.parts[TILEP_PART_DRCHEAD] == TILEP_SHOW_EQUIP)</a>
+<a name="ln495">            result.parts[TILEP_PART_DRCHEAD] = head;</a>
+<a name="ln496">        if (result.parts[TILEP_PART_DRCWING] == TILEP_SHOW_EQUIP)</a>
+<a name="ln497">            result.parts[TILEP_PART_DRCWING] = wing;</a>
+<a name="ln498">    }</a>
+<a name="ln499">    // Shadow.</a>
+<a name="ln500">    if (result.parts[TILEP_PART_SHADOW] == TILEP_SHOW_EQUIP)</a>
+<a name="ln501">        result.parts[TILEP_PART_SHADOW] = TILEP_SHADOW_SHADOW;</a>
+<a name="ln502"> </a>
+<a name="ln503">    // Various other slots.</a>
+<a name="ln504">    for (int i = 0; i &lt; TILEP_PART_MAX; i++)</a>
+<a name="ln505">        if (result.parts[i] == TILEP_SHOW_EQUIP)</a>
+<a name="ln506">            result.parts[i] = 0;</a>
+<a name="ln507">}</a>
+<a name="ln508"> </a>
+<a name="ln509">void fill_doll_for_newgame(dolls_data &amp;result, const newgame_def&amp; ng)</a>
+<a name="ln510">{</a>
+<a name="ln511">    for (int j = 0; j &lt; TILEP_PART_MAX; j++)</a>
+<a name="ln512">        result.parts[j] = TILEP_SHOW_EQUIP;</a>
+<a name="ln513"> </a>
+<a name="ln514">    unwind_var&lt;player&gt; unwind_you(you);</a>
+<a name="ln515">    you = player();</a>
+<a name="ln516"> </a>
+<a name="ln517">    // The following is part of the new game setup code from _setup_generic()</a>
+<a name="ln518">    you.your_name  = ng.name;</a>
+<a name="ln519">    you.species    = ng.species;</a>
+<a name="ln520">    you.char_class = ng.job;</a>
+<a name="ln521">    you.chr_class_name = get_job_name(you.char_class);</a>
+<a name="ln522"> </a>
+<a name="ln523">    species_stat_init(you.species);</a>
+<a name="ln524">    update_vision_range();</a>
+<a name="ln525">    job_stat_init(you.char_class);</a>
+<a name="ln526">    give_basic_mutations(you.species);</a>
+<a name="ln527">    give_items_skills(ng);</a>
+<a name="ln528"> </a>
+<a name="ln529">    for (int i = 0; i &lt; ENDOFPACK; ++i)</a>
+<a name="ln530">    {</a>
+<a name="ln531">        auto &amp;item = you.inv[i];</a>
+<a name="ln532">        if (item.defined())</a>
+<a name="ln533">            item_colour(item);</a>
+<a name="ln534">    }</a>
+<a name="ln535"> </a>
+<a name="ln536">    fill_doll_equipment(result);</a>
+<a name="ln537">}</a>
+<a name="ln538"> </a>
+<a name="ln539">// Writes equipment information into per-character doll file.</a>
+<a name="ln540">void save_doll_file(writer &amp;dollf)</a>
+<a name="ln541">{</a>
+<a name="ln542">    dolls_data result = player_doll;</a>
+<a name="ln543">    fill_doll_equipment(result);</a>
+<a name="ln544"> </a>
+<a name="ln545">    // Write into file.</a>
+<a name="ln546">    char fbuf[80];</a>
+<a name="ln547">    tilep_print_parts(fbuf, result);</a>
+<a name="ln548">    dollf.write(fbuf, strlen(fbuf));</a>
+<a name="ln549">}</a>
+<a name="ln550"> </a>
+<a name="ln551">#ifdef USE_TILE_LOCAL</a>
+<a name="ln552">void pack_doll_buf(SubmergedTileBuffer&amp; buf, const dolls_data &amp;doll,</a>
+<a name="ln553">                   int x, int y, bool submerged, bool ghost)</a>
+<a name="ln554">{</a>
+<a name="ln555">    // Ordered from back to front.</a>
+<a name="ln556">    int p_order[TILEP_PART_MAX] =</a>
+<a name="ln557">    {</a>
+<a name="ln558">        // background</a>
+<a name="ln559">        TILEP_PART_SHADOW,</a>
+<a name="ln560">        TILEP_PART_HALO,</a>
+<a name="ln561">        TILEP_PART_ENCH,</a>
+<a name="ln562">        TILEP_PART_DRCWING,</a>
+<a name="ln563">        TILEP_PART_CLOAK,</a>
+<a name="ln564">        // player</a>
+<a name="ln565">        TILEP_PART_BASE,</a>
+<a name="ln566">        TILEP_PART_BOOTS,</a>
+<a name="ln567">        TILEP_PART_LEG,</a>
+<a name="ln568">        TILEP_PART_BODY,</a>
+<a name="ln569">        TILEP_PART_ARM,</a>
+<a name="ln570">        TILEP_PART_HAIR,</a>
+<a name="ln571">        TILEP_PART_BEARD,</a>
+<a name="ln572">        TILEP_PART_DRCHEAD,</a>
+<a name="ln573">        TILEP_PART_HELM,</a>
+<a name="ln574">        TILEP_PART_HAND1,</a>
+<a name="ln575">        TILEP_PART_HAND2</a>
+<a name="ln576">    };</a>
+<a name="ln577"> </a>
+<a name="ln578">    int flags[TILEP_PART_MAX];</a>
+<a name="ln579">    tilep_calc_flags(doll, flags);</a>
+<a name="ln580"> </a>
+<a name="ln581">    // For skirts, boots go under the leg armour. For pants, they go over.</a>
+<a name="ln582">    if (doll.parts[TILEP_PART_LEG] &lt; TILEP_LEG_SKIRT_OFS)</a>
+<a name="ln583">    {</a>
+<a name="ln584">        p_order[7] = TILEP_PART_BOOTS;</a>
+<a name="ln585">        p_order[6] = TILEP_PART_LEG;</a>
+<a name="ln586">    }</a>
+<a name="ln587"> </a>
+<a name="ln588">    // Draw scarves above other clothing.</a>
+<a name="ln589">    if (doll.parts[TILEP_PART_CLOAK] &gt;= TILEP_CLOAK_SCARF_FIRST_NORM)</a>
+<a name="ln590">    {</a>
+<a name="ln591">        p_order[4] = p_order[5];</a>
+<a name="ln592">        p_order[5] = p_order[6];</a>
+<a name="ln593">        p_order[6] = p_order[7];</a>
+<a name="ln594">        p_order[7] = p_order[8];</a>
+<a name="ln595">        p_order[8] = p_order[9];</a>
+<a name="ln596">        p_order[9] = TILEP_PART_CLOAK;</a>
+<a name="ln597">    }</a>
+<a name="ln598"> </a>
+<a name="ln599">    // Special case bardings from being cut off.</a>
+<a name="ln600">    const bool is_naga = is_player_tile(doll.parts[TILEP_PART_BASE],</a>
+<a name="ln601">                                        TILEP_BASE_NAGA);</a>
+<a name="ln602"> </a>
+<a name="ln603">    if (doll.parts[TILEP_PART_BOOTS] &gt;= TILEP_BOOTS_NAGA_BARDING</a>
+<a name="ln604">        &amp;&amp; doll.parts[TILEP_PART_BOOTS] &lt;= TILEP_BOOTS_NAGA_BARDING_RED</a>
+<a name="ln605">        || doll.parts[TILEP_PART_BOOTS] == TILEP_BOOTS_LIGHTNING_SCALES)</a>
+<a name="ln606">    {</a>
+<a name="ln607">        flags[TILEP_PART_BOOTS] = is_naga ? TILEP_FLAG_NORMAL : TILEP_FLAG_HIDE;</a>
+<a name="ln608">    }</a>
+<a name="ln609"> </a>
+<a name="ln610">    const bool is_cent = is_player_tile(doll.parts[TILEP_PART_BASE],</a>
+<a name="ln611">                                        TILEP_BASE_CENTAUR);</a>
+<a name="ln612"> </a>
+<a name="ln613">    if (doll.parts[TILEP_PART_BOOTS] &gt;= TILEP_BOOTS_CENTAUR_BARDING</a>
+<a name="ln614">        &amp;&amp; doll.parts[TILEP_PART_BOOTS] &lt;= TILEP_BOOTS_CENTAUR_BARDING_RED</a>
+<a name="ln615">        || doll.parts[TILEP_PART_BOOTS] == TILEP_BOOTS_BLACK_KNIGHT)</a>
+<a name="ln616">    {</a>
+<a name="ln617">        flags[TILEP_PART_BOOTS] = is_cent ? TILEP_FLAG_NORMAL : TILEP_FLAG_HIDE;</a>
+<a name="ln618">    }</a>
+<a name="ln619"> </a>
+<a name="ln620">    // Set up mcache data based on equipment. We don't need this lookup if both</a>
+<a name="ln621">    // pairs of offsets are defined in Options.</a>
+<a name="ln622">    int draw_info_count = 0, dind = 0;</a>
+<a name="ln623">    mcache_entry *entry = nullptr;</a>
+<a name="ln624">    tile_draw_info dinfo[mcache_entry::MAX_INFO_COUNT];</a>
+<a name="ln625">    if (Options.tile_use_monster != MONS_0)</a>
+<a name="ln626">    {</a>
+<a name="ln627">        monster_info minfo(MONS_PLAYER, MONS_PLAYER);</a>
+<a name="ln628">        minfo.props[&quot;monster_tile&quot;] = short(doll.parts[TILEP_PART_BASE]);</a>
+<a name="ln629">        item_def *item;</a>
+<a name="ln630">        if (you.slot_item(EQ_WEAPON))</a>
+<a name="ln631">        {</a>
+<a name="ln632">            item = new item_def(get_item_info(*you.slot_item(EQ_WEAPON)));</a>
+<a name="ln633">            minfo.inv[MSLOT_WEAPON].reset(item);</a>
+<a name="ln634">        }</a>
+<a name="ln635">        if (you.slot_item(EQ_SHIELD))</a>
+<a name="ln636">        {</a>
+<a name="ln637">            item = new item_def(get_item_info(*you.slot_item(EQ_SHIELD)));</a>
+<a name="ln638">            minfo.inv[MSLOT_SHIELD].reset(item);</a>
+<a name="ln639">        }</a>
+<a name="ln640">        tileidx_t mcache_idx = mcache.register_monster(minfo);</a>
+<a name="ln641">        if (mcache_idx)</a>
+<a name="ln642">        {</a>
+<a name="ln643">            entry = mcache.get(mcache_idx);</a>
+<a name="ln644">            draw_info_count = entry-&gt;info(&amp;dinfo[0]);</a>
+<a name="ln645">        }</a>
+<a name="ln646">    }</a>
+<a name="ln647">    // A higher index here means that the part should be drawn on top.</a>
+<a name="ln648">    // This is drawn in reverse order because this could be a ghost</a>
+<a name="ln649">    // or being drawn in water, in which case we want the top-most part</a>
+<a name="ln650">    // to blend with the background underneath and not with the parts</a>
+<a name="ln651">    // underneath. Parts drawn afterwards will not obscure parts drawn</a>
+<a name="ln652">    // previously, because &quot;i&quot; is passed as the depth below.</a>
+<a name="ln653">    for (int i = TILEP_PART_MAX - 1; i &gt;= 0; --i)</a>
+<a name="ln654">    {</a>
+<a name="ln655">        int p = p_order[i];</a>
+<a name="ln656"> </a>
+<a name="ln657">        if (!doll.parts[p] || flags[p] == TILEP_FLAG_HIDE)</a>
+<a name="ln658">            continue;</a>
+<a name="ln659"> </a>
+<a name="ln660">        if (p == TILEP_PART_SHADOW &amp;&amp; (submerged || ghost))</a>
+<a name="ln661">            continue;</a>
+<a name="ln662"> </a>
+<a name="ln663">        int ymax = TILE_Y;</a>
+<a name="ln664"> </a>
+<a name="ln665">        if (flags[p] == TILEP_FLAG_CUT_CENTAUR</a>
+<a name="ln666">            || flags[p] == TILEP_FLAG_CUT_NAGA)</a>
+<a name="ln667">        {</a>
+<a name="ln668">            ymax = 18;</a>
+<a name="ln669">        }</a>
+<a name="ln670">        int ofs_x = 0, ofs_y = 0;</a>
+<a name="ln671">        if ((p == TILEP_PART_HAND1 &amp;&amp; you.slot_item(EQ_WEAPON)</a>
+<a name="ln672">             || p == TILEP_PART_HAND2 &amp;&amp; you.slot_item(EQ_SHIELD))</a>
+<a name="ln673">            &amp;&amp; dind &lt; draw_info_count - 1)</a>
+<a name="ln674">        {</a>
+<a name="ln675">            ofs_x = dinfo[draw_info_count - dind - 1].ofs_x;</a>
+<a name="ln676">            ofs_y = dinfo[draw_info_count - dind - 1].ofs_y;</a>
+<a name="ln677">            ++dind;</a>
+<a name="ln678">        }</a>
+<a name="ln679">        buf.add(doll.parts[p], x, y, i, submerged, ghost, ofs_x, ofs_y, ymax);</a>
+<a name="ln680">    }</a>
+<a name="ln681">}</a>
+<a name="ln682">#endif</a>
+<a name="ln683"> </a>
+<a name="ln684">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="228"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v557/" target="_blank">V557</a> Array overrun is possible. The value of 'p' index could reach 16.</p></div>
+<div class="balloon" rel="229"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v557/" target="_blank">V557</a> Array overrun is possible. The value of 'p' index could reach 16.</p></div>
+<div class="balloon" rel="228"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v557/" target="_blank">V557</a> Array overrun is possible. The '_get_random_doll_part' function processes value '[0..16]'. Inspect the first argument. Check lines: 228, 235.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

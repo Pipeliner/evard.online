@@ -1,0 +1,1193 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>dgn-shoals.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#include &quot;dgn-shoals.h&quot;</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &lt;algorithm&gt;</a>
+<a name="ln6">#include &lt;cmath&gt;</a>
+<a name="ln7">#include &lt;vector&gt;</a>
+<a name="ln8"> </a>
+<a name="ln9">#include &quot;act-iter.h&quot;</a>
+<a name="ln10">#include &quot;colour.h&quot;</a>
+<a name="ln11">#include &quot;coordit.h&quot;</a>
+<a name="ln12">#include &quot;dgn-height.h&quot;</a>
+<a name="ln13">#include &quot;dungeon.h&quot;</a>
+<a name="ln14">#include &quot;english.h&quot;</a>
+<a name="ln15">#include &quot;flood-find.h&quot;</a>
+<a name="ln16">#include &quot;item-prop.h&quot;</a>
+<a name="ln17">#include &quot;libutil.h&quot;</a>
+<a name="ln18">#include &quot;mapmark.h&quot;</a>
+<a name="ln19">#include &quot;maps.h&quot;</a>
+<a name="ln20">#include &quot;message.h&quot;</a>
+<a name="ln21">#include &quot;mgen-data.h&quot;</a>
+<a name="ln22">#include &quot;mon-place.h&quot;</a>
+<a name="ln23">#include &quot;state.h&quot;</a>
+<a name="ln24">#include &quot;stringutil.h&quot;</a>
+<a name="ln25">#include &quot;traps.h&quot;</a>
+<a name="ln26">#include &quot;view.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">static const char *PROPS_SHOALS_TIDE_KEY = &quot;shoals-tide-height&quot;;</a>
+<a name="ln29">static const char *PROPS_SHOALS_TIDE_VEL = &quot;shoals-tide-velocity&quot;;</a>
+<a name="ln30">static const char *PROPS_SHOALS_TIDE_UPDATE_TIME = &quot;shoals-tide-update-time&quot;;</a>
+<a name="ln31"> </a>
+<a name="ln32">static dgn_island_plan _shoals_islands;</a>
+<a name="ln33"> </a>
+<a name="ln34">static const int SHOALS_ISLAND_COLLIDE_DIST2 = 5 * 5;</a>
+<a name="ln35"> </a>
+<a name="ln36">// The raw tide height / TIDE_MULTIPLIER is the actual tide height. The higher</a>
+<a name="ln37">// the tide multiplier, the slower the tide advances and recedes. A multiplier</a>
+<a name="ln38">// of X implies that the tide will advance visibly about once in X turns.</a>
+<a name="ln39">static int TIDE_MULTIPLIER = 2;</a>
+<a name="ln40"> </a>
+<a name="ln41">static int LOW_TIDE = -18 * TIDE_MULTIPLIER;</a>
+<a name="ln42">static int HIGH_TIDE = 25 * TIDE_MULTIPLIER;</a>
+<a name="ln43"> </a>
+<a name="ln44">// The highest a tide can be called by a tide caller such as Ilsuiw.</a>
+<a name="ln45">static const int HIGH_CALLED_TIDE = 50;</a>
+<a name="ln46">static const int TIDE_DECEL_MARGIN = 8;</a>
+<a name="ln47">static const int PEAK_TIDE_VELOCITY = 2;</a>
+<a name="ln48">static const int CALL_TIDE_VELOCITY = 21;</a>
+<a name="ln49"> </a>
+<a name="ln50">// The area around the user of a call tide spell that is subject to</a>
+<a name="ln51">// local tide elevation.</a>
+<a name="ln52">static const int TIDE_CALL_RADIUS = 8;</a>
+<a name="ln53">static const int MAX_SHOAL_PLANTS = 180;</a>
+<a name="ln54"> </a>
+<a name="ln55">static const int _shoals_margin = 6;</a>
+<a name="ln56"> </a>
+<a name="ln57">enum shoals_height_thresholds</a>
+<a name="ln58">{</a>
+<a name="ln59">    SHT_UNDEFINED = -10000,</a>
+<a name="ln60">    SHT_STONE = 400,</a>
+<a name="ln61">    SHT_ROCK  = 135,</a>
+<a name="ln62">    SHT_FLOOR = 0,</a>
+<a name="ln63">    SHT_SHALLOW_WATER = -30,</a>
+<a name="ln64">};</a>
+<a name="ln65"> </a>
+<a name="ln66">enum class tide_dir</a>
+<a name="ln67">{</a>
+<a name="ln68">    rising,</a>
+<a name="ln69">    falling,</a>
+<a name="ln70">};</a>
+<a name="ln71"> </a>
+<a name="ln72">static tide_dir _shoals_tide_direction;</a>
+<a name="ln73">static monster* tide_caller = nullptr;</a>
+<a name="ln74">static coord_def tide_caller_pos;</a>
+<a name="ln75">static int tide_called_turns = 0;</a>
+<a name="ln76">static int tide_called_peak = 0;</a>
+<a name="ln77">static int shoals_plant_quota = 0;</a>
+<a name="ln78"> </a>
+<a name="ln79">static dungeon_feature_type _shoals_feature_by_height(int height)</a>
+<a name="ln80">{</a>
+<a name="ln81">    return height &gt;= SHT_STONE ? DNGN_STONE_WALL :</a>
+<a name="ln82">        height &gt;= SHT_ROCK ? DNGN_ROCK_WALL :</a>
+<a name="ln83">        height &gt;= SHT_FLOOR ? DNGN_FLOOR :</a>
+<a name="ln84">        height &gt;= SHT_SHALLOW_WATER ? DNGN_SHALLOW_WATER</a>
+<a name="ln85">        : DNGN_DEEP_WATER;</a>
+<a name="ln86">}</a>
+<a name="ln87"> </a>
+<a name="ln88">static dungeon_feature_type _shoals_feature_at(const coord_def &amp;c)</a>
+<a name="ln89">{</a>
+<a name="ln90">    const int height = dgn_height_at(c);</a>
+<a name="ln91">    return _shoals_feature_by_height(height);</a>
+<a name="ln92">}</a>
+<a name="ln93"> </a>
+<a name="ln94">static int _shoals_feature_height(dungeon_feature_type feat)</a>
+<a name="ln95">{</a>
+<a name="ln96">    switch (feat)</a>
+<a name="ln97">    {</a>
+<a name="ln98">    case DNGN_STONE_WALL:</a>
+<a name="ln99">        return SHT_STONE;</a>
+<a name="ln100">    case DNGN_FLOOR:</a>
+<a name="ln101">        return SHT_FLOOR;</a>
+<a name="ln102">    case DNGN_SHALLOW_WATER:</a>
+<a name="ln103">        return SHT_SHALLOW_WATER;</a>
+<a name="ln104">    case DNGN_DEEP_WATER:</a>
+<a name="ln105">        return SHT_SHALLOW_WATER - 1;</a>
+<a name="ln106">    default:</a>
+<a name="ln107">        return feat_is_solid(feat) ? SHT_ROCK : SHT_FLOOR;</a>
+<a name="ln108">    }</a>
+<a name="ln109">}</a>
+<a name="ln110"> </a>
+<a name="ln111">// Returns true if the given feature can be affected by Shoals tides.</a>
+<a name="ln112">static inline bool _shoals_tide_susceptible_feat(dungeon_feature_type feat)</a>
+<a name="ln113">{</a>
+<a name="ln114">    return feat == DNGN_SHALLOW_WATER || feat == DNGN_FLOOR;</a>
+<a name="ln115">}</a>
+<a name="ln116"> </a>
+<a name="ln117">// Return true if tide effects can propagate through this square.</a>
+<a name="ln118">// NOTE: uses RNG!</a>
+<a name="ln119">static inline bool _shoals_tide_passable_feat(dungeon_feature_type feat)</a>
+<a name="ln120">{</a>
+<a name="ln121">    return feat_is_watery(feat)</a>
+<a name="ln122">           // The Shoals tide can sometimes lap past the doorways of rooms</a>
+<a name="ln123">           // near the water. Note that the actual probability of the tide</a>
+<a name="ln124">           // getting through a doorway is this probability * 0.5 --</a>
+<a name="ln125">           // see _shoals_apply_tide.</a>
+<a name="ln126">           || feat_is_open_door(feat)</a>
+<a name="ln127">           || feat_is_closed_door(feat) &amp;&amp; one_chance_in(3);</a>
+<a name="ln128">}</a>
+<a name="ln129"> </a>
+<a name="ln130">static void _shoals_init_heights()</a>
+<a name="ln131">{</a>
+<a name="ln132">    dgn_initialise_heightmap(SHT_SHALLOW_WATER - 3);</a>
+<a name="ln133">}</a>
+<a name="ln134"> </a>
+<a name="ln135">static dgn_island_plan _shoals_island_plan()</a>
+<a name="ln136">{</a>
+<a name="ln137">    dgn_island_plan plan;</a>
+<a name="ln138">    plan.level_border_depth = _shoals_margin;</a>
+<a name="ln139">    plan.n_aux_centres = int_range(0, 3);</a>
+<a name="ln140">    plan.aux_centre_offset_range = int_range(2, 10);</a>
+<a name="ln141"> </a>
+<a name="ln142">    plan.atoll_roll = 10;</a>
+<a name="ln143">    plan.island_separation_dist2 = SHOALS_ISLAND_COLLIDE_DIST2;</a>
+<a name="ln144"> </a>
+<a name="ln145">    plan.n_island_centre_delta_points = int_range(50, 60);</a>
+<a name="ln146">    plan.island_centre_radius_range = int_range(3, 10);</a>
+<a name="ln147">    plan.island_centre_point_height_increment = int_range(80, 110);</a>
+<a name="ln148"> </a>
+<a name="ln149">    plan.n_island_aux_delta_points = int_range(25, 45);</a>
+<a name="ln150">    plan.island_aux_radius_range = int_range(2, 7);</a>
+<a name="ln151">    plan.island_aux_point_height_increment = int_range(50, 65);</a>
+<a name="ln152"> </a>
+<a name="ln153">    return plan;</a>
+<a name="ln154">}</a>
+<a name="ln155"> </a>
+<a name="ln156">static void _shoals_init_islands(int depth)</a>
+<a name="ln157">{</a>
+<a name="ln158">    const int nislands = 20 - depth * 2;</a>
+<a name="ln159">    _shoals_islands = _shoals_island_plan();</a>
+<a name="ln160">    _shoals_islands.build(nislands);</a>
+<a name="ln161">}</a>
+<a name="ln162"> </a>
+<a name="ln163">static void _shoals_build_cliff()</a>
+<a name="ln164">{</a>
+<a name="ln165">    const coord_def cliffc = dgn_random_point_in_margin(_shoals_margin * 2);</a>
+<a name="ln166">    const int length = random_range(6, 15);</a>
+<a name="ln167">    const double angle = dgn_degrees_to_radians(random2(360));</a>
+<a name="ln168">    const int_range n_cliff_points(40, 60);</a>
+<a name="ln169">    const int cliff_point_radius = 3;</a>
+<a name="ln170">    const int_range cliff_height_increment(100, 130);</a>
+<a name="ln171"> </a>
+<a name="ln172">    for (int i = 0; i &lt; length; i += 3)</a>
+<a name="ln173">    {</a>
+<a name="ln174">        const int distance = i - length / 2;</a>
+<a name="ln175">        coord_def place =</a>
+<a name="ln176">            cliffc + coord_def(static_cast&lt;int&gt;(distance * cos(angle)),</a>
+<a name="ln177">                               static_cast&lt;int&gt;(distance * sin(angle)));</a>
+<a name="ln178">        coord_def fuzz;</a>
+<a name="ln179">        fuzz.x = random_range(-2, 2);</a>
+<a name="ln180">        fuzz.y = random_range(-2, 2);</a>
+<a name="ln181"> </a>
+<a name="ln182">        place += fuzz;</a>
+<a name="ln183">        dgn_island_centred_at(place, resolve_range(n_cliff_points),</a>
+<a name="ln184">                              cliff_point_radius, cliff_height_increment,</a>
+<a name="ln185">                              _shoals_margin);</a>
+<a name="ln186">    }</a>
+<a name="ln187">}</a>
+<a name="ln188"> </a>
+<a name="ln189">static void _shoals_cliffs()</a>
+<a name="ln190">{</a>
+<a name="ln191">    const int ncliffs = random_range(0, 6, 2);</a>
+<a name="ln192">    for (int i = 0; i &lt; ncliffs; ++i)</a>
+<a name="ln193">        _shoals_build_cliff();</a>
+<a name="ln194">}</a>
+<a name="ln195"> </a>
+<a name="ln196">static void _shoals_smooth_water()</a>
+<a name="ln197">{</a>
+<a name="ln198">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln199">        dgn_smooth_height_at(*ri, 1, SHT_SHALLOW_WATER - 1);</a>
+<a name="ln200">}</a>
+<a name="ln201"> </a>
+<a name="ln202">static void _shoals_apply_level()</a>
+<a name="ln203">{</a>
+<a name="ln204">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln205">        if (!map_masked(*ri, MMT_VAULT))</a>
+<a name="ln206">            grd(*ri) = _shoals_feature_at(*ri);</a>
+<a name="ln207">}</a>
+<a name="ln208"> </a>
+<a name="ln209">static void _shoals_postbuild_apply_level()</a>
+<a name="ln210">{</a>
+<a name="ln211">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln212">    {</a>
+<a name="ln213">        if (!map_masked(*ri, MMT_VAULT))</a>
+<a name="ln214">        {</a>
+<a name="ln215">            const dungeon_feature_type feat = grd(*ri);</a>
+<a name="ln216">            if (feat_is_water(feat) || feat == DNGN_ROCK_WALL</a>
+<a name="ln217">                || feat == DNGN_STONE_WALL || feat == DNGN_FLOOR)</a>
+<a name="ln218">            {</a>
+<a name="ln219">                grd(*ri) = _shoals_feature_at(*ri);</a>
+<a name="ln220">            }</a>
+<a name="ln221">        }</a>
+<a name="ln222">    }</a>
+<a name="ln223">}</a>
+<a name="ln224"> </a>
+<a name="ln225">// Returns all points in deep water with an adjacent square in shallow water.</a>
+<a name="ln226">static vector&lt;coord_def&gt; _shoals_water_depth_change_points()</a>
+<a name="ln227">{</a>
+<a name="ln228">    vector&lt;coord_def&gt; points;</a>
+<a name="ln229">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln230">    {</a>
+<a name="ln231">        coord_def c(*ri);</a>
+<a name="ln232">        if (grd(c) == DNGN_DEEP_WATER</a>
+<a name="ln233">            &amp;&amp; dgn_has_adjacent_feat(c, DNGN_SHALLOW_WATER))</a>
+<a name="ln234">        {</a>
+<a name="ln235">            points.push_back(c);</a>
+<a name="ln236">        }</a>
+<a name="ln237">    }</a>
+<a name="ln238">    return points;</a>
+<a name="ln239">}</a>
+<a name="ln240"> </a>
+<a name="ln241">static inline void _shoals_deepen_water_at(coord_def p, int distance)</a>
+<a name="ln242">{</a>
+<a name="ln243">    dgn_height_at(p) -= distance * 7;</a>
+<a name="ln244">}</a>
+<a name="ln245"> </a>
+<a name="ln246">static void _shoals_deepen_water()</a>
+<a name="ln247">{</a>
+<a name="ln248">    vector&lt;coord_def&gt; pages[2];</a>
+<a name="ln249">    int current_page = 0;</a>
+<a name="ln250">    pages[current_page] = _shoals_water_depth_change_points();</a>
+<a name="ln251">    FixedArray&lt;bool, GXM, GYM&gt; seen_points(false);</a>
+<a name="ln252"> </a>
+<a name="ln253">    for (const coord_def &amp;pos : pages[current_page])</a>
+<a name="ln254">        seen_points(pos) = true;</a>
+<a name="ln255"> </a>
+<a name="ln256">    int distance = 0;</a>
+<a name="ln257">    while (!pages[current_page].empty())</a>
+<a name="ln258">    {</a>
+<a name="ln259">        const int next_page = !current_page;</a>
+<a name="ln260">        vector&lt;coord_def&gt; &amp;cpage(pages[current_page]);</a>
+<a name="ln261">        vector&lt;coord_def&gt; &amp;npage(pages[next_page]);</a>
+<a name="ln262">        for (const coord_def c : cpage)</a>
+<a name="ln263">        {</a>
+<a name="ln264">            if (distance)</a>
+<a name="ln265">                _shoals_deepen_water_at(c, distance);</a>
+<a name="ln266"> </a>
+<a name="ln267">            for (adjacent_iterator ai(c); ai; ++ai)</a>
+<a name="ln268">            {</a>
+<a name="ln269">                const coord_def adj(*ai);</a>
+<a name="ln270">                if (!seen_points(adj)</a>
+<a name="ln271">                    &amp;&amp; (adj - c).abs() == 1</a>
+<a name="ln272">                    &amp;&amp; grd(adj) == DNGN_DEEP_WATER)</a>
+<a name="ln273">                {</a>
+<a name="ln274">                    npage.push_back(adj);</a>
+<a name="ln275">                    seen_points(adj) = true;</a>
+<a name="ln276">                }</a>
+<a name="ln277">            }</a>
+<a name="ln278">        }</a>
+<a name="ln279">        cpage.clear();</a>
+<a name="ln280">        current_page = next_page;</a>
+<a name="ln281">        distance++;</a>
+<a name="ln282">    }</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">static void _shoals_furniture()</a>
+<a name="ln286">{</a>
+<a name="ln287">    dgn_place_stone_stairs();</a>
+<a name="ln288">}</a>
+<a name="ln289"> </a>
+<a name="ln290">static void _shoals_deepen_edges()</a>
+<a name="ln291">{</a>
+<a name="ln292">    const int edge = 1;</a>
+<a name="ln293">    const int deepen_by = 1000;</a>
+<a name="ln294">    // Water of the edge of the screen is too deep to be exposed by tides.</a>
+<a name="ln295">    for (int y = 1; y &lt; GYM - 2; ++y)</a>
+<a name="ln296">    {</a>
+<a name="ln297">        for (int x = 1; x &lt;= edge; ++x)</a>
+<a name="ln298">        {</a>
+<a name="ln299">            dgn_height_at(coord_def(x, y)) -= deepen_by;</a>
+<a name="ln300">            dgn_height_at(coord_def(GXM - 1 - x, y)) -= deepen_by;</a>
+<a name="ln301">        }</a>
+<a name="ln302">    }</a>
+<a name="ln303">    for (int x = 1; x &lt; GXM - 2; ++x)</a>
+<a name="ln304">    {</a>
+<a name="ln305">        for (int y = 1; y &lt;= edge; ++y)</a>
+<a name="ln306">        {</a>
+<a name="ln307">            dgn_height_at(coord_def(x, y)) -= deepen_by;</a>
+<a name="ln308">            dgn_height_at(coord_def(x, GYM - 1 - y)) -= deepen_by;</a>
+<a name="ln309">        }</a>
+<a name="ln310">    }</a>
+<a name="ln311">}</a>
+<a name="ln312"> </a>
+<a name="ln313">static int _shoals_contiguous_feature_flood(</a>
+<a name="ln314">    FixedArray&lt;short, GXM, GYM&gt; &amp;rmap,</a>
+<a name="ln315">    coord_def c,</a>
+<a name="ln316">    dungeon_feature_type feat,</a>
+<a name="ln317">    int nregion,</a>
+<a name="ln318">    int size_limit)</a>
+<a name="ln319">{</a>
+<a name="ln320">    vector&lt;coord_def&gt; visit(1, c);</a>
+<a name="ln321">    int npoints = 1;</a>
+<a name="ln322">    for (size_t i = 0; i &lt; visit.size() &amp;&amp; npoints &lt; size_limit; ++i)</a>
+<a name="ln323">    {</a>
+<a name="ln324">        const coord_def p(visit[i]);</a>
+<a name="ln325">        rmap(p) = nregion;</a>
+<a name="ln326"> </a>
+<a name="ln327">        if (npoints &lt; size_limit)</a>
+<a name="ln328">        {</a>
+<a name="ln329">            for (adjacent_iterator ai(p); ai &amp;&amp; npoints &lt; size_limit; ++ai)</a>
+<a name="ln330">            {</a>
+<a name="ln331">                const coord_def adj(*ai);</a>
+<a name="ln332">                if (in_bounds(adj) &amp;&amp; !rmap(adj) &amp;&amp; grd(adj) == feat</a>
+<a name="ln333">                    &amp;&amp; !map_masked(adj, MMT_VAULT))</a>
+<a name="ln334">                {</a>
+<a name="ln335">                    rmap(adj) = nregion;</a>
+<a name="ln336">                    visit.push_back(adj);</a>
+<a name="ln337">                    ++npoints;</a>
+<a name="ln338">                }</a>
+<a name="ln339">            }</a>
+<a name="ln340">        }</a>
+<a name="ln341">    }</a>
+<a name="ln342">    return npoints;</a>
+<a name="ln343">}</a>
+<a name="ln344"> </a>
+<a name="ln345">static coord_def _shoals_region_center(</a>
+<a name="ln346">    FixedArray&lt;short, GXM, GYM&gt; &amp;rmap,</a>
+<a name="ln347">    coord_def c)</a>
+<a name="ln348">{</a>
+<a name="ln349">    const int nregion(rmap(c));</a>
+<a name="ln350">    int nseen = 0;</a>
+<a name="ln351"> </a>
+<a name="ln352">    double cx = 0.0, cy = 0.0;</a>
+<a name="ln353">    vector&lt;coord_def&gt; visit(1, c);</a>
+<a name="ln354">    FixedArray&lt;bool, GXM, GYM&gt; visited(false);</a>
+<a name="ln355">    // visit can be modified by push_back during this loop</a>
+<a name="ln356">    for (size_t i = 0; i &lt; visit.size(); ++i)</a>
+<a name="ln357">    {</a>
+<a name="ln358">        const coord_def p(visit[i]);</a>
+<a name="ln359">        visited(p) = true;</a>
+<a name="ln360"> </a>
+<a name="ln361">        ++nseen;</a>
+<a name="ln362">        if (nseen == 1)</a>
+<a name="ln363">        {</a>
+<a name="ln364">            cx = p.x;</a>
+<a name="ln365">            cy = p.y;</a>
+<a name="ln366">        }</a>
+<a name="ln367">        else</a>
+<a name="ln368">        {</a>
+<a name="ln369">            cx = (cx * (nseen - 1) + p.x) / nseen;</a>
+<a name="ln370">            cy = (cy * (nseen - 1) + p.y) / nseen;</a>
+<a name="ln371">        }</a>
+<a name="ln372"> </a>
+<a name="ln373">        for (adjacent_iterator ai(p); ai; ++ai)</a>
+<a name="ln374">        {</a>
+<a name="ln375">            const coord_def adj(*ai);</a>
+<a name="ln376">            if (in_bounds(adj) &amp;&amp; !visited(adj) &amp;&amp; rmap(adj) == nregion)</a>
+<a name="ln377">            {</a>
+<a name="ln378">                visited(adj) = true;</a>
+<a name="ln379">                visit.push_back(adj);</a>
+<a name="ln380">            }</a>
+<a name="ln381">        }</a>
+<a name="ln382">    }</a>
+<a name="ln383"> </a>
+<a name="ln384">    const coord_def cgravity(static_cast&lt;int&gt;(cx), static_cast&lt;int&gt;(cy));</a>
+<a name="ln385">    coord_def closest_to_center;</a>
+<a name="ln386">    int closest_distance = 0;</a>
+<a name="ln387">    for (const coord_def p : visit)</a>
+<a name="ln388">    {</a>
+<a name="ln389">        const int dist2 = (p - cgravity).abs();</a>
+<a name="ln390">        if (closest_to_center.origin() || closest_distance &gt; dist2)</a>
+<a name="ln391">        {</a>
+<a name="ln392">            closest_to_center = p;</a>
+<a name="ln393">            closest_distance = dist2;</a>
+<a name="ln394">        }</a>
+<a name="ln395">    }</a>
+<a name="ln396">    return closest_to_center;</a>
+<a name="ln397">}</a>
+<a name="ln398"> </a>
+<a name="ln399">struct weighted_region</a>
+<a name="ln400">{</a>
+<a name="ln401">    int weight;</a>
+<a name="ln402">    coord_def pos;</a>
+<a name="ln403"> </a>
+<a name="ln404">    weighted_region(int _weight, coord_def _pos) : weight(_weight), pos(_pos)</a>
+<a name="ln405">    {</a>
+<a name="ln406">    }</a>
+<a name="ln407">};</a>
+<a name="ln408"> </a>
+<a name="ln409">static vector&lt;weighted_region&gt;</a>
+<a name="ln410">_shoals_point_feat_cluster(dungeon_feature_type feat,</a>
+<a name="ln411">                           const int wanted_count,</a>
+<a name="ln412">                           grid_short &amp;region_map)</a>
+<a name="ln413">{</a>
+<a name="ln414">    vector&lt;weighted_region&gt; regions;</a>
+<a name="ln415">    int region = 1;</a>
+<a name="ln416">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln417">    {</a>
+<a name="ln418">        coord_def c(*ri);</a>
+<a name="ln419">        if (!region_map(c) &amp;&amp; grd(c) == feat</a>
+<a name="ln420">            &amp;&amp; !map_masked(c, MMT_VAULT))</a>
+<a name="ln421">        {</a>
+<a name="ln422">            const int featcount =</a>
+<a name="ln423">                _shoals_contiguous_feature_flood(region_map,</a>
+<a name="ln424">                                                 c,</a>
+<a name="ln425">                                                 feat,</a>
+<a name="ln426">                                                 region++,</a>
+<a name="ln427">                                                 wanted_count * 3 / 2);</a>
+<a name="ln428">            if (featcount &gt;= wanted_count)</a>
+<a name="ln429">                regions.emplace_back(featcount, c);</a>
+<a name="ln430">        }</a>
+<a name="ln431">    }</a>
+<a name="ln432">    return regions;</a>
+<a name="ln433">}</a>
+<a name="ln434"> </a>
+<a name="ln435">static coord_def _shoals_pick_region(</a>
+<a name="ln436">    grid_short &amp;region_map,</a>
+<a name="ln437">    const vector&lt;weighted_region&gt; &amp;regions)</a>
+<a name="ln438">{</a>
+<a name="ln439">    if (regions.empty())</a>
+<a name="ln440">        return coord_def();</a>
+<a name="ln441">    return _shoals_region_center(region_map,</a>
+<a name="ln442">                                 regions[random2(regions.size())].pos);</a>
+<a name="ln443">}</a>
+<a name="ln444"> </a>
+<a name="ln445">static void _shoals_make_plant_at(coord_def p)</a>
+<a name="ln446">{</a>
+<a name="ln447">    if (shoals_plant_quota &gt; 0) // a bad person could post-decrement here...</a>
+<a name="ln448">    {</a>
+<a name="ln449">        mons_place(mgen_data::hostile_at(MONS_PLANT, false, p));</a>
+<a name="ln450">        --shoals_plant_quota;</a>
+<a name="ln451">    }</a>
+<a name="ln452">}</a>
+<a name="ln453"> </a>
+<a name="ln454">static bool _shoals_plantworthy_feat(dungeon_feature_type feat)</a>
+<a name="ln455">{</a>
+<a name="ln456">    return feat == DNGN_SHALLOW_WATER || feat == DNGN_FLOOR;</a>
+<a name="ln457">}</a>
+<a name="ln458"> </a>
+<a name="ln459">static void _shoals_make_plant_near(coord_def c, int radius,</a>
+<a name="ln460">                                    dungeon_feature_type preferred_feat,</a>
+<a name="ln461">                                    grid_bool *verboten)</a>
+<a name="ln462">{</a>
+<a name="ln463">    if (shoals_plant_quota &lt;= 0)</a>
+<a name="ln464">        return;</a>
+<a name="ln465"> </a>
+<a name="ln466">    const int ntries = 5;</a>
+<a name="ln467">    for (int i = 0; i &lt; ntries; ++i)</a>
+<a name="ln468">    {</a>
+<a name="ln469">        const coord_def plant_place(</a>
+<a name="ln470">            dgn_random_point_from(c, random2(1 + radius), _shoals_margin));</a>
+<a name="ln471">        if (!plant_place.origin()</a>
+<a name="ln472">            &amp;&amp; !monster_at(plant_place)</a>
+<a name="ln473">            &amp;&amp; !map_masked(plant_place, MMT_VAULT))</a>
+<a name="ln474">        {</a>
+<a name="ln475">            const dungeon_feature_type feat(grd(plant_place));</a>
+<a name="ln476">            if (_shoals_plantworthy_feat(feat)</a>
+<a name="ln477">                &amp;&amp; (feat == preferred_feat || coinflip())</a>
+<a name="ln478">                &amp;&amp; (!verboten || !(*verboten)(plant_place)))</a>
+<a name="ln479">            {</a>
+<a name="ln480">                _shoals_make_plant_at(plant_place);</a>
+<a name="ln481">                return;</a>
+<a name="ln482">            }</a>
+<a name="ln483">        }</a>
+<a name="ln484">    }</a>
+<a name="ln485">}</a>
+<a name="ln486"> </a>
+<a name="ln487">static void _shoals_plant_cluster(coord_def c, int nplants, int radius,</a>
+<a name="ln488">                                  dungeon_feature_type favoured_feat,</a>
+<a name="ln489">                                  grid_bool *verboten)</a>
+<a name="ln490">{</a>
+<a name="ln491">    for (int i = 0; i &lt; nplants; ++i)</a>
+<a name="ln492">        _shoals_make_plant_near(c, radius, favoured_feat, verboten);</a>
+<a name="ln493">}</a>
+<a name="ln494"> </a>
+<a name="ln495">static void _shoals_plant_supercluster(coord_def c,</a>
+<a name="ln496">                                       dungeon_feature_type favoured_feat,</a>
+<a name="ln497">                                       grid_bool *verboten = nullptr)</a>
+<a name="ln498">{</a>
+<a name="ln499">    int nplants = random_range(10, 17, 2);</a>
+<a name="ln500">    int radius = random_range(3, 9);</a>
+<a name="ln501">    _shoals_plant_cluster(c, nplants, radius, favoured_feat, verboten);</a>
+<a name="ln502"> </a>
+<a name="ln503">    const int nadditional_clusters(max(0, random_range(-1, 4, 2)));</a>
+<a name="ln504">    for (int i = 0; i &lt; nadditional_clusters; ++i)</a>
+<a name="ln505">    {</a>
+<a name="ln506">        const coord_def satellite(</a>
+<a name="ln507">            dgn_random_point_from(c, random_range(2, 12), _shoals_margin));</a>
+<a name="ln508">        if (!satellite.origin())</a>
+<a name="ln509">        {</a>
+<a name="ln510">            nplants = random_range(5, 12, 2);</a>
+<a name="ln511">            radius = random_range(2, 7);</a>
+<a name="ln512">            _shoals_plant_cluster(satellite, nplants, radius, favoured_feat,</a>
+<a name="ln513">                                  verboten);</a>
+<a name="ln514">        }</a>
+<a name="ln515">    }</a>
+<a name="ln516">}</a>
+<a name="ln517"> </a>
+<a name="ln518">static void _shoals_generate_water_plants(coord_def mangrove_central)</a>
+<a name="ln519">{</a>
+<a name="ln520">    if (!mangrove_central.origin())</a>
+<a name="ln521">        _shoals_plant_supercluster(mangrove_central, DNGN_SHALLOW_WATER);</a>
+<a name="ln522">}</a>
+<a name="ln523"> </a>
+<a name="ln524">struct coord_dbl</a>
+<a name="ln525">{</a>
+<a name="ln526">    double x, y;</a>
+<a name="ln527"> </a>
+<a name="ln528">    coord_dbl(double _x, double _y) : x(_x), y(_y) { }</a>
+<a name="ln529">    coord_dbl operator + (const coord_dbl &amp;o) const</a>
+<a name="ln530">    {</a>
+<a name="ln531">        return coord_dbl(x + o.x, y + o.y);</a>
+<a name="ln532">    }</a>
+<a name="ln533">    coord_dbl &amp;operator += (const coord_dbl &amp;o)</a>
+<a name="ln534">    {</a>
+<a name="ln535">        x += o.x;</a>
+<a name="ln536">        y += o.y;</a>
+<a name="ln537">        return *this;</a>
+<a name="ln538">    }</a>
+<a name="ln539">};</a>
+<a name="ln540"> </a>
+<a name="ln541">static coord_def _int_coord(const coord_dbl &amp;c)</a>
+<a name="ln542">{</a>
+<a name="ln543">    return coord_def(static_cast&lt;int&gt;(c.x), static_cast&lt;int&gt;(c.y));</a>
+<a name="ln544">}</a>
+<a name="ln545"> </a>
+<a name="ln546">static vector&lt;coord_def&gt; _shoals_windshadows(grid_bool &amp;windy)</a>
+<a name="ln547">{</a>
+<a name="ln548">    const int wind_angle_degrees = random2(360);</a>
+<a name="ln549">    const double wind_angle(dgn_degrees_to_radians(wind_angle_degrees));</a>
+<a name="ln550">    const coord_dbl wi(cos(wind_angle), sin(wind_angle));</a>
+<a name="ln551">    const double epsilon = 1e-5;</a>
+<a name="ln552"> </a>
+<a name="ln553">    vector&lt;coord_dbl&gt; wind_points;</a>
+<a name="ln554">    if (wi.x &gt; epsilon || wi.x &lt; -epsilon)</a>
+<a name="ln555">    {</a>
+<a name="ln556">        for (int y = 1; y &lt; GYM - 1; ++y)</a>
+<a name="ln557">            wind_points.emplace_back(wi.x &gt; epsilon ? 1 : GXM - 2, y);</a>
+<a name="ln558">    }</a>
+<a name="ln559">    if (wi.y &gt; epsilon || wi.y &lt; -epsilon)</a>
+<a name="ln560">    {</a>
+<a name="ln561">        for (int x = 1; x &lt; GXM - 1; ++x)</a>
+<a name="ln562">            wind_points.emplace_back(x, wi.y &gt; epsilon ? 1 : GYM - 2);</a>
+<a name="ln563">    }</a>
+<a name="ln564"> </a>
+<a name="ln565">    // wind_points can be modified during this loop via emplace_back</a>
+<a name="ln566">    for (size_t i = 0; i &lt; wind_points.size(); ++i)</a>
+<a name="ln567">    {</a>
+<a name="ln568">        const coord_def here(_int_coord(wind_points[i]));</a>
+<a name="ln569">        windy(here) = true;</a>
+<a name="ln570"> </a>
+<a name="ln571">        coord_dbl next = wind_points[i] + wi;</a>
+<a name="ln572">        while (_int_coord(next) == here)</a>
+<a name="ln573">            next += wi;</a>
+<a name="ln574"> </a>
+<a name="ln575">        const coord_def nextp(_int_coord(next));</a>
+<a name="ln576">        if (in_bounds(nextp) &amp;&amp; !windy(nextp) &amp;&amp; !cell_is_solid(nextp))</a>
+<a name="ln577">        {</a>
+<a name="ln578">            windy(nextp) = true;</a>
+<a name="ln579">            wind_points.push_back(next);</a>
+<a name="ln580">        }</a>
+<a name="ln581">    }</a>
+<a name="ln582"> </a>
+<a name="ln583">    // To avoid plants cropping up inside vaults, mark everything inside</a>
+<a name="ln584">    // vaults as &quot;windy&quot;.</a>
+<a name="ln585">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln586">        if (map_masked(*ri, MMT_VAULT))</a>
+<a name="ln587">            windy(*ri) = true;</a>
+<a name="ln588"> </a>
+<a name="ln589">    // Now we know the places in the wind shadow:</a>
+<a name="ln590">    vector&lt;coord_def&gt; wind_shadows;</a>
+<a name="ln591">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln592">    {</a>
+<a name="ln593">        const coord_def p(*ri);</a>
+<a name="ln594">        if (!windy(p) &amp;&amp; grd(p) == DNGN_FLOOR</a>
+<a name="ln595">            &amp;&amp; (dgn_has_adjacent_feat(p, DNGN_STONE_WALL)</a>
+<a name="ln596">                || dgn_has_adjacent_feat(p, DNGN_ROCK_WALL)))</a>
+<a name="ln597">        {</a>
+<a name="ln598">            wind_shadows.push_back(p);</a>
+<a name="ln599">        }</a>
+<a name="ln600">    }</a>
+<a name="ln601">    return wind_shadows;</a>
+<a name="ln602">}</a>
+<a name="ln603"> </a>
+<a name="ln604">static void _shoals_generate_wind_sheltered_plants(vector&lt;coord_def&gt; &amp;places,</a>
+<a name="ln605">                                                   grid_bool &amp;windy)</a>
+<a name="ln606">{</a>
+<a name="ln607">    if (places.empty())</a>
+<a name="ln608">        return;</a>
+<a name="ln609"> </a>
+<a name="ln610">    const int chosen = random2(places.size());</a>
+<a name="ln611">    const coord_def spot = places[random2(places.size())];</a>
+<a name="ln612">    places.erase(places.begin() + chosen);</a>
+<a name="ln613"> </a>
+<a name="ln614">    _shoals_plant_supercluster(spot, DNGN_FLOOR, &amp;windy);</a>
+<a name="ln615">}</a>
+<a name="ln616"> </a>
+<a name="ln617">void dgn_shoals_generate_flora()</a>
+<a name="ln618">{</a>
+<a name="ln619">    // Water clusters are groups of plants clustered near the water.</a>
+<a name="ln620">    // Wind clusters are groups of plants clustered in wind shadow --</a>
+<a name="ln621">    // possibly because they can grow better without being exposed to the</a>
+<a name="ln622">    // strong winds of the Shoals.</a>
+<a name="ln623">    //</a>
+<a name="ln624">    // Yeah, the strong winds aren't there yet, but they could be!</a>
+<a name="ln625">    //</a>
+<a name="ln626">    const int n_water_clusters = max(0, random_range(-1, 6, 2));</a>
+<a name="ln627">    const int n_wind_clusters = max(0, random_range(-2, 2, 2));</a>
+<a name="ln628"> </a>
+<a name="ln629">    shoals_plant_quota = MAX_SHOAL_PLANTS;</a>
+<a name="ln630"> </a>
+<a name="ln631">    if (n_water_clusters)</a>
+<a name="ln632">    {</a>
+<a name="ln633">        grid_short region_map(0);</a>
+<a name="ln634">        vector&lt;weighted_region&gt; regions(</a>
+<a name="ln635">            _shoals_point_feat_cluster(DNGN_SHALLOW_WATER, 6, region_map));</a>
+<a name="ln636"> </a>
+<a name="ln637">        for (int i = 0; i &lt; n_water_clusters; ++i)</a>
+<a name="ln638">        {</a>
+<a name="ln639">            const coord_def p(_shoals_pick_region(region_map, regions));</a>
+<a name="ln640">            _shoals_generate_water_plants(p);</a>
+<a name="ln641">        }</a>
+<a name="ln642">    }</a>
+<a name="ln643"> </a>
+<a name="ln644">    if (n_wind_clusters)</a>
+<a name="ln645">    {</a>
+<a name="ln646">        grid_bool windy(false);</a>
+<a name="ln647">        vector&lt;coord_def&gt; wind_shadows = _shoals_windshadows(windy);</a>
+<a name="ln648">        for (int i = 0; i &lt; n_wind_clusters; ++i)</a>
+<a name="ln649">            _shoals_generate_wind_sheltered_plants(wind_shadows, windy);</a>
+<a name="ln650">    }</a>
+<a name="ln651">}</a>
+<a name="ln652"> </a>
+<a name="ln653">void dgn_build_shoals_level()</a>
+<a name="ln654">{</a>
+<a name="ln655">        // TODO: Attach this information to the vault name string</a>
+<a name="ln656">        //       instead of the build method string.</a>
+<a name="ln657">    env.level_build_method += make_stringf(&quot; [depth %d]&quot;, you.depth);</a>
+<a name="ln658"> </a>
+<a name="ln659">    const int shoals_depth = you.depth - 1;</a>
+<a name="ln660">    dgn_replace_area(0, 0, GXM-1, GYM-1, DNGN_ROCK_WALL, DNGN_OPEN_SEA,</a>
+<a name="ln661">                     MMT_VAULT);</a>
+<a name="ln662">    _shoals_init_heights();</a>
+<a name="ln663">    _shoals_init_islands(shoals_depth);</a>
+<a name="ln664">    _shoals_cliffs();</a>
+<a name="ln665">    dgn_smooth_heights();</a>
+<a name="ln666">    _shoals_apply_level();</a>
+<a name="ln667">    _shoals_deepen_water();</a>
+<a name="ln668">    _shoals_deepen_edges();</a>
+<a name="ln669">    _shoals_smooth_water();</a>
+<a name="ln670">    _shoals_furniture();</a>
+<a name="ln671">}</a>
+<a name="ln672"> </a>
+<a name="ln673">// Search the map for vaults and set the terrain heights for features</a>
+<a name="ln674">// in the vault to reasonable levels.</a>
+<a name="ln675">void shoals_postprocess_level()</a>
+<a name="ln676">{</a>
+<a name="ln677">    if (!player_in_branch(BRANCH_SHOALS) || !env.heightmap)</a>
+<a name="ln678">        return;</a>
+<a name="ln679"> </a>
+<a name="ln680">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln681">    {</a>
+<a name="ln682">        const coord_def c(*ri);</a>
+<a name="ln683">        if (!(env.level_map_mask(c) &amp; MMT_VAULT))</a>
+<a name="ln684">            continue;</a>
+<a name="ln685"> </a>
+<a name="ln686">        // Don't mess with tide immune squares at all.</a>
+<a name="ln687">        if (is_tide_immune(c))</a>
+<a name="ln688">            continue;</a>
+<a name="ln689"> </a>
+<a name="ln690">        const dungeon_feature_type feat(grd(c));</a>
+<a name="ln691">        if (!_shoals_tide_susceptible_feat(feat) &amp;&amp; !feat_is_solid(feat))</a>
+<a name="ln692">            continue;</a>
+<a name="ln693"> </a>
+<a name="ln694">        const dungeon_feature_type expected_feat(_shoals_feature_at(c));</a>
+<a name="ln695">        // It would be nice to do actual height contours within</a>
+<a name="ln696">        // vaults, but for now, keep it simple.</a>
+<a name="ln697">        if (feat != expected_feat)</a>
+<a name="ln698">            dgn_height_at(c) = _shoals_feature_height(feat);</a>
+<a name="ln699">    }</a>
+<a name="ln700"> </a>
+<a name="ln701">    // Apply tide now, since the tide is likely to be nonzero unless</a>
+<a name="ln702">    // this is Shoals:1</a>
+<a name="ln703">    shoals_apply_tides(0, true);</a>
+<a name="ln704">}</a>
+<a name="ln705"> </a>
+<a name="ln706">static void _shoals_clamp_height_at(const coord_def &amp;c,</a>
+<a name="ln707">                                     int clamp_height = SHT_ROCK - 1)</a>
+<a name="ln708">{</a>
+<a name="ln709">    if (!in_bounds(c))</a>
+<a name="ln710">        return;</a>
+<a name="ln711"> </a>
+<a name="ln712">    if (dgn_height_at(c) &gt; clamp_height)</a>
+<a name="ln713">        dgn_height_at(c) = clamp_height;</a>
+<a name="ln714">}</a>
+<a name="ln715"> </a>
+<a name="ln716">static void _shoals_connect_smooth_height_at(const coord_def &amp;c)</a>
+<a name="ln717">{</a>
+<a name="ln718">    if (map_bounds_with_margin(c, 3))</a>
+<a name="ln719">        dgn_smooth_height_at(c, 1);</a>
+<a name="ln720">}</a>
+<a name="ln721"> </a>
+<a name="ln722">static void _shoals_connecting_point_smooth(const coord_def &amp;c, int radius)</a>
+<a name="ln723">{</a>
+<a name="ln724">    for (int dy = 0; dy &lt; radius; ++dy)</a>
+<a name="ln725">    {</a>
+<a name="ln726">        for (int dx = 0; dx &lt; radius; ++dx)</a>
+<a name="ln727">        {</a>
+<a name="ln728">            _shoals_connect_smooth_height_at(c + coord_def(dy, dx));</a>
+<a name="ln729">            if (dy)</a>
+<a name="ln730">                _shoals_connect_smooth_height_at(c + coord_def(-dy, dx));</a>
+<a name="ln731">            if (dx)</a>
+<a name="ln732">                _shoals_connect_smooth_height_at(c + coord_def(dy, -dx));</a>
+<a name="ln733">            if (dx &amp;&amp; dy)</a>
+<a name="ln734">                _shoals_connect_smooth_height_at(c + coord_def(-dy, -dx));</a>
+<a name="ln735">        }</a>
+<a name="ln736">    }</a>
+<a name="ln737">}</a>
+<a name="ln738"> </a>
+<a name="ln739">static void _shoals_connecting_point_clamp_height(</a>
+<a name="ln740">    const coord_def &amp;c, int radius)</a>
+<a name="ln741">{</a>
+<a name="ln742">    if (!in_bounds(c))</a>
+<a name="ln743">        return;</a>
+<a name="ln744"> </a>
+<a name="ln745">    for (rectangle_iterator ri(c - coord_def(radius, radius),</a>
+<a name="ln746">                               c + coord_def(radius, radius)); ri; ++ri)</a>
+<a name="ln747">    {</a>
+<a name="ln748">        _shoals_clamp_height_at(*ri);</a>
+<a name="ln749">    }</a>
+<a name="ln750"> </a>
+<a name="ln751">    const int min_height_threshold = (SHT_SHALLOW_WATER + SHT_FLOOR) / 2;</a>
+<a name="ln752">    if (dgn_height_at(c) &lt; min_height_threshold)</a>
+<a name="ln753">        dgn_height_at(c) = min_height_threshold;</a>
+<a name="ln754">}</a>
+<a name="ln755"> </a>
+<a name="ln756">bool dgn_shoals_connect_point(const coord_def &amp;point)</a>
+<a name="ln757">{</a>
+<a name="ln758">    flood_find&lt;feature_grid, coord_predicate&gt; ff(env.grid, in_bounds, true,</a>
+<a name="ln759">                                                 false);</a>
+<a name="ln760">    ff.add_feat(DNGN_FLOOR);</a>
+<a name="ln761"> </a>
+<a name="ln762">    const coord_def target = ff.find_first_from(point, env.level_map_mask);</a>
+<a name="ln763">    if (!in_bounds(target))</a>
+<a name="ln764">        return false;</a>
+<a name="ln765"> </a>
+<a name="ln766">    const vector&lt;coord_def&gt; track =</a>
+<a name="ln767">        dgn_join_the_dots_pathfind(point, target, MMT_VAULT);</a>
+<a name="ln768"> </a>
+<a name="ln769">    if (!track.empty())</a>
+<a name="ln770">    {</a>
+<a name="ln771">        const int n_points = 15;</a>
+<a name="ln772">        const int radius = 4;</a>
+<a name="ln773"> </a>
+<a name="ln774">        for (auto tc : track)</a>
+<a name="ln775">        {</a>
+<a name="ln776">            int height = 0, npoints = 0;</a>
+<a name="ln777">            for (radius_iterator ri(tc, radius, C_POINTY); ri; ++ri)</a>
+<a name="ln778">            {</a>
+<a name="ln779">                if (in_bounds(*ri))</a>
+<a name="ln780">                {</a>
+<a name="ln781">                    height += dgn_height_at(*ri);</a>
+<a name="ln782">                    ++npoints;</a>
+<a name="ln783">                }</a>
+<a name="ln784">            }</a>
+<a name="ln785"> </a>
+<a name="ln786">            const int target_height = SHT_FLOOR;</a>
+<a name="ln787">            if (height &lt; target_height)</a>
+<a name="ln788">            {</a>
+<a name="ln789">                const int elevation_change = target_height - height;</a>
+<a name="ln790">                const int elevation_change_per_dot =</a>
+<a name="ln791">                    max(1, elevation_change / n_points + 1);</a>
+<a name="ln792"> </a>
+<a name="ln793">                dgn_island_centred_at(tc, n_points, radius,</a>
+<a name="ln794">                                      int_range(elevation_change_per_dot,</a>
+<a name="ln795">                                                elevation_change_per_dot + 20),</a>
+<a name="ln796">                                      3);</a>
+<a name="ln797">            }</a>
+<a name="ln798">        }</a>
+<a name="ln799"> </a>
+<a name="ln800">        for (int i = track.size() - 1; i &gt;= 0; --i)</a>
+<a name="ln801">        {</a>
+<a name="ln802">            const coord_def &amp;p(track[i]);</a>
+<a name="ln803">            _shoals_connecting_point_smooth(p, radius + 2);</a>
+<a name="ln804">        }</a>
+<a name="ln805">        for (int i = track.size() - 1; i &gt;= 0; --i)</a>
+<a name="ln806">        {</a>
+<a name="ln807">            const coord_def &amp;p(track[i]);</a>
+<a name="ln808">            _shoals_connecting_point_clamp_height(p, radius + 2);</a>
+<a name="ln809">        }</a>
+<a name="ln810"> </a>
+<a name="ln811">        _shoals_postbuild_apply_level();</a>
+<a name="ln812">    }</a>
+<a name="ln813">    return !track.empty();</a>
+<a name="ln814">}</a>
+<a name="ln815"> </a>
+<a name="ln816">static void _shoals_run_tide(int &amp;tide, int &amp;acc)</a>
+<a name="ln817">{</a>
+<a name="ln818">    // If someone is calling the tide, the tide velocity is clamped high.</a>
+<a name="ln819">    if (tide_caller)</a>
+<a name="ln820">        acc = CALL_TIDE_VELOCITY;</a>
+<a name="ln821">    // If there's no tide caller and our velocity is suspiciously high,</a>
+<a name="ln822">    // reset it to a falling tide at peak velocity.</a>
+<a name="ln823">    else if (abs(acc) &gt; PEAK_TIDE_VELOCITY)</a>
+<a name="ln824">        acc = -PEAK_TIDE_VELOCITY;</a>
+<a name="ln825"> </a>
+<a name="ln826">    tide += acc;</a>
+<a name="ln827">    tide = max(min(tide, HIGH_TIDE), LOW_TIDE);</a>
+<a name="ln828">    if ((tide == HIGH_TIDE &amp;&amp; acc &gt; 0) || (tide == LOW_TIDE &amp;&amp; acc &lt; 0))</a>
+<a name="ln829">        acc = -acc;</a>
+<a name="ln830">    bool in_decel_margin =</a>
+<a name="ln831">        (abs(tide - HIGH_TIDE) &lt; TIDE_DECEL_MARGIN)</a>
+<a name="ln832">        || (abs(tide - LOW_TIDE) &lt; TIDE_DECEL_MARGIN);</a>
+<a name="ln833">    if ((abs(acc) &gt; 1) == in_decel_margin)</a>
+<a name="ln834">        acc = in_decel_margin? acc / 2 : acc * 2;</a>
+<a name="ln835">}</a>
+<a name="ln836"> </a>
+<a name="ln837">static void _shoals_tide_wash_blood_away_at(coord_def c)</a>
+<a name="ln838">{</a>
+<a name="ln839">    env.pgrid(c) &amp;= ~FPROP_BLOODY;</a>
+<a name="ln840">}</a>
+<a name="ln841"> </a>
+<a name="ln842">static void _shoals_apply_tide_feature_at(</a>
+<a name="ln843">    coord_def c,</a>
+<a name="ln844">    dungeon_feature_type feat)</a>
+<a name="ln845">{</a>
+<a name="ln846">    const dungeon_feature_type current_feat = grd(c);</a>
+<a name="ln847"> </a>
+<a name="ln848">    if (feat == current_feat)</a>
+<a name="ln849">        return;</a>
+<a name="ln850"> </a>
+<a name="ln851">    if (crawl_state.generating_level)</a>
+<a name="ln852">        grd(c) = feat;</a>
+<a name="ln853">    else</a>
+<a name="ln854">        dungeon_terrain_changed(c, feat, false, true);</a>
+<a name="ln855">}</a>
+<a name="ln856"> </a>
+<a name="ln857">// Determines if the tide is rising or falling based on before and</a>
+<a name="ln858">// after features at the same square.</a>
+<a name="ln859">static tide_dir _shoals_feature_tide_height_change(</a>
+<a name="ln860">    dungeon_feature_type oldfeat,</a>
+<a name="ln861">    dungeon_feature_type newfeat)</a>
+<a name="ln862">{</a>
+<a name="ln863">    const int height_delta =</a>
+<a name="ln864">        _shoals_feature_height(newfeat) - _shoals_feature_height(oldfeat);</a>
+<a name="ln865">    // If the apparent height of the new feature is greater (floor vs water),</a>
+<a name="ln866">    // the tide is receding.</a>
+<a name="ln867">    return height_delta &lt; 0 ? tide_dir::rising : tide_dir::falling;</a>
+<a name="ln868">}</a>
+<a name="ln869"> </a>
+<a name="ln870">static void _shoals_apply_tide_at(coord_def c, int tide)</a>
+<a name="ln871">{</a>
+<a name="ln872">    if (is_tide_immune(c))</a>
+<a name="ln873">        return;</a>
+<a name="ln874"> </a>
+<a name="ln875">    const int effective_height = dgn_height_at(c) - tide;</a>
+<a name="ln876">    dungeon_feature_type newfeat =</a>
+<a name="ln877">        _shoals_feature_by_height(effective_height);</a>
+<a name="ln878">    // Make sure we're not sprouting new walls, or deep water.</a>
+<a name="ln879">    if (feat_is_wall(newfeat))</a>
+<a name="ln880">        newfeat = DNGN_FLOOR;</a>
+<a name="ln881">    if (feat_is_water(newfeat))</a>
+<a name="ln882">        newfeat = DNGN_SHALLOW_WATER;</a>
+<a name="ln883">    const dungeon_feature_type oldfeat = grd(c);</a>
+<a name="ln884"> </a>
+<a name="ln885"> </a>
+<a name="ln886">    if (oldfeat == newfeat</a>
+<a name="ln887">        || (_shoals_feature_tide_height_change(oldfeat, newfeat) !=</a>
+<a name="ln888">            _shoals_tide_direction))</a>
+<a name="ln889">    {</a>
+<a name="ln890">        return;</a>
+<a name="ln891">    }</a>
+<a name="ln892"> </a>
+<a name="ln893">    _shoals_apply_tide_feature_at(c, newfeat);</a>
+<a name="ln894">}</a>
+<a name="ln895"> </a>
+<a name="ln896">static int _shoals_tide_at(coord_def pos, int base_tide)</a>
+<a name="ln897">{</a>
+<a name="ln898">    if (!tide_caller)</a>
+<a name="ln899">        return base_tide;</a>
+<a name="ln900"> </a>
+<a name="ln901">    pos -= tide_caller-&gt;pos();</a>
+<a name="ln902">    if (pos.rdist() &gt; TIDE_CALL_RADIUS)</a>
+<a name="ln903">        return base_tide;</a>
+<a name="ln904"> </a>
+<a name="ln905">    return base_tide + max(0, tide_called_peak - pos.rdist() * 3);</a>
+<a name="ln906">}</a>
+<a name="ln907"> </a>
+<a name="ln908">static vector&lt;coord_def&gt; _shoals_extra_tide_seeds()</a>
+<a name="ln909">{</a>
+<a name="ln910">    return find_marker_positions_by_prop(&quot;tide_seed&quot;);</a>
+<a name="ln911">}</a>
+<a name="ln912"> </a>
+<a name="ln913">static void _shoals_apply_tide(int tide)</a>
+<a name="ln914">{</a>
+<a name="ln915">    vector&lt;coord_def&gt; pages[2];</a>
+<a name="ln916">    int current_page = 0;</a>
+<a name="ln917"> </a>
+<a name="ln918">    // Start from corners of the map.</a>
+<a name="ln919">    pages[current_page].emplace_back(1,1);</a>
+<a name="ln920">    pages[current_page].emplace_back(GXM - 2, 1);</a>
+<a name="ln921">    pages[current_page].emplace_back(1, GYM - 2);</a>
+<a name="ln922">    pages[current_page].emplace_back(GXM - 2, GYM - 2);</a>
+<a name="ln923"> </a>
+<a name="ln924">    // Find any extra seeds -- markers with tide_seed=&quot;y&quot;.</a>
+<a name="ln925">    const vector&lt;coord_def&gt; extra_seeds(_shoals_extra_tide_seeds());</a>
+<a name="ln926">    pages[current_page].insert(pages[current_page].end(),</a>
+<a name="ln927">                               extra_seeds.begin(), extra_seeds.end());</a>
+<a name="ln928"> </a>
+<a name="ln929">    FixedArray&lt;bool, GXM, GYM&gt; seen_points(false);</a>
+<a name="ln930"> </a>
+<a name="ln931">    while (!pages[current_page].empty())</a>
+<a name="ln932">    {</a>
+<a name="ln933">        int next_page = !current_page;</a>
+<a name="ln934">        vector&lt;coord_def&gt; &amp;cpage(pages[current_page]);</a>
+<a name="ln935">        vector&lt;coord_def&gt; &amp;npage(pages[next_page]);</a>
+<a name="ln936"> </a>
+<a name="ln937">        for (const coord_def c : cpage)</a>
+<a name="ln938">        {</a>
+<a name="ln939">            const dungeon_feature_type herefeat(grd(c));</a>
+<a name="ln940">            const bool was_wet = (_shoals_tide_passable_feat(herefeat)</a>
+<a name="ln941">                                  &amp;&amp; !is_temp_terrain(c));</a>
+<a name="ln942">            seen_points(c) = true;</a>
+<a name="ln943">            if (_shoals_tide_susceptible_feat(herefeat))</a>
+<a name="ln944">                _shoals_apply_tide_at(c, _shoals_tide_at(c, tide));</a>
+<a name="ln945"> </a>
+<a name="ln946">            const bool is_wet(feat_is_water(grd(c)));</a>
+<a name="ln947"> </a>
+<a name="ln948">            // Only squares that were wet (before applying tide</a>
+<a name="ln949">            // effects!) can propagate the tide onwards. If the tide is</a>
+<a name="ln950">            // receding and just left the square dry, there's only a chance of</a>
+<a name="ln951">            // it continuing past and draining other squares through this one.</a>
+<a name="ln952">            if (was_wet &amp;&amp; (is_wet || coinflip()))</a>
+<a name="ln953">            {</a>
+<a name="ln954">                for (adjacent_iterator ai(c); ai; ++ai)</a>
+<a name="ln955">                {</a>
+<a name="ln956">                    coord_def adj(*ai);</a>
+<a name="ln957">                    if (!in_bounds(adj))</a>
+<a name="ln958">                        continue;</a>
+<a name="ln959">                    if (!seen_points(adj))</a>
+<a name="ln960">                    {</a>
+<a name="ln961">                        const dungeon_feature_type feat = grd(adj);</a>
+<a name="ln962">                        if (_shoals_tide_passable_feat(feat)</a>
+<a name="ln963">                            || _shoals_tide_susceptible_feat(feat))</a>
+<a name="ln964">                        {</a>
+<a name="ln965">                            npage.push_back(adj);</a>
+<a name="ln966">                            seen_points(adj) = true;</a>
+<a name="ln967">                        }</a>
+<a name="ln968">                        // Squares that the tide cannot directly</a>
+<a name="ln969">                        // affect may still lose bloodspatter as the</a>
+<a name="ln970">                        // tide goes past.</a>
+<a name="ln971">                        else if (is_bloodcovered(adj)</a>
+<a name="ln972">                                 &amp;&amp; one_chance_in(15))</a>
+<a name="ln973">                        {</a>
+<a name="ln974">                            _shoals_tide_wash_blood_away_at(adj);</a>
+<a name="ln975">                        }</a>
+<a name="ln976">                    }</a>
+<a name="ln977">                }</a>
+<a name="ln978">            }</a>
+<a name="ln979">        }</a>
+<a name="ln980"> </a>
+<a name="ln981">        cpage.clear();</a>
+<a name="ln982">        current_page = next_page;</a>
+<a name="ln983">    }</a>
+<a name="ln984">}</a>
+<a name="ln985"> </a>
+<a name="ln986">static void _shoals_init_tide()</a>
+<a name="ln987">{</a>
+<a name="ln988">    CrawlHashTable &amp;props = you.props;</a>
+<a name="ln989">    if (!props.exists(PROPS_SHOALS_TIDE_KEY))</a>
+<a name="ln990">    {</a>
+<a name="ln991">        props[PROPS_SHOALS_TIDE_KEY].get_short() = 0;</a>
+<a name="ln992">        props[PROPS_SHOALS_TIDE_VEL].get_short() = PEAK_TIDE_VELOCITY;</a>
+<a name="ln993">        props[PROPS_SHOALS_TIDE_UPDATE_TIME].get_int() = 0;</a>
+<a name="ln994">    }</a>
+<a name="ln995">    if (!env.properties.exists(PROPS_SHOALS_TIDE_KEY))</a>
+<a name="ln996">        env.properties[PROPS_SHOALS_TIDE_KEY].get_short() = 0;</a>
+<a name="ln997">}</a>
+<a name="ln998"> </a>
+<a name="ln999">static monster* _shoals_find_tide_caller()</a>
+<a name="ln1000">{</a>
+<a name="ln1001">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1002">        if (mi-&gt;has_ench(ENCH_TIDE))</a>
+<a name="ln1003">            return *mi;</a>
+<a name="ln1004">    return nullptr;</a>
+<a name="ln1005">}</a>
+<a name="ln1006"> </a>
+<a name="ln1007">void shoals_apply_tides(int turns_elapsed, bool force)</a>
+<a name="ln1008">{</a>
+<a name="ln1009">    if (!player_in_branch(BRANCH_SHOALS)</a>
+<a name="ln1010">        || (!turns_elapsed &amp;&amp; !force)</a>
+<a name="ln1011">        || !env.heightmap)</a>
+<a name="ln1012">    {</a>
+<a name="ln1013">        return;</a>
+<a name="ln1014">    }</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    // isolate from main levelgen rng if called from there; the behaviour of</a>
+<a name="ln1017">    // this function is dependent on global state (tide direction, etc) that</a>
+<a name="ln1018">    // may impact the number of rolls depending on when the player changes</a>
+<a name="ln1019">    // shoals levels, so doing this with the levelgen rng has downstream</a>
+<a name="ln1020">    // effects.</a>
+<a name="ln1021">    rng::generator tide_rng(rng::GAMEPLAY);</a>
+<a name="ln1022"> </a>
+<a name="ln1023">    CrawlHashTable &amp;props(you.props);</a>
+<a name="ln1024">    _shoals_init_tide();</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    // Make sure we don't do too much catch-up if another Shoals level</a>
+<a name="ln1027">    // has been updating the tide.</a>
+<a name="ln1028">    if (turns_elapsed &gt; 1)</a>
+<a name="ln1029">    {</a>
+<a name="ln1030">        const int last_updated_time =</a>
+<a name="ln1031">            props[PROPS_SHOALS_TIDE_UPDATE_TIME].get_int();</a>
+<a name="ln1032">        const int turn_delta = (you.elapsed_time - last_updated_time) / 10;</a>
+<a name="ln1033">        turns_elapsed = min(turns_elapsed, turn_delta);</a>
+<a name="ln1034">    }</a>
+<a name="ln1035"> </a>
+<a name="ln1036">    const int TIDE_UNIT = HIGH_TIDE - LOW_TIDE;</a>
+<a name="ln1037">    // If we've been gone a long time, eliminate some unnecessary math.</a>
+<a name="ln1038">    if (turns_elapsed &gt; TIDE_UNIT * 2)</a>
+<a name="ln1039">        turns_elapsed = turns_elapsed % TIDE_UNIT + TIDE_UNIT;</a>
+<a name="ln1040"> </a>
+<a name="ln1041">    unwind_var&lt;monster* &gt; tide_caller_unwind(tide_caller,</a>
+<a name="ln1042">                                             _shoals_find_tide_caller());</a>
+<a name="ln1043">    if (tide_caller)</a>
+<a name="ln1044">    {</a>
+<a name="ln1045">        tide_called_turns = tide_caller-&gt;props[TIDE_CALL_TURN].get_int();</a>
+<a name="ln1046">        tide_called_turns = you.num_turns - tide_called_turns;</a>
+<a name="ln1047">        if (tide_called_turns &lt; 1L)</a>
+<a name="ln1048">            tide_called_turns = 1L;</a>
+<a name="ln1049">        tide_called_peak  = min(HIGH_CALLED_TIDE, int(tide_called_turns * 5));</a>
+<a name="ln1050">        tide_caller_pos = tide_caller-&gt;pos();</a>
+<a name="ln1051">    }</a>
+<a name="ln1052"> </a>
+<a name="ln1053">    int tide = props[PROPS_SHOALS_TIDE_KEY].get_short();</a>
+<a name="ln1054">    int acc = props[PROPS_SHOALS_TIDE_VEL].get_short();</a>
+<a name="ln1055">    const int old_tide = env.properties[PROPS_SHOALS_TIDE_KEY].get_short();</a>
+<a name="ln1056">    while (turns_elapsed-- &gt; 0)</a>
+<a name="ln1057">        _shoals_run_tide(tide, acc);</a>
+<a name="ln1058"> </a>
+<a name="ln1059">    props[PROPS_SHOALS_TIDE_KEY].get_short() = tide;</a>
+<a name="ln1060">    props[PROPS_SHOALS_TIDE_VEL].get_short() = acc;</a>
+<a name="ln1061">    props[PROPS_SHOALS_TIDE_UPDATE_TIME].get_int() = you.elapsed_time;</a>
+<a name="ln1062">    env.properties[PROPS_SHOALS_TIDE_KEY].get_short() = tide;</a>
+<a name="ln1063"> </a>
+<a name="ln1064">    if (force</a>
+<a name="ln1065">        || tide_caller</a>
+<a name="ln1066">        || old_tide / TIDE_MULTIPLIER != tide / TIDE_MULTIPLIER)</a>
+<a name="ln1067">    {</a>
+<a name="ln1068">        _shoals_tide_direction =</a>
+<a name="ln1069">            tide &gt; old_tide ? tide_dir::rising : tide_dir::falling;</a>
+<a name="ln1070">        _shoals_apply_tide(tide / TIDE_MULTIPLIER);</a>
+<a name="ln1071">    }</a>
+<a name="ln1072">}</a>
+<a name="ln1073"> </a>
+<a name="ln1074">void shoals_release_tide(monster* mons)</a>
+<a name="ln1075">{</a>
+<a name="ln1076">    if (player_in_branch(BRANCH_SHOALS))</a>
+<a name="ln1077">    {</a>
+<a name="ln1078">        if (player_can_hear(mons-&gt;pos()))</a>
+<a name="ln1079">        {</a>
+<a name="ln1080">            mprf(MSGCH_SOUND, &quot;The tide is released from %s call.&quot;,</a>
+<a name="ln1081">                 apostrophise(mons-&gt;name(DESC_YOUR, true)).c_str());</a>
+<a name="ln1082">            if (you.see_cell(mons-&gt;pos()))</a>
+<a name="ln1083">                flash_view_delay(UA_MONSTER, ETC_WATER, 150);</a>
+<a name="ln1084">        }</a>
+<a name="ln1085">        shoals_apply_tides(0, true);</a>
+<a name="ln1086">    }</a>
+<a name="ln1087">}</a>
+<a name="ln1088"> </a>
+<a name="ln1089">#ifdef WIZARD</a>
+<a name="ln1090">static void _shoals_change_tide_granularity(int newval)</a>
+<a name="ln1091">{</a>
+<a name="ln1092">    LOW_TIDE        = LOW_TIDE * newval / TIDE_MULTIPLIER;</a>
+<a name="ln1093">    HIGH_TIDE       = HIGH_TIDE * newval / TIDE_MULTIPLIER;</a>
+<a name="ln1094">    TIDE_MULTIPLIER = newval;</a>
+<a name="ln1095">}</a>
+<a name="ln1096"> </a>
+<a name="ln1097">static keyfun_action _tidemod_keyfilter(int &amp;c)</a>
+<a name="ln1098">{</a>
+<a name="ln1099">    return c == '+' || c == '-'? KEYFUN_BREAK : KEYFUN_PROCESS;</a>
+<a name="ln1100">}</a>
+<a name="ln1101"> </a>
+<a name="ln1102">static void _shoals_force_tide(CrawlHashTable &amp;props, int increment)</a>
+<a name="ln1103">{</a>
+<a name="ln1104">    int tide = props[PROPS_SHOALS_TIDE_KEY].get_short();</a>
+<a name="ln1105">    tide += increment * TIDE_MULTIPLIER;</a>
+<a name="ln1106">    tide = min(HIGH_TIDE, max(LOW_TIDE, tide));</a>
+<a name="ln1107">    props[PROPS_SHOALS_TIDE_KEY] = short(tide);</a>
+<a name="ln1108">    _shoals_tide_direction = increment &gt; 0 ? tide_dir::rising : tide_dir::falling;</a>
+<a name="ln1109">    _shoals_apply_tide(tide / TIDE_MULTIPLIER);</a>
+<a name="ln1110">}</a>
+<a name="ln1111"> </a>
+<a name="ln1112">void wizard_mod_tide()</a>
+<a name="ln1113">{</a>
+<a name="ln1114">    if (!player_in_branch(BRANCH_SHOALS) || !env.heightmap)</a>
+<a name="ln1115">    {</a>
+<a name="ln1116">        mprf(MSGCH_WARN, &quot;Not in Shoals or no heightmap; tide not available.&quot;);</a>
+<a name="ln1117">        return;</a>
+<a name="ln1118">    }</a>
+<a name="ln1119"> </a>
+<a name="ln1120">    char buf[80];</a>
+<a name="ln1121">    while (true)</a>
+<a name="ln1122">    {</a>
+<a name="ln1123">        mprf(MSGCH_PROMPT,</a>
+<a name="ln1124">             &quot;Tide inertia: %d. New value &quot;</a>
+<a name="ln1125">             &quot;(smaller = faster tide) or use +/- to change tide: &quot;,</a>
+<a name="ln1126">             TIDE_MULTIPLIER);</a>
+<a name="ln1127">        mpr(&quot;&quot;);</a>
+<a name="ln1128">        const int res =</a>
+<a name="ln1129">            cancellable_get_line(buf, sizeof buf, nullptr, _tidemod_keyfilter);</a>
+<a name="ln1130">        clear_messages(true);</a>
+<a name="ln1131">        if (key_is_escape(res))</a>
+<a name="ln1132">            break;</a>
+<a name="ln1133">        if (!res)</a>
+<a name="ln1134">        {</a>
+<a name="ln1135">            const int newgran = atoi(buf);</a>
+<a name="ln1136">            if (newgran &gt; 0 &amp;&amp; newgran &lt; 3000)</a>
+<a name="ln1137">                _shoals_change_tide_granularity(newgran);</a>
+<a name="ln1138">        }</a>
+<a name="ln1139">        if (res == '+' || res == '-')</a>
+<a name="ln1140">        {</a>
+<a name="ln1141">            _shoals_force_tide(you.props, res == '+'? 2 : -2);</a>
+<a name="ln1142">            viewwindow();</a>
+<a name="ln1143">        }</a>
+<a name="ln1144">    }</a>
+<a name="ln1145">}</a>
+<a name="ln1146">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="127"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="327"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'npoints < size_limit' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

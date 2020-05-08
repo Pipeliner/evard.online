@@ -1,0 +1,902 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>player-act.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Implementing the actor interface for player.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;player.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cmath&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;act-iter.h&quot;</a>
+<a name="ln13">#include &quot;areas.h&quot;</a>
+<a name="ln14">#include &quot;art-enum.h&quot;</a>
+<a name="ln15">#include &quot;coordit.h&quot;</a>
+<a name="ln16">#include &quot;dgn-event.h&quot;</a>
+<a name="ln17">#include &quot;english.h&quot;</a>
+<a name="ln18">#include &quot;env.h&quot;</a>
+<a name="ln19">#include &quot;fight.h&quot;</a>
+<a name="ln20">#include &quot;food.h&quot;</a>
+<a name="ln21">#include &quot;god-abil.h&quot; // RU_SAC_XP_LEVELS</a>
+<a name="ln22">#include &quot;god-conduct.h&quot;</a>
+<a name="ln23">#include &quot;god-item.h&quot;</a>
+<a name="ln24">#include &quot;god-passive.h&quot; // passive_t::no_haste</a>
+<a name="ln25">#include &quot;hints.h&quot;</a>
+<a name="ln26">#include &quot;item-name.h&quot;</a>
+<a name="ln27">#include &quot;item-prop.h&quot;</a>
+<a name="ln28">#include &quot;item-use.h&quot;</a>
+<a name="ln29">#include &quot;message.h&quot;</a>
+<a name="ln30">#include &quot;player-stats.h&quot;</a>
+<a name="ln31">#include &quot;religion.h&quot;</a>
+<a name="ln32">#include &quot;spl-damage.h&quot;</a>
+<a name="ln33">#include &quot;state.h&quot;</a>
+<a name="ln34">#include &quot;terrain.h&quot;</a>
+<a name="ln35">#include &quot;transform.h&quot;</a>
+<a name="ln36">#include &quot;traps.h&quot;</a>
+<a name="ln37">#include &quot;viewgeom.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39">int player::mindex() const</a>
+<a name="ln40">{</a>
+<a name="ln41">    return MHITYOU;</a>
+<a name="ln42">}</a>
+<a name="ln43"> </a>
+<a name="ln44">kill_category player::kill_alignment() const</a>
+<a name="ln45">{</a>
+<a name="ln46">    return KC_YOU;</a>
+<a name="ln47">}</a>
+<a name="ln48"> </a>
+<a name="ln49">god_type player::deity() const</a>
+<a name="ln50">{</a>
+<a name="ln51">    return religion;</a>
+<a name="ln52">}</a>
+<a name="ln53"> </a>
+<a name="ln54">bool player::alive() const</a>
+<a name="ln55">{</a>
+<a name="ln56">    // Simplistic, but if the player dies the game is over anyway, so</a>
+<a name="ln57">    // nobody can ask further questions.</a>
+<a name="ln58">    return !crawl_state.game_is_arena();</a>
+<a name="ln59">}</a>
+<a name="ln60"> </a>
+<a name="ln61">bool player::is_summoned(int* _duration, int* summon_type) const</a>
+<a name="ln62">{</a>
+<a name="ln63">    if (_duration != nullptr)</a>
+<a name="ln64">        *_duration = -1;</a>
+<a name="ln65">    if (summon_type != nullptr)</a>
+<a name="ln66">        *summon_type = 0;</a>
+<a name="ln67"> </a>
+<a name="ln68">    return false;</a>
+<a name="ln69">}</a>
+<a name="ln70"> </a>
+<a name="ln71">void player::moveto(const coord_def &amp;c, bool clear_net)</a>
+<a name="ln72">{</a>
+<a name="ln73">    if (clear_net &amp;&amp; c != pos())</a>
+<a name="ln74">        clear_trapping_net();</a>
+<a name="ln75"> </a>
+<a name="ln76">    crawl_view.set_player_at(c);</a>
+<a name="ln77">    set_position(c);</a>
+<a name="ln78"> </a>
+<a name="ln79">    clear_invalid_constrictions();</a>
+<a name="ln80">    end_searing_ray();</a>
+<a name="ln81">}</a>
+<a name="ln82"> </a>
+<a name="ln83">bool player::move_to_pos(const coord_def &amp;c, bool clear_net, bool /*force*/)</a>
+<a name="ln84">{</a>
+<a name="ln85">    actor *target = actor_at(c);</a>
+<a name="ln86">    if (!target || target-&gt;submerged())</a>
+<a name="ln87">    {</a>
+<a name="ln88">        moveto(c, clear_net);</a>
+<a name="ln89">        return true;</a>
+<a name="ln90">    }</a>
+<a name="ln91">    return false;</a>
+<a name="ln92">}</a>
+<a name="ln93"> </a>
+<a name="ln94">void player::apply_location_effects(const coord_def &amp;oldpos,</a>
+<a name="ln95">                                    killer_type /*killer*/,</a>
+<a name="ln96">                                    int /*killernum*/)</a>
+<a name="ln97">{</a>
+<a name="ln98">    moveto_location_effects(env.grid(oldpos));</a>
+<a name="ln99">}</a>
+<a name="ln100"> </a>
+<a name="ln101">void player::set_position(const coord_def &amp;c)</a>
+<a name="ln102">{</a>
+<a name="ln103">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln104"> </a>
+<a name="ln105">    const bool real_move = (c != pos());</a>
+<a name="ln106">    actor::set_position(c);</a>
+<a name="ln107"> </a>
+<a name="ln108">    if (real_move)</a>
+<a name="ln109">    {</a>
+<a name="ln110">        prev_grd_targ.reset();</a>
+<a name="ln111">        if (duration[DUR_QUAD_DAMAGE])</a>
+<a name="ln112">            invalidate_agrid(true);</a>
+<a name="ln113"> </a>
+<a name="ln114">        if (player_has_orb())</a>
+<a name="ln115">        {</a>
+<a name="ln116">            env.orb_pos = c;</a>
+<a name="ln117">            invalidate_agrid(true);</a>
+<a name="ln118">        }</a>
+<a name="ln119"> </a>
+<a name="ln120">        dungeon_events.fire_position_event(DET_PLAYER_MOVED, c);</a>
+<a name="ln121">    }</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">bool player::swimming() const</a>
+<a name="ln125">{</a>
+<a name="ln126">    return in_water() &amp;&amp; can_swim();</a>
+<a name="ln127">}</a>
+<a name="ln128"> </a>
+<a name="ln129">bool player::submerged() const</a>
+<a name="ln130">{</a>
+<a name="ln131">    return false;</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">bool player::floundering() const</a>
+<a name="ln135">{</a>
+<a name="ln136">    return in_water() &amp;&amp; !can_swim() &amp;&amp; !extra_balanced();</a>
+<a name="ln137">}</a>
+<a name="ln138"> </a>
+<a name="ln139">bool player::extra_balanced() const</a>
+<a name="ln140">{</a>
+<a name="ln141">    const dungeon_feature_type grid = grd(pos());</a>
+<a name="ln142">    return species == SP_GREY_DRACONIAN</a>
+<a name="ln143">              || form == transformation::tree</a>
+<a name="ln144">              || grid == DNGN_SHALLOW_WATER</a>
+<a name="ln145">                  &amp;&amp; (species == SP_NAGA // tails, not feet</a>
+<a name="ln146">                      || body_size(PSIZE_BODY) &gt;= SIZE_LARGE)</a>
+<a name="ln147">                  &amp;&amp; form_keeps_mutations();</a>
+<a name="ln148">}</a>
+<a name="ln149"> </a>
+<a name="ln150">int player::get_hit_dice() const</a>
+<a name="ln151">{</a>
+<a name="ln152">    return experience_level;</a>
+<a name="ln153">}</a>
+<a name="ln154"> </a>
+<a name="ln155">int player::get_experience_level() const</a>
+<a name="ln156">{</a>
+<a name="ln157">    return experience_level;</a>
+<a name="ln158">}</a>
+<a name="ln159"> </a>
+<a name="ln160">int player::get_max_xl() const</a>
+<a name="ln161">{</a>
+<a name="ln162">    return 27 - get_mutation_level(MUT_INEXPERIENCED) * RU_SAC_XP_LEVELS;</a>
+<a name="ln163">}</a>
+<a name="ln164"> </a>
+<a name="ln165">bool player::can_pass_through_feat(dungeon_feature_type grid) const</a>
+<a name="ln166">{</a>
+<a name="ln167">    return !feat_is_solid(grid) &amp;&amp; grid != DNGN_MALIGN_GATEWAY;</a>
+<a name="ln168">}</a>
+<a name="ln169"> </a>
+<a name="ln170">bool player::is_habitable_feat(dungeon_feature_type actual_grid) const</a>
+<a name="ln171">{</a>
+<a name="ln172">    return can_pass_through_feat(actual_grid)</a>
+<a name="ln173">           &amp;&amp; !is_feat_dangerous(actual_grid);</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">size_type player::body_size(size_part_type psize, bool base) const</a>
+<a name="ln177">{</a>
+<a name="ln178">    if (base)</a>
+<a name="ln179">        return species_size(species, psize);</a>
+<a name="ln180">    else</a>
+<a name="ln181">    {</a>
+<a name="ln182">        size_type tf_size = get_form()-&gt;size;</a>
+<a name="ln183">        return tf_size == SIZE_CHARACTER ? species_size(species, psize)</a>
+<a name="ln184">                                         : tf_size;</a>
+<a name="ln185">    }</a>
+<a name="ln186">}</a>
+<a name="ln187"> </a>
+<a name="ln188">int player::damage_type(int)</a>
+<a name="ln189">{</a>
+<a name="ln190">    if (const item_def* wp = weapon())</a>
+<a name="ln191">        return get_vorpal_type(*wp);</a>
+<a name="ln192">    else if (form == transformation::blade_hands)</a>
+<a name="ln193">        return DVORP_SLICING;</a>
+<a name="ln194">    else if (has_usable_claws())</a>
+<a name="ln195">        return DVORP_CLAWING;</a>
+<a name="ln196">    else if (has_usable_tentacles())</a>
+<a name="ln197">        return DVORP_TENTACLE;</a>
+<a name="ln198"> </a>
+<a name="ln199">    return DVORP_CRUSHING;</a>
+<a name="ln200">}</a>
+<a name="ln201"> </a>
+<a name="ln202">/**</a>
+<a name="ln203"> * What weapon brand does the player attack with in melee?</a>
+<a name="ln204"> */</a>
+<a name="ln205">brand_type player::damage_brand(int)</a>
+<a name="ln206">{</a>
+<a name="ln207">    // confusing touch always overrides</a>
+<a name="ln208">    if (duration[DUR_CONFUSING_TOUCH])</a>
+<a name="ln209">        return SPWPN_CONFUSE;</a>
+<a name="ln210"> </a>
+<a name="ln211">    const int wpn = equip[EQ_WEAPON];</a>
+<a name="ln212">    if (wpn != -1 &amp;&amp; !melded[EQ_WEAPON])</a>
+<a name="ln213">    {</a>
+<a name="ln214">        if (is_range_weapon(inv[wpn]))</a>
+<a name="ln215">            return SPWPN_NORMAL; // XXX: check !is_melee_weapon instead?</a>
+<a name="ln216">        return get_weapon_brand(inv[wpn]);</a>
+<a name="ln217">    }</a>
+<a name="ln218"> </a>
+<a name="ln219">    // unarmed</a>
+<a name="ln220"> </a>
+<a name="ln221">    return get_form()-&gt;get_uc_brand();</a>
+<a name="ln222">}</a>
+<a name="ln223"> </a>
+<a name="ln224"> </a>
+<a name="ln225">/**</a>
+<a name="ln226"> * Return the delay caused by attacking with your weapon and this projectile.</a>
+<a name="ln227"> *</a>
+<a name="ln228"> * @param projectile  The projectile to be fired/thrown, if any.</a>
+<a name="ln229"> * @param rescale     Whether to re-scale the time to account for the fact that</a>
+<a name="ln230"> *                    finesse doesn't stack with haste.</a>
+<a name="ln231"> * @return            A random_var representing the range of possible values of</a>
+<a name="ln232"> *                    attack delay. It can be casted to an int, in which case</a>
+<a name="ln233"> *                    its value is determined by the appropriate rolls.</a>
+<a name="ln234"> */</a>
+<a name="ln235">random_var player::attack_delay(const item_def *projectile, bool rescale) const</a>
+<a name="ln236">{</a>
+<a name="ln237">    const item_def* weap = weapon();</a>
+<a name="ln238">    random_var attk_delay(15);</a>
+<a name="ln239">    // a semi-arbitrary multiplier, to minimize loss of precision from integer</a>
+<a name="ln240">    // math.</a>
+<a name="ln241">    const int DELAY_SCALE = 20;</a>
+<a name="ln242">    const int base_shield_penalty = adjusted_shield_penalty(DELAY_SCALE);</a>
+<a name="ln243"> </a>
+<a name="ln244">    if (projectile &amp;&amp; is_launched(this, weap, *projectile) == launch_retval::THROWN)</a>
+<a name="ln245">    {</a>
+<a name="ln246">        // Thrown weapons use 10 + projectile damage to determine base delay.</a>
+<a name="ln247">        const skill_type wpn_skill = SK_THROWING;</a>
+<a name="ln248">        const int projectile_delay = 10 + property(*projectile, PWPN_DAMAGE) / 2;</a>
+<a name="ln249">        attk_delay = random_var(projectile_delay);</a>
+<a name="ln250">        attk_delay -= div_rand_round(random_var(you.skill(wpn_skill, 10)),</a>
+<a name="ln251">                                     DELAY_SCALE);</a>
+<a name="ln252"> </a>
+<a name="ln253">        // apply minimum to weapon skill modification</a>
+<a name="ln254">        attk_delay = rv::max(attk_delay,</a>
+<a name="ln255">                random_var(FASTEST_PLAYER_THROWING_SPEED));</a>
+<a name="ln256">    }</a>
+<a name="ln257">    else if (!projectile &amp;&amp; !weap)</a>
+<a name="ln258">    {</a>
+<a name="ln259">        int sk = form_uses_xl() ? experience_level * 10 :</a>
+<a name="ln260">                                  skill(SK_UNARMED_COMBAT, 10);</a>
+<a name="ln261">        attk_delay = random_var(10) - div_rand_round(random_var(sk), 27*2);</a>
+<a name="ln262">    }</a>
+<a name="ln263">    else if (weap &amp;&amp;</a>
+<a name="ln264">             (projectile ? projectile-&gt;launched_by(*weap)</a>
+<a name="ln265">                         : is_melee_weapon(*weap)))</a>
+<a name="ln266">    {</a>
+<a name="ln267">        const skill_type wpn_skill = item_attack_skill(*weap);</a>
+<a name="ln268">        // Cap skill contribution to mindelay skill, so that rounding</a>
+<a name="ln269">        // doesn't make speed brand benefit from higher skill.</a>
+<a name="ln270">        const int wpn_sklev = min(you.skill(wpn_skill, 10),</a>
+<a name="ln271">                                  10 * weapon_min_delay_skill(*weap));</a>
+<a name="ln272"> </a>
+<a name="ln273">        attk_delay = random_var(property(*weap, PWPN_SPEED));</a>
+<a name="ln274">        attk_delay -= div_rand_round(random_var(wpn_sklev), DELAY_SCALE);</a>
+<a name="ln275">        if (get_weapon_brand(*weap) == SPWPN_SPEED)</a>
+<a name="ln276">            attk_delay = div_rand_round(attk_delay * 2, 3);</a>
+<a name="ln277">    }</a>
+<a name="ln278"> </a>
+<a name="ln279">    // At the moment it never gets this low anyway.</a>
+<a name="ln280">    attk_delay = rv::max(attk_delay, random_var(3));</a>
+<a name="ln281"> </a>
+<a name="ln282">    if (base_shield_penalty)</a>
+<a name="ln283">    {</a>
+<a name="ln284">        // Calculate this separately to avoid overflowing the weights in</a>
+<a name="ln285">        // the random_var.</a>
+<a name="ln286">        random_var shield_penalty =</a>
+<a name="ln287">            div_rand_round(rv::min(rv::roll_dice(1, base_shield_penalty),</a>
+<a name="ln288">                                   rv::roll_dice(1, base_shield_penalty)),</a>
+<a name="ln289">                           DELAY_SCALE);</a>
+<a name="ln290">        attk_delay += shield_penalty;</a>
+<a name="ln291">    }</a>
+<a name="ln292"> </a>
+<a name="ln293">    if (you.duration[DUR_FINESSE])</a>
+<a name="ln294">    {</a>
+<a name="ln295">        ASSERT(!you.duration[DUR_BERSERK]);</a>
+<a name="ln296">        // Finesse shouldn't stack with Haste, so we make this attack take</a>
+<a name="ln297">        // longer so when Haste speeds it up, only Finesse will apply.</a>
+<a name="ln298">        if (you.duration[DUR_HASTE] &amp;&amp; rescale)</a>
+<a name="ln299">            attk_delay = haste_mul(attk_delay);</a>
+<a name="ln300">        attk_delay = div_rand_round(attk_delay, 2);</a>
+<a name="ln301">    }</a>
+<a name="ln302"> </a>
+<a name="ln303">    // TODO: does this really have to depend on `you.time_taken`?  In basic</a>
+<a name="ln304">    // cases at least, `you.time_taken` is just `player_speed()`. See</a>
+<a name="ln305">    // `_prep_input`.</a>
+<a name="ln306">    return rv::max(div_rand_round(attk_delay * you.time_taken, BASELINE_DELAY),</a>
+<a name="ln307">                   random_var(2));</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">// Returns the item in the given equipment slot, nullptr if the slot is empty.</a>
+<a name="ln311">// eq must be in [EQ_WEAPON, EQ_RING_AMULET], or bad things will happen.</a>
+<a name="ln312">item_def *player::slot_item(equipment_type eq, bool include_melded) const</a>
+<a name="ln313">{</a>
+<a name="ln314">    ASSERT_RANGE(eq, EQ_FIRST_EQUIP, NUM_EQUIP);</a>
+<a name="ln315"> </a>
+<a name="ln316">    const int item = equip[eq];</a>
+<a name="ln317">    if (item == -1 || !include_melded &amp;&amp; melded[eq])</a>
+<a name="ln318">        return nullptr;</a>
+<a name="ln319">    return const_cast&lt;item_def *&gt;(&amp;inv[item]);</a>
+<a name="ln320">}</a>
+<a name="ln321"> </a>
+<a name="ln322">// Returns the item in the player's weapon slot.</a>
+<a name="ln323">item_def *player::weapon(int /* which_attack */) const</a>
+<a name="ln324">{</a>
+<a name="ln325">    if (melded[EQ_WEAPON])</a>
+<a name="ln326">        return nullptr;</a>
+<a name="ln327"> </a>
+<a name="ln328">    return slot_item(EQ_WEAPON, false);</a>
+<a name="ln329">}</a>
+<a name="ln330"> </a>
+<a name="ln331">// Give hands required to wield weapon.</a>
+<a name="ln332">hands_reqd_type player::hands_reqd(const item_def &amp;item, bool base) const</a>
+<a name="ln333">{</a>
+<a name="ln334">    if (species == SP_FORMICID)</a>
+<a name="ln335">        return HANDS_ONE;</a>
+<a name="ln336">    else</a>
+<a name="ln337">        return actor::hands_reqd(item, base);</a>
+<a name="ln338">}</a>
+<a name="ln339"> </a>
+<a name="ln340">bool player::can_wield(const item_def&amp; item, bool ignore_curse,</a>
+<a name="ln341">                       bool ignore_brand, bool ignore_shield,</a>
+<a name="ln342">                       bool ignore_transform) const</a>
+<a name="ln343">{</a>
+<a name="ln344">    if (equip[EQ_WEAPON] != -1 &amp;&amp; !ignore_curse)</a>
+<a name="ln345">    {</a>
+<a name="ln346">        if (inv[equip[EQ_WEAPON]].cursed())</a>
+<a name="ln347">            return false;</a>
+<a name="ln348">    }</a>
+<a name="ln349"> </a>
+<a name="ln350">    // Unassigned means unarmed combat.</a>
+<a name="ln351">    const bool two_handed = item.base_type == OBJ_UNASSIGNED</a>
+<a name="ln352">                            || hands_reqd(item) == HANDS_TWO;</a>
+<a name="ln353"> </a>
+<a name="ln354">    if (two_handed &amp;&amp; (</a>
+<a name="ln355">        (!ignore_shield &amp;&amp; shield())</a>
+<a name="ln356">        || get_mutation_level(MUT_MISSING_HAND)))</a>
+<a name="ln357">    {</a>
+<a name="ln358">        return false;</a>
+<a name="ln359">    }</a>
+<a name="ln360"> </a>
+<a name="ln361">    return could_wield(item, ignore_brand, ignore_transform);</a>
+<a name="ln362">}</a>
+<a name="ln363"> </a>
+<a name="ln364">/**</a>
+<a name="ln365"> * Checks whether the player could ever wield the given weapon, regardless of</a>
+<a name="ln366"> * what they're currently wielding, transformed into, or any other state.</a>
+<a name="ln367"> *</a>
+<a name="ln368"> * @param item              The item to wield.</a>
+<a name="ln369"> * @param ignore_brand      Whether to disregard the weapon's brand.</a>
+<a name="ln370"> * @return                  Whether the player could potentially wield the</a>
+<a name="ln371"> *                          item.</a>
+<a name="ln372"> */</a>
+<a name="ln373">bool player::could_wield(const item_def &amp;item, bool ignore_brand,</a>
+<a name="ln374">                         bool ignore_transform, bool quiet) const</a>
+<a name="ln375">{</a>
+<a name="ln376">    // Only ogres and trolls can wield large rocks (for sandblast).</a>
+<a name="ln377">    if (!species_can_throw_large_rocks(you.species)</a>
+<a name="ln378">        &amp;&amp; item.is_type(OBJ_MISSILES, MI_LARGE_ROCK))</a>
+<a name="ln379">    {</a>
+<a name="ln380">        if (!quiet)</a>
+<a name="ln381">            mpr(&quot;That's too large and heavy for you to wield.&quot;);</a>
+<a name="ln382">        return false;</a>
+<a name="ln383">    }</a>
+<a name="ln384"> </a>
+<a name="ln385">    // Most non-weapon objects can be wielded, though there's rarely a point</a>
+<a name="ln386">    if (!is_weapon(item))</a>
+<a name="ln387">    {</a>
+<a name="ln388">        if (item.base_type == OBJ_ARMOUR || item.base_type == OBJ_JEWELLERY)</a>
+<a name="ln389">        {</a>
+<a name="ln390">            if (!quiet)</a>
+<a name="ln391">                mprf(&quot;You can't wield %s.&quot;, base_type_string(item));</a>
+<a name="ln392">            return false;</a>
+<a name="ln393">        }</a>
+<a name="ln394"> </a>
+<a name="ln395">        return true;</a>
+<a name="ln396">    }</a>
+<a name="ln397">    else if (species == SP_FELID)</a>
+<a name="ln398">    {</a>
+<a name="ln399">        if (!quiet)</a>
+<a name="ln400">            mpr(&quot;You can't use weapons.&quot;);</a>
+<a name="ln401">        return false;</a>
+<a name="ln402">    }</a>
+<a name="ln403"> </a>
+<a name="ln404">    const size_type bsize = body_size(PSIZE_TORSO, ignore_transform);</a>
+<a name="ln405">    // Small species wielding large weapons...</a>
+<a name="ln406">    if (!is_weapon_wieldable(item, bsize))</a>
+<a name="ln407">    {</a>
+<a name="ln408">        if (!quiet)</a>
+<a name="ln409">            mpr(&quot;That's too large for you to wield.&quot;);</a>
+<a name="ln410">        return false;</a>
+<a name="ln411">    }</a>
+<a name="ln412"> </a>
+<a name="ln413">    if (get_mutation_level(MUT_MISSING_HAND)</a>
+<a name="ln414">        &amp;&amp; you.hands_reqd(item) == HANDS_TWO)</a>
+<a name="ln415">    {</a>
+<a name="ln416">        return false;</a>
+<a name="ln417">    }</a>
+<a name="ln418"> </a>
+<a name="ln419">    // don't let undead/demonspawn wield holy weapons/scrolls (out of spite)</a>
+<a name="ln420">    if (!ignore_brand &amp;&amp; undead_or_demonic() &amp;&amp; is_holy_item(item))</a>
+<a name="ln421">    {</a>
+<a name="ln422">        if (!quiet)</a>
+<a name="ln423">            mpr(&quot;This weapon is holy and will not allow you to wield it.&quot;);</a>
+<a name="ln424">        return false;</a>
+<a name="ln425">    }</a>
+<a name="ln426"> </a>
+<a name="ln427">    return true;</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">// Returns the shield the player is wearing, or nullptr if none.</a>
+<a name="ln431">item_def *player::shield() const</a>
+<a name="ln432">{</a>
+<a name="ln433">    return slot_item(EQ_SHIELD, false);</a>
+<a name="ln434">}</a>
+<a name="ln435"> </a>
+<a name="ln436">void player::make_hungry(int hunger_increase, bool silent)</a>
+<a name="ln437">{</a>
+<a name="ln438">    if (hunger_increase &gt; 0)</a>
+<a name="ln439">        ::make_hungry(hunger_increase, silent);</a>
+<a name="ln440">    else if (hunger_increase &lt; 0)</a>
+<a name="ln441">        ::lessen_hunger(-hunger_increase, silent);</a>
+<a name="ln442">}</a>
+<a name="ln443"> </a>
+<a name="ln444">string player::name(description_level_type dt, bool, bool) const</a>
+<a name="ln445">{</a>
+<a name="ln446">    switch (dt)</a>
+<a name="ln447">    {</a>
+<a name="ln448">    case DESC_NONE:</a>
+<a name="ln449">        return &quot;&quot;;</a>
+<a name="ln450">    case DESC_A: case DESC_THE:</a>
+<a name="ln451">    default:</a>
+<a name="ln452">        return &quot;you&quot;;</a>
+<a name="ln453">    case DESC_YOUR:</a>
+<a name="ln454">    case DESC_ITS:</a>
+<a name="ln455">        return &quot;your&quot;;</a>
+<a name="ln456">    }</a>
+<a name="ln457">}</a>
+<a name="ln458"> </a>
+<a name="ln459">string player::pronoun(pronoun_type pro, bool /*force_visible*/) const</a>
+<a name="ln460">{</a>
+<a name="ln461">    return decline_pronoun(GENDER_YOU, pro);</a>
+<a name="ln462">}</a>
+<a name="ln463"> </a>
+<a name="ln464">string player::conj_verb(const string &amp;verb) const</a>
+<a name="ln465">{</a>
+<a name="ln466">    return conjugate_verb(verb, true);</a>
+<a name="ln467">}</a>
+<a name="ln468"> </a>
+<a name="ln469">/**</a>
+<a name="ln470"> * What's the singular form of a name for the player's current hands?</a>
+<a name="ln471"> *</a>
+<a name="ln472"> * @return A string describing the player's current hand or hand-equivalents.</a>
+<a name="ln473"> */</a>
+<a name="ln474">static string _hand_name_singular()</a>
+<a name="ln475">{</a>
+<a name="ln476">    if (!get_form()-&gt;hand_name.empty())</a>
+<a name="ln477">        return get_form()-&gt;hand_name;</a>
+<a name="ln478"> </a>
+<a name="ln479">    if (you.species == SP_FELID)</a>
+<a name="ln480">        return &quot;paw&quot;;</a>
+<a name="ln481"> </a>
+<a name="ln482">    if (you.has_usable_claws())</a>
+<a name="ln483">        return &quot;claw&quot;;</a>
+<a name="ln484"> </a>
+<a name="ln485">    if (you.has_usable_tentacles())</a>
+<a name="ln486">        return &quot;tentacle&quot;;</a>
+<a name="ln487"> </a>
+<a name="ln488">    return &quot;hand&quot;;</a>
+<a name="ln489">}</a>
+<a name="ln490"> </a>
+<a name="ln491">/**</a>
+<a name="ln492"> * What's the the name for the player's hands?</a>
+<a name="ln493"> *</a>
+<a name="ln494"> * @param plural                Whether to use the plural, if possible.</a>
+<a name="ln495"> * @param can_plural[in,out]    Whether this name can be pluralized.</a>
+<a name="ln496"> * @return A string describing the player's current hand or hand-equivalents.</a>
+<a name="ln497"> */</a>
+<a name="ln498">string player::hand_name(bool plural, bool *can_plural) const</a>
+<a name="ln499">{</a>
+<a name="ln500">    bool _can_plural;</a>
+<a name="ln501">    if (can_plural == nullptr)</a>
+<a name="ln502">        can_plural = &amp;_can_plural;</a>
+<a name="ln503">    *can_plural = !get_mutation_level(MUT_MISSING_HAND);</a>
+<a name="ln504"> </a>
+<a name="ln505">    const string singular = _hand_name_singular();</a>
+<a name="ln506">    if (plural &amp;&amp; *can_plural)</a>
+<a name="ln507">        return pluralise(singular);</a>
+<a name="ln508"> </a>
+<a name="ln509">    return singular;</a>
+<a name="ln510">}</a>
+<a name="ln511"> </a>
+<a name="ln512">/**</a>
+<a name="ln513"> * What's the singular form of a name for the player's current feet?</a>
+<a name="ln514"> *</a>
+<a name="ln515"> * @param can_plural[in,out]    Whether this name can be pluralized.</a>
+<a name="ln516"> * @return A string describing the player's current feet or feet-equivalents.</a>
+<a name="ln517"> */</a>
+<a name="ln518">static string _foot_name_singular(bool *can_plural)</a>
+<a name="ln519">{</a>
+<a name="ln520">    if (!get_form()-&gt;foot_name.empty())</a>
+<a name="ln521">        return get_form()-&gt;foot_name;</a>
+<a name="ln522"> </a>
+<a name="ln523">    if (you.get_mutation_level(MUT_HOOVES) &gt;= 3)</a>
+<a name="ln524">        return &quot;hoof&quot;;</a>
+<a name="ln525"> </a>
+<a name="ln526">    if (you.has_usable_talons())</a>
+<a name="ln527">        return &quot;talon&quot;;</a>
+<a name="ln528"> </a>
+<a name="ln529">    if (you.has_usable_tentacles())</a>
+<a name="ln530">    {</a>
+<a name="ln531">        *can_plural = false;</a>
+<a name="ln532">        return &quot;tentacles&quot;;</a>
+<a name="ln533">    }</a>
+<a name="ln534"> </a>
+<a name="ln535">    if (you.species == SP_NAGA)</a>
+<a name="ln536">    {</a>
+<a name="ln537">        *can_plural = false;</a>
+<a name="ln538">        return &quot;underbelly&quot;;</a>
+<a name="ln539">    }</a>
+<a name="ln540"> </a>
+<a name="ln541">    if (you.species == SP_FELID)</a>
+<a name="ln542">        return &quot;paw&quot;;</a>
+<a name="ln543"> </a>
+<a name="ln544">    if (you.fishtail)</a>
+<a name="ln545">    {</a>
+<a name="ln546">        *can_plural = false;</a>
+<a name="ln547">        return &quot;tail&quot;;</a>
+<a name="ln548">    }</a>
+<a name="ln549"> </a>
+<a name="ln550">    return &quot;foot&quot;;</a>
+<a name="ln551">}</a>
+<a name="ln552"> </a>
+<a name="ln553">/**</a>
+<a name="ln554"> * What's the the name for the player's feet?</a>
+<a name="ln555"> *</a>
+<a name="ln556"> * @param plural                Whether to use the plural, if possible.</a>
+<a name="ln557"> * @param can_plural[in,out]    Whether this name can be pluralized.</a>
+<a name="ln558"> * @return A string describing the player's current feet or feet-equivalents.</a>
+<a name="ln559"> */</a>
+<a name="ln560">string player::foot_name(bool plural, bool *can_plural) const</a>
+<a name="ln561">{</a>
+<a name="ln562">    bool _can_plural;</a>
+<a name="ln563">    if (can_plural == nullptr)</a>
+<a name="ln564">        can_plural = &amp;_can_plural;</a>
+<a name="ln565">    *can_plural = true;</a>
+<a name="ln566"> </a>
+<a name="ln567">    const string singular = _foot_name_singular(can_plural);</a>
+<a name="ln568">    if (plural &amp;&amp; *can_plural)</a>
+<a name="ln569">        return pluralise(singular);</a>
+<a name="ln570"> </a>
+<a name="ln571">    return singular;</a>
+<a name="ln572">}</a>
+<a name="ln573"> </a>
+<a name="ln574">string player::arm_name(bool plural, bool *can_plural) const</a>
+<a name="ln575">{</a>
+<a name="ln576">    if (form_changed_physiology())</a>
+<a name="ln577">        return hand_name(plural, can_plural);</a>
+<a name="ln578"> </a>
+<a name="ln579">    if (can_plural != nullptr)</a>
+<a name="ln580">        *can_plural = true;</a>
+<a name="ln581"> </a>
+<a name="ln582">    string adj;</a>
+<a name="ln583">    string str = &quot;arm&quot;;</a>
+<a name="ln584"> </a>
+<a name="ln585">    if (species_is_draconian(you.species) || species == SP_NAGA)</a>
+<a name="ln586">        adj = &quot;scaled&quot;;</a>
+<a name="ln587">    else if (species == SP_TENGU)</a>
+<a name="ln588">        adj = &quot;feathered&quot;;</a>
+<a name="ln589">    else if (species == SP_MUMMY)</a>
+<a name="ln590">        adj = &quot;bandage-wrapped&quot;;</a>
+<a name="ln591">    else if (species == SP_OCTOPODE)</a>
+<a name="ln592">        str = &quot;tentacle&quot;;</a>
+<a name="ln593"> </a>
+<a name="ln594">    if (form == transformation::lich)</a>
+<a name="ln595">        adj = &quot;bony&quot;;</a>
+<a name="ln596">    else if (form == transformation::shadow)</a>
+<a name="ln597">        adj = &quot;shadowy&quot;;</a>
+<a name="ln598"> </a>
+<a name="ln599">    if (!adj.empty())</a>
+<a name="ln600">        str = adj + &quot; &quot; + str;</a>
+<a name="ln601"> </a>
+<a name="ln602">    if (plural)</a>
+<a name="ln603">        str = pluralise(str);</a>
+<a name="ln604"> </a>
+<a name="ln605">    return str;</a>
+<a name="ln606">}</a>
+<a name="ln607"> </a>
+<a name="ln608">/**</a>
+<a name="ln609"> * What name should be used for the player's means of unarmed attack?</a>
+<a name="ln610"> *</a>
+<a name="ln611"> * (E.g. for display in the top-right of the UI.)</a>
+<a name="ln612"> *</a>
+<a name="ln613"> * @return  A string describing the player's UC attack 'weapon'.</a>
+<a name="ln614"> */</a>
+<a name="ln615">string player::unarmed_attack_name() const</a>
+<a name="ln616">{</a>
+<a name="ln617">    string default_name = &quot;Nothing wielded&quot;;</a>
+<a name="ln618"> </a>
+<a name="ln619">    if (has_usable_claws(true))</a>
+<a name="ln620">    {</a>
+<a name="ln621">        if (species == SP_FELID)</a>
+<a name="ln622">            default_name = &quot;Teeth and claws&quot;;</a>
+<a name="ln623">        else</a>
+<a name="ln624">            default_name = &quot;Claws&quot;;</a>
+<a name="ln625">    }</a>
+<a name="ln626">    else if (has_usable_tentacles(true))</a>
+<a name="ln627">        default_name = &quot;Tentacles&quot;;</a>
+<a name="ln628"> </a>
+<a name="ln629">    return get_form()-&gt;get_uc_attack_name(default_name);</a>
+<a name="ln630">}</a>
+<a name="ln631"> </a>
+<a name="ln632">bool player::fumbles_attack()</a>
+<a name="ln633">{</a>
+<a name="ln634">    bool did_fumble = false;</a>
+<a name="ln635"> </a>
+<a name="ln636">    // Fumbling in shallow water.</a>
+<a name="ln637">    if (floundering()</a>
+<a name="ln638">        || liquefied_ground() &amp;&amp; you.duration[DUR_LIQUEFYING] == 0)</a>
+<a name="ln639">    {</a>
+<a name="ln640">        if (x_chance_in_y(3, 8))</a>
+<a name="ln641">        {</a>
+<a name="ln642">            mpr(&quot;Your unstable footing causes you to fumble your attack.&quot;);</a>
+<a name="ln643">            did_fumble = true;</a>
+<a name="ln644">        }</a>
+<a name="ln645">        if (floundering())</a>
+<a name="ln646">            learned_something_new(HINT_FUMBLING_SHALLOW_WATER);</a>
+<a name="ln647">    }</a>
+<a name="ln648">    return did_fumble;</a>
+<a name="ln649">}</a>
+<a name="ln650"> </a>
+<a name="ln651">void player::attacking(actor *other, bool ranged)</a>
+<a name="ln652">{</a>
+<a name="ln653">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln654"> </a>
+<a name="ln655">    if (!other)</a>
+<a name="ln656">        return;</a>
+<a name="ln657"> </a>
+<a name="ln658">    if (other-&gt;is_monster())</a>
+<a name="ln659">    {</a>
+<a name="ln660">        const monster* mon = other-&gt;as_monster();</a>
+<a name="ln661">        if (!mon-&gt;friendly() &amp;&amp; !mon-&gt;neutral())</a>
+<a name="ln662">            pet_target = mon-&gt;mindex();</a>
+<a name="ln663">    }</a>
+<a name="ln664"> </a>
+<a name="ln665">    if (ranged || mons_is_firewood(*(monster*) other))</a>
+<a name="ln666">        return;</a>
+<a name="ln667"> </a>
+<a name="ln668">    const int chance = pow(3, get_mutation_level(MUT_BERSERK) - 1);</a>
+<a name="ln669">    if (has_mutation(MUT_BERSERK) &amp;&amp; x_chance_in_y(chance, 100))</a>
+<a name="ln670">        go_berserk(false);</a>
+<a name="ln671">}</a>
+<a name="ln672"> </a>
+<a name="ln673">/**</a>
+<a name="ln674"> * Check to see if Chei slows down the berserking player.</a>
+<a name="ln675"> * @param intentional If true, this was initiated by the player, and additional</a>
+<a name="ln676"> *                    messages can be printed if we can't berserk.</a>
+<a name="ln677"> * @return            True if Chei will slow the player, false otherwise.</a>
+<a name="ln678"> */</a>
+<a name="ln679">static bool _god_prevents_berserk_haste(bool intentional)</a>
+<a name="ln680">{</a>
+<a name="ln681">    const god_type old_religion = you.religion;</a>
+<a name="ln682"> </a>
+<a name="ln683">    if (!have_passive(passive_t::no_haste))</a>
+<a name="ln684">        return false;</a>
+<a name="ln685"> </a>
+<a name="ln686">    // Chei makes berserk not speed you up.</a>
+<a name="ln687">    // Unintentional would be forgiven &quot;just this once&quot; every time.</a>
+<a name="ln688">    // Intentional could work as normal, but that would require storing</a>
+<a name="ln689">    // whether you transgressed to start it -- so we just consider this</a>
+<a name="ln690">    // a part of your penance.</a>
+<a name="ln691">    if (!intentional)</a>
+<a name="ln692">    {</a>
+<a name="ln693">        simple_god_message(&quot; protects you from inadvertent hurry.&quot;);</a>
+<a name="ln694">        return true;</a>
+<a name="ln695">    }</a>
+<a name="ln696"> </a>
+<a name="ln697">    did_god_conduct(DID_HASTY, 8);</a>
+<a name="ln698">    // Let's see if you've lost your religion...</a>
+<a name="ln699">    if (!you_worship(old_religion))</a>
+<a name="ln700">        return false;</a>
+<a name="ln701"> </a>
+<a name="ln702">    simple_god_message(&quot; forces you to slow down.&quot;);</a>
+<a name="ln703">    return true;</a>
+<a name="ln704">}</a>
+<a name="ln705"> </a>
+<a name="ln706">/**</a>
+<a name="ln707"> * Make the player go berserk!</a>
+<a name="ln708"> * @param intentional If true, this was initiated by the player, and additional</a>
+<a name="ln709"> *                    messages can be printed if we can't berserk.</a>
+<a name="ln710"> * @param potion      If true, this was caused by the player quaffing !berserk;</a>
+<a name="ln711"> *                    and we get the same additional messages as when</a>
+<a name="ln712"> *                    intentional is true.</a>
+<a name="ln713"> * @return            True if we went berserk, false otherwise.</a>
+<a name="ln714"> */</a>
+<a name="ln715">bool player::go_berserk(bool intentional, bool potion)</a>
+<a name="ln716">{</a>
+<a name="ln717">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln718"> </a>
+<a name="ln719">    if (!you.can_go_berserk(intentional, potion))</a>
+<a name="ln720">        return false;</a>
+<a name="ln721"> </a>
+<a name="ln722">    if (crawl_state.game_is_hints())</a>
+<a name="ln723">        Hints.hints_berserk_counter++;</a>
+<a name="ln724"> </a>
+<a name="ln725">    mpr(&quot;A red film seems to cover your vision as you go berserk!&quot;);</a>
+<a name="ln726"> </a>
+<a name="ln727">    if (you.duration[DUR_FINESSE] &gt; 0)</a>
+<a name="ln728">    {</a>
+<a name="ln729">        you.duration[DUR_FINESSE] = 0; // Totally incompatible.</a>
+<a name="ln730">        mpr(&quot;Your finesse ends abruptly.&quot;);</a>
+<a name="ln731">    }</a>
+<a name="ln732"> </a>
+<a name="ln733">    if (!_god_prevents_berserk_haste(intentional))</a>
+<a name="ln734">        mpr(&quot;You feel yourself moving faster!&quot;);</a>
+<a name="ln735"> </a>
+<a name="ln736">    mpr(&quot;You feel mighty!&quot;);</a>
+<a name="ln737"> </a>
+<a name="ln738">    const int berserk_duration = (20 + random2avg(19,2)) / 2;</a>
+<a name="ln739">    you.increase_duration(DUR_BERSERK, berserk_duration);</a>
+<a name="ln740"> </a>
+<a name="ln741">    // Apply Berserk's +50% Current/Max HP.</a>
+<a name="ln742">    calc_hp(true, false);</a>
+<a name="ln743"> </a>
+<a name="ln744">    you.berserk_penalty = 0;</a>
+<a name="ln745"> </a>
+<a name="ln746">    you.redraw_quiver = true; // Account for no firing.</a>
+<a name="ln747"> </a>
+<a name="ln748">    if (player_equip_unrand(UNRAND_ZEALOT_SWORD))</a>
+<a name="ln749">        for (monster_near_iterator mi(you.pos(), LOS_NO_TRANS); mi; ++mi)</a>
+<a name="ln750">            if (mi-&gt;friendly())</a>
+<a name="ln751">                mi-&gt;go_berserk(false);</a>
+<a name="ln752"> </a>
+<a name="ln753">    return true;</a>
+<a name="ln754">}</a>
+<a name="ln755"> </a>
+<a name="ln756">bool player::can_go_berserk() const</a>
+<a name="ln757">{</a>
+<a name="ln758">    return can_go_berserk(false);</a>
+<a name="ln759">}</a>
+<a name="ln760"> </a>
+<a name="ln761">bool player::can_go_berserk(bool intentional, bool potion, bool quiet,</a>
+<a name="ln762">                            string *reason, bool temp) const</a>
+<a name="ln763">{</a>
+<a name="ln764">    const bool verbose = (intentional || potion) &amp;&amp; !quiet;</a>
+<a name="ln765">    string msg;</a>
+<a name="ln766">    bool success = false;</a>
+<a name="ln767"> </a>
+<a name="ln768">    if (berserk() &amp;&amp; temp)</a>
+<a name="ln769">        msg = &quot;You're already berserk!&quot;;</a>
+<a name="ln770">    else if (duration[DUR_BERSERK_COOLDOWN] &amp;&amp; temp)</a>
+<a name="ln771">        msg = &quot;You're still recovering from your berserk rage.&quot;;</a>
+<a name="ln772">    else if (duration[DUR_DEATHS_DOOR] &amp;&amp; temp)</a>
+<a name="ln773">        msg = &quot;You can't enter a blood rage from death's door.&quot;;</a>
+<a name="ln774">    else if (beheld() &amp;&amp; !player_equip_unrand(UNRAND_DEMON_AXE) &amp;&amp; temp)</a>
+<a name="ln775">        msg = &quot;You are too mesmerised to rage.&quot;;</a>
+<a name="ln776">    else if (afraid() &amp;&amp; temp)</a>
+<a name="ln777">        msg = &quot;You are too terrified to rage.&quot;;</a>
+<a name="ln778">    else if (!intentional &amp;&amp; !potion &amp;&amp; clarity() &amp;&amp; temp)</a>
+<a name="ln779">        msg = &quot;You're too calm and focused to rage.&quot;;</a>
+<a name="ln780">    else if (is_lifeless_undead(temp))</a>
+<a name="ln781">        msg = &quot;You cannot raise a blood rage in your lifeless body.&quot;;</a>
+<a name="ln782">    else if (stasis())</a>
+<a name="ln783">        msg = &quot;Your stasis prevents you from going berserk.&quot;;</a>
+<a name="ln784">    else</a>
+<a name="ln785">        success = true;</a>
+<a name="ln786"> </a>
+<a name="ln787">    if (!success)</a>
+<a name="ln788">    {</a>
+<a name="ln789">        if (verbose)</a>
+<a name="ln790">            mpr(msg);</a>
+<a name="ln791">        if (reason)</a>
+<a name="ln792">            *reason = msg;</a>
+<a name="ln793">    }</a>
+<a name="ln794">    return success;</a>
+<a name="ln795">}</a>
+<a name="ln796"> </a>
+<a name="ln797">bool player::berserk() const</a>
+<a name="ln798">{</a>
+<a name="ln799">    return duration[DUR_BERSERK];</a>
+<a name="ln800">}</a>
+<a name="ln801"> </a>
+<a name="ln802">bool player::antimagic_susceptible() const</a>
+<a name="ln803">{</a>
+<a name="ln804">    // Maybe check for having non-zero (max) MP?</a>
+<a name="ln805">    return true;</a>
+<a name="ln806">}</a>
+<a name="ln807"> </a>
+<a name="ln808">bool player::is_web_immune() const</a>
+<a name="ln809">{</a>
+<a name="ln810">    // Spider form</a>
+<a name="ln811">    return form == transformation::spider;</a>
+<a name="ln812">}</a>
+<a name="ln813"> </a>
+<a name="ln814">bool player::shove(const char* feat_name)</a>
+<a name="ln815">{</a>
+<a name="ln816">    for (distance_iterator di(pos()); di; ++di)</a>
+<a name="ln817">        if (in_bounds(*di) &amp;&amp; !actor_at(*di) &amp;&amp; !is_feat_dangerous(grd(*di))</a>
+<a name="ln818">            &amp;&amp; can_pass_through_feat(grd(*di)))</a>
+<a name="ln819">        {</a>
+<a name="ln820">            moveto(*di);</a>
+<a name="ln821">            if (*feat_name)</a>
+<a name="ln822">                mprf(&quot;You are pushed out of the %s.&quot;, feat_name);</a>
+<a name="ln823">            dprf(&quot;Moved to (%d, %d).&quot;, pos().x, pos().y);</a>
+<a name="ln824">            return true;</a>
+<a name="ln825">        }</a>
+<a name="ln826">    return false;</a>
+<a name="ln827">}</a>
+<a name="ln828"> </a>
+<a name="ln829">/*</a>
+<a name="ln830"> * Calculate base constriction damage.</a>
+<a name="ln831"> *</a>
+<a name="ln832"> * @param direct True if this is for direct constriction, false otherwise (e.g.</a>
+<a name="ln833"> *               Borg's Vile Clutch), false otherwise.</a>
+<a name="ln834"> * @returns The base damage.</a>
+<a name="ln835"> */</a>
+<a name="ln836">int player::constriction_damage(bool direct) const</a>
+<a name="ln837">{</a>
+<a name="ln838">    if (direct)</a>
+<a name="ln839">        return roll_dice(2, div_rand_round(strength(), 5));</a>
+<a name="ln840"> </a>
+<a name="ln841">    return roll_dice(2, div_rand_round(70 +</a>
+<a name="ln842">                calc_spell_power(SPELL_BORGNJORS_VILE_CLUTCH, true), 20));</a>
+<a name="ln843">}</a>
+<a name="ln844"> </a>
+<a name="ln845">/**</a>
+<a name="ln846"> * How many heads does the player have, in their current form?</a>
+<a name="ln847"> *</a>
+<a name="ln848"> * Currently only checks for hydra form.</a>
+<a name="ln849"> */</a>
+<a name="ln850">int player::heads() const</a>
+<a name="ln851">{</a>
+<a name="ln852">    if (props.exists(HYDRA_FORM_HEADS_KEY))</a>
+<a name="ln853">        return props[HYDRA_FORM_HEADS_KEY].get_int();</a>
+<a name="ln854">    return 1; // not actually always true</a>
+<a name="ln855">}</a>
+
+</code></pre>
+<div class="balloon" rel="317"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="638"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

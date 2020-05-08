@@ -1,0 +1,1594 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>target.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#include &quot;target.h&quot;</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &lt;cmath&gt;</a>
+<a name="ln6">#include &lt;utility&gt; // swap</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;cloud.h&quot;</a>
+<a name="ln9">#include &quot;coord.h&quot;</a>
+<a name="ln10">#include &quot;coordit.h&quot;</a>
+<a name="ln11">#include &quot;directn.h&quot;</a>
+<a name="ln12">#include &quot;english.h&quot;</a>
+<a name="ln13">#include &quot;env.h&quot;</a>
+<a name="ln14">#include &quot;fight.h&quot;</a>
+<a name="ln15">#include &quot;god-abil.h&quot;</a>
+<a name="ln16">#include &quot;libutil.h&quot;</a>
+<a name="ln17">#include &quot;los-def.h&quot;</a>
+<a name="ln18">#include &quot;losglobal.h&quot;</a>
+<a name="ln19">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln20">#include &quot;spl-damage.h&quot;</a>
+<a name="ln21">#include &quot;spl-goditem.h&quot; // player_is_debuffable</a>
+<a name="ln22">#include &quot;spl-other.h&quot;</a>
+<a name="ln23">#include &quot;stringutil.h&quot;</a>
+<a name="ln24">#include &quot;terrain.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">#define notify_fail(x) (why_not = (x), false)</a>
+<a name="ln27"> </a>
+<a name="ln28">static string _wallmsg(coord_def c)</a>
+<a name="ln29">{</a>
+<a name="ln30">    ASSERT(map_bounds(c)); // there'd be an information leak</a>
+<a name="ln31">    const char *wall = feat_type_name(grd(c));</a>
+<a name="ln32">    return &quot;There is &quot; + article_a(wall) + &quot; there.&quot;;</a>
+<a name="ln33">}</a>
+<a name="ln34"> </a>
+<a name="ln35">bool targeter::set_aim(coord_def a)</a>
+<a name="ln36">{</a>
+<a name="ln37">    // This matches a condition in direction_chooser::move_is_ok().</a>
+<a name="ln38">    if (agent &amp;&amp; !can_affect_unseen() &amp;&amp;</a>
+<a name="ln39">            !cell_see_cell(agent-&gt;pos(), a, LOS_NO_TRANS))</a>
+<a name="ln40">    {</a>
+<a name="ln41">        return false;</a>
+<a name="ln42">    }</a>
+<a name="ln43"> </a>
+<a name="ln44">    aim = a;</a>
+<a name="ln45">    return true;</a>
+<a name="ln46">}</a>
+<a name="ln47"> </a>
+<a name="ln48">bool targeter::can_affect_outside_range()</a>
+<a name="ln49">{</a>
+<a name="ln50">    return false;</a>
+<a name="ln51">}</a>
+<a name="ln52"> </a>
+<a name="ln53">bool targeter::can_affect_unseen()</a>
+<a name="ln54">{</a>
+<a name="ln55">    return false;</a>
+<a name="ln56">}</a>
+<a name="ln57"> </a>
+<a name="ln58">bool targeter::can_affect_walls()</a>
+<a name="ln59">{</a>
+<a name="ln60">    return false;</a>
+<a name="ln61">}</a>
+<a name="ln62"> </a>
+<a name="ln63">bool targeter::anyone_there(coord_def loc)</a>
+<a name="ln64">{</a>
+<a name="ln65">    if (!map_bounds(loc))</a>
+<a name="ln66">        return false;</a>
+<a name="ln67">    if (agent &amp;&amp; agent-&gt;is_player())</a>
+<a name="ln68">        return env.map_knowledge(loc).monsterinfo();</a>
+<a name="ln69">    return actor_at(loc);</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">bool targeter::has_additional_sites(coord_def /*loc*/)</a>
+<a name="ln73">{</a>
+<a name="ln74">    return false;</a>
+<a name="ln75">}</a>
+<a name="ln76"> </a>
+<a name="ln77">bool targeter::affects_monster(const monster_info&amp; /*mon*/)</a>
+<a name="ln78">{</a>
+<a name="ln79">    return true; //TODO: false</a>
+<a name="ln80">}</a>
+<a name="ln81"> </a>
+<a name="ln82">targeter_beam::targeter_beam(const actor *act, int r, zap_type zap,</a>
+<a name="ln83">                               int pow, int min_ex_rad, int max_ex_rad) :</a>
+<a name="ln84">                               min_expl_rad(min_ex_rad),</a>
+<a name="ln85">                               max_expl_rad(max_ex_rad),</a>
+<a name="ln86">                               range(r)</a>
+<a name="ln87">{</a>
+<a name="ln88">    ASSERT(act);</a>
+<a name="ln89">    ASSERT(min_ex_rad &gt;= 0);</a>
+<a name="ln90">    ASSERT(max_ex_rad &gt;= 0);</a>
+<a name="ln91">    ASSERT(max_ex_rad &gt;= min_ex_rad);</a>
+<a name="ln92">    agent = act;</a>
+<a name="ln93">    beam.set_agent(act);</a>
+<a name="ln94">    origin = aim = act-&gt;pos();</a>
+<a name="ln95">    beam.attitude = ATT_FRIENDLY;</a>
+<a name="ln96">    zappy(zap, pow, false, beam);</a>
+<a name="ln97">    beam.is_tracer = true;</a>
+<a name="ln98">    beam.is_targeting = true;</a>
+<a name="ln99">    beam.range = range;</a>
+<a name="ln100">    beam.source = origin;</a>
+<a name="ln101">    beam.target = aim;</a>
+<a name="ln102">    beam.dont_stop_player = true;</a>
+<a name="ln103">    beam.friend_info.dont_stop = true;</a>
+<a name="ln104">    beam.foe_info.dont_stop = true;</a>
+<a name="ln105">    beam.ex_size = min_ex_rad;</a>
+<a name="ln106">    beam.aimed_at_spot = true;</a>
+<a name="ln107"> </a>
+<a name="ln108">    penetrates_targets = beam.pierce;</a>
+<a name="ln109">}</a>
+<a name="ln110"> </a>
+<a name="ln111">bool targeter_beam::set_aim(coord_def a)</a>
+<a name="ln112">{</a>
+<a name="ln113">    if (!targeter::set_aim(a))</a>
+<a name="ln114">        return false;</a>
+<a name="ln115"> </a>
+<a name="ln116">    bolt tempbeam = beam;</a>
+<a name="ln117"> </a>
+<a name="ln118">    tempbeam.target = aim;</a>
+<a name="ln119">    tempbeam.path_taken.clear();</a>
+<a name="ln120">    tempbeam.fire();</a>
+<a name="ln121">    path_taken = tempbeam.path_taken;</a>
+<a name="ln122"> </a>
+<a name="ln123">    if (max_expl_rad &gt; 0)</a>
+<a name="ln124">        set_explosion_aim(beam);</a>
+<a name="ln125"> </a>
+<a name="ln126">    return true;</a>
+<a name="ln127">}</a>
+<a name="ln128"> </a>
+<a name="ln129">void targeter_beam::set_explosion_aim(bolt tempbeam)</a>
+<a name="ln130">{</a>
+<a name="ln131">    set_explosion_target(tempbeam);</a>
+<a name="ln132">    tempbeam.use_target_as_pos = true;</a>
+<a name="ln133">    exp_map_min.init(INT_MAX);</a>
+<a name="ln134">    tempbeam.determine_affected_cells(exp_map_min, coord_def(), 0,</a>
+<a name="ln135">                                      min_expl_rad, true, true);</a>
+<a name="ln136">    exp_map_max.init(INT_MAX);</a>
+<a name="ln137">    tempbeam.determine_affected_cells(exp_map_max, coord_def(), 0,</a>
+<a name="ln138">                                      max_expl_rad, true, true);</a>
+<a name="ln139">}</a>
+<a name="ln140"> </a>
+<a name="ln141">void targeter_beam::set_explosion_target(bolt &amp;tempbeam)</a>
+<a name="ln142">{</a>
+<a name="ln143">    tempbeam.target = origin;</a>
+<a name="ln144">    for (auto c : path_taken)</a>
+<a name="ln145">    {</a>
+<a name="ln146">        if (cell_is_solid(c) &amp;&amp; !tempbeam.can_affect_wall(c))</a>
+<a name="ln147">            break;</a>
+<a name="ln148">        tempbeam.target = c;</a>
+<a name="ln149">        if (anyone_there(c) &amp;&amp; !tempbeam.ignores_monster(monster_at(c)))</a>
+<a name="ln150">            break;</a>
+<a name="ln151">    }</a>
+<a name="ln152">}</a>
+<a name="ln153"> </a>
+<a name="ln154">bool targeter_beam::valid_aim(coord_def a)</a>
+<a name="ln155">{</a>
+<a name="ln156">    if (a != origin &amp;&amp; !can_affect_unseen() &amp;&amp;</a>
+<a name="ln157">            !cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln158">    {</a>
+<a name="ln159">        if (agent-&gt;see_cell(a))</a>
+<a name="ln160">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln161">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln162">    }</a>
+<a name="ln163">    if ((origin - a).rdist() &gt; range)</a>
+<a name="ln164">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln165">    return true;</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">bool targeter_beam::can_affect_outside_range()</a>
+<a name="ln169">{</a>
+<a name="ln170">    // XXX is this everything?</a>
+<a name="ln171">    return max_expl_rad &gt; 0;</a>
+<a name="ln172">}</a>
+<a name="ln173"> </a>
+<a name="ln174">aff_type targeter_beam::is_affected(coord_def loc)</a>
+<a name="ln175">{</a>
+<a name="ln176">    bool on_path = false;</a>
+<a name="ln177">    int visit_count = 0;</a>
+<a name="ln178">    coord_def c;</a>
+<a name="ln179">    aff_type current = AFF_YES;</a>
+<a name="ln180">    for (auto pc : path_taken)</a>
+<a name="ln181">    {</a>
+<a name="ln182">        if (cell_is_solid(pc)</a>
+<a name="ln183">            &amp;&amp; !beam.can_affect_wall(pc)</a>
+<a name="ln184">            &amp;&amp; max_expl_rad &gt; 0)</a>
+<a name="ln185">        {</a>
+<a name="ln186">            break;</a>
+<a name="ln187">        }</a>
+<a name="ln188"> </a>
+<a name="ln189">        c = pc;</a>
+<a name="ln190">        if (c == loc)</a>
+<a name="ln191">        {</a>
+<a name="ln192">            visit_count++;</a>
+<a name="ln193">            if (max_expl_rad &gt; 0)</a>
+<a name="ln194">                on_path = true;</a>
+<a name="ln195">            else if (cell_is_solid(pc))</a>
+<a name="ln196">            {</a>
+<a name="ln197">                bool res = beam.can_affect_wall(pc);</a>
+<a name="ln198">                if (res)</a>
+<a name="ln199">                    return current;</a>
+<a name="ln200">                else</a>
+<a name="ln201">                    return AFF_NO;</a>
+<a name="ln202"> </a>
+<a name="ln203">            }</a>
+<a name="ln204">            else</a>
+<a name="ln205">                continue;</a>
+<a name="ln206">        }</a>
+<a name="ln207">        if (anyone_there(pc)</a>
+<a name="ln208">            &amp;&amp; !penetrates_targets</a>
+<a name="ln209">            &amp;&amp; !beam.ignores_monster(monster_at(pc)))</a>
+<a name="ln210">        {</a>
+<a name="ln211">            // We assume an exploding spell will always stop here.</a>
+<a name="ln212">            if (max_expl_rad &gt; 0)</a>
+<a name="ln213">                break;</a>
+<a name="ln214">            current = AFF_MAYBE;</a>
+<a name="ln215">        }</a>
+<a name="ln216">    }</a>
+<a name="ln217">    if (max_expl_rad &gt; 0)</a>
+<a name="ln218">    {</a>
+<a name="ln219">        if ((loc - c).rdist() &lt;= 9)</a>
+<a name="ln220">        {</a>
+<a name="ln221">            bool aff_wall = beam.can_affect_wall(loc);</a>
+<a name="ln222">            if (!cell_is_solid(loc) || aff_wall)</a>
+<a name="ln223">            {</a>
+<a name="ln224">                coord_def centre(9,9);</a>
+<a name="ln225">                if (exp_map_min(loc - c + centre) &lt; INT_MAX)</a>
+<a name="ln226">                {</a>
+<a name="ln227">                    return (!cell_is_solid(loc) || aff_wall)</a>
+<a name="ln228">                           ? AFF_YES : AFF_MAYBE;</a>
+<a name="ln229">                }</a>
+<a name="ln230">                if (exp_map_max(loc - c + centre) &lt; INT_MAX)</a>
+<a name="ln231">                    return AFF_MAYBE;</a>
+<a name="ln232">            }</a>
+<a name="ln233">        }</a>
+<a name="ln234">        else</a>
+<a name="ln235">            return on_path ? AFF_TRACER : AFF_NO;</a>
+<a name="ln236">    }</a>
+<a name="ln237"> </a>
+<a name="ln238">    return visit_count == 0 ? AFF_NO :</a>
+<a name="ln239">           visit_count == 1 ? AFF_YES :</a>
+<a name="ln240">                              AFF_MULTIPLE;</a>
+<a name="ln241">}</a>
+<a name="ln242"> </a>
+<a name="ln243">bool targeter_beam::affects_monster(const monster_info&amp; mon)</a>
+<a name="ln244">{</a>
+<a name="ln245">    //XXX: this is a disgusting hack that probably leaks information!</a>
+<a name="ln246">    //     bolt::is_harmless (and transitively, bolt::nasty_to) should</a>
+<a name="ln247">    //     take monster_infos instead.</a>
+<a name="ln248">    const monster* m = monster_at(mon.pos);</a>
+<a name="ln249">    if (!m)</a>
+<a name="ln250">        return false;</a>
+<a name="ln251"> </a>
+<a name="ln252">    if (beam.is_enchantment() &amp;&amp; beam.has_saving_throw()</a>
+<a name="ln253">        &amp;&amp; mon.res_magic() == MAG_IMMUNE)</a>
+<a name="ln254">    {</a>
+<a name="ln255">        return false;</a>
+<a name="ln256">    }</a>
+<a name="ln257"> </a>
+<a name="ln258">    // beckoning is useless against adjacent mons!</a>
+<a name="ln259">    // XXX: this should probably be somewhere else</a>
+<a name="ln260">    if (beam.flavour == BEAM_BECKONING)</a>
+<a name="ln261">        return grid_distance(mon.pos, you.pos()) &gt; 1;</a>
+<a name="ln262"> </a>
+<a name="ln263">    return !beam.is_harmless(m) || beam.nice_to(mon)</a>
+<a name="ln264">    // Inner flame affects allies without harming or helping them.</a>
+<a name="ln265">           || beam.flavour == BEAM_INNER_FLAME;</a>
+<a name="ln266">}</a>
+<a name="ln267"> </a>
+<a name="ln268">targeter_unravelling::targeter_unravelling(const actor *act, int r, int pow)</a>
+<a name="ln269">    : targeter_beam(act, r, ZAP_UNRAVELLING, pow, 1, 1)</a>
+<a name="ln270">{</a>
+<a name="ln271">}</a>
+<a name="ln272"> </a>
+<a name="ln273">/**</a>
+<a name="ln274"> * Will a casting of Violent Unravelling explode a target at the given loc?</a>
+<a name="ln275"> *</a>
+<a name="ln276"> * @param c     The location in question.</a>
+<a name="ln277"> * @return      Whether, to the player's knowledge, there's a valid target for</a>
+<a name="ln278"> *              Violent Unravelling at the given coordinate.</a>
+<a name="ln279"> */</a>
+<a name="ln280">static bool unravelling_explodes_at(const coord_def c)</a>
+<a name="ln281">{</a>
+<a name="ln282">    if (you.pos() == c &amp;&amp; player_is_debuffable())</a>
+<a name="ln283">        return true;</a>
+<a name="ln284"> </a>
+<a name="ln285">    const monster_info* mi = env.map_knowledge(c).monsterinfo();</a>
+<a name="ln286">    return mi &amp;&amp; mi-&gt;debuffable();</a>
+<a name="ln287">}</a>
+<a name="ln288"> </a>
+<a name="ln289">bool targeter_unravelling::set_aim(coord_def a)</a>
+<a name="ln290">{</a>
+<a name="ln291">    if (!targeter::set_aim(a))</a>
+<a name="ln292">        return false;</a>
+<a name="ln293"> </a>
+<a name="ln294">    bolt tempbeam = beam;</a>
+<a name="ln295"> </a>
+<a name="ln296">    tempbeam.target = aim;</a>
+<a name="ln297">    tempbeam.path_taken.clear();</a>
+<a name="ln298">    tempbeam.fire();</a>
+<a name="ln299">    path_taken = tempbeam.path_taken;</a>
+<a name="ln300"> </a>
+<a name="ln301">    bolt explosion_beam = beam;</a>
+<a name="ln302">    set_explosion_target(beam);</a>
+<a name="ln303">    if (unravelling_explodes_at(beam.target))</a>
+<a name="ln304">        min_expl_rad = 1;</a>
+<a name="ln305">    else</a>
+<a name="ln306">        min_expl_rad = 0;</a>
+<a name="ln307"> </a>
+<a name="ln308">    set_explosion_aim(beam);</a>
+<a name="ln309"> </a>
+<a name="ln310">    return true;</a>
+<a name="ln311">}</a>
+<a name="ln312"> </a>
+<a name="ln313">targeter_view::targeter_view()</a>
+<a name="ln314">{</a>
+<a name="ln315">    origin = aim = you.pos();</a>
+<a name="ln316">}</a>
+<a name="ln317"> </a>
+<a name="ln318">bool targeter_view::valid_aim(coord_def /*a*/)</a>
+<a name="ln319">{</a>
+<a name="ln320">    return true; // don't reveal map bounds</a>
+<a name="ln321">}</a>
+<a name="ln322"> </a>
+<a name="ln323">aff_type targeter_view::is_affected(coord_def loc)</a>
+<a name="ln324">{</a>
+<a name="ln325">    if (loc == aim)</a>
+<a name="ln326">        return AFF_YES;</a>
+<a name="ln327"> </a>
+<a name="ln328">    return AFF_NO;</a>
+<a name="ln329">}</a>
+<a name="ln330"> </a>
+<a name="ln331">targeter_smite::targeter_smite(const actor* act, int ran,</a>
+<a name="ln332">                                 int exp_min, int exp_max, bool wall_ok,</a>
+<a name="ln333">                                 bool (*affects_pos_func)(const coord_def &amp;)):</a>
+<a name="ln334">    exp_range_min(exp_min), exp_range_max(exp_max), range(ran),</a>
+<a name="ln335">    affects_walls(wall_ok), affects_pos(affects_pos_func)</a>
+<a name="ln336">{</a>
+<a name="ln337">    ASSERT(act);</a>
+<a name="ln338">    ASSERT(exp_min &gt;= 0);</a>
+<a name="ln339">    ASSERT(exp_max &gt;= 0);</a>
+<a name="ln340">    ASSERT(exp_min &lt;= exp_max);</a>
+<a name="ln341">    agent = act;</a>
+<a name="ln342">    origin = aim = act-&gt;pos();</a>
+<a name="ln343">}</a>
+<a name="ln344"> </a>
+<a name="ln345">bool targeter_smite::valid_aim(coord_def a)</a>
+<a name="ln346">{</a>
+<a name="ln347">    if (a != origin &amp;&amp; !cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln348">    {</a>
+<a name="ln349">        // Scrying/glass/tree/grate.</a>
+<a name="ln350">        if (agent &amp;&amp; agent-&gt;see_cell(a))</a>
+<a name="ln351">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln352">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln353">    }</a>
+<a name="ln354">    if ((origin - a).rdist() &gt; range)</a>
+<a name="ln355">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln356">    if (!affects_walls &amp;&amp; cell_is_solid(a))</a>
+<a name="ln357">        return notify_fail(_wallmsg(a));</a>
+<a name="ln358">    return true;</a>
+<a name="ln359">}</a>
+<a name="ln360"> </a>
+<a name="ln361">bool targeter_smite::set_aim(coord_def a)</a>
+<a name="ln362">{</a>
+<a name="ln363">    if (!targeter::set_aim(a))</a>
+<a name="ln364">        return false;</a>
+<a name="ln365"> </a>
+<a name="ln366">    if (exp_range_max &gt; 0)</a>
+<a name="ln367">    {</a>
+<a name="ln368">        bolt beam;</a>
+<a name="ln369">        beam.target = a;</a>
+<a name="ln370">        beam.use_target_as_pos = true;</a>
+<a name="ln371">        exp_map_min.init(INT_MAX);</a>
+<a name="ln372">        beam.determine_affected_cells(exp_map_min, coord_def(), 0,</a>
+<a name="ln373">                                      exp_range_min, true, true);</a>
+<a name="ln374">        exp_map_max.init(INT_MAX);</a>
+<a name="ln375">        beam.determine_affected_cells(exp_map_max, coord_def(), 0,</a>
+<a name="ln376">                                      exp_range_max, true, true);</a>
+<a name="ln377">    }</a>
+<a name="ln378">    return true;</a>
+<a name="ln379">}</a>
+<a name="ln380"> </a>
+<a name="ln381">bool targeter_smite::can_affect_outside_range()</a>
+<a name="ln382">{</a>
+<a name="ln383">    // XXX is this everything?</a>
+<a name="ln384">    return exp_range_max &gt; 0;</a>
+<a name="ln385">}</a>
+<a name="ln386"> </a>
+<a name="ln387">bool targeter_smite::can_affect_walls()</a>
+<a name="ln388">{</a>
+<a name="ln389">    return affects_walls;</a>
+<a name="ln390">}</a>
+<a name="ln391"> </a>
+<a name="ln392">aff_type targeter_smite::is_affected(coord_def loc)</a>
+<a name="ln393">{</a>
+<a name="ln394">    if (!valid_aim(aim))</a>
+<a name="ln395">        return AFF_NO;</a>
+<a name="ln396"> </a>
+<a name="ln397">    if (affects_pos &amp;&amp; !affects_pos(loc))</a>
+<a name="ln398">        return AFF_NO;</a>
+<a name="ln399"> </a>
+<a name="ln400">    if (loc == aim)</a>
+<a name="ln401">        return AFF_YES;</a>
+<a name="ln402"> </a>
+<a name="ln403">    if (exp_range_max &lt;= 0)</a>
+<a name="ln404">        return AFF_NO;</a>
+<a name="ln405"> </a>
+<a name="ln406">    if ((loc - aim).rdist() &gt; 9)</a>
+<a name="ln407">        return AFF_NO;</a>
+<a name="ln408">    coord_def centre(9,9);</a>
+<a name="ln409">    if (exp_map_min(loc - aim + centre) &lt; INT_MAX)</a>
+<a name="ln410">        return AFF_YES;</a>
+<a name="ln411">    if (exp_map_max(loc - aim + centre) &lt; INT_MAX)</a>
+<a name="ln412">        return AFF_MAYBE;</a>
+<a name="ln413"> </a>
+<a name="ln414">    return AFF_NO;</a>
+<a name="ln415">}</a>
+<a name="ln416"> </a>
+<a name="ln417">targeter_walljump::targeter_walljump() :</a>
+<a name="ln418">    targeter_smite(&amp;you, LOS_RADIUS, 1, 1, false, nullptr)</a>
+<a name="ln419">{</a>
+<a name="ln420">}</a>
+<a name="ln421"> </a>
+<a name="ln422">bool targeter_walljump::valid_aim(coord_def a)</a>
+<a name="ln423">{</a>
+<a name="ln424">    return wu_jian_can_wall_jump(a, why_not);</a>
+<a name="ln425">}</a>
+<a name="ln426"> </a>
+<a name="ln427">aff_type targeter_walljump::is_affected(coord_def loc)</a>
+<a name="ln428">{</a>
+<a name="ln429">    if (!valid_aim(aim))</a>
+<a name="ln430">        return AFF_NO;</a>
+<a name="ln431"> </a>
+<a name="ln432">    auto wall_jump_direction = (you.pos() - aim).sgn();</a>
+<a name="ln433">    auto wall_jump_landing_spot = (you.pos() + wall_jump_direction</a>
+<a name="ln434">                                   + wall_jump_direction);</a>
+<a name="ln435">    if (loc == wall_jump_landing_spot)</a>
+<a name="ln436">        return AFF_YES;</a>
+<a name="ln437"> </a>
+<a name="ln438">    if (loc.distance_from(wall_jump_landing_spot) == 1 &amp;&amp; monster_at(loc))</a>
+<a name="ln439">        return AFF_YES;</a>
+<a name="ln440"> </a>
+<a name="ln441">    return AFF_NO;</a>
+<a name="ln442">}</a>
+<a name="ln443"> </a>
+<a name="ln444">targeter_passwall::targeter_passwall(int max_range) :</a>
+<a name="ln445">    targeter_smite(&amp;you, max_range, 1, 1, true, nullptr)</a>
+<a name="ln446">{</a>
+<a name="ln447">}</a>
+<a name="ln448"> </a>
+<a name="ln449">bool targeter_passwall::valid_aim(coord_def a)</a>
+<a name="ln450">{</a>
+<a name="ln451">    passwall_path tmp_path(you, a - you.pos(), range);</a>
+<a name="ln452">    string failmsg;</a>
+<a name="ln453">    tmp_path.is_valid(&amp;failmsg);</a>
+<a name="ln454">    if (!tmp_path.spell_succeeds())</a>
+<a name="ln455">        return notify_fail(failmsg);</a>
+<a name="ln456">    return true;</a>
+<a name="ln457">}</a>
+<a name="ln458"> </a>
+<a name="ln459">bool targeter_passwall::set_aim(coord_def a)</a>
+<a name="ln460">{</a>
+<a name="ln461">    cur_path = make_unique&lt;passwall_path&gt;(you, a - you.pos(), range);</a>
+<a name="ln462">    return true;</a>
+<a name="ln463">}</a>
+<a name="ln464"> </a>
+<a name="ln465">aff_type targeter_passwall::is_affected(coord_def loc)</a>
+<a name="ln466">{</a>
+<a name="ln467">    if (!cur_path)</a>
+<a name="ln468">        return AFF_NO;</a>
+<a name="ln469">    // not very efficient...</a>
+<a name="ln470">    for (auto p : cur_path-&gt;path)</a>
+<a name="ln471">        if (p == loc)</a>
+<a name="ln472">            return AFF_YES;</a>
+<a name="ln473">    return AFF_NO;</a>
+<a name="ln474">}</a>
+<a name="ln475"> </a>
+<a name="ln476">bool targeter_passwall::can_affect_outside_range()</a>
+<a name="ln477">{</a>
+<a name="ln478">    return true;</a>
+<a name="ln479">}</a>
+<a name="ln480"> </a>
+<a name="ln481">bool targeter_passwall::can_affect_unseen()</a>
+<a name="ln482">{</a>
+<a name="ln483">    return true;</a>
+<a name="ln484">}</a>
+<a name="ln485"> </a>
+<a name="ln486">bool targeter_passwall::affects_monster(const monster_info&amp; /*mon*/)</a>
+<a name="ln487">{</a>
+<a name="ln488">    return false;</a>
+<a name="ln489">}</a>
+<a name="ln490"> </a>
+<a name="ln491">targeter_dig::targeter_dig(int max_range) :</a>
+<a name="ln492">    targeter_beam(&amp;you, max_range, ZAP_DIG, 0, 0, 0)</a>
+<a name="ln493">{</a>
+<a name="ln494">}</a>
+<a name="ln495"> </a>
+<a name="ln496">bool targeter_dig::valid_aim(coord_def a)</a>
+<a name="ln497">{</a>
+<a name="ln498">    if (a == origin)</a>
+<a name="ln499">        return notify_fail(&quot;Please select a direction to dig.&quot;);</a>
+<a name="ln500">    if ((origin - a).rdist() &gt; range || !in_bounds(a))</a>
+<a name="ln501">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln502">    int possible_squares_affected;</a>
+<a name="ln503">    if (aim_test_cache.count(a))</a>
+<a name="ln504">        possible_squares_affected = aim_test_cache[a];</a>
+<a name="ln505">    else</a>
+<a name="ln506">    {</a>
+<a name="ln507">        // TODO: maybe shouldn't use set_aim? ugly side-effect, but it does take</a>
+<a name="ln508">        // care of all the beam management.</a>
+<a name="ln509">        if (!set_aim(a))</a>
+<a name="ln510">            possible_squares_affected = -1; // can't happen?</a>
+<a name="ln511">        else</a>
+<a name="ln512">        {</a>
+<a name="ln513">            possible_squares_affected = 0;</a>
+<a name="ln514">            for (auto p : path_taken)</a>
+<a name="ln515">                if (beam.can_affect_wall(p) ||</a>
+<a name="ln516">                        in_bounds(p) &amp;&amp; env.map_knowledge(p).feat() == DNGN_UNSEEN)</a>
+<a name="ln517">                {</a>
+<a name="ln518">                    possible_squares_affected++;</a>
+<a name="ln519">                }</a>
+<a name="ln520">        }</a>
+<a name="ln521">        aim_test_cache[a] = possible_squares_affected;</a>
+<a name="ln522">    }</a>
+<a name="ln523">    if (possible_squares_affected == 0)</a>
+<a name="ln524">        return notify_fail(&quot;Digging in that direction won't affect any walls.&quot;);</a>
+<a name="ln525">    else if (possible_squares_affected &lt; 0)</a>
+<a name="ln526">        return false;</a>
+<a name="ln527">    else</a>
+<a name="ln528">        return true;</a>
+<a name="ln529">}</a>
+<a name="ln530"> </a>
+<a name="ln531">bool targeter_dig::can_affect_unseen()</a>
+<a name="ln532">{</a>
+<a name="ln533">    return true;</a>
+<a name="ln534">}</a>
+<a name="ln535"> </a>
+<a name="ln536">bool targeter_dig::affects_monster(const monster_info&amp; /*mon*/)</a>
+<a name="ln537">{</a>
+<a name="ln538">    return false;</a>
+<a name="ln539">}</a>
+<a name="ln540"> </a>
+<a name="ln541">bool targeter_dig::can_affect_walls()</a>
+<a name="ln542">{</a>
+<a name="ln543">    return true;</a>
+<a name="ln544">}</a>
+<a name="ln545"> </a>
+<a name="ln546">aff_type targeter_dig::is_affected(coord_def loc)</a>
+<a name="ln547">{</a>
+<a name="ln548">    aff_type current = AFF_YES;</a>
+<a name="ln549">    bool hit_barrier = false;</a>
+<a name="ln550">    for (auto pc : path_taken)</a>
+<a name="ln551">    {</a>
+<a name="ln552">        if (hit_barrier)</a>
+<a name="ln553">            return AFF_NO; // some previous iteration hit a barrier</a>
+<a name="ln554">        current = AFF_YES;</a>
+<a name="ln555">        // uses comparison to DNGN_UNSEEN so that this works sensibly with magic</a>
+<a name="ln556">        // mapping etc. TODO: console tracers use the same symbol/color as</a>
+<a name="ln557">        // mmapped walls.</a>
+<a name="ln558">        if (in_bounds(pc) &amp;&amp; env.map_knowledge(pc).feat() != DNGN_UNSEEN)</a>
+<a name="ln559">        {</a>
+<a name="ln560">            if (!cell_is_solid(pc))</a>
+<a name="ln561">                current = AFF_TRACER;</a>
+<a name="ln562">            else if (!beam.can_affect_wall(pc))</a>
+<a name="ln563">            {</a>
+<a name="ln564">                current = AFF_TRACER; // show tracer at the barrier cell</a>
+<a name="ln565">                hit_barrier = true;</a>
+<a name="ln566">            }</a>
+<a name="ln567">            // otherwise, default to AFF_YES</a>
+<a name="ln568">        }</a>
+<a name="ln569">        // unseen squares default to AFF_YES</a>
+<a name="ln570">        if (pc == loc)</a>
+<a name="ln571">            return current;</a>
+<a name="ln572">    }</a>
+<a name="ln573">    // path never intersected loc at all</a>
+<a name="ln574">    return AFF_NO;</a>
+<a name="ln575">}</a>
+<a name="ln576"> </a>
+<a name="ln577">targeter_transference::targeter_transference(const actor* act, int aoe) :</a>
+<a name="ln578">    targeter_smite(act, LOS_RADIUS, aoe, aoe, false, nullptr)</a>
+<a name="ln579">{</a>
+<a name="ln580">}</a>
+<a name="ln581"> </a>
+<a name="ln582">bool targeter_transference::valid_aim(coord_def a)</a>
+<a name="ln583">{</a>
+<a name="ln584">    if (!targeter_smite::valid_aim(a))</a>
+<a name="ln585">        return false;</a>
+<a name="ln586"> </a>
+<a name="ln587">    const actor *victim = actor_at(a);</a>
+<a name="ln588">    if (victim &amp;&amp; you.can_see(*victim))</a>
+<a name="ln589">    {</a>
+<a name="ln590">        if (mons_is_hepliaklqana_ancestor(victim-&gt;type))</a>
+<a name="ln591">        {</a>
+<a name="ln592">            return notify_fail(&quot;You can't transfer your ancestor with &quot;</a>
+<a name="ln593">                               &quot;themself.&quot;);</a>
+<a name="ln594">        }</a>
+<a name="ln595">        if (mons_is_tentacle_or_tentacle_segment(victim-&gt;type)</a>
+<a name="ln596">            || victim-&gt;is_stationary())</a>
+<a name="ln597">        {</a>
+<a name="ln598">            return notify_fail(&quot;You can't transfer that.&quot;);</a>
+<a name="ln599">        }</a>
+<a name="ln600">    }</a>
+<a name="ln601">    return true;</a>
+<a name="ln602">}</a>
+<a name="ln603"> </a>
+<a name="ln604">targeter_fragment::targeter_fragment(const actor* act, int power, int ran) :</a>
+<a name="ln605">    targeter_smite(act, ran, 1, 1, true, nullptr),</a>
+<a name="ln606">    pow(power)</a>
+<a name="ln607">{</a>
+<a name="ln608">}</a>
+<a name="ln609"> </a>
+<a name="ln610">bool targeter_fragment::valid_aim(coord_def a)</a>
+<a name="ln611">{</a>
+<a name="ln612">    if (!targeter_smite::valid_aim(a))</a>
+<a name="ln613">        return false;</a>
+<a name="ln614"> </a>
+<a name="ln615">    bolt tempbeam;</a>
+<a name="ln616">    bool temp;</a>
+<a name="ln617">    if (!setup_fragmentation_beam(tempbeam, pow, agent, a, true, nullptr, temp))</a>
+<a name="ln618">        return notify_fail(&quot;You cannot affect that.&quot;);</a>
+<a name="ln619">    return true;</a>
+<a name="ln620">}</a>
+<a name="ln621"> </a>
+<a name="ln622">bool targeter_fragment::set_aim(coord_def a)</a>
+<a name="ln623">{</a>
+<a name="ln624">    if (!targeter::set_aim(a))</a>
+<a name="ln625">        return false;</a>
+<a name="ln626"> </a>
+<a name="ln627">    bolt tempbeam;</a>
+<a name="ln628">    bool temp;</a>
+<a name="ln629"> </a>
+<a name="ln630">    if (setup_fragmentation_beam(tempbeam, pow, agent, a, true, nullptr, temp))</a>
+<a name="ln631">    {</a>
+<a name="ln632">        exp_range_min = tempbeam.ex_size;</a>
+<a name="ln633">        exp_range_max = tempbeam.ex_size;</a>
+<a name="ln634">    }</a>
+<a name="ln635">    else</a>
+<a name="ln636">    {</a>
+<a name="ln637">        exp_range_min = exp_range_max = 0;</a>
+<a name="ln638">        return false;</a>
+<a name="ln639">    }</a>
+<a name="ln640"> </a>
+<a name="ln641">    bolt beam;</a>
+<a name="ln642">    beam.target = a;</a>
+<a name="ln643">    beam.use_target_as_pos = true;</a>
+<a name="ln644">    exp_map_min.init(INT_MAX);</a>
+<a name="ln645">    beam.determine_affected_cells(exp_map_min, coord_def(), 0,</a>
+<a name="ln646">                                  exp_range_min, false, false);</a>
+<a name="ln647">    exp_map_max.init(INT_MAX);</a>
+<a name="ln648">    beam.determine_affected_cells(exp_map_max, coord_def(), 0,</a>
+<a name="ln649">                                  exp_range_max, false, false);</a>
+<a name="ln650"> </a>
+<a name="ln651">    return true;</a>
+<a name="ln652">}</a>
+<a name="ln653"> </a>
+<a name="ln654">targeter_reach::targeter_reach(const actor* act, reach_type ran) :</a>
+<a name="ln655">    range(ran)</a>
+<a name="ln656">{</a>
+<a name="ln657">    ASSERT(act);</a>
+<a name="ln658">    agent = act;</a>
+<a name="ln659">    origin = aim = act-&gt;pos();</a>
+<a name="ln660">}</a>
+<a name="ln661"> </a>
+<a name="ln662">bool targeter_reach::valid_aim(coord_def a)</a>
+<a name="ln663">{</a>
+<a name="ln664">    if (!cell_see_cell(origin, a, LOS_DEFAULT))</a>
+<a name="ln665">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln666">    if (!agent-&gt;see_cell_no_trans(a))</a>
+<a name="ln667">        return notify_fail(&quot;You can't get through.&quot;);</a>
+<a name="ln668"> </a>
+<a name="ln669">    int dist = (origin - a).rdist();</a>
+<a name="ln670"> </a>
+<a name="ln671">    if (dist &gt; range)</a>
+<a name="ln672">        return notify_fail(&quot;You can't reach that far!&quot;);</a>
+<a name="ln673"> </a>
+<a name="ln674">    return true;</a>
+<a name="ln675">}</a>
+<a name="ln676"> </a>
+<a name="ln677">aff_type targeter_reach::is_affected(coord_def loc)</a>
+<a name="ln678">{</a>
+<a name="ln679">    if (!valid_aim(loc))</a>
+<a name="ln680">        return AFF_NO;</a>
+<a name="ln681"> </a>
+<a name="ln682">    if (loc == aim)</a>
+<a name="ln683">        return AFF_YES;</a>
+<a name="ln684"> </a>
+<a name="ln685">    if (((loc - origin) * 2 - (aim - origin)).abs() &lt;= 1</a>
+<a name="ln686">        &amp;&amp; feat_is_reachable_past(grd(loc)))</a>
+<a name="ln687">    {</a>
+<a name="ln688">        return AFF_TRACER;</a>
+<a name="ln689">    }</a>
+<a name="ln690"> </a>
+<a name="ln691">    return AFF_NO;</a>
+<a name="ln692">}</a>
+<a name="ln693"> </a>
+<a name="ln694">targeter_cleave::targeter_cleave(const actor* act, coord_def target)</a>
+<a name="ln695">{</a>
+<a name="ln696">    ASSERT(act);</a>
+<a name="ln697">    agent = act;</a>
+<a name="ln698">    origin = act-&gt;pos();</a>
+<a name="ln699">    aim = target;</a>
+<a name="ln700">    list&lt;actor*&gt; act_targets;</a>
+<a name="ln701">    get_cleave_targets(*act, target, act_targets);</a>
+<a name="ln702">    while (!act_targets.empty())</a>
+<a name="ln703">    {</a>
+<a name="ln704">        targets.insert(act_targets.front()-&gt;pos());</a>
+<a name="ln705">        act_targets.pop_front();</a>
+<a name="ln706">    }</a>
+<a name="ln707">}</a>
+<a name="ln708"> </a>
+<a name="ln709">aff_type targeter_cleave::is_affected(coord_def loc)</a>
+<a name="ln710">{</a>
+<a name="ln711">    return targets.count(loc) ? AFF_YES : AFF_NO;</a>
+<a name="ln712">}</a>
+<a name="ln713"> </a>
+<a name="ln714">targeter_cloud::targeter_cloud(const actor* act, int r,</a>
+<a name="ln715">                                 int count_min, int count_max) :</a>
+<a name="ln716">    range(r), cnt_min(count_min), cnt_max(count_max), avoid_clouds(true)</a>
+<a name="ln717">{</a>
+<a name="ln718">    ASSERT(cnt_min &gt; 0);</a>
+<a name="ln719">    ASSERT(cnt_max &gt; 0);</a>
+<a name="ln720">    ASSERT(cnt_min &lt;= cnt_max);</a>
+<a name="ln721">    agent = act;</a>
+<a name="ln722">    if (agent)</a>
+<a name="ln723">        origin = aim = act-&gt;pos();</a>
+<a name="ln724">}</a>
+<a name="ln725"> </a>
+<a name="ln726">static bool _cloudable(coord_def loc, bool avoid_clouds)</a>
+<a name="ln727">{</a>
+<a name="ln728">    return in_bounds(loc)</a>
+<a name="ln729">           &amp;&amp; !cell_is_solid(loc)</a>
+<a name="ln730">           &amp;&amp; !(avoid_clouds &amp;&amp; cloud_at(loc)</a>
+<a name="ln731">           &amp;&amp; !is_sanctuary(loc));</a>
+<a name="ln732">}</a>
+<a name="ln733"> </a>
+<a name="ln734">bool targeter_cloud::valid_aim(coord_def a)</a>
+<a name="ln735">{</a>
+<a name="ln736">    if (agent &amp;&amp; (origin - a).rdist() &gt; range)</a>
+<a name="ln737">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln738">    if (!map_bounds(a)</a>
+<a name="ln739">        || agent</a>
+<a name="ln740">           &amp;&amp; origin != a</a>
+<a name="ln741">           &amp;&amp; !cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln742">    {</a>
+<a name="ln743">        // Scrying/glass/tree/grate.</a>
+<a name="ln744">        if (agent &amp;&amp; agent-&gt;see_cell(a))</a>
+<a name="ln745">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln746">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln747">    }</a>
+<a name="ln748">    if (cell_is_solid(a))</a>
+<a name="ln749">        return notify_fail(_wallmsg(a));</a>
+<a name="ln750">    if (agent)</a>
+<a name="ln751">    {</a>
+<a name="ln752">        if (cloud_at(a) &amp;&amp; avoid_clouds)</a>
+<a name="ln753">            return notify_fail(&quot;There's already a cloud there.&quot;);</a>
+<a name="ln754">        else if (is_sanctuary(a))</a>
+<a name="ln755">            return notify_fail(&quot;You can't place clouds in a sanctuary.&quot;);</a>
+<a name="ln756">        ASSERT(_cloudable(a, avoid_clouds));</a>
+<a name="ln757">    }</a>
+<a name="ln758">    return true;</a>
+<a name="ln759">}</a>
+<a name="ln760"> </a>
+<a name="ln761">bool targeter_cloud::set_aim(coord_def a)</a>
+<a name="ln762">{</a>
+<a name="ln763">    if (!targeter::set_aim(a))</a>
+<a name="ln764">        return false;</a>
+<a name="ln765"> </a>
+<a name="ln766">    seen.clear();</a>
+<a name="ln767">    queue.clear();</a>
+<a name="ln768">    queue.emplace_back();</a>
+<a name="ln769"> </a>
+<a name="ln770">    int placed = 0;</a>
+<a name="ln771">    queue[0].push_back(a);</a>
+<a name="ln772"> </a>
+<a name="ln773">    for (unsigned int d1 = 0; d1 &lt; queue.size() &amp;&amp; placed &lt; cnt_max; d1++)</a>
+<a name="ln774">    {</a>
+<a name="ln775">        placed += queue[d1].size();</a>
+<a name="ln776"> </a>
+<a name="ln777">        for (coord_def c : queue[d1])</a>
+<a name="ln778">        {</a>
+<a name="ln779">            for (adjacent_iterator ai(c); ai; ++ai)</a>
+<a name="ln780">                if (_cloudable(*ai, avoid_clouds) &amp;&amp; !seen.count(*ai))</a>
+<a name="ln781">                {</a>
+<a name="ln782">                    unsigned int d2 = d1 + 1;</a>
+<a name="ln783">                    if (d2 &gt;= queue.size())</a>
+<a name="ln784">                        queue.resize(d2 + 1);</a>
+<a name="ln785">                    queue[d2].push_back(*ai);</a>
+<a name="ln786">                    seen[*ai] = AFF_TRACER;</a>
+<a name="ln787">                }</a>
+<a name="ln788"> </a>
+<a name="ln789">            seen[c] = placed &lt;= cnt_min ? AFF_YES : AFF_MAYBE;</a>
+<a name="ln790">        }</a>
+<a name="ln791">    }</a>
+<a name="ln792"> </a>
+<a name="ln793">    return true;</a>
+<a name="ln794">}</a>
+<a name="ln795"> </a>
+<a name="ln796">bool targeter_cloud::can_affect_outside_range()</a>
+<a name="ln797">{</a>
+<a name="ln798">    return true;</a>
+<a name="ln799">}</a>
+<a name="ln800"> </a>
+<a name="ln801">aff_type targeter_cloud::is_affected(coord_def loc)</a>
+<a name="ln802">{</a>
+<a name="ln803">    if (!valid_aim(aim))</a>
+<a name="ln804">        return AFF_NO;</a>
+<a name="ln805"> </a>
+<a name="ln806">    if (aff_type *aff = map_find(seen, loc))</a>
+<a name="ln807">    {</a>
+<a name="ln808">        if (*aff &gt; 0) // AFF_TRACER is used privately</a>
+<a name="ln809">            return *aff;</a>
+<a name="ln810">    }</a>
+<a name="ln811">    return AFF_NO;</a>
+<a name="ln812">}</a>
+<a name="ln813"> </a>
+<a name="ln814">targeter_splash::targeter_splash(const actor* act, int ran)</a>
+<a name="ln815">    : range(ran)</a>
+<a name="ln816">{</a>
+<a name="ln817">    ASSERT(act);</a>
+<a name="ln818">    agent = act;</a>
+<a name="ln819">    origin = aim = act-&gt;pos();</a>
+<a name="ln820">}</a>
+<a name="ln821"> </a>
+<a name="ln822">bool targeter_splash::valid_aim(coord_def a)</a>
+<a name="ln823">{</a>
+<a name="ln824">    if (agent &amp;&amp; grid_distance(origin, a) &gt; range)</a>
+<a name="ln825">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln826">    return true;</a>
+<a name="ln827">}</a>
+<a name="ln828"> </a>
+<a name="ln829">aff_type targeter_splash::is_affected(coord_def loc)</a>
+<a name="ln830">{</a>
+<a name="ln831">    if (!valid_aim(aim) || !valid_aim(loc))</a>
+<a name="ln832">        return AFF_NO;</a>
+<a name="ln833"> </a>
+<a name="ln834">    if (loc == aim)</a>
+<a name="ln835">        return AFF_YES;</a>
+<a name="ln836"> </a>
+<a name="ln837">    // self-spit currently doesn't splash</a>
+<a name="ln838">    if (aim == origin)</a>
+<a name="ln839">        return AFF_NO;</a>
+<a name="ln840"> </a>
+<a name="ln841">    // it splashes around only upon hitting someone</a>
+<a name="ln842">    if (!anyone_there(aim))</a>
+<a name="ln843">        return AFF_NO;</a>
+<a name="ln844"> </a>
+<a name="ln845">    if (grid_distance(loc, aim) &gt; 1)</a>
+<a name="ln846">        return AFF_NO;</a>
+<a name="ln847"> </a>
+<a name="ln848">    // you're safe from being splashed by own spit</a>
+<a name="ln849">    if (loc == origin)</a>
+<a name="ln850">        return AFF_NO;</a>
+<a name="ln851"> </a>
+<a name="ln852">    return anyone_there(loc) ? AFF_YES : AFF_MAYBE;</a>
+<a name="ln853">}</a>
+<a name="ln854"> </a>
+<a name="ln855">targeter_radius::targeter_radius(const actor *act, los_type _los,</a>
+<a name="ln856">                             int ran, int ran_max, int ran_min):</a>
+<a name="ln857">    range(ran), range_max(ran_max), range_min(ran_min)</a>
+<a name="ln858">{</a>
+<a name="ln859">    ASSERT(act);</a>
+<a name="ln860">    agent = act;</a>
+<a name="ln861">    origin = aim = act-&gt;pos();</a>
+<a name="ln862">    los = _los;</a>
+<a name="ln863">    if (!range_max)</a>
+<a name="ln864">        range_max = range;</a>
+<a name="ln865">    ASSERT(range_max &gt;= range);</a>
+<a name="ln866">}</a>
+<a name="ln867"> </a>
+<a name="ln868">bool targeter_radius::valid_aim(coord_def a)</a>
+<a name="ln869">{</a>
+<a name="ln870">    if ((a - origin).rdist() &gt; range_max || (a - origin).rdist() &lt; range_min)</a>
+<a name="ln871">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln872">    // If this message ever becomes used, please improve it. I did not</a>
+<a name="ln873">    // bother adding complexity just for monsters and &quot;hit allies&quot; prompts</a>
+<a name="ln874">    // which don't need it.</a>
+<a name="ln875">    if (!is_affected(a))</a>
+<a name="ln876">        return notify_fail(&quot;The effect is blocked.&quot;);</a>
+<a name="ln877">    return true;</a>
+<a name="ln878">}</a>
+<a name="ln879"> </a>
+<a name="ln880">aff_type targeter_radius::is_affected(coord_def loc)</a>
+<a name="ln881">{</a>
+<a name="ln882">    if (loc == aim)</a>
+<a name="ln883">        return AFF_YES;</a>
+<a name="ln884"> </a>
+<a name="ln885">    if ((loc - origin).rdist() &gt; range_max || (loc - origin).rdist() &lt; range_min)</a>
+<a name="ln886">        return AFF_NO;</a>
+<a name="ln887"> </a>
+<a name="ln888">    if (!cell_see_cell(loc, origin, los))</a>
+<a name="ln889">        return AFF_NO;</a>
+<a name="ln890"> </a>
+<a name="ln891">    return AFF_YES;</a>
+<a name="ln892">}</a>
+<a name="ln893"> </a>
+<a name="ln894">targeter_thunderbolt::targeter_thunderbolt(const actor *act, int r,</a>
+<a name="ln895">                                             coord_def _prev)</a>
+<a name="ln896">{</a>
+<a name="ln897">    ASSERT(act);</a>
+<a name="ln898">    agent = act;</a>
+<a name="ln899">    origin = act-&gt;pos();</a>
+<a name="ln900">    prev = _prev;</a>
+<a name="ln901">    aim = prev.origin() ? origin : prev;</a>
+<a name="ln902">    ASSERT_RANGE(r, 1 + 1, you.current_vision + 1);</a>
+<a name="ln903">    range = r;</a>
+<a name="ln904">}</a>
+<a name="ln905"> </a>
+<a name="ln906">bool targeter_thunderbolt::valid_aim(coord_def a)</a>
+<a name="ln907">{</a>
+<a name="ln908">    if (a != origin &amp;&amp; !cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln909">    {</a>
+<a name="ln910">        // Scrying/glass/tree/grate.</a>
+<a name="ln911">        if (agent-&gt;see_cell(a))</a>
+<a name="ln912">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln913">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln914">    }</a>
+<a name="ln915">    if ((origin - a).rdist() &gt; range)</a>
+<a name="ln916">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln917">    return true;</a>
+<a name="ln918">}</a>
+<a name="ln919"> </a>
+<a name="ln920">static void _make_ray(ray_def &amp;ray, coord_def a, coord_def b)</a>
+<a name="ln921">{</a>
+<a name="ln922">    // Like beams, we need to allow picking the &quot;better&quot; ray if one is blocked</a>
+<a name="ln923">    // by a wall.</a>
+<a name="ln924">    if (!find_ray(a, b, ray, opc_solid_see))</a>
+<a name="ln925">        ray = ray_def(geom::ray(a.x + 0.5, a.y + 0.5, b.x - a.x, b.y - a.y));</a>
+<a name="ln926">}</a>
+<a name="ln927"> </a>
+<a name="ln928">static bool left_of(coord_def a, coord_def b)</a>
+<a name="ln929">{</a>
+<a name="ln930">    return a.x * b.y &gt; a.y * b.x;</a>
+<a name="ln931">}</a>
+<a name="ln932"> </a>
+<a name="ln933">bool targeter_thunderbolt::set_aim(coord_def a)</a>
+<a name="ln934">{</a>
+<a name="ln935">    aim = a;</a>
+<a name="ln936">    zapped.clear();</a>
+<a name="ln937"> </a>
+<a name="ln938">    if (a == origin)</a>
+<a name="ln939">        return false;</a>
+<a name="ln940"> </a>
+<a name="ln941">    arc_length.init(0);</a>
+<a name="ln942"> </a>
+<a name="ln943">    ray_def ray;</a>
+<a name="ln944">    coord_def p; // ray.pos() does lots of processing, cache it</a>
+<a name="ln945"> </a>
+<a name="ln946">    // For consistency with beams, we need to</a>
+<a name="ln947">    _make_ray(ray, origin, aim);</a>
+<a name="ln948">    while ((origin - (p = ray.pos())).rdist() &lt;= range</a>
+<a name="ln949">           &amp;&amp; map_bounds(p) &amp;&amp; opc_solid_see(p) &lt; OPC_OPAQUE)</a>
+<a name="ln950">    {</a>
+<a name="ln951">        if (p != origin &amp;&amp; zapped[p] &lt;= 0)</a>
+<a name="ln952">        {</a>
+<a name="ln953">            zapped[p] = AFF_YES;</a>
+<a name="ln954">            arc_length[origin.distance_from(p)]++;</a>
+<a name="ln955">        }</a>
+<a name="ln956">        ray.advance();</a>
+<a name="ln957">    }</a>
+<a name="ln958"> </a>
+<a name="ln959">    if (prev.origin())</a>
+<a name="ln960">        return true;</a>
+<a name="ln961"> </a>
+<a name="ln962">    _make_ray(ray, origin, prev);</a>
+<a name="ln963">    while ((origin - (p = ray.pos())).rdist() &lt;= range</a>
+<a name="ln964">           &amp;&amp; map_bounds(p) &amp;&amp; opc_solid_see(p) &lt; OPC_OPAQUE)</a>
+<a name="ln965">    {</a>
+<a name="ln966">        if (p != origin &amp;&amp; zapped[p] &lt;= 0)</a>
+<a name="ln967">        {</a>
+<a name="ln968">            zapped[p] = AFF_MAYBE; // fully affected, we just want to highlight cur</a>
+<a name="ln969">            arc_length[origin.distance_from(p)]++;</a>
+<a name="ln970">        }</a>
+<a name="ln971">        ray.advance();</a>
+<a name="ln972">    }</a>
+<a name="ln973"> </a>
+<a name="ln974">    coord_def a1 = prev - origin;</a>
+<a name="ln975">    coord_def a2 = aim - origin;</a>
+<a name="ln976">    if (left_of(a2, a1))</a>
+<a name="ln977">        swap(a1, a2);</a>
+<a name="ln978"> </a>
+<a name="ln979">    for (int x = -LOS_RADIUS; x &lt;= LOS_RADIUS; ++x)</a>
+<a name="ln980">        for (int y = -LOS_RADIUS; y &lt;= LOS_RADIUS; ++y)</a>
+<a name="ln981">        {</a>
+<a name="ln982">            if (max(abs(x), abs(y)) &gt; range)</a>
+<a name="ln983">                continue;</a>
+<a name="ln984">            coord_def r(x, y);</a>
+<a name="ln985">            if (left_of(a1, r) &amp;&amp; left_of(r, a2))</a>
+<a name="ln986">            {</a>
+<a name="ln987">                (p = r) += origin;</a>
+<a name="ln988">                if (!zapped.count(p))</a>
+<a name="ln989">                    arc_length[r.rdist()]++;</a>
+<a name="ln990">                if (zapped[p] &lt;= 0 &amp;&amp; cell_see_cell(origin, p, LOS_NO_TRANS))</a>
+<a name="ln991">                    zapped[p] = AFF_MAYBE;</a>
+<a name="ln992">            }</a>
+<a name="ln993">        }</a>
+<a name="ln994"> </a>
+<a name="ln995">    zapped[origin] = AFF_NO;</a>
+<a name="ln996"> </a>
+<a name="ln997">    return true;</a>
+<a name="ln998">}</a>
+<a name="ln999"> </a>
+<a name="ln1000">aff_type targeter_thunderbolt::is_affected(coord_def loc)</a>
+<a name="ln1001">{</a>
+<a name="ln1002">    if (loc == aim)</a>
+<a name="ln1003">        return zapped[loc] ? AFF_YES : AFF_TRACER;</a>
+<a name="ln1004"> </a>
+<a name="ln1005">    if ((loc - origin).rdist() &gt; range)</a>
+<a name="ln1006">        return AFF_NO;</a>
+<a name="ln1007"> </a>
+<a name="ln1008">    return zapped[loc];</a>
+<a name="ln1009">}</a>
+<a name="ln1010"> </a>
+<a name="ln1011">targeter_shadow_step::targeter_shadow_step(const actor* act, int r) :</a>
+<a name="ln1012">    range(r)</a>
+<a name="ln1013">{</a>
+<a name="ln1014">    ASSERT(act);</a>
+<a name="ln1015">    agent = act;</a>
+<a name="ln1016">    origin = act-&gt;pos();</a>
+<a name="ln1017">    step_is_blocked = false;</a>
+<a name="ln1018">}</a>
+<a name="ln1019"> </a>
+<a name="ln1020">bool targeter_shadow_step::valid_aim(coord_def a)</a>
+<a name="ln1021">{</a>
+<a name="ln1022">    ray_def ray;</a>
+<a name="ln1023"> </a>
+<a name="ln1024">    if (origin == a)</a>
+<a name="ln1025">        return notify_fail(&quot;You cannot target yourself.&quot;);</a>
+<a name="ln1026">    else if ((origin - a).rdist() &gt; range)</a>
+<a name="ln1027">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln1028">    else if (!cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln1029">    {</a>
+<a name="ln1030">        if (agent-&gt;see_cell(a))</a>
+<a name="ln1031">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln1032">        else</a>
+<a name="ln1033">            return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln1034">    }</a>
+<a name="ln1035">    else if (cell_is_solid(a))</a>
+<a name="ln1036">        return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln1037">    else if (!find_ray(agent-&gt;pos(), a, ray, opc_solid_see))</a>
+<a name="ln1038">        return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln1039">    else if (!has_additional_sites(a))</a>
+<a name="ln1040">    {</a>
+<a name="ln1041">        switch (no_landing_reason)</a>
+<a name="ln1042">        {</a>
+<a name="ln1043">        case shadow_step_blocked::move:</a>
+<a name="ln1044">        case shadow_step_blocked::occupied:</a>
+<a name="ln1045">            return notify_fail(&quot;There is no safe place near that&quot;</a>
+<a name="ln1046">                               &quot; location.&quot;);</a>
+<a name="ln1047">        case shadow_step_blocked::path:</a>
+<a name="ln1048">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln1049">        case shadow_step_blocked::no_target:</a>
+<a name="ln1050">            return notify_fail(&quot;There isn't a shadow there.&quot;);</a>
+<a name="ln1051">        case shadow_step_blocked::none:</a>
+<a name="ln1052">            die(&quot;buggy no_landing_reason&quot;);</a>
+<a name="ln1053">        }</a>
+<a name="ln1054">    }</a>
+<a name="ln1055">    return true;</a>
+<a name="ln1056">}</a>
+<a name="ln1057"> </a>
+<a name="ln1058">bool targeter_shadow_step::valid_landing(coord_def a, bool check_invis)</a>
+<a name="ln1059">{</a>
+<a name="ln1060">    actor *act;</a>
+<a name="ln1061">    ray_def ray;</a>
+<a name="ln1062"> </a>
+<a name="ln1063">    if (!agent-&gt;is_habitable(a))</a>
+<a name="ln1064">    {</a>
+<a name="ln1065">        blocked_landing_reason = shadow_step_blocked::move;</a>
+<a name="ln1066">        return false;</a>
+<a name="ln1067">    }</a>
+<a name="ln1068">    if (agent-&gt;is_player())</a>
+<a name="ln1069">    {</a>
+<a name="ln1070">        monster* beholder = you.get_beholder(a);</a>
+<a name="ln1071">        if (beholder)</a>
+<a name="ln1072">        {</a>
+<a name="ln1073">            blocked_landing_reason = shadow_step_blocked::move;</a>
+<a name="ln1074">            return false;</a>
+<a name="ln1075">        }</a>
+<a name="ln1076"> </a>
+<a name="ln1077">        monster* fearmonger = you.get_fearmonger(a);</a>
+<a name="ln1078">        if (fearmonger)</a>
+<a name="ln1079">        {</a>
+<a name="ln1080">            blocked_landing_reason = shadow_step_blocked::move;</a>
+<a name="ln1081">            return false;</a>
+<a name="ln1082">        }</a>
+<a name="ln1083">    }</a>
+<a name="ln1084">    if (!find_ray(agent-&gt;pos(), a, ray, opc_solid_see))</a>
+<a name="ln1085">    {</a>
+<a name="ln1086">        blocked_landing_reason = shadow_step_blocked::path;</a>
+<a name="ln1087">        return false;</a>
+<a name="ln1088">    }</a>
+<a name="ln1089"> </a>
+<a name="ln1090">    // Check if a landing site is invalid due to a visible monster obstructing</a>
+<a name="ln1091">    // the path.</a>
+<a name="ln1092">    ray.advance();</a>
+<a name="ln1093">    while (map_bounds(ray.pos()))</a>
+<a name="ln1094">    {</a>
+<a name="ln1095">        act = actor_at(ray.pos());</a>
+<a name="ln1096">        if (ray.pos() == a)</a>
+<a name="ln1097">        {</a>
+<a name="ln1098">            if (act &amp;&amp; (!check_invis || agent-&gt;can_see(*act)))</a>
+<a name="ln1099">            {</a>
+<a name="ln1100">                blocked_landing_reason = shadow_step_blocked::occupied;</a>
+<a name="ln1101">                return false;</a>
+<a name="ln1102">            }</a>
+<a name="ln1103">            break;</a>
+<a name="ln1104">        }</a>
+<a name="ln1105">        ray.advance();</a>
+<a name="ln1106">    }</a>
+<a name="ln1107">    return true;</a>
+<a name="ln1108">}</a>
+<a name="ln1109"> </a>
+<a name="ln1110">aff_type targeter_shadow_step::is_affected(coord_def loc)</a>
+<a name="ln1111">{</a>
+<a name="ln1112">    aff_type aff = AFF_NO;</a>
+<a name="ln1113"> </a>
+<a name="ln1114">    if (loc == aim)</a>
+<a name="ln1115">        aff = AFF_YES;</a>
+<a name="ln1116">    else if (additional_sites.count(loc))</a>
+<a name="ln1117">        aff = AFF_LANDING;</a>
+<a name="ln1118">    return aff;</a>
+<a name="ln1119">}</a>
+<a name="ln1120"> </a>
+<a name="ln1121">// If something unseen either occupies the aim position or blocks the</a>
+<a name="ln1122">// shadow_step path, indicate that with step_is_blocked, but still return true</a>
+<a name="ln1123">// so long there is at least one valid landing position from the player's</a>
+<a name="ln1124">// perspective.</a>
+<a name="ln1125">bool targeter_shadow_step::set_aim(coord_def a)</a>
+<a name="ln1126">{</a>
+<a name="ln1127">    if (a == origin)</a>
+<a name="ln1128">        return false;</a>
+<a name="ln1129">    if (!targeter::set_aim(a))</a>
+<a name="ln1130">        return false;</a>
+<a name="ln1131"> </a>
+<a name="ln1132">    step_is_blocked = false;</a>
+<a name="ln1133"> </a>
+<a name="ln1134">    // Find our set of landing sites, choose one at random to be the</a>
+<a name="ln1135">    // destination and see if it's actually blocked.</a>
+<a name="ln1136">    set_additional_sites(aim);</a>
+<a name="ln1137">    if (additional_sites.size())</a>
+<a name="ln1138">    {</a>
+<a name="ln1139">        auto it = random_iterator(additional_sites);</a>
+<a name="ln1140">        landing_site = *it;</a>
+<a name="ln1141">        if (!valid_landing(landing_site, false))</a>
+<a name="ln1142">            step_is_blocked = true;</a>
+<a name="ln1143">        return true;</a>
+<a name="ln1144">    }</a>
+<a name="ln1145">    return false;</a>
+<a name="ln1146">}</a>
+<a name="ln1147"> </a>
+<a name="ln1148">// Determine the set of valid landing sites</a>
+<a name="ln1149">void targeter_shadow_step::set_additional_sites(coord_def a)</a>
+<a name="ln1150">{</a>
+<a name="ln1151">    get_additional_sites(a);</a>
+<a name="ln1152">    additional_sites = temp_sites;</a>
+<a name="ln1153">}</a>
+<a name="ln1154"> </a>
+<a name="ln1155">// Determine the set of valid landing sites for the target, putting the results</a>
+<a name="ln1156">// in the private set variable temp_sites. This uses valid_aim(), so it looks</a>
+<a name="ln1157">// for uninhabited squares that are habitable by the player, but doesn't check</a>
+<a name="ln1158">// against e.g. harmful clouds</a>
+<a name="ln1159">void targeter_shadow_step::get_additional_sites(coord_def a)</a>
+<a name="ln1160">{</a>
+<a name="ln1161">    bool agent_adjacent = a.distance_from(agent-&gt;pos()) == 1;</a>
+<a name="ln1162">    temp_sites.clear();</a>
+<a name="ln1163"> </a>
+<a name="ln1164">    const actor *victim = actor_at(a);</a>
+<a name="ln1165">    if (!victim || !victim-&gt;as_monster()</a>
+<a name="ln1166">        || mons_is_firewood(*victim-&gt;as_monster())</a>
+<a name="ln1167">        || victim-&gt;as_monster()-&gt;friendly()</a>
+<a name="ln1168">        || !agent-&gt;can_see(*victim)</a>
+<a name="ln1169">        || !victim-&gt;umbraed())</a>
+<a name="ln1170">    {</a>
+<a name="ln1171">        no_landing_reason = shadow_step_blocked::no_target;</a>
+<a name="ln1172">        return;</a>
+<a name="ln1173">    }</a>
+<a name="ln1174"> </a>
+<a name="ln1175">    no_landing_reason = shadow_step_blocked::none;</a>
+<a name="ln1176">    for (adjacent_iterator ai(a, false); ai; ++ai)</a>
+<a name="ln1177">    {</a>
+<a name="ln1178">        // See if site is valid, record a putative reason for why no sites were</a>
+<a name="ln1179">        // found.</a>
+<a name="ln1180">        if (!agent_adjacent || agent-&gt;pos().distance_from(*ai) &gt; 1)</a>
+<a name="ln1181">        {</a>
+<a name="ln1182">            if (valid_landing(*ai))</a>
+<a name="ln1183">            {</a>
+<a name="ln1184">                temp_sites.insert(*ai);</a>
+<a name="ln1185">                no_landing_reason = shadow_step_blocked::none;</a>
+<a name="ln1186">            }</a>
+<a name="ln1187">            else</a>
+<a name="ln1188">                no_landing_reason = blocked_landing_reason;</a>
+<a name="ln1189">        }</a>
+<a name="ln1190">    }</a>
+<a name="ln1191">}</a>
+<a name="ln1192"> </a>
+<a name="ln1193">// See if we can find at least one valid landing position for the given monster.</a>
+<a name="ln1194">bool targeter_shadow_step::has_additional_sites(coord_def a)</a>
+<a name="ln1195">{</a>
+<a name="ln1196">    get_additional_sites(a);</a>
+<a name="ln1197">    return temp_sites.size();</a>
+<a name="ln1198">}</a>
+<a name="ln1199"> </a>
+<a name="ln1200">targeter_cone::targeter_cone(const actor *act, int r)</a>
+<a name="ln1201">{</a>
+<a name="ln1202">    ASSERT(act);</a>
+<a name="ln1203">    agent = act;</a>
+<a name="ln1204">    origin = act-&gt;pos();</a>
+<a name="ln1205">    aim = origin;</a>
+<a name="ln1206">    ASSERT_RANGE(r, 1 + 1, you.current_vision + 1);</a>
+<a name="ln1207">    range = r;</a>
+<a name="ln1208">}</a>
+<a name="ln1209"> </a>
+<a name="ln1210">bool targeter_cone::valid_aim(coord_def a)</a>
+<a name="ln1211">{</a>
+<a name="ln1212">    if (a != origin &amp;&amp; !cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln1213">    {</a>
+<a name="ln1214">        // Scrying/glass/tree/grate.</a>
+<a name="ln1215">        if (agent-&gt;see_cell(a))</a>
+<a name="ln1216">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln1217">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln1218">    }</a>
+<a name="ln1219">    if ((origin - a).rdist() &gt; range)</a>
+<a name="ln1220">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln1221">    return true;</a>
+<a name="ln1222">}</a>
+<a name="ln1223"> </a>
+<a name="ln1224">static bool left_of_eq(coord_def a, coord_def b)</a>
+<a name="ln1225">{</a>
+<a name="ln1226">    return a.x * b.y &gt;= a.y * b.x;</a>
+<a name="ln1227">}</a>
+<a name="ln1228"> </a>
+<a name="ln1229">// Ripped off from targeter_thunderbolt::set_aim.</a>
+<a name="ln1230">bool targeter_cone::set_aim(coord_def a)</a>
+<a name="ln1231">{</a>
+<a name="ln1232">    aim = a;</a>
+<a name="ln1233">    zapped.clear();</a>
+<a name="ln1234">    for (int i = 0; i &lt; LOS_RADIUS + 1; i++)</a>
+<a name="ln1235">        sweep[i].clear();</a>
+<a name="ln1236"> </a>
+<a name="ln1237">    if (a == origin)</a>
+<a name="ln1238">        return false;</a>
+<a name="ln1239"> </a>
+<a name="ln1240">    const coord_def delta = a - origin;</a>
+<a name="ln1241">    const double arc = PI/4;</a>
+<a name="ln1242">    coord_def l, r;</a>
+<a name="ln1243">    l.x = origin.x + (cos(-arc) * delta.x - sin(-arc) * delta.y + 0.5);</a>
+<a name="ln1244">    l.y = origin.y + (sin(-arc) * delta.x + cos(-arc) * delta.y + 0.5);</a>
+<a name="ln1245">    r.x = origin.x + (cos( arc) * delta.x - sin( arc) * delta.y + 0.5);</a>
+<a name="ln1246">    r.y = origin.y + (sin( arc) * delta.x + cos( arc) * delta.y + 0.5);</a>
+<a name="ln1247"> </a>
+<a name="ln1248">    coord_def p;</a>
+<a name="ln1249"> </a>
+<a name="ln1250">    coord_def a1 = l - origin;</a>
+<a name="ln1251">    coord_def a2 = r - origin;</a>
+<a name="ln1252">    if (left_of(a2, a1))</a>
+<a name="ln1253">        swap(a1, a2);</a>
+<a name="ln1254"> </a>
+<a name="ln1255">    for (int x = -LOS_RADIUS; x &lt;= LOS_RADIUS; ++x)</a>
+<a name="ln1256">        for (int y = -LOS_RADIUS; y &lt;= LOS_RADIUS; ++y)</a>
+<a name="ln1257">        {</a>
+<a name="ln1258">            if (max(abs(x), abs(y)) &gt; range)</a>
+<a name="ln1259">                continue;</a>
+<a name="ln1260">            coord_def q(x, y);</a>
+<a name="ln1261">            if (left_of_eq(a1, q) &amp;&amp; left_of_eq(q, a2))</a>
+<a name="ln1262">            {</a>
+<a name="ln1263">                (p = q) += origin;</a>
+<a name="ln1264">                if (zapped[p] &lt;= 0</a>
+<a name="ln1265">                    &amp;&amp; map_bounds(p)</a>
+<a name="ln1266">                    &amp;&amp; opc_solid_see(p) &lt; OPC_OPAQUE</a>
+<a name="ln1267">                    &amp;&amp; cell_see_cell(origin, p, LOS_NO_TRANS))</a>
+<a name="ln1268">                {</a>
+<a name="ln1269">                    zapped[p] = AFF_YES;</a>
+<a name="ln1270">                    sweep[(origin - p).rdist()][p] = AFF_YES;</a>
+<a name="ln1271">                }</a>
+<a name="ln1272">            }</a>
+<a name="ln1273">        }</a>
+<a name="ln1274"> </a>
+<a name="ln1275">    zapped[origin] = AFF_NO;</a>
+<a name="ln1276">    sweep[0].clear();</a>
+<a name="ln1277"> </a>
+<a name="ln1278">    return true;</a>
+<a name="ln1279">}</a>
+<a name="ln1280"> </a>
+<a name="ln1281">aff_type targeter_cone::is_affected(coord_def loc)</a>
+<a name="ln1282">{</a>
+<a name="ln1283">    if (loc == aim)</a>
+<a name="ln1284">        return zapped[loc] ? AFF_YES : AFF_TRACER;</a>
+<a name="ln1285"> </a>
+<a name="ln1286">    if ((loc - origin).rdist() &gt; range)</a>
+<a name="ln1287">        return AFF_NO;</a>
+<a name="ln1288"> </a>
+<a name="ln1289">    return zapped[loc];</a>
+<a name="ln1290">}</a>
+<a name="ln1291"> </a>
+<a name="ln1292">targeter_shotgun::targeter_shotgun(const actor* act, size_t beam_count,</a>
+<a name="ln1293">                                     int r, bool clouds)</a>
+<a name="ln1294">{</a>
+<a name="ln1295">    ASSERT(act);</a>
+<a name="ln1296">    agent = act;</a>
+<a name="ln1297">    origin = act-&gt;pos();</a>
+<a name="ln1298">    num_beams = beam_count;</a>
+<a name="ln1299">    for (size_t i = 0; i &lt; num_beams; i++)</a>
+<a name="ln1300">        rays.emplace_back();</a>
+<a name="ln1301">    range = r;</a>
+<a name="ln1302">    uses_clouds = clouds;</a>
+<a name="ln1303">}</a>
+<a name="ln1304"> </a>
+<a name="ln1305">bool targeter_shotgun::valid_aim(coord_def a)</a>
+<a name="ln1306">{</a>
+<a name="ln1307">    if (a != origin &amp;&amp; !cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln1308">    {</a>
+<a name="ln1309">        if (agent-&gt;see_cell(a))</a>
+<a name="ln1310">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln1311">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln1312">    }</a>
+<a name="ln1313">    if ((origin - a).rdist() &gt; range)</a>
+<a name="ln1314">        return notify_fail(&quot;Out of range.&quot;);</a>
+<a name="ln1315">    return true;</a>
+<a name="ln1316">}</a>
+<a name="ln1317"> </a>
+<a name="ln1318">bool targeter_shotgun::set_aim(coord_def a)</a>
+<a name="ln1319">{</a>
+<a name="ln1320">    zapped.clear();</a>
+<a name="ln1321"> </a>
+<a name="ln1322">    // confused monster targeting might be fuzzed across a wall, so</a>
+<a name="ln1323">    // skip the validation in the parent function and set aim directly.</a>
+<a name="ln1324">    // N.B. We assume this targeter can actually handle an invalid aim</a>
+<a name="ln1325">    // (not all targeters can).</a>
+<a name="ln1326">    if (!agent || agent-&gt;is_monster())</a>
+<a name="ln1327">        aim = a;</a>
+<a name="ln1328">    // ... but for UI consistency, players should be restricted to LOS.</a>
+<a name="ln1329">    else if (!targeter::set_aim(a))</a>
+<a name="ln1330">        return false;</a>
+<a name="ln1331"> </a>
+<a name="ln1332">    if (a == origin)</a>
+<a name="ln1333">        return false;</a>
+<a name="ln1334"> </a>
+<a name="ln1335">    ray_def orig_ray;</a>
+<a name="ln1336">    _make_ray(orig_ray, origin, a);</a>
+<a name="ln1337">    coord_def p;</a>
+<a name="ln1338"> </a>
+<a name="ln1339">    const double spread_range = (double)(num_beams - 1) * PI / 40.0;</a>
+<a name="ln1340">    for (size_t i = 0; i &lt; num_beams; i++)</a>
+<a name="ln1341">    {</a>
+<a name="ln1342">        double spread = (num_beams == 1)</a>
+<a name="ln1343">                        ? 0.0</a>
+<a name="ln1344">                        : -(spread_range / 2.0)</a>
+<a name="ln1345">                          + (spread_range * (double)i)</a>
+<a name="ln1346">                                          / (double)(num_beams - 1);</a>
+<a name="ln1347">        rays[i] = ray_def();</a>
+<a name="ln1348">        rays[i].r.start = orig_ray.r.start;</a>
+<a name="ln1349">        rays[i].r.dir.x =</a>
+<a name="ln1350">             orig_ray.r.dir.x * cos(spread) + orig_ray.r.dir.y * sin(spread);</a>
+<a name="ln1351">        rays[i].r.dir.y =</a>
+<a name="ln1352">            -orig_ray.r.dir.x * sin(spread) + orig_ray.r.dir.y * cos(spread);</a>
+<a name="ln1353">        ray_def tempray = rays[i];</a>
+<a name="ln1354">        p = tempray.pos();</a>
+<a name="ln1355">        while ((origin - (p = tempray.pos())).rdist() &lt;= range</a>
+<a name="ln1356">               &amp;&amp; map_bounds(p) &amp;&amp; opc_solid_see(p) &lt; OPC_OPAQUE)</a>
+<a name="ln1357">        {</a>
+<a name="ln1358">            if (p != origin</a>
+<a name="ln1359">                &amp;&amp; (!uses_clouds || !cloud_at(p) &amp;&amp; !is_sanctuary(p)))</a>
+<a name="ln1360">            {</a>
+<a name="ln1361">                zapped[p] = zapped[p] + 1;</a>
+<a name="ln1362">            }</a>
+<a name="ln1363">            tempray.advance();</a>
+<a name="ln1364">        }</a>
+<a name="ln1365">    }</a>
+<a name="ln1366"> </a>
+<a name="ln1367">    zapped[origin] = 0;</a>
+<a name="ln1368">    return true;</a>
+<a name="ln1369">}</a>
+<a name="ln1370"> </a>
+<a name="ln1371">aff_type targeter_shotgun::is_affected(coord_def loc)</a>
+<a name="ln1372">{</a>
+<a name="ln1373">    if ((loc - origin).rdist() &gt; range</a>
+<a name="ln1374">         || uses_clouds &amp;&amp; (cloud_at(loc) || is_sanctuary(loc)))</a>
+<a name="ln1375">    {</a>
+<a name="ln1376">        return AFF_NO;</a>
+<a name="ln1377">    }</a>
+<a name="ln1378"> </a>
+<a name="ln1379">    return (zapped[loc] &gt;= num_beams) ? AFF_YES :</a>
+<a name="ln1380">           (zapped[loc] &gt; 0)          ? AFF_MAYBE</a>
+<a name="ln1381">                                      : AFF_NO;</a>
+<a name="ln1382">}</a>
+<a name="ln1383"> </a>
+<a name="ln1384">targeter_monster_sequence::targeter_monster_sequence(const actor *act, int pow, int r) :</a>
+<a name="ln1385">                          targeter_beam(act, r, ZAP_DEBUGGING_RAY, pow, 0, 0)</a>
+<a name="ln1386">{</a>
+<a name="ln1387">    // for `path_taken` to be set properly, the beam needs to be piercing, and</a>
+<a name="ln1388">    // ZAP_DEBUGGING_RAY is not.</a>
+<a name="ln1389">    beam.pierce = true;</a>
+<a name="ln1390">}</a>
+<a name="ln1391"> </a>
+<a name="ln1392">bool targeter_monster_sequence::set_aim(coord_def a)</a>
+<a name="ln1393">{</a>
+<a name="ln1394">    if (!targeter_beam::set_aim(a))</a>
+<a name="ln1395">        return false;</a>
+<a name="ln1396"> </a>
+<a name="ln1397">    bolt tempbeam = beam;</a>
+<a name="ln1398">    tempbeam.target = origin;</a>
+<a name="ln1399">    bool last_cell_has_mons = true;</a>
+<a name="ln1400">    bool passed_through_mons = false;</a>
+<a name="ln1401">    for (auto c : path_taken)</a>
+<a name="ln1402">    {</a>
+<a name="ln1403">        if (!last_cell_has_mons)</a>
+<a name="ln1404">            return false; // we must have an uninterrupted chain of monsters</a>
+<a name="ln1405"> </a>
+<a name="ln1406">        if (cell_is_solid(c))</a>
+<a name="ln1407">            break;</a>
+<a name="ln1408"> </a>
+<a name="ln1409">        tempbeam.target = c;</a>
+<a name="ln1410">        if (anyone_there(c))</a>
+<a name="ln1411">        {</a>
+<a name="ln1412">            passed_through_mons = true;</a>
+<a name="ln1413">            tempbeam.use_target_as_pos = true;</a>
+<a name="ln1414">            exp_map.init(INT_MAX);</a>
+<a name="ln1415">            tempbeam.determine_affected_cells(exp_map, coord_def(), 0,</a>
+<a name="ln1416">                                              0, true, true);</a>
+<a name="ln1417">        }</a>
+<a name="ln1418">        else</a>
+<a name="ln1419">            last_cell_has_mons = false;</a>
+<a name="ln1420">    }</a>
+<a name="ln1421"> </a>
+<a name="ln1422">    return passed_through_mons;</a>
+<a name="ln1423">}</a>
+<a name="ln1424"> </a>
+<a name="ln1425">bool targeter_monster_sequence::valid_aim(coord_def a)</a>
+<a name="ln1426">{</a>
+<a name="ln1427">    if (!targeter_beam::set_aim(a))</a>
+<a name="ln1428">        return false;</a>
+<a name="ln1429"> </a>
+<a name="ln1430">    bool last_cell_has_mons = true;</a>
+<a name="ln1431">    bool passed_through_mons = false;</a>
+<a name="ln1432">    for (auto c : path_taken)</a>
+<a name="ln1433">    {</a>
+<a name="ln1434">        if (!last_cell_has_mons)</a>
+<a name="ln1435">            return false; // we must have an uninterrupted chain of monsters</a>
+<a name="ln1436"> </a>
+<a name="ln1437">        if (cell_is_solid(c))</a>
+<a name="ln1438">            return false;</a>
+<a name="ln1439"> </a>
+<a name="ln1440">        if (!anyone_there(c))</a>
+<a name="ln1441">            last_cell_has_mons = false;</a>
+<a name="ln1442">        else</a>
+<a name="ln1443">            passed_through_mons = true;</a>
+<a name="ln1444">    }</a>
+<a name="ln1445"> </a>
+<a name="ln1446">    return passed_through_mons;</a>
+<a name="ln1447">}</a>
+<a name="ln1448"> </a>
+<a name="ln1449">aff_type targeter_monster_sequence::is_affected(coord_def loc)</a>
+<a name="ln1450">{</a>
+<a name="ln1451">    bool on_path = false;</a>
+<a name="ln1452">    for (auto c : path_taken)</a>
+<a name="ln1453">    {</a>
+<a name="ln1454">        if (cell_is_solid(c))</a>
+<a name="ln1455">            break;</a>
+<a name="ln1456">        if (c == loc)</a>
+<a name="ln1457">            on_path = true;</a>
+<a name="ln1458">        if (anyone_there(c)</a>
+<a name="ln1459">            &amp;&amp; !beam.ignores_monster(monster_at(c))</a>
+<a name="ln1460">            &amp;&amp; (loc - c).rdist() &lt;= 9)</a>
+<a name="ln1461">        {</a>
+<a name="ln1462">            coord_def centre(9,9);</a>
+<a name="ln1463">            if (exp_map(loc - c + centre) &lt; INT_MAX</a>
+<a name="ln1464">                &amp;&amp; !cell_is_solid(loc))</a>
+<a name="ln1465">            {</a>
+<a name="ln1466">                return AFF_YES;</a>
+<a name="ln1467">            }</a>
+<a name="ln1468">        }</a>
+<a name="ln1469">    }</a>
+<a name="ln1470"> </a>
+<a name="ln1471">    return on_path ? AFF_TRACER : AFF_NO;</a>
+<a name="ln1472">}</a>
+<a name="ln1473"> </a>
+<a name="ln1474">targeter_overgrow::targeter_overgrow()</a>
+<a name="ln1475">{</a>
+<a name="ln1476">    agent = &amp;you;</a>
+<a name="ln1477">    origin = you.pos();</a>
+<a name="ln1478">}</a>
+<a name="ln1479"> </a>
+<a name="ln1480">bool targeter_overgrow::overgrow_affects_pos(const coord_def &amp;p)</a>
+<a name="ln1481">{</a>
+<a name="ln1482">    if (!in_bounds(p))</a>
+<a name="ln1483">        return false;</a>
+<a name="ln1484">    if (env.markers.property_at(p, MAT_ANY, &quot;veto_shatter&quot;) == &quot;veto&quot;)</a>
+<a name="ln1485">        return false;</a>
+<a name="ln1486"> </a>
+<a name="ln1487">    const dungeon_feature_type feat = grd(p);</a>
+<a name="ln1488">    if (feat_is_open_door(feat))</a>
+<a name="ln1489">    {</a>
+<a name="ln1490">        const monster* const mons = monster_at(p);</a>
+<a name="ln1491">        if (mons &amp;&amp; agent &amp;&amp; agent-&gt;can_see(*mons))</a>
+<a name="ln1492">            return false;</a>
+<a name="ln1493"> </a>
+<a name="ln1494">        return true;</a>
+<a name="ln1495">    }</a>
+<a name="ln1496"> </a>
+<a name="ln1497">    return feat_is_diggable(feat)</a>
+<a name="ln1498">        || feat_is_closed_door(feat)</a>
+<a name="ln1499">        || feat_is_tree(feat)</a>
+<a name="ln1500">        || (feat_is_wall(feat) &amp;&amp; !feat_is_permarock(feat));</a>
+<a name="ln1501">}</a>
+<a name="ln1502"> </a>
+<a name="ln1503">aff_type targeter_overgrow::is_affected(coord_def loc)</a>
+<a name="ln1504">{</a>
+<a name="ln1505">    if (affected_positions.count(loc))</a>
+<a name="ln1506">        return AFF_YES;</a>
+<a name="ln1507"> </a>
+<a name="ln1508">    return AFF_NO;</a>
+<a name="ln1509">}</a>
+<a name="ln1510"> </a>
+<a name="ln1511">bool targeter_overgrow::valid_aim(coord_def a)</a>
+<a name="ln1512">{</a>
+<a name="ln1513">    if (a != origin &amp;&amp; !cell_see_cell(origin, a, LOS_NO_TRANS))</a>
+<a name="ln1514">    {</a>
+<a name="ln1515">        if (agent &amp;&amp; agent-&gt;see_cell(a))</a>
+<a name="ln1516">            return notify_fail(&quot;There's something in the way.&quot;);</a>
+<a name="ln1517">        return notify_fail(&quot;You cannot see that place.&quot;);</a>
+<a name="ln1518">    }</a>
+<a name="ln1519"> </a>
+<a name="ln1520">    if (!overgrow_affects_pos(a))</a>
+<a name="ln1521">        return notify_fail(&quot;You cannot grow anything here.&quot;);</a>
+<a name="ln1522"> </a>
+<a name="ln1523">    return true;</a>
+<a name="ln1524">}</a>
+<a name="ln1525"> </a>
+<a name="ln1526">bool targeter_overgrow::set_aim(coord_def a)</a>
+<a name="ln1527">{</a>
+<a name="ln1528">    affected_positions.clear();</a>
+<a name="ln1529"> </a>
+<a name="ln1530">    if (!targeter::set_aim(a))</a>
+<a name="ln1531">        return false;</a>
+<a name="ln1532"> </a>
+<a name="ln1533">    if (overgrow_affects_pos(a))</a>
+<a name="ln1534">        affected_positions.insert(a);</a>
+<a name="ln1535">    else</a>
+<a name="ln1536">        return false;</a>
+<a name="ln1537"> </a>
+<a name="ln1538">    for (adjacent_iterator ai(a, true); ai; ++ai)</a>
+<a name="ln1539">    {</a>
+<a name="ln1540">        if (overgrow_affects_pos(*ai) &amp;&amp; you.see_cell_no_trans(*ai))</a>
+<a name="ln1541">            affected_positions.insert(*ai);</a>
+<a name="ln1542">    }</a>
+<a name="ln1543"> </a>
+<a name="ln1544">    return affected_positions.size();</a>
+<a name="ln1545">}</a>
+
+</code></pre>
+<div class="balloon" rel="516"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1359"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1374"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1011"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: no_landing_reason, blocked_landing_reason.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

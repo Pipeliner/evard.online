@@ -1,0 +1,496 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>perlin.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*</a>
+<a name="ln2"> * This is a C++ port of version Stefan Gustavson's public domain</a>
+<a name="ln3"> * implementation of simplex noise (Version 2012-03-09), which can be</a>
+<a name="ln4"> * found at &lt;http://webstaff.itn.liu.se/~stegu/simplexnoise/&gt;.</a>
+<a name="ln5"> *</a>
+<a name="ln6"> * (Simplex Noise is a new (2001) algorithm created by Ken Perlin to</a>
+<a name="ln7"> * replace his classic &quot;Perlin&quot; noise algorithm.)</a>
+<a name="ln8"> *</a>
+<a name="ln9"> * It was ported by Brendan Hickey (brendan@bhickey.net) and released on</a>
+<a name="ln10"> * 2012-09-16.</a>
+<a name="ln11"> *</a>
+<a name="ln12"> * It is made available under the Creative Commons CC0 license.</a>
+<a name="ln13"> *</a>
+<a name="ln14"> * A speed-improved simplex noise algorithm for 2D, 3D and 4D in C++.</a>
+<a name="ln15"> *</a>
+<a name="ln16"> * Based on example code by Stefan Gustavson (stegu@itn.liu.se).</a>
+<a name="ln17"> * Optimisations by Peter Eastman (peastman@drizzle.stanford.edu).</a>
+<a name="ln18"> * Better rank ordering method by Stefan Gustavson in 2012.</a>
+<a name="ln19"> * This could be speeded up even further, but it's useful as it is.</a>
+<a name="ln20"> *</a>
+<a name="ln21"> * Clumsily ported to some horrendous C/C++ mix by</a>
+<a name="ln22"> *      Brendan Hickey (brendan@bhickey.net)</a>
+<a name="ln23"> *</a>
+<a name="ln24"> * Version 2012-09-16</a>
+<a name="ln25"> *</a>
+<a name="ln26"> * This code was placed in the public domain by its original author,</a>
+<a name="ln27"> * Stefan Gustavson. You may use it as you see fit, but</a>
+<a name="ln28"> * attribution is appreciated.</a>
+<a name="ln29"> *</a>
+<a name="ln30"> */</a>
+<a name="ln31"> </a>
+<a name="ln32">#include &quot;AppHdr.h&quot;</a>
+<a name="ln33"> </a>
+<a name="ln34">#include &quot;perlin.h&quot;</a>
+<a name="ln35"> </a>
+<a name="ln36">#include &lt;cmath&gt;</a>
+<a name="ln37">#include &lt;stdint.h&gt;</a>
+<a name="ln38"> </a>
+<a name="ln39">namespace perlin</a>
+<a name="ln40">{</a>
+<a name="ln41">    // Inner class to speed up gradient computations</a>
+<a name="ln42">    // ([in Java,] array access is a lot slower than member access)</a>
+<a name="ln43">    class Grad</a>
+<a name="ln44">    {</a>
+<a name="ln45">        public:</a>
+<a name="ln46">            const double x, y, z, w;</a>
+<a name="ln47">            Grad(double _x, double _y, double _z) : x(_x), y(_y), z(_z), w(0) {}</a>
+<a name="ln48">            Grad(double _x, double _y, double _z, double _w) : x(_x), y(_y), z(_z), w(_w) {}</a>
+<a name="ln49">    };</a>
+<a name="ln50"> </a>
+<a name="ln51">    static const Grad grad3[] =</a>
+<a name="ln52">    {</a>
+<a name="ln53">        Grad(1,1,0), Grad(-1,1,0), Grad(1,-1,0), Grad(-1,-1,0),</a>
+<a name="ln54">        Grad(1,0,1), Grad(-1,0,1), Grad(1,0,-1), Grad(-1,0,-1),</a>
+<a name="ln55">        Grad(0,1,1), Grad(0,-1,1), Grad(0,1,-1), Grad(0,-1,-1)</a>
+<a name="ln56">    };</a>
+<a name="ln57"> </a>
+<a name="ln58">    static const Grad grad4[] =</a>
+<a name="ln59">    {</a>
+<a name="ln60">        Grad(0,1,1,1),  Grad(0,1,1,-1),  Grad(0,1,-1,1),  Grad(0,1,-1,-1),</a>
+<a name="ln61">        Grad(0,-1,1,1), Grad(0,-1,1,-1), Grad(0,-1,-1,1), Grad(0,-1,-1,-1),</a>
+<a name="ln62">        Grad(1,0,1,1),  Grad(1,0,1,-1),  Grad(1,0,-1,1),  Grad(1,0,-1,-1),</a>
+<a name="ln63">        Grad(-1,0,1,1), Grad(-1,0,1,-1), Grad(-1,0,-1,1), Grad(-1,0,-1,-1),</a>
+<a name="ln64">        Grad(1,1,0,1),  Grad(1,1,0,-1),  Grad(1,-1,0,1),  Grad(1,-1,0,-1),</a>
+<a name="ln65">        Grad(-1,1,0,1), Grad(-1,1,0,-1), Grad(-1,-1,0,1), Grad(-1,-1,0,-1),</a>
+<a name="ln66">        Grad(1,1,1,0),  Grad(1,1,-1,0),  Grad(1,-1,1,0),  Grad(1,-1,-1,0),</a>
+<a name="ln67">        Grad(-1,1,1,0), Grad(-1,1,-1,0), Grad(-1,-1,1,0), Grad(-1,-1,-1,0)</a>
+<a name="ln68">    };</a>
+<a name="ln69"> </a>
+<a name="ln70">    static const uint8_t perm[] = {151,160,137,91,90,15,</a>
+<a name="ln71">        131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,</a>
+<a name="ln72">        190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,</a>
+<a name="ln73">        88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,</a>
+<a name="ln74">        77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,</a>
+<a name="ln75">        102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,</a>
+<a name="ln76">        135,130,116,188,159,86,164,100,109,198,173,186, 3,64,52,217,226,250,124,123,</a>
+<a name="ln77">        5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,</a>
+<a name="ln78">        223,183,170,213,119,248,152, 2,44,154,163, 70,221,153,101,155,167, 43,172,9,</a>
+<a name="ln79">        129,22,39,253, 19,98,108,110,79,113,224,232,178,185, 112,104,218,246,97,228,</a>
+<a name="ln80">        251,34,242,193,238,210,144,12,191,179,162,241, 81,51,145,235,249,14,239,107,</a>
+<a name="ln81">        49,192,214, 31,181,199,106,157,184, 84,204,176,115,121,50,45,127, 4,150,254,</a>
+<a name="ln82">        138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180,</a>
+<a name="ln83">        // wrap</a>
+<a name="ln84">        151,160,137,91,90,15,</a>
+<a name="ln85">        131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,</a>
+<a name="ln86">        190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,</a>
+<a name="ln87">        88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,</a>
+<a name="ln88">        77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,</a>
+<a name="ln89">        102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,</a>
+<a name="ln90">        135,130,116,188,159,86,164,100,109,198,173,186, 3,64,52,217,226,250,124,123,</a>
+<a name="ln91">        5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,</a>
+<a name="ln92">        223,183,170,213,119,248,152, 2,44,154,163, 70,221,153,101,155,167, 43,172,9,</a>
+<a name="ln93">        129,22,39,253, 19,98,108,110,79,113,224,232,178,185, 112,104,218,246,97,228,</a>
+<a name="ln94">        251,34,242,193,238,210,144,12,191,179,162,241, 81,51,145,235,249,14,239,107,</a>
+<a name="ln95">        49,192,214, 31,181,199,106,157,184, 84,204,176,115,121,50,45,127, 4,150,254,</a>
+<a name="ln96">        138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180};</a>
+<a name="ln97"> </a>
+<a name="ln98">    static IMMUTABLE uint8_t permMod12(const uint32_t x)</a>
+<a name="ln99">    {</a>
+<a name="ln100">        return perm[x] % 12;</a>
+<a name="ln101">    }</a>
+<a name="ln102"> </a>
+<a name="ln103">    // Skewing and unskewing factors for 2, 3, and 4 dimensions</a>
+<a name="ln104">    static const double F2 = 0.5 * (sqrt(3.0) - 1.0);</a>
+<a name="ln105">    static const double G2 = (3.0 - sqrt(3.0)) / 6.0;</a>
+<a name="ln106">    static const double F3 = 1.0 / 3.0;</a>
+<a name="ln107">    static const double G3 = 1.0 / 6.0;</a>
+<a name="ln108">    static const double F4 = (sqrt(5.0) - 1.0) / 4.0;</a>
+<a name="ln109">    static const double G4 = (5.0 - sqrt(5.0)) / 20.0;</a>
+<a name="ln110"> </a>
+<a name="ln111">    // Use uint64_t so that noise() can work sensibly for</a>
+<a name="ln112">    // coordinates from the full range of uint32_t; otherwise scaling,</a>
+<a name="ln113">    // signedness, and skew will give us considerably less than that.</a>
+<a name="ln114">    static uint64_t fastfloor(const double x)</a>
+<a name="ln115">    {</a>
+<a name="ln116">        uint64_t xi = (uint64_t) x;</a>
+<a name="ln117">        return x &lt; xi ? xi-1 : xi;</a>
+<a name="ln118">    }</a>
+<a name="ln119"> </a>
+<a name="ln120">    static double dot(Grad g, double x, double y)</a>
+<a name="ln121">    {</a>
+<a name="ln122">        return g.x*x + g.y*y;</a>
+<a name="ln123">    }</a>
+<a name="ln124">    static double dot(Grad g, double x, double y, double z)</a>
+<a name="ln125">    {</a>
+<a name="ln126">        return g.x*x + g.y*y + g.z*z;</a>
+<a name="ln127">    }</a>
+<a name="ln128">    static double dot(Grad g, double x, double y, double z, double w)</a>
+<a name="ln129">    {</a>
+<a name="ln130">        return g.x*x + g.y*y + g.z*z + g.w*w;</a>
+<a name="ln131">    }</a>
+<a name="ln132"> </a>
+<a name="ln133"> </a>
+<a name="ln134">    // 2D simplex noise</a>
+<a name="ln135">    double noise(double xin, double yin)</a>
+<a name="ln136">    {</a>
+<a name="ln137">        double n0, n1, n2; // Noise contributions from the three corners</a>
+<a name="ln138">        // Skew the input space to determine which simplex cell we're in</a>
+<a name="ln139">        double s = (xin+yin)*F2; // Hairy factor for 2D</a>
+<a name="ln140">        uint64_t i = fastfloor(xin+s);</a>
+<a name="ln141">        uint64_t j = fastfloor(yin+s);</a>
+<a name="ln142">        double t = (i+j)*G2;</a>
+<a name="ln143">        double X0 = i-t; // Unskew the cell origin back to (x,y) space</a>
+<a name="ln144">        double Y0 = j-t;</a>
+<a name="ln145">        double x0 = xin-X0; // The x,y distances from the cell origin</a>
+<a name="ln146">        double y0 = yin-Y0;</a>
+<a name="ln147">        // For the 2D case, the simplex shape is an equilateral triangle.</a>
+<a name="ln148">        // Determine which simplex we are in.</a>
+<a name="ln149">        int i1, j1; // Offsets for second (middle) corner of simplex in (i,j) coords</a>
+<a name="ln150">        if (x0 &gt; y0)</a>
+<a name="ln151">            i1=1, j1=0; // lower triangle, XY order: (0,0)-&gt;(1,0)-&gt;(1,1)</a>
+<a name="ln152">        else</a>
+<a name="ln153">            i1=0, j1=1; // upper triangle, YX order: (0,0)-&gt;(0,1)-&gt;(1,1)</a>
+<a name="ln154">        // A step of (1,0) in (i,j) means a step of (1-c,-c) in (x,y), and</a>
+<a name="ln155">        // a step of (0,1) in (i,j) means a step of (-c,1-c) in (x,y), where</a>
+<a name="ln156">        // c = (3-sqrt(3))/6</a>
+<a name="ln157">        double x1 = x0 - i1 + G2; // Offsets for middle corner in (x,y) unskewed coords</a>
+<a name="ln158">        double y1 = y0 - j1 + G2;</a>
+<a name="ln159">        double x2 = x0 - 1.0 + 2.0 * G2; // Offsets for last corner in (x,y) unskewed coords</a>
+<a name="ln160">        double y2 = y0 - 1.0 + 2.0 * G2;</a>
+<a name="ln161">        // Work out the hashed gradient indices of the three simplex corners</a>
+<a name="ln162">        int ii = i &amp; 255;</a>
+<a name="ln163">        int jj = j &amp; 255;</a>
+<a name="ln164">        int gi0 = permMod12(ii+perm[jj]);</a>
+<a name="ln165">        int gi1 = permMod12(ii+i1+perm[jj+j1]);</a>
+<a name="ln166">        int gi2 = permMod12(ii+1+perm[jj+1]);</a>
+<a name="ln167">        // Calculate the contribution from the three corners</a>
+<a name="ln168">        double t0 = 0.5 - x0*x0-y0*y0;</a>
+<a name="ln169">        if (t0 &lt; 0)</a>
+<a name="ln170">            n0 = 0.0;</a>
+<a name="ln171">        else</a>
+<a name="ln172">        {</a>
+<a name="ln173">            t0 *= t0;</a>
+<a name="ln174">            n0 = t0 * t0 * dot(grad3[gi0], x0, y0);  // (x,y) of grad3 used for 2D gradient</a>
+<a name="ln175">        }</a>
+<a name="ln176">        double t1 = 0.5 - x1*x1-y1*y1;</a>
+<a name="ln177">        if (t1 &lt; 0)</a>
+<a name="ln178">            n1 = 0.0;</a>
+<a name="ln179">        else</a>
+<a name="ln180">        {</a>
+<a name="ln181">            t1 *= t1;</a>
+<a name="ln182">            n1 = t1 * t1 * dot(grad3[gi1], x1, y1);</a>
+<a name="ln183">        }</a>
+<a name="ln184">        double t2 = 0.5 - x2*x2-y2*y2;</a>
+<a name="ln185">        if (t2 &lt; 0)</a>
+<a name="ln186">            n2 = 0.0;</a>
+<a name="ln187">        else</a>
+<a name="ln188">        {</a>
+<a name="ln189">            t2 *= t2;</a>
+<a name="ln190">            n2 = t2 * t2 * dot(grad3[gi2], x2, y2);</a>
+<a name="ln191">        }</a>
+<a name="ln192">        // Add contributions from each corner to get the final noise value.</a>
+<a name="ln193">        // The result is scaled to return values in the interval [-1,1].</a>
+<a name="ln194">        return 70.0 * (n0 + n1 + n2);</a>
+<a name="ln195">    }</a>
+<a name="ln196"> </a>
+<a name="ln197">    // 3D simplex noise</a>
+<a name="ln198">    double noise(double xin, double yin, double zin)</a>
+<a name="ln199">    {</a>
+<a name="ln200">        double n0, n1, n2, n3; // Noise contributions from the four corners</a>
+<a name="ln201">        // Skew the input space to determine which simplex cell we're in</a>
+<a name="ln202">        double s = (xin+yin+zin)*F3; // Very nice and simple skew factor for 3D</a>
+<a name="ln203">        uint64_t i = fastfloor(xin+s);</a>
+<a name="ln204">        uint64_t j = fastfloor(yin+s);</a>
+<a name="ln205">        uint64_t k = fastfloor(zin+s);</a>
+<a name="ln206">        double t = (i+j+k)*G3;</a>
+<a name="ln207">        double X0 = i-t; // Unskew the cell origin back to (x,y,z) space</a>
+<a name="ln208">        double Y0 = j-t;</a>
+<a name="ln209">        double Z0 = k-t;</a>
+<a name="ln210">        double x0 = xin-X0; // The x,y,z distances from the cell origin</a>
+<a name="ln211">        double y0 = yin-Y0;</a>
+<a name="ln212">        double z0 = zin-Z0;</a>
+<a name="ln213">        // For the 3D case, the simplex shape is a slightly irregular tetrahedron.</a>
+<a name="ln214">        // Determine which simplex we are in.</a>
+<a name="ln215">        int i1, j1, k1; // Offsets for second corner of simplex in (i,j,k) coords</a>
+<a name="ln216">        int i2, j2, k2; // Offsets for third corner of simplex in (i,j,k) coords</a>
+<a name="ln217">        if (x0 &gt;= y0)</a>
+<a name="ln218">        {</a>
+<a name="ln219">            if (y0 &gt;= z0)</a>
+<a name="ln220">                i1=1, j1=0, k1=0, i2=1, j2=1, k2=0; // X Y Z order</a>
+<a name="ln221">            else if (x0 &gt;= z0)</a>
+<a name="ln222">                i1=1, j1=0, k1=0, i2=1, j2=0, k2=1; // X Z Y order</a>
+<a name="ln223">            else</a>
+<a name="ln224">                i1=0, j1=0, k1=1, i2=1, j2=0, k2=1; // Z X Y order</a>
+<a name="ln225">        }</a>
+<a name="ln226">        else</a>
+<a name="ln227">        {   // x0 &lt; y0</a>
+<a name="ln228">            if (y0 &lt; z0)</a>
+<a name="ln229">                i1=0, j1=0, k1=1, i2=0, j2=1, k2=1; // Z Y X order</a>
+<a name="ln230">            else if (x0 &lt; z0)</a>
+<a name="ln231">                i1=0, j1=1, k1=0, i2=0, j2=1, k2=1; // Y Z X order</a>
+<a name="ln232">            else</a>
+<a name="ln233">                i1=0, j1=1, k1=0, i2=1, j2=1, k2=0; // Y X Z order</a>
+<a name="ln234">        }</a>
+<a name="ln235">        // A step of (1,0,0) in (i,j,k) means a step of (1-c,-c,-c) in (x,y,z),</a>
+<a name="ln236">        // a step of (0,1,0) in (i,j,k) means a step of (-c,1-c,-c) in (x,y,z), and</a>
+<a name="ln237">        // a step of (0,0,1) in (i,j,k) means a step of (-c,-c,1-c) in (x,y,z), where</a>
+<a name="ln238">        // c = 1/6.</a>
+<a name="ln239">        double x1 = x0 - i1 + G3; // Offsets for second corner in (x,y,z) coords</a>
+<a name="ln240">        double y1 = y0 - j1 + G3;</a>
+<a name="ln241">        double z1 = z0 - k1 + G3;</a>
+<a name="ln242">        double x2 = x0 - i2 + 2.0*G3; // Offsets for third corner in (x,y,z) coords</a>
+<a name="ln243">        double y2 = y0 - j2 + 2.0*G3;</a>
+<a name="ln244">        double z2 = z0 - k2 + 2.0*G3;</a>
+<a name="ln245">        double x3 = x0 - 1.0 + 3.0*G3; // Offsets for last corner in (x,y,z) coords</a>
+<a name="ln246">        double y3 = y0 - 1.0 + 3.0*G3;</a>
+<a name="ln247">        double z3 = z0 - 1.0 + 3.0*G3;</a>
+<a name="ln248">        // Work out the hashed gradient indices of the four simplex corners</a>
+<a name="ln249">        int ii = i &amp; 255;</a>
+<a name="ln250">        int jj = j &amp; 255;</a>
+<a name="ln251">        int kk = k &amp; 255;</a>
+<a name="ln252">        int gi0 = permMod12(ii+perm[jj+perm[kk]]);</a>
+<a name="ln253">        int gi1 = permMod12(ii+i1+perm[jj+j1+perm[kk+k1]]);</a>
+<a name="ln254">        int gi2 = permMod12(ii+i2+perm[jj+j2+perm[kk+k2]]);</a>
+<a name="ln255">        int gi3 = permMod12(ii+1+perm[jj+1+perm[kk+1]]);</a>
+<a name="ln256">        // Calculate the contribution from the four corners</a>
+<a name="ln257">        double t0 = 0.6 - x0*x0 - y0*y0 - z0*z0;</a>
+<a name="ln258">        if (t0 &lt; 0)</a>
+<a name="ln259">            n0 = 0.0;</a>
+<a name="ln260">        else</a>
+<a name="ln261">        {</a>
+<a name="ln262">            t0 *= t0;</a>
+<a name="ln263">            n0 = t0 * t0 * dot(grad3[gi0], x0, y0, z0);</a>
+<a name="ln264">        }</a>
+<a name="ln265">        double t1 = 0.6 - x1*x1 - y1*y1 - z1*z1;</a>
+<a name="ln266">        if (t1 &lt; 0)</a>
+<a name="ln267">            n1 = 0.0;</a>
+<a name="ln268">        else</a>
+<a name="ln269">        {</a>
+<a name="ln270">            t1 *= t1;</a>
+<a name="ln271">            n1 = t1 * t1 * dot(grad3[gi1], x1, y1, z1);</a>
+<a name="ln272">        }</a>
+<a name="ln273">        double t2 = 0.6 - x2*x2 - y2*y2 - z2*z2;</a>
+<a name="ln274">        if (t2 &lt; 0)</a>
+<a name="ln275">            n2 = 0.0;</a>
+<a name="ln276">        else</a>
+<a name="ln277">        {</a>
+<a name="ln278">            t2 *= t2;</a>
+<a name="ln279">            n2 = t2 * t2 * dot(grad3[gi2], x2, y2, z2);</a>
+<a name="ln280">        }</a>
+<a name="ln281">        double t3 = 0.6 - x3*x3 - y3*y3 - z3*z3;</a>
+<a name="ln282">        if (t3&lt;0)</a>
+<a name="ln283">            n3 = 0.0;</a>
+<a name="ln284">        else</a>
+<a name="ln285">        {</a>
+<a name="ln286">            t3 *= t3;</a>
+<a name="ln287">            n3 = t3 * t3 * dot(grad3[gi3], x3, y3, z3);</a>
+<a name="ln288">        }</a>
+<a name="ln289">        // Add contributions from each corner to get the final noise value.</a>
+<a name="ln290">        // The result is scaled to stay just inside [-1,1]</a>
+<a name="ln291">        return 32.0 * (n0 + n1 + n2 + n3);</a>
+<a name="ln292">    }</a>
+<a name="ln293"> </a>
+<a name="ln294"> </a>
+<a name="ln295">    // 4D simplex noise, better simplex rank ordering method 2012-03-09</a>
+<a name="ln296">    double noise(double x, double y, double z, double w)</a>
+<a name="ln297">    {</a>
+<a name="ln298">        double n0, n1, n2, n3, n4; // Noise contributions from the five corners</a>
+<a name="ln299">        // Skew the (x,y,z,w) space to determine which cell of 24 simplices we're in</a>
+<a name="ln300">        double s = (x + y + z + w) * F4; // Factor for 4D skewing</a>
+<a name="ln301">        uint64_t i = fastfloor(x + s);</a>
+<a name="ln302">        uint64_t j = fastfloor(y + s);</a>
+<a name="ln303">        uint64_t k = fastfloor(z + s);</a>
+<a name="ln304">        uint64_t l = fastfloor(w + s);</a>
+<a name="ln305">        double t = (i + j + k + l) * G4; // Factor for 4D unskewing</a>
+<a name="ln306">        double X0 = i - t; // Unskew the cell origin back to (x,y,z,w) space</a>
+<a name="ln307">        double Y0 = j - t;</a>
+<a name="ln308">        double Z0 = k - t;</a>
+<a name="ln309">        double W0 = l - t;</a>
+<a name="ln310">        double x0 = x - X0;  // The x,y,z,w distances from the cell origin</a>
+<a name="ln311">        double y0 = y - Y0;</a>
+<a name="ln312">        double z0 = z - Z0;</a>
+<a name="ln313">        double w0 = w - W0;</a>
+<a name="ln314">        // For the 4D case, the simplex is a 4D shape I won't even try to describe.</a>
+<a name="ln315">        // To find out which of the 24 possible simplices we're in, we need to</a>
+<a name="ln316">        // determine the magnitude ordering of x0, y0, z0 and w0.</a>
+<a name="ln317">        // Six pair-wise comparisons are performed between each possible pair</a>
+<a name="ln318">        // of the four coordinates, and the results are used to rank the numbers.</a>
+<a name="ln319">        int rankx = 0;</a>
+<a name="ln320">        int ranky = 0;</a>
+<a name="ln321">        int rankz = 0;</a>
+<a name="ln322">        int rankw = 0;</a>
+<a name="ln323">        ++(x0 &gt; y0 ? rankx : ranky);</a>
+<a name="ln324">        ++(x0 &gt; z0 ? rankx : rankz);</a>
+<a name="ln325">        ++(x0 &gt; w0 ? rankx : rankw);</a>
+<a name="ln326">        ++(y0 &gt; z0 ? ranky : rankz);</a>
+<a name="ln327">        ++(y0 &gt; w0 ? ranky : rankw);</a>
+<a name="ln328">        ++(z0 &gt; w0 ? rankz : rankw);</a>
+<a name="ln329">        int i1, j1, k1, l1; // The integer offsets for the second simplex corner</a>
+<a name="ln330">        int i2, j2, k2, l2; // The integer offsets for the third simplex corner</a>
+<a name="ln331">        int i3, j3, k3, l3; // The integer offsets for the fourth simplex corner</a>
+<a name="ln332">        // simplex[c] is a 4-vector with the numbers 0, 1, 2 and 3 in some order.</a>
+<a name="ln333">        // Many values of c will never occur, since e.g. x&gt;y&gt;z&gt;w makes x&lt;z, y&lt;w and x&lt;w</a>
+<a name="ln334">        // impossible. Only the 24 indices which have non-zero entries make any sense.</a>
+<a name="ln335">        // We use a thresholding to set the coordinates in turn from the largest magnitude.</a>
+<a name="ln336">        // Rank 3 denotes the largest coordinate.</a>
+<a name="ln337">        i1 = rankx &gt;= 3 ? 1 : 0;</a>
+<a name="ln338">        j1 = ranky &gt;= 3 ? 1 : 0;</a>
+<a name="ln339">        k1 = rankz &gt;= 3 ? 1 : 0;</a>
+<a name="ln340">        l1 = rankw &gt;= 3 ? 1 : 0;</a>
+<a name="ln341">        // Rank 2 denotes the second largest coordinate.</a>
+<a name="ln342">        i2 = rankx &gt;= 2 ? 1 : 0;</a>
+<a name="ln343">        j2 = ranky &gt;= 2 ? 1 : 0;</a>
+<a name="ln344">        k2 = rankz &gt;= 2 ? 1 : 0;</a>
+<a name="ln345">        l2 = rankw &gt;= 2 ? 1 : 0;</a>
+<a name="ln346">        // Rank 1 denotes the second smallest coordinate.</a>
+<a name="ln347">        i3 = rankx &gt;= 1 ? 1 : 0;</a>
+<a name="ln348">        j3 = ranky &gt;= 1 ? 1 : 0;</a>
+<a name="ln349">        k3 = rankz &gt;= 1 ? 1 : 0;</a>
+<a name="ln350">        l3 = rankw &gt;= 1 ? 1 : 0;</a>
+<a name="ln351">        // The fifth corner has all coordinate offsets = 1, so no need to compute that.</a>
+<a name="ln352">        double x1 = x0 - i1 + G4; // Offsets for second corner in (x,y,z,w) coords</a>
+<a name="ln353">        double y1 = y0 - j1 + G4;</a>
+<a name="ln354">        double z1 = z0 - k1 + G4;</a>
+<a name="ln355">        double w1 = w0 - l1 + G4;</a>
+<a name="ln356">        double x2 = x0 - i2 + 2.0*G4; // Offsets for third corner in (x,y,z,w) coords</a>
+<a name="ln357">        double y2 = y0 - j2 + 2.0*G4;</a>
+<a name="ln358">        double z2 = z0 - k2 + 2.0*G4;</a>
+<a name="ln359">        double w2 = w0 - l2 + 2.0*G4;</a>
+<a name="ln360">        double x3 = x0 - i3 + 3.0*G4; // Offsets for fourth corner in (x,y,z,w) coords</a>
+<a name="ln361">        double y3 = y0 - j3 + 3.0*G4;</a>
+<a name="ln362">        double z3 = z0 - k3 + 3.0*G4;</a>
+<a name="ln363">        double w3 = w0 - l3 + 3.0*G4;</a>
+<a name="ln364">        double x4 = x0 - 1.0 + 4.0*G4; // Offsets for last corner in (x,y,z,w) coords</a>
+<a name="ln365">        double y4 = y0 - 1.0 + 4.0*G4;</a>
+<a name="ln366">        double z4 = z0 - 1.0 + 4.0*G4;</a>
+<a name="ln367">        double w4 = w0 - 1.0 + 4.0*G4;</a>
+<a name="ln368">        // Work out the hashed gradient indices of the five simplex corners</a>
+<a name="ln369">        int ii = i &amp; 255;</a>
+<a name="ln370">        int jj = j &amp; 255;</a>
+<a name="ln371">        int kk = k &amp; 255;</a>
+<a name="ln372">        int ll = l &amp; 255;</a>
+<a name="ln373">        int gi0 = perm[ii+perm[jj+perm[kk+perm[ll]]]] % 32;</a>
+<a name="ln374">        int gi1 = perm[ii+i1+perm[jj+j1+perm[kk+k1+perm[ll+l1]]]] % 32;</a>
+<a name="ln375">        int gi2 = perm[ii+i2+perm[jj+j2+perm[kk+k2+perm[ll+l2]]]] % 32;</a>
+<a name="ln376">        int gi3 = perm[ii+i3+perm[jj+j3+perm[kk+k3+perm[ll+l3]]]] % 32;</a>
+<a name="ln377">        int gi4 = perm[ii+1+perm[jj+1+perm[kk+1+perm[ll+1]]]] % 32;</a>
+<a name="ln378">        // Calculate the contribution from the five corners</a>
+<a name="ln379">        double t0 = 0.6 - x0*x0 - y0*y0 - z0*z0 - w0*w0;</a>
+<a name="ln380">        if (t0 &lt; 0)</a>
+<a name="ln381">            n0 = 0.0;</a>
+<a name="ln382">        else</a>
+<a name="ln383">        {</a>
+<a name="ln384">            t0 *= t0;</a>
+<a name="ln385">            n0 = t0 * t0 * dot(grad4[gi0], x0, y0, z0, w0);</a>
+<a name="ln386">        }</a>
+<a name="ln387">        double t1 = 0.6 - x1*x1 - y1*y1 - z1*z1 - w1*w1;</a>
+<a name="ln388">        if (t1 &lt; 0)</a>
+<a name="ln389">            n1 = 0.0;</a>
+<a name="ln390">        else</a>
+<a name="ln391">        {</a>
+<a name="ln392">            t1 *= t1;</a>
+<a name="ln393">            n1 = t1 * t1 * dot(grad4[gi1], x1, y1, z1, w1);</a>
+<a name="ln394">        }</a>
+<a name="ln395">        double t2 = 0.6 - x2*x2 - y2*y2 - z2*z2 - w2*w2;</a>
+<a name="ln396">        if (t2 &lt; 0)</a>
+<a name="ln397">            n2 = 0.0;</a>
+<a name="ln398">        else</a>
+<a name="ln399">        {</a>
+<a name="ln400">            t2 *= t2;</a>
+<a name="ln401">            n2 = t2 * t2 * dot(grad4[gi2], x2, y2, z2, w2);</a>
+<a name="ln402">        }</a>
+<a name="ln403">        double t3 = 0.6 - x3*x3 - y3*y3 - z3*z3 - w3*w3;</a>
+<a name="ln404">        if (t3 &lt; 0)</a>
+<a name="ln405">            n3 = 0.0;</a>
+<a name="ln406">        else</a>
+<a name="ln407">        {</a>
+<a name="ln408">            t3 *= t3;</a>
+<a name="ln409">            n3 = t3 * t3 * dot(grad4[gi3], x3, y3, z3, w3);</a>
+<a name="ln410">        }</a>
+<a name="ln411">        double t4 = 0.6 - x4*x4 - y4*y4 - z4*z4 - w4*w4;</a>
+<a name="ln412">        if (t4 &lt; 0)</a>
+<a name="ln413">            n4 = 0.0;</a>
+<a name="ln414">        else</a>
+<a name="ln415">        {</a>
+<a name="ln416">            t4 *= t4;</a>
+<a name="ln417">            n4 = t4 * t4 * dot(grad4[gi4], x4, y4, z4, w4);</a>
+<a name="ln418">        }</a>
+<a name="ln419">        // Sum up and scale the result to cover the range [-1,1]</a>
+<a name="ln420">        return 27.0 * (n0 + n1 + n2 + n3 + n4);</a>
+<a name="ln421">    }</a>
+<a name="ln422"> </a>
+<a name="ln423">    // This is *not* in Stefan Gustavson's Java original</a>
+<a name="ln424">    // FIXME: what does it do?</a>
+<a name="ln425">    double fBM(double x, double y, double z, uint32_t octaves)</a>
+<a name="ln426">    {</a>
+<a name="ln427">        if (octaves &lt; 1)</a>
+<a name="ln428">            return 0.0;</a>
+<a name="ln429">        if (octaves == 1)</a>
+<a name="ln430">            return noise(x, y, z);</a>
+<a name="ln431"> </a>
+<a name="ln432">        uint32_t divisor = 1;</a>
+<a name="ln433">        double norm = 0.0;</a>
+<a name="ln434">        double value = 0;</a>
+<a name="ln435">        double xi = x;</a>
+<a name="ln436">        double yi = y;</a>
+<a name="ln437">        double zi = z;</a>
+<a name="ln438">        for (uint32_t octave = 0; octave &lt; octaves; ++octave)</a>
+<a name="ln439">        {</a>
+<a name="ln440">            value += noise(xi / divisor, yi / divisor, zi / divisor) / divisor;</a>
+<a name="ln441">            norm += 1 / divisor;</a>
+<a name="ln442">            divisor *= 2;</a>
+<a name="ln443">            double xt = yi * sin(1.41421356) + cos(1.41421356);</a>
+<a name="ln444">            yi = yi * cos(1.41421356) + sin(1.41421356);</a>
+<a name="ln445">            xi = xt;</a>
+<a name="ln446">            zi += 1.7;</a>
+<a name="ln447">        }</a>
+<a name="ln448">        return value / norm;</a>
+<a name="ln449">    }</a>
+<a name="ln450">}</a>
+
+</code></pre>
+<div class="balloon" rel="441"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v636/" target="_blank">V636</a> The '1 / divisor' expression was implicitly cast from 'int' type to 'double' type. Consider utilizing an explicit type cast to avoid the loss of a fractional part. An example: double A = (double)(X) / Y;.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

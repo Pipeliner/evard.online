@@ -1,0 +1,1423 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mapmark.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Level markers (annotations).</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mapmark.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;beh-type.h&quot;</a>
+<a name="ln13">#include &quot;cluautil.h&quot;</a>
+<a name="ln14">#include &quot;coordit.h&quot;</a>
+<a name="ln15">#include &quot;dlua.h&quot;</a>
+<a name="ln16">#include &quot;end.h&quot;</a>
+<a name="ln17">#include &quot;env.h&quot;</a>
+<a name="ln18">#include &quot;libutil.h&quot;</a>
+<a name="ln19">#include &quot;l-libs.h&quot;</a>
+<a name="ln20">#include &quot;map-marker-type.h&quot;</a>
+<a name="ln21">#include &quot;stringutil.h&quot;</a>
+<a name="ln22">#include &quot;terrain.h&quot;</a>
+<a name="ln23">#include &quot;unwind.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">////////////////////////////////////////////////////////////////////////</a>
+<a name="ln26">// Dungeon markers</a>
+<a name="ln27"> </a>
+<a name="ln28">map_marker::marker_reader map_marker::readers[NUM_MAP_MARKER_TYPES] =</a>
+<a name="ln29">{</a>
+<a name="ln30">    &amp;map_feature_marker::read,</a>
+<a name="ln31">    &amp;map_lua_marker::read,</a>
+<a name="ln32">    &amp;map_corruption_marker::read,</a>
+<a name="ln33">    &amp;map_wiz_props_marker::read,</a>
+<a name="ln34">    &amp;map_tomb_marker::read,</a>
+<a name="ln35">    &amp;map_malign_gateway_marker::read,</a>
+<a name="ln36">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln37">    &amp;map_phoenix_marker::read,</a>
+<a name="ln38">#endif</a>
+<a name="ln39">    &amp;map_position_marker::read,</a>
+<a name="ln40">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln41">    &amp;map_door_seal_marker::read,</a>
+<a name="ln42">#endif</a>
+<a name="ln43">    &amp;map_terrain_change_marker::read,</a>
+<a name="ln44">    &amp;map_cloud_spreader_marker::read</a>
+<a name="ln45">};</a>
+<a name="ln46"> </a>
+<a name="ln47">map_marker::marker_parser map_marker::parsers[NUM_MAP_MARKER_TYPES] =</a>
+<a name="ln48">{</a>
+<a name="ln49">    &amp;map_feature_marker::parse,</a>
+<a name="ln50">    &amp;map_lua_marker::parse,</a>
+<a name="ln51">    nullptr,</a>
+<a name="ln52">    nullptr,</a>
+<a name="ln53">    nullptr</a>
+<a name="ln54">};</a>
+<a name="ln55"> </a>
+<a name="ln56">map_marker::map_marker(map_marker_type t, const coord_def &amp;p)</a>
+<a name="ln57">    : pos(p), type(t)</a>
+<a name="ln58">{</a>
+<a name="ln59">}</a>
+<a name="ln60"> </a>
+<a name="ln61">map_marker::~map_marker()</a>
+<a name="ln62">{</a>
+<a name="ln63">}</a>
+<a name="ln64"> </a>
+<a name="ln65">void map_marker::activate(bool)</a>
+<a name="ln66">{</a>
+<a name="ln67">}</a>
+<a name="ln68"> </a>
+<a name="ln69">void map_marker::init()</a>
+<a name="ln70">{</a>
+<a name="ln71">}</a>
+<a name="ln72"> </a>
+<a name="ln73">void map_marker::write(writer &amp;outf) const</a>
+<a name="ln74">{</a>
+<a name="ln75">    marshallShort(outf, type);</a>
+<a name="ln76">    marshallCoord(outf, pos);</a>
+<a name="ln77">}</a>
+<a name="ln78"> </a>
+<a name="ln79">void map_marker::read(reader &amp;inf)</a>
+<a name="ln80">{</a>
+<a name="ln81">    // Don't read type! The type has to be read by someone who knows how</a>
+<a name="ln82">    // to look up the unmarshall function.</a>
+<a name="ln83">    pos = unmarshallCoord(inf);</a>
+<a name="ln84">}</a>
+<a name="ln85"> </a>
+<a name="ln86">string map_marker::property(const string &amp;pname) const</a>
+<a name="ln87">{</a>
+<a name="ln88">    UNUSED(pname);</a>
+<a name="ln89">    return &quot;&quot;;</a>
+<a name="ln90">}</a>
+<a name="ln91"> </a>
+<a name="ln92">map_marker *map_marker::read_marker(reader &amp;inf)</a>
+<a name="ln93">{</a>
+<a name="ln94">    const map_marker_type mtype =</a>
+<a name="ln95">        static_cast&lt;map_marker_type&gt;(unmarshallShort(inf));</a>
+<a name="ln96">    return readers[mtype]? (*readers[mtype])(inf, mtype) : nullptr;</a>
+<a name="ln97">}</a>
+<a name="ln98"> </a>
+<a name="ln99">map_marker *map_marker::parse_marker(const string &amp;s, const string &amp;ctx)</a>
+<a name="ln100">{</a>
+<a name="ln101">    for (int i = 0; i &lt; NUM_MAP_MARKER_TYPES; ++i)</a>
+<a name="ln102">    {</a>
+<a name="ln103">        if (parsers[i])</a>
+<a name="ln104">        {</a>
+<a name="ln105">            if (map_marker *m = parsers[i](s, ctx))</a>
+<a name="ln106">                return m;</a>
+<a name="ln107">        }</a>
+<a name="ln108">    }</a>
+<a name="ln109">    return nullptr;</a>
+<a name="ln110">}</a>
+<a name="ln111"> </a>
+<a name="ln112">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln113">// map_feature_marker</a>
+<a name="ln114"> </a>
+<a name="ln115">map_feature_marker::map_feature_marker(</a>
+<a name="ln116">    const coord_def &amp;p,</a>
+<a name="ln117">    dungeon_feature_type _feat)</a>
+<a name="ln118">    : map_marker(MAT_FEATURE, p), feat(_feat)</a>
+<a name="ln119">{</a>
+<a name="ln120">}</a>
+<a name="ln121"> </a>
+<a name="ln122">map_feature_marker::map_feature_marker(</a>
+<a name="ln123">    const map_feature_marker &amp;other)</a>
+<a name="ln124">    : map_marker(MAT_FEATURE, other.pos), feat(other.feat)</a>
+<a name="ln125">{</a>
+<a name="ln126">}</a>
+<a name="ln127"> </a>
+<a name="ln128">void map_feature_marker::write(writer &amp;outf) const</a>
+<a name="ln129">{</a>
+<a name="ln130">    map_marker::write(outf);</a>
+<a name="ln131">    marshallShort(outf, feat);</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">void map_feature_marker::read(reader &amp;inf)</a>
+<a name="ln135">{</a>
+<a name="ln136">    map_marker::read(inf);</a>
+<a name="ln137">    feat = static_cast&lt;dungeon_feature_type&gt;(unmarshallShort(inf));</a>
+<a name="ln138">}</a>
+<a name="ln139"> </a>
+<a name="ln140">map_marker *map_feature_marker::clone() const</a>
+<a name="ln141">{</a>
+<a name="ln142">    return new map_feature_marker(pos, feat);</a>
+<a name="ln143">}</a>
+<a name="ln144"> </a>
+<a name="ln145">map_marker *map_feature_marker::read(reader &amp;inf, map_marker_type)</a>
+<a name="ln146">{</a>
+<a name="ln147">    map_marker *mapf = new map_feature_marker();</a>
+<a name="ln148">    mapf-&gt;read(inf);</a>
+<a name="ln149">    return mapf;</a>
+<a name="ln150">}</a>
+<a name="ln151"> </a>
+<a name="ln152">map_marker *map_feature_marker::parse(const string &amp;s, const string &amp;)</a>
+<a name="ln153">{</a>
+<a name="ln154">    if (!starts_with(s, &quot;feat:&quot;))</a>
+<a name="ln155">        return nullptr;</a>
+<a name="ln156">    string raw = s;</a>
+<a name="ln157">    strip_tag(raw, &quot;feat:&quot;, true);</a>
+<a name="ln158"> </a>
+<a name="ln159">    const dungeon_feature_type ft = dungeon_feature_by_name(raw);</a>
+<a name="ln160">    if (ft == DNGN_UNSEEN)</a>
+<a name="ln161">    {</a>
+<a name="ln162">        throw bad_map_marker_f(&quot;Bad feature marker: %s (unknown feature '%s')&quot;,</a>
+<a name="ln163">                               s.c_str(), raw.c_str());</a>
+<a name="ln164">    }</a>
+<a name="ln165">    return new map_feature_marker(coord_def(0, 0), ft);</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">string map_feature_marker::debug_describe() const</a>
+<a name="ln169">{</a>
+<a name="ln170">    return make_stringf(&quot;feature (%s)&quot;, dungeon_feature_name(feat));</a>
+<a name="ln171">}</a>
+<a name="ln172"> </a>
+<a name="ln173">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln174">// map_lua_marker</a>
+<a name="ln175"> </a>
+<a name="ln176">map_lua_marker::map_lua_marker()</a>
+<a name="ln177">    : map_marker(MAT_LUA_MARKER, coord_def()), initialised(false)</a>
+<a name="ln178">{</a>
+<a name="ln179">}</a>
+<a name="ln180"> </a>
+<a name="ln181">map_lua_marker::map_lua_marker(const lua_datum &amp;fn)</a>
+<a name="ln182">    : map_marker(MAT_LUA_MARKER, coord_def())</a>
+<a name="ln183">{</a>
+<a name="ln184">    lua_stack_cleaner clean(dlua);</a>
+<a name="ln185">    fn.push();</a>
+<a name="ln186">    if (fn.is_function() &amp;&amp; !dlua.callfn(&quot;dgn_run_map&quot;, 1, 1))</a>
+<a name="ln187">        mprf(MSGCH_ERROR, &quot;lua_marker exec error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln188">    else</a>
+<a name="ln189">        check_register_table();</a>
+<a name="ln190">}</a>
+<a name="ln191"> </a>
+<a name="ln192">map_lua_marker::map_lua_marker(const string &amp;s, const string &amp;,</a>
+<a name="ln193">                               bool mapdef_marker)</a>
+<a name="ln194">    : map_marker(MAT_LUA_MARKER, coord_def()), initialised(false)</a>
+<a name="ln195">{</a>
+<a name="ln196">    lua_stack_cleaner clean(dlua);</a>
+<a name="ln197">    if (mapdef_marker)</a>
+<a name="ln198">    {</a>
+<a name="ln199">        if (dlua.loadstring((&quot;return &quot; + s).c_str(), &quot;lua_marker&quot;))</a>
+<a name="ln200">            mprf(MSGCH_ERROR, &quot;lua_marker load error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln201">        if (!dlua.callfn(&quot;dgn_run_map&quot;, 1, 1))</a>
+<a name="ln202">            mprf(MSGCH_ERROR, &quot;lua_marker exec error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln203">    }</a>
+<a name="ln204">    else</a>
+<a name="ln205">    {</a>
+<a name="ln206">        if (dlua.execstring((&quot;return &quot; + s).c_str(), &quot;lua_marker_mapless&quot;, 1))</a>
+<a name="ln207">        {</a>
+<a name="ln208">            mprf(MSGCH_ERROR, &quot;lua_marker_mapless exec error: %s&quot;,</a>
+<a name="ln209">                 dlua.error.c_str());</a>
+<a name="ln210">        }</a>
+<a name="ln211">    }</a>
+<a name="ln212">    check_register_table();</a>
+<a name="ln213">}</a>
+<a name="ln214"> </a>
+<a name="ln215">map_lua_marker::~map_lua_marker()</a>
+<a name="ln216">{</a>
+<a name="ln217">}</a>
+<a name="ln218"> </a>
+<a name="ln219">map_marker *map_lua_marker::clone() const</a>
+<a name="ln220">{</a>
+<a name="ln221">    map_lua_marker *copy = new map_lua_marker();</a>
+<a name="ln222">    copy-&gt;pos = pos;</a>
+<a name="ln223">    if (get_table())</a>
+<a name="ln224">        copy-&gt;check_register_table();</a>
+<a name="ln225">    return copy;</a>
+<a name="ln226">}</a>
+<a name="ln227"> </a>
+<a name="ln228">void map_lua_marker::check_register_table()</a>
+<a name="ln229">{</a>
+<a name="ln230">    if (!lua_istable(dlua, -1))</a>
+<a name="ln231">    {</a>
+<a name="ln232">        mprf(MSGCH_ERROR, &quot;lua_marker: Expected table, didn't get it.&quot;);</a>
+<a name="ln233">        initialised = false;</a>
+<a name="ln234">        return;</a>
+<a name="ln235">    }</a>
+<a name="ln236"> </a>
+<a name="ln237">    // Got a table. Save it in the registry.</a>
+<a name="ln238">    marker_table.reset(new lua_datum(dlua));</a>
+<a name="ln239">    initialised = true;</a>
+<a name="ln240">}</a>
+<a name="ln241"> </a>
+<a name="ln242">bool map_lua_marker::get_table() const</a>
+<a name="ln243">{</a>
+<a name="ln244">    if (marker_table)</a>
+<a name="ln245">    {</a>
+<a name="ln246">        marker_table-&gt;push();</a>
+<a name="ln247">        return lua_istable(dlua, -1);</a>
+<a name="ln248">    }</a>
+<a name="ln249">    else</a>
+<a name="ln250">        return false;</a>
+<a name="ln251">}</a>
+<a name="ln252"> </a>
+<a name="ln253">void map_lua_marker::write(writer &amp;outf) const</a>
+<a name="ln254">{</a>
+<a name="ln255">    map_marker::write(outf);</a>
+<a name="ln256"> </a>
+<a name="ln257">    lua_stack_cleaner clean(dlua);</a>
+<a name="ln258">    bool lua_init = initialised;</a>
+<a name="ln259">    if (!get_table())</a>
+<a name="ln260">    {</a>
+<a name="ln261">        mprf(MSGCH_ERROR, &quot;Couldn't find table.&quot;);</a>
+<a name="ln262">        lua_init = false;</a>
+<a name="ln263">    }</a>
+<a name="ln264"> </a>
+<a name="ln265">    marshallByte(outf, lua_init);</a>
+<a name="ln266">    if (!lua_init)</a>
+<a name="ln267">        return;</a>
+<a name="ln268"> </a>
+<a name="ln269">    // Call dlua_marker_function(table, 'read')</a>
+<a name="ln270">    lua_pushstring(dlua, &quot;read&quot;);</a>
+<a name="ln271">    if (!dlua.callfn(&quot;dlua_marker_reader_name&quot;, 2, 1))</a>
+<a name="ln272">        end(1, false, &quot;lua_marker: write error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln273"> </a>
+<a name="ln274">    // Right, what's on top should be a table name. Save it.</a>
+<a name="ln275">    if (!lua_isstring(dlua, -1))</a>
+<a name="ln276">    {</a>
+<a name="ln277">        end(1, false, &quot;Expected marker class name (string) to save, got %s&quot;,</a>
+<a name="ln278">            lua_typename(dlua, lua_type(dlua, -1)));</a>
+<a name="ln279">    }</a>
+<a name="ln280"> </a>
+<a name="ln281">    const string marker_class(lua_tostring(dlua, -1));</a>
+<a name="ln282">    marshallString(outf, marker_class);</a>
+<a name="ln283"> </a>
+<a name="ln284">    // Okay, saved the marker's class. Now ask the writer to do its thing.</a>
+<a name="ln285"> </a>
+<a name="ln286">    // Call: dlua_marker_method(table, fname, marker)</a>
+<a name="ln287">    get_table();</a>
+<a name="ln288">    lua_pushstring(dlua, &quot;write&quot;);</a>
+<a name="ln289">    lua_pushlightuserdata(dlua, const_cast&lt;map_lua_marker*&gt;(this));</a>
+<a name="ln290">    lua_pushlightuserdata(dlua, &amp;outf);</a>
+<a name="ln291"> </a>
+<a name="ln292">    if (!dlua.callfn(&quot;dlua_marker_method&quot;, 4))</a>
+<a name="ln293">        end(1, false, &quot;lua_marker::write error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln294">}</a>
+<a name="ln295"> </a>
+<a name="ln296">void map_lua_marker::read(reader &amp;inf)</a>
+<a name="ln297">{</a>
+<a name="ln298">    map_marker::read(inf);</a>
+<a name="ln299"> </a>
+<a name="ln300">    if (!(initialised = unmarshallByte(inf)))</a>
+<a name="ln301">        return;</a>
+<a name="ln302"> </a>
+<a name="ln303">    const string marker_class = unmarshallString(inf);</a>
+<a name="ln304">    lua_pushstring(dlua, marker_class.c_str());</a>
+<a name="ln305">    dlua_push_userdata(dlua, this, MAPMARK_METATABLE);</a>
+<a name="ln306">    lua_pushlightuserdata(dlua, &amp;inf);</a>
+<a name="ln307">    if (!dlua.callfn(&quot;dlua_marker_read&quot;, 3, 1))</a>
+<a name="ln308">        end(1, false, &quot;lua_marker::read error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln309"> </a>
+<a name="ln310">    // Right, what's on top had better be a table.</a>
+<a name="ln311">    check_register_table();</a>
+<a name="ln312">}</a>
+<a name="ln313"> </a>
+<a name="ln314">map_marker *map_lua_marker::read(reader &amp;inf, map_marker_type)</a>
+<a name="ln315">{</a>
+<a name="ln316">    map_marker *marker = new map_lua_marker;</a>
+<a name="ln317">    marker-&gt;read(inf);</a>
+<a name="ln318">    return marker;</a>
+<a name="ln319">}</a>
+<a name="ln320"> </a>
+<a name="ln321">void map_lua_marker::push_fn_args(const char *fn) const</a>
+<a name="ln322">{</a>
+<a name="ln323">    get_table();</a>
+<a name="ln324">    lua_pushstring(dlua, fn);</a>
+<a name="ln325">    dlua_push_userdata(dlua, this, MAPMARK_METATABLE);</a>
+<a name="ln326">}</a>
+<a name="ln327"> </a>
+<a name="ln328">bool map_lua_marker::callfn(const char *fn, bool warn_err, int args) const</a>
+<a name="ln329">{</a>
+<a name="ln330">    if (args == -1)</a>
+<a name="ln331">    {</a>
+<a name="ln332">        const int top = lua_gettop(dlua);</a>
+<a name="ln333">        push_fn_args(fn);</a>
+<a name="ln334">        args = lua_gettop(dlua) - top;</a>
+<a name="ln335">    }</a>
+<a name="ln336">    const bool res = dlua.callfn(&quot;dlua_marker_method&quot;, args, 1);</a>
+<a name="ln337">    if (!res &amp;&amp; warn_err)</a>
+<a name="ln338">        mprf(MSGCH_ERROR, &quot;mlua error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln339">    return res;</a>
+<a name="ln340">}</a>
+<a name="ln341"> </a>
+<a name="ln342">void map_lua_marker::init()</a>
+<a name="ln343">{</a>
+<a name="ln344">    lua_stack_cleaner clean(dlua);</a>
+<a name="ln345">    push_fn_args(&quot;init&quot;);</a>
+<a name="ln346">    callfn(&quot;init&quot;, true, 3);</a>
+<a name="ln347">}</a>
+<a name="ln348"> </a>
+<a name="ln349">void map_lua_marker::activate(bool verbose)</a>
+<a name="ln350">{</a>
+<a name="ln351">    lua_stack_cleaner clean(dlua);</a>
+<a name="ln352">    push_fn_args(&quot;activate&quot;);</a>
+<a name="ln353">    lua_pushboolean(dlua, verbose);</a>
+<a name="ln354">    callfn(&quot;activate&quot;, true, 4);</a>
+<a name="ln355">}</a>
+<a name="ln356"> </a>
+<a name="ln357">bool map_lua_marker::notify_dgn_event(const dgn_event &amp;e)</a>
+<a name="ln358">{</a>
+<a name="ln359">    lua_stack_cleaner clean(dlua);</a>
+<a name="ln360">    push_fn_args(&quot;event&quot;);</a>
+<a name="ln361">    clua_push_dgn_event(dlua, &amp;e);</a>
+<a name="ln362">    if (!dlua.callfn(&quot;dlua_marker_method&quot;, 4, 1))</a>
+<a name="ln363">    {</a>
+<a name="ln364">        mprf(MSGCH_ERROR, &quot;notify_dgn_event: Lua error: %s&quot;,</a>
+<a name="ln365">             dlua.error.c_str());</a>
+<a name="ln366"> </a>
+<a name="ln367">        // Lua error prevents veto if the event is vetoable.</a>
+<a name="ln368">        return true;</a>
+<a name="ln369">    }</a>
+<a name="ln370"> </a>
+<a name="ln371">    bool accepted = true;</a>
+<a name="ln372"> </a>
+<a name="ln373">    // We accept only a real boolean false as a veto.</a>
+<a name="ln374">    if (lua_isboolean(dlua, -1))</a>
+<a name="ln375">        accepted = lua_toboolean(dlua, -1);</a>
+<a name="ln376"> </a>
+<a name="ln377">    return accepted;</a>
+<a name="ln378">}</a>
+<a name="ln379"> </a>
+<a name="ln380">string map_lua_marker::call_str_fn(const char *fn) const</a>
+<a name="ln381">{</a>
+<a name="ln382">    lua_stack_cleaner cln(dlua);</a>
+<a name="ln383">    if (!callfn(fn))</a>
+<a name="ln384">        return make_stringf(&quot;error (%s): %s&quot;, fn, dlua.error.c_str());</a>
+<a name="ln385"> </a>
+<a name="ln386">    string result;</a>
+<a name="ln387">    if (lua_isstring(dlua, -1))</a>
+<a name="ln388">        result = lua_tostring(dlua, -1);</a>
+<a name="ln389">    return result;</a>
+<a name="ln390">}</a>
+<a name="ln391"> </a>
+<a name="ln392">string map_lua_marker::debug_describe() const</a>
+<a name="ln393">{</a>
+<a name="ln394">    return call_str_fn(&quot;describe&quot;);</a>
+<a name="ln395">}</a>
+<a name="ln396"> </a>
+<a name="ln397">string map_lua_marker::property(const string &amp;pname) const</a>
+<a name="ln398">{</a>
+<a name="ln399">    lua_stack_cleaner cln(dlua);</a>
+<a name="ln400">    push_fn_args(&quot;property&quot;);</a>
+<a name="ln401">    lua_pushstring(dlua, pname.c_str());</a>
+<a name="ln402">    if (!callfn(&quot;property&quot;, false, 4))</a>
+<a name="ln403">    {</a>
+<a name="ln404">        mprf(MSGCH_ERROR, &quot;Lua marker property (%s) error: %s&quot;,</a>
+<a name="ln405">             pname.c_str(), dlua.error.c_str());</a>
+<a name="ln406">        return make_stringf(&quot;error (prop:%s): %s&quot;,</a>
+<a name="ln407">                            pname.c_str(), dlua.error.c_str());</a>
+<a name="ln408">    }</a>
+<a name="ln409">    string result;</a>
+<a name="ln410">    if (lua_isstring(dlua, -1))</a>
+<a name="ln411">        result = lua_tostring(dlua, -1);</a>
+<a name="ln412">    return result;</a>
+<a name="ln413">}</a>
+<a name="ln414"> </a>
+<a name="ln415">string map_lua_marker::debug_to_string() const</a>
+<a name="ln416">{</a>
+<a name="ln417">    lua_stack_cleaner cln(dlua);</a>
+<a name="ln418"> </a>
+<a name="ln419">    if (!get_table())</a>
+<a name="ln420">        return &quot;Unable to get table for lua marker.&quot;;</a>
+<a name="ln421"> </a>
+<a name="ln422">    if (!dlua.callfn(&quot;table_to_string&quot;, 1, 1))</a>
+<a name="ln423">        return make_stringf(&quot;error (table_to_string): %s&quot;, dlua.error.c_str());</a>
+<a name="ln424"> </a>
+<a name="ln425">    string result;</a>
+<a name="ln426">    if (lua_isstring(dlua, -1))</a>
+<a name="ln427">        result = lua_tostring(dlua, -1);</a>
+<a name="ln428">    else</a>
+<a name="ln429">        result = &quot;table_to_string() returned nothing&quot;;</a>
+<a name="ln430">    return result;</a>
+<a name="ln431">}</a>
+<a name="ln432"> </a>
+<a name="ln433">map_marker *map_lua_marker::parse(const string &amp;s, const string &amp;ctx)</a>
+<a name="ln434">{</a>
+<a name="ln435">    string raw           = s;</a>
+<a name="ln436">    bool   mapdef_marker = true;</a>
+<a name="ln437"> </a>
+<a name="ln438">    if (starts_with(s, &quot;lua:&quot;))</a>
+<a name="ln439">        strip_tag(raw, &quot;lua:&quot;, true);</a>
+<a name="ln440">    else if (starts_with(s, &quot;lua_mapless:&quot;))</a>
+<a name="ln441">    {</a>
+<a name="ln442">        strip_tag(raw, &quot;lua_mapless:&quot;, true);</a>
+<a name="ln443">        mapdef_marker = false;</a>
+<a name="ln444">    }</a>
+<a name="ln445">    else</a>
+<a name="ln446">        return nullptr;</a>
+<a name="ln447"> </a>
+<a name="ln448">    map_lua_marker *mark = new map_lua_marker(raw, ctx, mapdef_marker);</a>
+<a name="ln449">    if (!mark-&gt;initialised)</a>
+<a name="ln450">    {</a>
+<a name="ln451">        delete mark;</a>
+<a name="ln452">        throw bad_map_marker_f(&quot;Unable to initialise Lua marker from '%s'&quot;,</a>
+<a name="ln453">                               raw.c_str());</a>
+<a name="ln454">    }</a>
+<a name="ln455">    return mark;</a>
+<a name="ln456">}</a>
+<a name="ln457"> </a>
+<a name="ln458">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln459">// map_corruption_marker</a>
+<a name="ln460"> </a>
+<a name="ln461">map_corruption_marker::map_corruption_marker(const coord_def &amp;p,</a>
+<a name="ln462">                                             int dur)</a>
+<a name="ln463">    : map_marker(MAT_CORRUPTION_NEXUS, p), duration(dur)</a>
+<a name="ln464">{</a>
+<a name="ln465">}</a>
+<a name="ln466"> </a>
+<a name="ln467">void map_corruption_marker::write(writer &amp;out) const</a>
+<a name="ln468">{</a>
+<a name="ln469">    map_marker::write(out);</a>
+<a name="ln470">    marshallShort(out, duration);</a>
+<a name="ln471">}</a>
+<a name="ln472"> </a>
+<a name="ln473">void map_corruption_marker::read(reader &amp;in)</a>
+<a name="ln474">{</a>
+<a name="ln475">    map_marker::read(in);</a>
+<a name="ln476">    duration = unmarshallShort(in);</a>
+<a name="ln477">}</a>
+<a name="ln478"> </a>
+<a name="ln479">map_marker *map_corruption_marker::read(reader &amp;in, map_marker_type)</a>
+<a name="ln480">{</a>
+<a name="ln481">    map_corruption_marker *mc = new map_corruption_marker();</a>
+<a name="ln482">    mc-&gt;read(in);</a>
+<a name="ln483">    return mc;</a>
+<a name="ln484">}</a>
+<a name="ln485"> </a>
+<a name="ln486">map_marker *map_corruption_marker::clone() const</a>
+<a name="ln487">{</a>
+<a name="ln488">    map_corruption_marker *mark = new map_corruption_marker(pos, duration);</a>
+<a name="ln489">    return mark;</a>
+<a name="ln490">}</a>
+<a name="ln491"> </a>
+<a name="ln492">string map_corruption_marker::debug_describe() const</a>
+<a name="ln493">{</a>
+<a name="ln494">    return make_stringf(&quot;Lugonu corrupt (%d)&quot;, duration);</a>
+<a name="ln495">}</a>
+<a name="ln496"> </a>
+<a name="ln497">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln498">// map_feature_marker</a>
+<a name="ln499"> </a>
+<a name="ln500">map_wiz_props_marker::map_wiz_props_marker(</a>
+<a name="ln501">    const coord_def &amp;p)</a>
+<a name="ln502">    : map_marker(MAT_WIZ_PROPS, p)</a>
+<a name="ln503">{</a>
+<a name="ln504">}</a>
+<a name="ln505"> </a>
+<a name="ln506">map_wiz_props_marker::map_wiz_props_marker(</a>
+<a name="ln507">    const map_wiz_props_marker &amp;other)</a>
+<a name="ln508">    : map_marker(MAT_WIZ_PROPS, other.pos), properties(other.properties)</a>
+<a name="ln509">{</a>
+<a name="ln510">}</a>
+<a name="ln511"> </a>
+<a name="ln512">void map_wiz_props_marker::write(writer &amp;outf) const</a>
+<a name="ln513">{</a>
+<a name="ln514">    map_marker::write(outf);</a>
+<a name="ln515">    marshallShort(outf, properties.size());</a>
+<a name="ln516">    for (const auto &amp;entry : properties)</a>
+<a name="ln517">    {</a>
+<a name="ln518">        marshallString(outf, entry.first);</a>
+<a name="ln519">        marshallString(outf, entry.second);</a>
+<a name="ln520">    }</a>
+<a name="ln521">}</a>
+<a name="ln522"> </a>
+<a name="ln523">void map_wiz_props_marker::read(reader &amp;inf)</a>
+<a name="ln524">{</a>
+<a name="ln525">    map_marker::read(inf);</a>
+<a name="ln526"> </a>
+<a name="ln527">    short numPairs = unmarshallShort(inf);</a>
+<a name="ln528">    for (short i = 0; i &lt; numPairs; i++)</a>
+<a name="ln529">    {</a>
+<a name="ln530">        const string key = unmarshallString(inf);</a>
+<a name="ln531">        const string val = unmarshallString(inf);</a>
+<a name="ln532"> </a>
+<a name="ln533">        set_property(key, val);</a>
+<a name="ln534">    }</a>
+<a name="ln535">}</a>
+<a name="ln536"> </a>
+<a name="ln537">string map_wiz_props_marker::property(const string &amp;pname) const</a>
+<a name="ln538">{</a>
+<a name="ln539">    if (pname == &quot;desc&quot;)</a>
+<a name="ln540">        return property(&quot;feature_description&quot;);</a>
+<a name="ln541"> </a>
+<a name="ln542">    return lookup(properties, pname, &quot;&quot;);</a>
+<a name="ln543">}</a>
+<a name="ln544"> </a>
+<a name="ln545">string map_wiz_props_marker::set_property(const string &amp;key, const string &amp;val)</a>
+<a name="ln546">{</a>
+<a name="ln547">    string old_val = properties[key];</a>
+<a name="ln548">    properties[key] = val;</a>
+<a name="ln549">    return old_val;</a>
+<a name="ln550">}</a>
+<a name="ln551"> </a>
+<a name="ln552">map_marker *map_wiz_props_marker::clone() const</a>
+<a name="ln553">{</a>
+<a name="ln554">    return new map_wiz_props_marker(*this);</a>
+<a name="ln555">}</a>
+<a name="ln556"> </a>
+<a name="ln557">map_marker *map_wiz_props_marker::read(reader &amp;inf, map_marker_type)</a>
+<a name="ln558">{</a>
+<a name="ln559">    map_marker *mapf = new map_wiz_props_marker();</a>
+<a name="ln560">    mapf-&gt;read(inf);</a>
+<a name="ln561">    return mapf;</a>
+<a name="ln562">}</a>
+<a name="ln563"> </a>
+<a name="ln564">map_marker *map_wiz_props_marker::parse(const string &amp;, const string &amp;)</a>
+<a name="ln565">{</a>
+<a name="ln566">    throw bad_map_marker(&quot;map_wiz_props_marker::parse() not implemented&quot;);</a>
+<a name="ln567">}</a>
+<a name="ln568"> </a>
+<a name="ln569">string map_wiz_props_marker::debug_describe() const</a>
+<a name="ln570">{</a>
+<a name="ln571">    return &quot;Wizard props: &quot; + property(&quot;feature_description&quot;);</a>
+<a name="ln572">}</a>
+<a name="ln573"> </a>
+<a name="ln574">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln575">// map_tomb_marker</a>
+<a name="ln576"> </a>
+<a name="ln577">map_tomb_marker::map_tomb_marker(const coord_def &amp;p,</a>
+<a name="ln578">                                 int dur, int src, int targ)</a>
+<a name="ln579">    : map_marker(MAT_TOMB, p), duration(dur), source(src), target(targ)</a>
+<a name="ln580">{</a>
+<a name="ln581">}</a>
+<a name="ln582"> </a>
+<a name="ln583">void map_tomb_marker::write(writer &amp;out) const</a>
+<a name="ln584">{</a>
+<a name="ln585">    map_marker::write(out);</a>
+<a name="ln586">    marshallShort(out, duration);</a>
+<a name="ln587">    marshallShort(out, source);</a>
+<a name="ln588">    marshallShort(out, target);</a>
+<a name="ln589">}</a>
+<a name="ln590"> </a>
+<a name="ln591">void map_tomb_marker::read(reader &amp;in)</a>
+<a name="ln592">{</a>
+<a name="ln593">    map_marker::read(in);</a>
+<a name="ln594">    duration = unmarshallShort(in);</a>
+<a name="ln595">    source   = unmarshallShort(in);</a>
+<a name="ln596">    target   = unmarshallShort(in);</a>
+<a name="ln597">}</a>
+<a name="ln598"> </a>
+<a name="ln599">map_marker *map_tomb_marker::read(reader &amp;in, map_marker_type)</a>
+<a name="ln600">{</a>
+<a name="ln601">    map_tomb_marker *mc = new map_tomb_marker();</a>
+<a name="ln602">    mc-&gt;read(in);</a>
+<a name="ln603">    return mc;</a>
+<a name="ln604">}</a>
+<a name="ln605"> </a>
+<a name="ln606">map_marker *map_tomb_marker::clone() const</a>
+<a name="ln607">{</a>
+<a name="ln608">    map_tomb_marker *mark = new map_tomb_marker(pos, duration,</a>
+<a name="ln609">                                                source, target);</a>
+<a name="ln610">    return mark;</a>
+<a name="ln611">}</a>
+<a name="ln612"> </a>
+<a name="ln613">string map_tomb_marker::debug_describe() const</a>
+<a name="ln614">{</a>
+<a name="ln615">    return make_stringf(&quot;Tomb (%d, %d, %d)&quot;, duration,</a>
+<a name="ln616">                                             source, target);</a>
+<a name="ln617">}</a>
+<a name="ln618"> </a>
+<a name="ln619">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln620">// map_malign_gateway_marker</a>
+<a name="ln621"> </a>
+<a name="ln622">map_malign_gateway_marker::map_malign_gateway_marker(const coord_def &amp;p,</a>
+<a name="ln623">                                 int dur, bool ip, string sum, beh_type b,</a>
+<a name="ln624">                                 god_type gd, int pow)</a>
+<a name="ln625">    : map_marker(MAT_MALIGN, p), duration(dur), is_player(ip), monster_summoned(false),</a>
+<a name="ln626">      summoner_string(sum), behaviour(b), god(gd), power(pow)</a>
+<a name="ln627">{</a>
+<a name="ln628">}</a>
+<a name="ln629"> </a>
+<a name="ln630">void map_malign_gateway_marker::write(writer &amp;out) const</a>
+<a name="ln631">{</a>
+<a name="ln632">    map_marker::write(out);</a>
+<a name="ln633">    marshallShort(out, duration);</a>
+<a name="ln634">    marshallBoolean(out, is_player);</a>
+<a name="ln635">    marshallBoolean(out, monster_summoned);</a>
+<a name="ln636">    marshallString(out, summoner_string);</a>
+<a name="ln637">    marshallUByte(out, behaviour);</a>
+<a name="ln638">    marshallUByte(out, god);</a>
+<a name="ln639">    marshallShort(out, power);</a>
+<a name="ln640">}</a>
+<a name="ln641"> </a>
+<a name="ln642">void map_malign_gateway_marker::read(reader &amp;in)</a>
+<a name="ln643">{</a>
+<a name="ln644">    map_marker::read(in);</a>
+<a name="ln645">    duration  = unmarshallShort(in);</a>
+<a name="ln646">    is_player = unmarshallBoolean(in);</a>
+<a name="ln647"> </a>
+<a name="ln648">    monster_summoned = unmarshallBoolean(in);</a>
+<a name="ln649">    summoner_string = unmarshallString(in);</a>
+<a name="ln650">    behaviour = static_cast&lt;beh_type&gt;(unmarshallUByte(in));</a>
+<a name="ln651"> </a>
+<a name="ln652">    god       = static_cast&lt;god_type&gt;(unmarshallByte(in));</a>
+<a name="ln653">    power     = unmarshallShort(in);</a>
+<a name="ln654">}</a>
+<a name="ln655"> </a>
+<a name="ln656">map_marker *map_malign_gateway_marker::read(reader &amp;in, map_marker_type)</a>
+<a name="ln657">{</a>
+<a name="ln658">    map_malign_gateway_marker *mc = new map_malign_gateway_marker();</a>
+<a name="ln659">    mc-&gt;read(in);</a>
+<a name="ln660">    return mc;</a>
+<a name="ln661">}</a>
+<a name="ln662"> </a>
+<a name="ln663">map_marker *map_malign_gateway_marker::clone() const</a>
+<a name="ln664">{</a>
+<a name="ln665">    map_malign_gateway_marker *mark = new map_malign_gateway_marker(pos,</a>
+<a name="ln666">        duration, is_player, summoner_string, behaviour, god, power);</a>
+<a name="ln667">    return mark;</a>
+<a name="ln668">}</a>
+<a name="ln669"> </a>
+<a name="ln670">string map_malign_gateway_marker::debug_describe() const</a>
+<a name="ln671">{</a>
+<a name="ln672">    return make_stringf(&quot;Malign gateway (%d, %s)&quot;, duration,</a>
+<a name="ln673">                        is_player ? &quot;player&quot; : &quot;monster&quot;);</a>
+<a name="ln674">}</a>
+<a name="ln675">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln676"> </a>
+<a name="ln677">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln678">// map_phoenix_marker</a>
+<a name="ln679"> </a>
+<a name="ln680">map_phoenix_marker::map_phoenix_marker(const coord_def&amp; p,</a>
+<a name="ln681">                    int dur, int mnum, beh_type bh, mon_attitude_type at,</a>
+<a name="ln682">                    god_type gd, coord_def cp)</a>
+<a name="ln683">    : map_marker(MAT_PHOENIX, p), duration(dur), mon_num(mnum),</a>
+<a name="ln684">            behaviour(bh), attitude(at), god(gd), corpse_pos(cp)</a>
+<a name="ln685">{</a>
+<a name="ln686">}</a>
+<a name="ln687"> </a>
+<a name="ln688">void map_phoenix_marker::write(writer &amp;out) const</a>
+<a name="ln689">{</a>
+<a name="ln690">    map_marker::write(out);</a>
+<a name="ln691">    marshallShort(out, duration);</a>
+<a name="ln692">    marshallShort(out, mon_num);</a>
+<a name="ln693">    marshallUByte(out, behaviour);</a>
+<a name="ln694">    marshallUByte(out, attitude);</a>
+<a name="ln695">    marshallUByte(out, god);</a>
+<a name="ln696">    marshallCoord(out, corpse_pos);</a>
+<a name="ln697">}</a>
+<a name="ln698"> </a>
+<a name="ln699">void map_phoenix_marker::read(reader &amp;in)</a>
+<a name="ln700">{</a>
+<a name="ln701">    map_marker::read(in);</a>
+<a name="ln702"> </a>
+<a name="ln703">    duration = unmarshallShort(in);</a>
+<a name="ln704">    mon_num = unmarshallShort(in);</a>
+<a name="ln705">    behaviour = static_cast&lt;beh_type&gt;(unmarshallUByte(in));</a>
+<a name="ln706">    attitude = static_cast&lt;mon_attitude_type&gt;(unmarshallUByte(in));</a>
+<a name="ln707">    god       = static_cast&lt;god_type&gt;(unmarshallByte(in));</a>
+<a name="ln708">    corpse_pos = unmarshallCoord(in);</a>
+<a name="ln709">}</a>
+<a name="ln710"> </a>
+<a name="ln711">map_marker *map_phoenix_marker::read(reader &amp;in, map_marker_type)</a>
+<a name="ln712">{</a>
+<a name="ln713">    map_phoenix_marker *mc = new map_phoenix_marker();</a>
+<a name="ln714">    mc-&gt;read(in);</a>
+<a name="ln715">    return mc;</a>
+<a name="ln716">}</a>
+<a name="ln717"> </a>
+<a name="ln718">map_marker *map_phoenix_marker::clone() const</a>
+<a name="ln719">{</a>
+<a name="ln720">    map_phoenix_marker *mark = new map_phoenix_marker(pos, duration, mon_num,</a>
+<a name="ln721">                                    behaviour, attitude, god, corpse_pos);</a>
+<a name="ln722">    return mark;</a>
+<a name="ln723">}</a>
+<a name="ln724"> </a>
+<a name="ln725">string map_phoenix_marker::debug_describe() const</a>
+<a name="ln726">{</a>
+<a name="ln727">    return make_stringf(&quot;Phoenix marker (%d, %d)&quot;, duration, mon_num);</a>
+<a name="ln728">}</a>
+<a name="ln729"> </a>
+<a name="ln730">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln731">// map_door_seal_marker</a>
+<a name="ln732"> </a>
+<a name="ln733">map_door_seal_marker::map_door_seal_marker(const coord_def&amp; p,</a>
+<a name="ln734">                    int dur, int mnum, dungeon_feature_type oldfeat)</a>
+<a name="ln735">    : map_marker(MAT_DOOR_SEAL, p), duration(dur), mon_num(mnum),</a>
+<a name="ln736">        old_feature(oldfeat)</a>
+<a name="ln737">{</a>
+<a name="ln738">}</a>
+<a name="ln739"> </a>
+<a name="ln740">void map_door_seal_marker::write(writer &amp;out) const</a>
+<a name="ln741">{</a>
+<a name="ln742">    map_marker::write(out);</a>
+<a name="ln743">    marshallShort(out, duration);</a>
+<a name="ln744">    marshallShort(out, mon_num);</a>
+<a name="ln745">    marshallUByte(out, old_feature);</a>
+<a name="ln746">}</a>
+<a name="ln747"> </a>
+<a name="ln748">void map_door_seal_marker::read(reader &amp;in)</a>
+<a name="ln749">{</a>
+<a name="ln750">    map_marker::read(in);</a>
+<a name="ln751"> </a>
+<a name="ln752">    duration = unmarshallShort(in);</a>
+<a name="ln753">    mon_num = unmarshallShort(in);</a>
+<a name="ln754">    old_feature = static_cast&lt;dungeon_feature_type&gt;(unmarshallUByte(in));</a>
+<a name="ln755">}</a>
+<a name="ln756"> </a>
+<a name="ln757">map_marker *map_door_seal_marker::read(reader &amp;in, map_marker_type)</a>
+<a name="ln758">{</a>
+<a name="ln759">    map_door_seal_marker *mc = new map_door_seal_marker();</a>
+<a name="ln760">    mc-&gt;read(in);</a>
+<a name="ln761">    return mc;</a>
+<a name="ln762">}</a>
+<a name="ln763"> </a>
+<a name="ln764">map_marker *map_door_seal_marker::clone() const</a>
+<a name="ln765">{</a>
+<a name="ln766">    map_door_seal_marker *mark = new map_door_seal_marker(pos, duration, mon_num, old_feature);</a>
+<a name="ln767">    return mark;</a>
+<a name="ln768">}</a>
+<a name="ln769"> </a>
+<a name="ln770">string map_door_seal_marker::debug_describe() const</a>
+<a name="ln771">{</a>
+<a name="ln772">    return make_stringf(&quot;Door seal marker (%d, %d)&quot;, duration, mon_num);</a>
+<a name="ln773">}</a>
+<a name="ln774">#endif</a>
+<a name="ln775"> </a>
+<a name="ln776">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln777">// map_terrain_change_marker</a>
+<a name="ln778"> </a>
+<a name="ln779">map_terrain_change_marker::map_terrain_change_marker (const coord_def&amp; p,</a>
+<a name="ln780">                    dungeon_feature_type oldfeat, dungeon_feature_type newfeat,</a>
+<a name="ln781">                    int dur, terrain_change_type ctype, int mnum, int oldcol)</a>
+<a name="ln782">    : map_marker(MAT_TERRAIN_CHANGE, p), duration(dur), mon_num(mnum),</a>
+<a name="ln783">      old_feature(oldfeat), new_feature(newfeat), change_type(ctype),</a>
+<a name="ln784">      colour(oldcol)</a>
+<a name="ln785">{</a>
+<a name="ln786">}</a>
+<a name="ln787"> </a>
+<a name="ln788">void map_terrain_change_marker::write(writer &amp;out) const</a>
+<a name="ln789">{</a>
+<a name="ln790">    map_marker::write(out);</a>
+<a name="ln791">    marshallShort(out, duration);</a>
+<a name="ln792">    marshallUByte(out, old_feature);</a>
+<a name="ln793">    marshallUByte(out, new_feature);</a>
+<a name="ln794">    marshallUByte(out, change_type);</a>
+<a name="ln795">    marshallShort(out, mon_num);</a>
+<a name="ln796">    marshallUByte(out, colour);</a>
+<a name="ln797">}</a>
+<a name="ln798"> </a>
+<a name="ln799">void map_terrain_change_marker::read(reader &amp;in)</a>
+<a name="ln800">{</a>
+<a name="ln801">    map_marker::read(in);</a>
+<a name="ln802"> </a>
+<a name="ln803">    duration = unmarshallShort(in);</a>
+<a name="ln804">    old_feature = static_cast&lt;dungeon_feature_type&gt;(unmarshallUByte(in));</a>
+<a name="ln805">    new_feature = static_cast&lt;dungeon_feature_type&gt;(unmarshallUByte(in));</a>
+<a name="ln806">    change_type = static_cast&lt;terrain_change_type&gt;(unmarshallUByte(in));</a>
+<a name="ln807">    mon_num = unmarshallShort(in);</a>
+<a name="ln808">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln809">    if (in.getMinorVersion() &lt; TAG_MINOR_SAVE_TERRAIN_COLOUR)</a>
+<a name="ln810">        colour = BLACK;</a>
+<a name="ln811">    else</a>
+<a name="ln812">#endif</a>
+<a name="ln813">        colour = unmarshallUByte(in);</a>
+<a name="ln814">}</a>
+<a name="ln815"> </a>
+<a name="ln816">map_marker *map_terrain_change_marker::read(reader &amp;in, map_marker_type)</a>
+<a name="ln817">{</a>
+<a name="ln818">    map_terrain_change_marker *mc = new map_terrain_change_marker();</a>
+<a name="ln819">    mc-&gt;read(in);</a>
+<a name="ln820">    return mc;</a>
+<a name="ln821">}</a>
+<a name="ln822"> </a>
+<a name="ln823">map_marker *map_terrain_change_marker::clone() const</a>
+<a name="ln824">{</a>
+<a name="ln825">    map_terrain_change_marker *mark =</a>
+<a name="ln826">        new map_terrain_change_marker(pos, old_feature, new_feature, duration,</a>
+<a name="ln827">                                      change_type, mon_num, colour);</a>
+<a name="ln828">    return mark;</a>
+<a name="ln829">}</a>
+<a name="ln830"> </a>
+<a name="ln831">string map_terrain_change_marker::debug_describe() const</a>
+<a name="ln832">{</a>
+<a name="ln833">    return make_stringf(&quot;Terrain change marker (%d-&gt;%d, %d)&quot;,</a>
+<a name="ln834">                        old_feature, new_feature, duration);</a>
+<a name="ln835">}</a>
+<a name="ln836"> </a>
+<a name="ln837">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln838">// map_cloud_spreader_marker</a>
+<a name="ln839"> </a>
+<a name="ln840">map_cloud_spreader_marker::map_cloud_spreader_marker(const coord_def &amp;p,</a>
+<a name="ln841">                              cloud_type cloud, int spd, int amt,</a>
+<a name="ln842">                              int max_radius, int dur, actor* agent)</a>
+<a name="ln843">: map_marker(MAT_CLOUD_SPREADER, p), ctype(cloud), speed(spd),</a>
+<a name="ln844">  remaining(amt), max_rad(max_radius), duration(dur), speed_increment(0)</a>
+<a name="ln845">{</a>
+<a name="ln846">    if (agent)</a>
+<a name="ln847">    {</a>
+<a name="ln848">        agent_mid = agent-&gt;mid;</a>
+<a name="ln849">        if (agent-&gt;is_monster())</a>
+<a name="ln850">            kcat = (agent-&gt;as_monster()-&gt;friendly() ? KC_FRIENDLY : KC_OTHER);</a>
+<a name="ln851">        else</a>
+<a name="ln852">            kcat = KC_YOU;</a>
+<a name="ln853">    }</a>
+<a name="ln854">    else</a>
+<a name="ln855">    {</a>
+<a name="ln856">        agent_mid = 0;</a>
+<a name="ln857">        kcat = KC_OTHER;</a>
+<a name="ln858">    }</a>
+<a name="ln859">}</a>
+<a name="ln860"> </a>
+<a name="ln861">void map_cloud_spreader_marker::write(writer &amp;out) const</a>
+<a name="ln862">{</a>
+<a name="ln863">    map_marker::write(out);</a>
+<a name="ln864">    marshallByte(out, ctype);</a>
+<a name="ln865">    marshallShort(out, speed);</a>
+<a name="ln866">    marshallShort(out, duration);</a>
+<a name="ln867">    marshallByte(out, max_rad);</a>
+<a name="ln868">    marshallShort(out, remaining);</a>
+<a name="ln869">    marshallShort(out, speed_increment);</a>
+<a name="ln870">    marshallInt(out, agent_mid);</a>
+<a name="ln871">    marshallByte(out, kcat);</a>
+<a name="ln872">}</a>
+<a name="ln873"> </a>
+<a name="ln874">void map_cloud_spreader_marker::read(reader &amp;in)</a>
+<a name="ln875">{</a>
+<a name="ln876">    map_marker::read(in);</a>
+<a name="ln877"> </a>
+<a name="ln878">    ctype = static_cast&lt;cloud_type&gt;(unmarshallByte(in));</a>
+<a name="ln879">    speed = unmarshallShort(in);</a>
+<a name="ln880">    duration = unmarshallShort(in);</a>
+<a name="ln881">    max_rad = unmarshallByte(in);</a>
+<a name="ln882">    remaining = unmarshallShort(in);</a>
+<a name="ln883">    speed_increment = unmarshallShort(in);</a>
+<a name="ln884">    agent_mid = static_cast&lt;mid_t&gt;(unmarshallInt(in));</a>
+<a name="ln885">    kcat = static_cast&lt;kill_category&gt;(unmarshallByte(in));</a>
+<a name="ln886">}</a>
+<a name="ln887"> </a>
+<a name="ln888">map_marker *map_cloud_spreader_marker::read(reader &amp;in, map_marker_type)</a>
+<a name="ln889">{</a>
+<a name="ln890">    map_cloud_spreader_marker *mc = new map_cloud_spreader_marker();</a>
+<a name="ln891">    mc-&gt;read(in);</a>
+<a name="ln892">    return mc;</a>
+<a name="ln893">}</a>
+<a name="ln894"> </a>
+<a name="ln895">map_marker *map_cloud_spreader_marker::clone() const</a>
+<a name="ln896">{</a>
+<a name="ln897">    map_cloud_spreader_marker *mark =</a>
+<a name="ln898">            new map_cloud_spreader_marker(pos, ctype, speed, remaining, max_rad,</a>
+<a name="ln899">                                          duration);</a>
+<a name="ln900">    mark-&gt;agent_mid = agent_mid;</a>
+<a name="ln901">    mark-&gt;kcat = kcat;</a>
+<a name="ln902">    return mark;</a>
+<a name="ln903">}</a>
+<a name="ln904"> </a>
+<a name="ln905">string map_cloud_spreader_marker::debug_describe() const</a>
+<a name="ln906">{</a>
+<a name="ln907">    return make_stringf(&quot;Cloud spreader marker (%d)&quot;, ctype);</a>
+<a name="ln908">}</a>
+<a name="ln909"> </a>
+<a name="ln910">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln911">// map_position_marker</a>
+<a name="ln912"> </a>
+<a name="ln913">map_position_marker::map_position_marker(</a>
+<a name="ln914">    const coord_def &amp;p,</a>
+<a name="ln915">    dungeon_feature_type _feat,</a>
+<a name="ln916">    const coord_def _dest)</a>
+<a name="ln917">    : map_marker(MAT_POSITION, p), feat(_feat), dest(_dest)</a>
+<a name="ln918">{</a>
+<a name="ln919">}</a>
+<a name="ln920"> </a>
+<a name="ln921">map_position_marker::map_position_marker(</a>
+<a name="ln922">    const map_position_marker &amp;other)</a>
+<a name="ln923">    : map_marker(MAT_POSITION, other.pos), feat(other.feat), dest(other.dest)</a>
+<a name="ln924">{</a>
+<a name="ln925">}</a>
+<a name="ln926"> </a>
+<a name="ln927">void map_position_marker::write(writer &amp;outf) const</a>
+<a name="ln928">{</a>
+<a name="ln929">    map_marker::write(outf);</a>
+<a name="ln930">    marshallUByte(outf, feat);</a>
+<a name="ln931">    marshallCoord(outf, dest);</a>
+<a name="ln932">}</a>
+<a name="ln933"> </a>
+<a name="ln934">void map_position_marker::read(reader &amp;inf)</a>
+<a name="ln935">{</a>
+<a name="ln936">    map_marker::read(inf);</a>
+<a name="ln937">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln938">    if (inf.getMinorVersion() &lt; TAG_MINOR_TRANSPORTERS)</a>
+<a name="ln939">        feat = DNGN_UNSEEN;</a>
+<a name="ln940">    else</a>
+<a name="ln941">#endif</a>
+<a name="ln942">    feat = unmarshallFeatureType(inf);</a>
+<a name="ln943">    dest = (unmarshallCoord(inf));</a>
+<a name="ln944">}</a>
+<a name="ln945"> </a>
+<a name="ln946">map_marker *map_position_marker::clone() const</a>
+<a name="ln947">{</a>
+<a name="ln948">    return new map_position_marker(pos, feat, dest);</a>
+<a name="ln949">}</a>
+<a name="ln950"> </a>
+<a name="ln951">map_marker *map_position_marker::read(reader &amp;inf, map_marker_type)</a>
+<a name="ln952">{</a>
+<a name="ln953">    map_marker *mapf = new map_position_marker();</a>
+<a name="ln954">    mapf-&gt;read(inf);</a>
+<a name="ln955">    return mapf;</a>
+<a name="ln956">}</a>
+<a name="ln957"> </a>
+<a name="ln958">string map_position_marker::debug_describe() const</a>
+<a name="ln959">{</a>
+<a name="ln960">    return make_stringf(&quot;position (%d,%d)&quot;, dest.x, dest.y);</a>
+<a name="ln961">}</a>
+<a name="ln962"> </a>
+<a name="ln963">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln964">// Map markers in env.</a>
+<a name="ln965"> </a>
+<a name="ln966">map_markers::map_markers() : markers(), have_inactive_markers(false)</a>
+<a name="ln967">{</a>
+<a name="ln968">}</a>
+<a name="ln969"> </a>
+<a name="ln970">map_markers::map_markers(const map_markers &amp;c)</a>
+<a name="ln971">  : markers(), have_inactive_markers(false)</a>
+<a name="ln972">{</a>
+<a name="ln973">    init_from(c);</a>
+<a name="ln974">}</a>
+<a name="ln975"> </a>
+<a name="ln976">map_markers &amp;map_markers::operator = (const map_markers &amp;c)</a>
+<a name="ln977">{</a>
+<a name="ln978">    if (this != &amp;c)</a>
+<a name="ln979">    {</a>
+<a name="ln980">        clear();</a>
+<a name="ln981">        init_from(c);</a>
+<a name="ln982">    }</a>
+<a name="ln983">    return *this;</a>
+<a name="ln984">}</a>
+<a name="ln985"> </a>
+<a name="ln986">map_markers::~map_markers()</a>
+<a name="ln987">{</a>
+<a name="ln988">    clear();</a>
+<a name="ln989">}</a>
+<a name="ln990"> </a>
+<a name="ln991">void map_markers::init_from(const map_markers &amp;c)</a>
+<a name="ln992">{</a>
+<a name="ln993">    for (const auto &amp;entry : c.markers)</a>
+<a name="ln994">        add(entry.second-&gt;clone());</a>
+<a name="ln995">    have_inactive_markers = c.have_inactive_markers;</a>
+<a name="ln996">}</a>
+<a name="ln997"> </a>
+<a name="ln998">void map_markers::clear_need_activate()</a>
+<a name="ln999">{</a>
+<a name="ln1000">    have_inactive_markers = false;</a>
+<a name="ln1001">}</a>
+<a name="ln1002"> </a>
+<a name="ln1003">void map_markers::init_all()</a>
+<a name="ln1004">{</a>
+<a name="ln1005">    // called when a level is generated, but not yet entered</a>
+<a name="ln1006">    for (auto i = markers.begin(); i != markers.end();)</a>
+<a name="ln1007">    {</a>
+<a name="ln1008">        map_marker *marker = i-&gt;second;</a>
+<a name="ln1009">        ++i;</a>
+<a name="ln1010">        marker-&gt;init();</a>
+<a name="ln1011">    }</a>
+<a name="ln1012"> </a>
+<a name="ln1013">    for (auto i = markers.begin(); i != markers.end();)</a>
+<a name="ln1014">    {</a>
+<a name="ln1015">        map_marker *marker = i-&gt;second;</a>
+<a name="ln1016">        ++i;</a>
+<a name="ln1017">        if (!marker-&gt;property(&quot;post_init_remove&quot;).empty())</a>
+<a name="ln1018">            remove(marker);</a>
+<a name="ln1019">    }</a>
+<a name="ln1020">}</a>
+<a name="ln1021"> </a>
+<a name="ln1022">void map_markers::activate_all(bool verbose)</a>
+<a name="ln1023">{</a>
+<a name="ln1024">    // called when a level is entered</a>
+<a name="ln1025">    for (auto i = markers.begin(); i != markers.end();)</a>
+<a name="ln1026">    {</a>
+<a name="ln1027">        map_marker *marker = i-&gt;second;</a>
+<a name="ln1028">        ++i;</a>
+<a name="ln1029">        marker-&gt;activate(verbose);</a>
+<a name="ln1030">    }</a>
+<a name="ln1031"> </a>
+<a name="ln1032">    for (auto i = markers.begin(); i != markers.end();)</a>
+<a name="ln1033">    {</a>
+<a name="ln1034">        map_marker *marker = i-&gt;second;</a>
+<a name="ln1035">        ++i;</a>
+<a name="ln1036">        if (!marker-&gt;property(&quot;post_activate_remove&quot;).empty())</a>
+<a name="ln1037">            remove(marker);</a>
+<a name="ln1038">    }</a>
+<a name="ln1039"> </a>
+<a name="ln1040">    have_inactive_markers = false;</a>
+<a name="ln1041">}</a>
+<a name="ln1042"> </a>
+<a name="ln1043">void map_markers::activate_markers_at(coord_def p)</a>
+<a name="ln1044">{</a>
+<a name="ln1045">    for (map_marker *activatee : get_markers_at(p))</a>
+<a name="ln1046">        activatee-&gt;activate();</a>
+<a name="ln1047"> </a>
+<a name="ln1048">    for (map_marker *active : get_markers_at(p))</a>
+<a name="ln1049">    {</a>
+<a name="ln1050">        const string prop = active-&gt;property(&quot;post_activate_remove&quot;);</a>
+<a name="ln1051">        if (!prop.empty())</a>
+<a name="ln1052">            remove(active);</a>
+<a name="ln1053">    }</a>
+<a name="ln1054">}</a>
+<a name="ln1055"> </a>
+<a name="ln1056">void map_markers::add(map_marker *marker)</a>
+<a name="ln1057">{</a>
+<a name="ln1058">    markers.insert(dgn_pos_marker(marker-&gt;pos, marker));</a>
+<a name="ln1059">    have_inactive_markers = true;</a>
+<a name="ln1060">}</a>
+<a name="ln1061"> </a>
+<a name="ln1062">void map_markers::unlink_marker(const map_marker *marker)</a>
+<a name="ln1063">{</a>
+<a name="ln1064">    auto els = markers.equal_range(marker-&gt;pos);</a>
+<a name="ln1065">    for (auto i = els.first; i != els.second; ++i)</a>
+<a name="ln1066">    {</a>
+<a name="ln1067">        if (i-&gt;second == marker)</a>
+<a name="ln1068">        {</a>
+<a name="ln1069">            markers.erase(i);</a>
+<a name="ln1070">            break;</a>
+<a name="ln1071">        }</a>
+<a name="ln1072">    }</a>
+<a name="ln1073">}</a>
+<a name="ln1074"> </a>
+<a name="ln1075">void map_markers::check_empty()</a>
+<a name="ln1076">{</a>
+<a name="ln1077">    if (markers.empty())</a>
+<a name="ln1078">        have_inactive_markers = false;</a>
+<a name="ln1079">}</a>
+<a name="ln1080"> </a>
+<a name="ln1081">void map_markers::remove(map_marker *marker)</a>
+<a name="ln1082">{</a>
+<a name="ln1083">    unlink_marker(marker);</a>
+<a name="ln1084">    delete marker;</a>
+<a name="ln1085">    check_empty();</a>
+<a name="ln1086">}</a>
+<a name="ln1087"> </a>
+<a name="ln1088">void map_markers::remove_markers_at(const coord_def &amp;c,</a>
+<a name="ln1089">                                    map_marker_type type)</a>
+<a name="ln1090">{</a>
+<a name="ln1091">    auto els = markers.equal_range(c);</a>
+<a name="ln1092">    for (auto i = els.first; i != els.second;)</a>
+<a name="ln1093">    {</a>
+<a name="ln1094">        auto todel = i++;</a>
+<a name="ln1095">        if (type == MAT_ANY || todel-&gt;second-&gt;get_type() == type)</a>
+<a name="ln1096">        {</a>
+<a name="ln1097">            delete todel-&gt;second;</a>
+<a name="ln1098">            markers.erase(todel);</a>
+<a name="ln1099">        }</a>
+<a name="ln1100">    }</a>
+<a name="ln1101">    check_empty();</a>
+<a name="ln1102">}</a>
+<a name="ln1103"> </a>
+<a name="ln1104">map_marker *map_markers::find(const coord_def &amp;c, map_marker_type type)</a>
+<a name="ln1105">{</a>
+<a name="ln1106">    auto els = markers.equal_range(c);</a>
+<a name="ln1107">    for (auto i = els.first; i != els.second; ++i)</a>
+<a name="ln1108">        if (type == MAT_ANY || i-&gt;second-&gt;get_type() == type)</a>
+<a name="ln1109">            return i-&gt;second;</a>
+<a name="ln1110">    return nullptr;</a>
+<a name="ln1111">}</a>
+<a name="ln1112"> </a>
+<a name="ln1113">map_marker *map_markers::find(map_marker_type type)</a>
+<a name="ln1114">{</a>
+<a name="ln1115">    for (const auto &amp;entry : markers)</a>
+<a name="ln1116">        if (type == MAT_ANY || entry.second-&gt;get_type() == type)</a>
+<a name="ln1117">            return entry.second;</a>
+<a name="ln1118"> </a>
+<a name="ln1119">    return nullptr;</a>
+<a name="ln1120">}</a>
+<a name="ln1121"> </a>
+<a name="ln1122">void map_markers::move(const coord_def &amp;from, const coord_def &amp;to)</a>
+<a name="ln1123">{</a>
+<a name="ln1124">    unwind_bool inactive(have_inactive_markers);</a>
+<a name="ln1125">    auto els = markers.equal_range(from);</a>
+<a name="ln1126"> </a>
+<a name="ln1127">    list&lt;map_marker*&gt; tmarkers;</a>
+<a name="ln1128">    for (auto i = els.first; i != els.second;)</a>
+<a name="ln1129">    {</a>
+<a name="ln1130">        auto curr = i++;</a>
+<a name="ln1131">        tmarkers.push_back(curr-&gt;second);</a>
+<a name="ln1132">        markers.erase(curr);</a>
+<a name="ln1133">    }</a>
+<a name="ln1134"> </a>
+<a name="ln1135">    for (auto mark : tmarkers)</a>
+<a name="ln1136">    {</a>
+<a name="ln1137">        mark-&gt;pos = to;</a>
+<a name="ln1138">        add(mark);</a>
+<a name="ln1139">    }</a>
+<a name="ln1140">}</a>
+<a name="ln1141"> </a>
+<a name="ln1142">void map_markers::move_marker(map_marker *marker, const coord_def &amp;to)</a>
+<a name="ln1143">{</a>
+<a name="ln1144">    unwind_bool inactive(have_inactive_markers);</a>
+<a name="ln1145">    unlink_marker(marker);</a>
+<a name="ln1146">    marker-&gt;pos = to;</a>
+<a name="ln1147">    add(marker);</a>
+<a name="ln1148">}</a>
+<a name="ln1149"> </a>
+<a name="ln1150">vector&lt;map_marker*&gt; map_markers::get_all(map_marker_type mat)</a>
+<a name="ln1151">{</a>
+<a name="ln1152">    vector&lt;map_marker*&gt; rmarkers;</a>
+<a name="ln1153">    for (const auto &amp;entry : markers)</a>
+<a name="ln1154">    {</a>
+<a name="ln1155">        if (mat == MAT_ANY || entry.second-&gt;get_type() == mat)</a>
+<a name="ln1156">            rmarkers.push_back(entry.second);</a>
+<a name="ln1157">    }</a>
+<a name="ln1158">    return rmarkers;</a>
+<a name="ln1159">}</a>
+<a name="ln1160"> </a>
+<a name="ln1161">vector&lt;map_marker*&gt; map_markers::get_all(const string &amp;key, const string &amp;val)</a>
+<a name="ln1162">{</a>
+<a name="ln1163">    vector&lt;map_marker*&gt; rmarkers;</a>
+<a name="ln1164"> </a>
+<a name="ln1165">    for (const auto &amp;entry : markers)</a>
+<a name="ln1166">    {</a>
+<a name="ln1167">        map_marker*  marker = entry.second;</a>
+<a name="ln1168">        const string prop   = marker-&gt;property(key);</a>
+<a name="ln1169"> </a>
+<a name="ln1170">        if (val.empty() &amp;&amp; !prop.empty() || !val.empty() &amp;&amp; val == prop)</a>
+<a name="ln1171">            rmarkers.push_back(marker);</a>
+<a name="ln1172">    }</a>
+<a name="ln1173"> </a>
+<a name="ln1174">    return rmarkers;</a>
+<a name="ln1175">}</a>
+<a name="ln1176"> </a>
+<a name="ln1177">vector&lt;map_marker*&gt; map_markers::get_markers_at(const coord_def &amp;c)</a>
+<a name="ln1178">{</a>
+<a name="ln1179">    auto els = markers.equal_range(c);</a>
+<a name="ln1180">    vector&lt;map_marker*&gt; rmarkers;</a>
+<a name="ln1181">    for (auto i = els.first; i != els.second; ++i)</a>
+<a name="ln1182">        rmarkers.push_back(i-&gt;second);</a>
+<a name="ln1183">    return rmarkers;</a>
+<a name="ln1184">}</a>
+<a name="ln1185"> </a>
+<a name="ln1186">string map_markers::property_at(const coord_def &amp;c, map_marker_type type,</a>
+<a name="ln1187">                                const string &amp;key)</a>
+<a name="ln1188">{</a>
+<a name="ln1189">    UNUSED(type);</a>
+<a name="ln1190">    auto els = markers.equal_range(c);</a>
+<a name="ln1191">    for (auto i = els.first; i != els.second; ++i)</a>
+<a name="ln1192">    {</a>
+<a name="ln1193">        const string &amp;prop = i-&gt;second-&gt;property(key);</a>
+<a name="ln1194">        if (!prop.empty())</a>
+<a name="ln1195">            return prop;</a>
+<a name="ln1196">    }</a>
+<a name="ln1197">    return &quot;&quot;;</a>
+<a name="ln1198">}</a>
+<a name="ln1199"> </a>
+<a name="ln1200">void map_markers::clear()</a>
+<a name="ln1201">{</a>
+<a name="ln1202">    for (auto &amp;entry : markers)</a>
+<a name="ln1203">        delete entry.second;</a>
+<a name="ln1204">    markers.clear();</a>
+<a name="ln1205">    check_empty();</a>
+<a name="ln1206">}</a>
+<a name="ln1207"> </a>
+<a name="ln1208">static const long MARKERS_COOKY = 0x17742C32;</a>
+<a name="ln1209">void map_markers::write(writer &amp;outf) const</a>
+<a name="ln1210">{</a>
+<a name="ln1211">    marshallInt(outf, MARKERS_COOKY);</a>
+<a name="ln1212"> </a>
+<a name="ln1213">    vector&lt;unsigned char&gt; buf;</a>
+<a name="ln1214"> </a>
+<a name="ln1215">    marshallShort(outf, markers.size());</a>
+<a name="ln1216">    for (const auto &amp;entry : markers)</a>
+<a name="ln1217">    {</a>
+<a name="ln1218">        buf.clear();</a>
+<a name="ln1219">        writer tmp_outf(&amp;buf);</a>
+<a name="ln1220">        entry.second-&gt;write(tmp_outf);</a>
+<a name="ln1221"> </a>
+<a name="ln1222">        // Write the marker data, prefixed by a size</a>
+<a name="ln1223">        marshallInt(outf, buf.size());</a>
+<a name="ln1224">        for (auto byte : buf)</a>
+<a name="ln1225">            outf.writeByte(byte);</a>
+<a name="ln1226">    }</a>
+<a name="ln1227">}</a>
+<a name="ln1228"> </a>
+<a name="ln1229">void map_markers::read(reader &amp;inf)</a>
+<a name="ln1230">{</a>
+<a name="ln1231">    clear();</a>
+<a name="ln1232"> </a>
+<a name="ln1233">    const int cooky = unmarshallInt(inf);</a>
+<a name="ln1234">    ASSERT(cooky == MARKERS_COOKY);</a>
+<a name="ln1235">    UNUSED(cooky);</a>
+<a name="ln1236"> </a>
+<a name="ln1237">    const int nmarkers = unmarshallShort(inf);</a>
+<a name="ln1238">    for (int i = 0; i &lt; nmarkers; ++i)</a>
+<a name="ln1239">    {</a>
+<a name="ln1240">        // used by tools</a>
+<a name="ln1241">        unmarshallInt(inf);</a>
+<a name="ln1242">        if (map_marker *mark = map_marker::read_marker(inf))</a>
+<a name="ln1243">            add(mark);</a>
+<a name="ln1244">    }</a>
+<a name="ln1245">}</a>
+<a name="ln1246"> </a>
+<a name="ln1247">/////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1248"> </a>
+<a name="ln1249">bool marker_vetoes_operation(const char *op)</a>
+<a name="ln1250">{</a>
+<a name="ln1251">    return env.markers.property_at(you.pos(), MAT_ANY, op) == &quot;veto&quot;;</a>
+<a name="ln1252">}</a>
+<a name="ln1253"> </a>
+<a name="ln1254">coord_def find_marker_position_by_prop(const string &amp;prop,</a>
+<a name="ln1255">                                       const string &amp;expected)</a>
+<a name="ln1256">{</a>
+<a name="ln1257">    const vector&lt;coord_def&gt; markers =</a>
+<a name="ln1258">        find_marker_positions_by_prop(prop, expected, 1);</a>
+<a name="ln1259">    if (markers.empty())</a>
+<a name="ln1260">    {</a>
+<a name="ln1261">        const coord_def nowhere(-1, -1);</a>
+<a name="ln1262">        return nowhere;</a>
+<a name="ln1263">    }</a>
+<a name="ln1264">    return markers[0];</a>
+<a name="ln1265">}</a>
+<a name="ln1266"> </a>
+<a name="ln1267">vector&lt;coord_def&gt; find_marker_positions_by_prop(const string &amp;prop,</a>
+<a name="ln1268">                                                const string &amp;expected,</a>
+<a name="ln1269">                                                unsigned maxresults)</a>
+<a name="ln1270">{</a>
+<a name="ln1271">    vector&lt;coord_def&gt; marker_positions;</a>
+<a name="ln1272">    for (rectangle_iterator i(0, 0); i; ++i)</a>
+<a name="ln1273">    {</a>
+<a name="ln1274">        const string value = env.markers.property_at(*i, MAT_ANY, prop);</a>
+<a name="ln1275">        if (!value.empty() &amp;&amp; (expected.empty() || value == expected))</a>
+<a name="ln1276">        {</a>
+<a name="ln1277">            marker_positions.push_back(*i);</a>
+<a name="ln1278">            if (maxresults &amp;&amp; marker_positions.size() &gt;= maxresults)</a>
+<a name="ln1279">                return marker_positions;</a>
+<a name="ln1280">        }</a>
+<a name="ln1281">    }</a>
+<a name="ln1282">    return marker_positions;</a>
+<a name="ln1283">}</a>
+<a name="ln1284"> </a>
+<a name="ln1285">vector&lt;map_marker*&gt; find_markers_by_prop(const string &amp;prop,</a>
+<a name="ln1286">                                         const string &amp;expected,</a>
+<a name="ln1287">                                         unsigned maxresults)</a>
+<a name="ln1288">{</a>
+<a name="ln1289">    vector&lt;map_marker*&gt; markers;</a>
+<a name="ln1290">    for (rectangle_iterator pos(0, 0); pos; ++pos)</a>
+<a name="ln1291">    {</a>
+<a name="ln1292">        for (map_marker *mark : env.markers.get_markers_at(*pos))</a>
+<a name="ln1293">        {</a>
+<a name="ln1294">            const string value(mark-&gt;property(prop));</a>
+<a name="ln1295">            if (!value.empty() &amp;&amp; (expected.empty() || value == expected))</a>
+<a name="ln1296">            {</a>
+<a name="ln1297">                markers.push_back(mark);</a>
+<a name="ln1298">                if (maxresults &amp;&amp; markers.size() &gt;= maxresults)</a>
+<a name="ln1299">                    return markers;</a>
+<a name="ln1300">            }</a>
+<a name="ln1301">        }</a>
+<a name="ln1302">    }</a>
+<a name="ln1303">    return markers;</a>
+<a name="ln1304">}</a>
+<a name="ln1305"> </a>
+<a name="ln1306">///////////////////////////////////////////////////////////////////</a>
+<a name="ln1307"> </a>
+<a name="ln1308">// Safely remove all markers and dungeon listeners at the given square.</a>
+<a name="ln1309">void remove_markers_and_listeners_at(coord_def p)</a>
+<a name="ln1310">{</a>
+<a name="ln1311">    // Look for Lua markers on this square that are listening for</a>
+<a name="ln1312">    // non-positional events, (such as bazaar portals listening for</a>
+<a name="ln1313">    // turncount changes) and detach them manually from the dungeon</a>
+<a name="ln1314">    // event dispatcher.</a>
+<a name="ln1315">    for (map_marker *marker : env.markers.get_markers_at(p))</a>
+<a name="ln1316">    {</a>
+<a name="ln1317">        if (marker-&gt;get_type() == MAT_LUA_MARKER)</a>
+<a name="ln1318">        {</a>
+<a name="ln1319">            dungeon_events.remove_listener(</a>
+<a name="ln1320">                dynamic_cast&lt;map_lua_marker*&gt;(marker));</a>
+<a name="ln1321">        }</a>
+<a name="ln1322">    }</a>
+<a name="ln1323"> </a>
+<a name="ln1324">    env.markers.remove_markers_at(p);</a>
+<a name="ln1325">    dungeon_events.clear_listeners_at(p);</a>
+<a name="ln1326">}</a>
+<a name="ln1327"> </a>
+<a name="ln1328">/**</a>
+<a name="ln1329"> * Get any position marker at the given location for the given type of feature.</a>
+<a name="ln1330"> * Multiple position markers can exist at a given location, so the `feat`</a>
+<a name="ln1331"> * argument is used to select the desired one.</a>
+<a name="ln1332"> *</a>
+<a name="ln1333"> * @param pos     The position to check.</a>
+<a name="ln1334"> * @param feat    The type of feature for which we want a position marker.</a>
+<a name="ln1335"> * @returns       The position marker if one exists, otherwise nullptr.</a>
+<a name="ln1336"> **/</a>
+<a name="ln1337">map_position_marker *get_position_marker_at(const coord_def &amp;pos,</a>
+<a name="ln1338">                                            dungeon_feature_type feat)</a>
+<a name="ln1339">{</a>
+<a name="ln1340">    for (map_marker *m : env.markers.get_markers_at(pos))</a>
+<a name="ln1341">    {</a>
+<a name="ln1342">        if (m-&gt;get_type() != MAT_POSITION)</a>
+<a name="ln1343">            continue;</a>
+<a name="ln1344"> </a>
+<a name="ln1345">        map_position_marker *posm = dynamic_cast&lt;map_position_marker*&gt;(m);</a>
+<a name="ln1346">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1347">        // Escape hatches were the only feature type using position markers</a>
+<a name="ln1348">        // before TAG_MINOR_TRANSPORTERS.</a>
+<a name="ln1349">        if (posm-&gt;feat == DNGN_UNSEEN &amp;&amp; feat_is_escape_hatch(feat))</a>
+<a name="ln1350">            posm-&gt;feat = feat;</a>
+<a name="ln1351">#endif</a>
+<a name="ln1352">        if (posm-&gt;feat == feat)</a>
+<a name="ln1353">            return posm;</a>
+<a name="ln1354">    }</a>
+<a name="ln1355"> </a>
+<a name="ln1356">    return nullptr;</a>
+<a name="ln1357">}</a>
+<a name="ln1358"> </a>
+<a name="ln1359">/**</a>
+<a name="ln1360"> * Get the destination of the transporter at the given pos.</a>
+<a name="ln1361"> *</a>
+<a name="ln1362"> * @param pos     The position of the transporter.</a>
+<a name="ln1363"> * @returns       The destination of the transporter. This will be</a>
+<a name="ln1364"> *                INVALID_COORD if no valid destination exists.</a>
+<a name="ln1365"> **/</a>
+<a name="ln1366">coord_def get_transporter_dest(const coord_def &amp;pos)</a>
+<a name="ln1367">{</a>
+<a name="ln1368">    ASSERT(grd(pos) == DNGN_TRANSPORTER);</a>
+<a name="ln1369"> </a>
+<a name="ln1370">    map_position_marker *marker</a>
+<a name="ln1371">        = get_position_marker_at(pos, DNGN_TRANSPORTER);</a>
+<a name="ln1372">    coord_def dest = INVALID_COORD;</a>
+<a name="ln1373"> </a>
+<a name="ln1374">    if (marker)</a>
+<a name="ln1375">        dest = marker-&gt;dest;</a>
+<a name="ln1376">    return dest;</a>
+<a name="ln1377">}</a>
+
+</code></pre>
+<div class="balloon" rel="1349"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'posm'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

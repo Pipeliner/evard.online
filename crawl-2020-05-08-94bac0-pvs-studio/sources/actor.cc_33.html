@@ -1,0 +1,1097 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>actor.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#include &quot;actor.h&quot;</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &lt;sstream&gt;</a>
+<a name="ln6"> </a>
+<a name="ln7">#include &quot;act-iter.h&quot;</a>
+<a name="ln8">#include &quot;areas.h&quot;</a>
+<a name="ln9">#include &quot;art-enum.h&quot;</a>
+<a name="ln10">#include &quot;attack.h&quot;</a>
+<a name="ln11">#include &quot;chardump.h&quot;</a>
+<a name="ln12">#include &quot;directn.h&quot;</a>
+<a name="ln13">#include &quot;env.h&quot;</a>
+<a name="ln14">#include &quot;fight.h&quot; // apply_chunked_ac</a>
+<a name="ln15">#include &quot;fprop.h&quot;</a>
+<a name="ln16">#include &quot;god-passive.h&quot;</a>
+<a name="ln17">#include &quot;item-prop.h&quot;</a>
+<a name="ln18">#include &quot;los.h&quot;</a>
+<a name="ln19">#include &quot;message.h&quot;</a>
+<a name="ln20">#include &quot;mon-behv.h&quot;</a>
+<a name="ln21">#include &quot;mon-death.h&quot;</a>
+<a name="ln22">#include &quot;religion.h&quot;</a>
+<a name="ln23">#include &quot;stepdown.h&quot;</a>
+<a name="ln24">#include &quot;stringutil.h&quot;</a>
+<a name="ln25">#include &quot;terrain.h&quot;</a>
+<a name="ln26">#include &quot;transform.h&quot;</a>
+<a name="ln27">#include &quot;traps.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29">actor::~actor()</a>
+<a name="ln30">{</a>
+<a name="ln31">    if (constricting)</a>
+<a name="ln32">        delete constricting;</a>
+<a name="ln33">}</a>
+<a name="ln34"> </a>
+<a name="ln35">bool actor::will_trigger_shaft() const</a>
+<a name="ln36">{</a>
+<a name="ln37">    return is_valid_shaft_level()</a>
+<a name="ln38">           // let's pretend that they always make their saving roll</a>
+<a name="ln39">           &amp;&amp; !(is_monster()</a>
+<a name="ln40">                &amp;&amp; mons_is_elven_twin(static_cast&lt;const monster* &gt;(this)));</a>
+<a name="ln41">}</a>
+<a name="ln42"> </a>
+<a name="ln43">level_id actor::shaft_dest() const</a>
+<a name="ln44">{</a>
+<a name="ln45">    return generic_shaft_dest(level_id::current());</a>
+<a name="ln46">}</a>
+<a name="ln47"> </a>
+<a name="ln48">/**</a>
+<a name="ln49"> * Check if the actor is on the ground (or in water).</a>
+<a name="ln50"> */</a>
+<a name="ln51">bool actor::ground_level() const</a>
+<a name="ln52">{</a>
+<a name="ln53">    return !airborne();</a>
+<a name="ln54">}</a>
+<a name="ln55"> </a>
+<a name="ln56">// Give hands required to wield weapon.</a>
+<a name="ln57">hands_reqd_type actor::hands_reqd(const item_def &amp;item, bool base) const</a>
+<a name="ln58">{</a>
+<a name="ln59">    return basic_hands_reqd(item, body_size(PSIZE_TORSO, base));</a>
+<a name="ln60">}</a>
+<a name="ln61"> </a>
+<a name="ln62">/**</a>
+<a name="ln63"> * Wrapper around the virtual actor::can_wield(const item_def&amp;,bool,bool,bool,bool) const overload.</a>
+<a name="ln64"> * @param item May be nullptr, in which case a dummy item will be passed in.</a>
+<a name="ln65"> */</a>
+<a name="ln66">bool actor::can_wield(const item_def* item, bool ignore_curse,</a>
+<a name="ln67">                      bool ignore_brand, bool ignore_shield,</a>
+<a name="ln68">                      bool ignore_transform) const</a>
+<a name="ln69">{</a>
+<a name="ln70">    if (item == nullptr)</a>
+<a name="ln71">    {</a>
+<a name="ln72">        // Unarmed combat.</a>
+<a name="ln73">        item_def fake;</a>
+<a name="ln74">        fake.base_type = OBJ_UNASSIGNED;</a>
+<a name="ln75">        return can_wield(fake, ignore_curse, ignore_brand, ignore_shield, ignore_transform);</a>
+<a name="ln76">    }</a>
+<a name="ln77">    else</a>
+<a name="ln78">        return can_wield(*item, ignore_curse, ignore_brand, ignore_shield, ignore_transform);</a>
+<a name="ln79">}</a>
+<a name="ln80"> </a>
+<a name="ln81">bool actor::can_pass_through(int x, int y) const</a>
+<a name="ln82">{</a>
+<a name="ln83">    return can_pass_through_feat(grd[x][y]);</a>
+<a name="ln84">}</a>
+<a name="ln85"> </a>
+<a name="ln86">bool actor::can_pass_through(const coord_def &amp;c) const</a>
+<a name="ln87">{</a>
+<a name="ln88">    return can_pass_through_feat(grd(c));</a>
+<a name="ln89">}</a>
+<a name="ln90"> </a>
+<a name="ln91">bool actor::is_habitable(const coord_def &amp;_pos) const</a>
+<a name="ln92">{</a>
+<a name="ln93">    return is_habitable_feat(grd(_pos));</a>
+<a name="ln94">}</a>
+<a name="ln95"> </a>
+<a name="ln96">bool actor::handle_trap()</a>
+<a name="ln97">{</a>
+<a name="ln98">    trap_def* trap = trap_at(pos());</a>
+<a name="ln99">    if (trap)</a>
+<a name="ln100">        trap-&gt;trigger(*this);</a>
+<a name="ln101">    return trap != nullptr;</a>
+<a name="ln102">}</a>
+<a name="ln103"> </a>
+<a name="ln104">int actor::skill_rdiv(skill_type sk, int mult, int div) const</a>
+<a name="ln105">{</a>
+<a name="ln106">    return div_rand_round(skill(sk, mult * 256), div * 256);</a>
+<a name="ln107">}</a>
+<a name="ln108"> </a>
+<a name="ln109">int actor::check_res_magic(int power)</a>
+<a name="ln110">{</a>
+<a name="ln111">    const int mrs = res_magic();</a>
+<a name="ln112"> </a>
+<a name="ln113">    if (mrs == MAG_IMMUNE)</a>
+<a name="ln114">        return 100;</a>
+<a name="ln115"> </a>
+<a name="ln116">    const int adj_pow = ench_power_stepdown(power);</a>
+<a name="ln117"> </a>
+<a name="ln118">    const int mrchance = (100 + mrs) - adj_pow;</a>
+<a name="ln119">    int mrch2 = random2(100);</a>
+<a name="ln120">    mrch2 += random2(101);</a>
+<a name="ln121"> </a>
+<a name="ln122">    dprf(&quot;Power: %d (%d pre-stepdown), MR: %d, target: %d, roll: %d&quot;,</a>
+<a name="ln123">         adj_pow, power, mrs, mrchance, mrch2);</a>
+<a name="ln124"> </a>
+<a name="ln125">    return mrchance - mrch2;</a>
+<a name="ln126">}</a>
+<a name="ln127"> </a>
+<a name="ln128">void actor::set_position(const coord_def &amp;c)</a>
+<a name="ln129">{</a>
+<a name="ln130">    const coord_def oldpos = position;</a>
+<a name="ln131">    position = c;</a>
+<a name="ln132">    los_actor_moved(this, oldpos);</a>
+<a name="ln133">    areas_actor_moved(this, oldpos);</a>
+<a name="ln134">}</a>
+<a name="ln135"> </a>
+<a name="ln136">bool actor::can_hibernate(bool holi_only, bool intrinsic_only) const</a>
+<a name="ln137">{</a>
+<a name="ln138">    // Undead, nonliving, and plants don't sleep. If the monster is</a>
+<a name="ln139">    // berserk or already asleep, it doesn't sleep either.</a>
+<a name="ln140">    if (!can_sleep(holi_only))</a>
+<a name="ln141">        return false;</a>
+<a name="ln142"> </a>
+<a name="ln143">    if (!holi_only)</a>
+<a name="ln144">    {</a>
+<a name="ln145">        // The monster is cold-resistant and can't be hibernated.</a>
+<a name="ln146">        if (intrinsic_only &amp;&amp; is_monster()</a>
+<a name="ln147">                ? get_mons_resist(*as_monster(), MR_RES_COLD) &gt; 0</a>
+<a name="ln148">                : res_cold() &gt; 0)</a>
+<a name="ln149">        {</a>
+<a name="ln150">            return false;</a>
+<a name="ln151">        }</a>
+<a name="ln152"> </a>
+<a name="ln153">        // The monster has slept recently.</a>
+<a name="ln154">        if (is_monster() &amp;&amp; !intrinsic_only</a>
+<a name="ln155">            &amp;&amp; static_cast&lt;const monster* &gt;(this)-&gt;has_ench(ENCH_SLEEP_WARY))</a>
+<a name="ln156">        {</a>
+<a name="ln157">            return false;</a>
+<a name="ln158">        }</a>
+<a name="ln159">    }</a>
+<a name="ln160"> </a>
+<a name="ln161">    return true;</a>
+<a name="ln162">}</a>
+<a name="ln163"> </a>
+<a name="ln164">bool actor::can_sleep(bool holi_only) const</a>
+<a name="ln165">{</a>
+<a name="ln166">    const mon_holy_type holi = holiness();</a>
+<a name="ln167">    if (holi &amp; (MH_UNDEAD | MH_NONLIVING | MH_PLANT))</a>
+<a name="ln168">        return false;</a>
+<a name="ln169"> </a>
+<a name="ln170">    if (!holi_only)</a>
+<a name="ln171">        return !(berserk() || clarity() || asleep());</a>
+<a name="ln172"> </a>
+<a name="ln173">    return true;</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">void actor::shield_block_succeeded(actor *foe)</a>
+<a name="ln177">{</a>
+<a name="ln178">    item_def *sh = shield();</a>
+<a name="ln179">    const unrandart_entry *unrand_entry;</a>
+<a name="ln180"> </a>
+<a name="ln181">    if (sh</a>
+<a name="ln182">        &amp;&amp; sh-&gt;base_type == OBJ_ARMOUR</a>
+<a name="ln183">        &amp;&amp; get_armour_slot(*sh) == EQ_SHIELD</a>
+<a name="ln184">        &amp;&amp; is_artefact(*sh)</a>
+<a name="ln185">        &amp;&amp; is_unrandom_artefact(*sh)</a>
+<a name="ln186">        &amp;&amp; (unrand_entry = get_unrand_entry(sh-&gt;unrand_idx))</a>
+<a name="ln187">        &amp;&amp; unrand_entry-&gt;melee_effects)</a>
+<a name="ln188">    {</a>
+<a name="ln189">        unrand_entry-&gt;melee_effects(sh, this, foe, false, 0);</a>
+<a name="ln190">    }</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">int actor::inaccuracy() const</a>
+<a name="ln194">{</a>
+<a name="ln195">    return wearing(EQ_AMULET, AMU_INACCURACY);</a>
+<a name="ln196">}</a>
+<a name="ln197"> </a>
+<a name="ln198">bool actor::gourmand(bool calc_unid, bool items) const</a>
+<a name="ln199">{</a>
+<a name="ln200">    return items &amp;&amp; wearing(EQ_AMULET, AMU_THE_GOURMAND, calc_unid);</a>
+<a name="ln201">}</a>
+<a name="ln202"> </a>
+<a name="ln203">bool actor::res_corr(bool calc_unid, bool items) const</a>
+<a name="ln204">{</a>
+<a name="ln205">    return items &amp;&amp; (wearing(EQ_RINGS, RING_RESIST_CORROSION, calc_unid)</a>
+<a name="ln206">                     || wearing(EQ_BODY_ARMOUR, ARM_ACID_DRAGON_ARMOUR, calc_unid)</a>
+<a name="ln207">                     || scan_artefacts(ARTP_RCORR, calc_unid));</a>
+<a name="ln208">}</a>
+<a name="ln209"> </a>
+<a name="ln210">bool actor::cloud_immune(bool calc_unid, bool items) const</a>
+<a name="ln211">{</a>
+<a name="ln212">    const item_def *body_armour = slot_item(EQ_BODY_ARMOUR);</a>
+<a name="ln213">    return items &amp;&amp; (wearing_ego(EQ_CLOAK, SPARM_CLOUD_IMMUNE, calc_unid)</a>
+<a name="ln214">                     || (body_armour</a>
+<a name="ln215">                        &amp;&amp; is_unrandom_artefact(*body_armour, UNRAND_RCLOUDS)));</a>
+<a name="ln216">}</a>
+<a name="ln217"> </a>
+<a name="ln218">bool actor::holy_wrath_susceptible() const</a>
+<a name="ln219">{</a>
+<a name="ln220">    return res_holy_energy() &lt; 0;</a>
+<a name="ln221">}</a>
+<a name="ln222"> </a>
+<a name="ln223">// This is a bit confusing. This is not the function that determines whether or</a>
+<a name="ln224">// not an actor is capable of teleporting, only whether they are specifically</a>
+<a name="ln225">// under the influence of the &quot;notele&quot; effect. See actor::no_tele() for a</a>
+<a name="ln226">// superset of this function.</a>
+<a name="ln227">bool actor::has_notele_item(bool calc_unid, vector&lt;const item_def *&gt; *matches) const</a>
+<a name="ln228">{</a>
+<a name="ln229">    return scan_artefacts(ARTP_PREVENT_TELEPORTATION, calc_unid, matches);</a>
+<a name="ln230">}</a>
+<a name="ln231"> </a>
+<a name="ln232">// permaswift effects like boots of running and lightning scales</a>
+<a name="ln233">bool actor::run(bool calc_unid, bool items) const</a>
+<a name="ln234">{</a>
+<a name="ln235">    return items &amp;&amp; wearing_ego(EQ_BOOTS, SPARM_RUNNING, calc_unid);</a>
+<a name="ln236">}</a>
+<a name="ln237"> </a>
+<a name="ln238">bool actor::angry(bool calc_unid, bool items) const</a>
+<a name="ln239">{</a>
+<a name="ln240">    return items &amp;&amp; scan_artefacts(ARTP_ANGRY, calc_unid);</a>
+<a name="ln241">}</a>
+<a name="ln242"> </a>
+<a name="ln243">bool actor::clarity(bool calc_unid, bool items) const</a>
+<a name="ln244">{</a>
+<a name="ln245">    return items &amp;&amp; scan_artefacts(ARTP_CLARITY, calc_unid);</a>
+<a name="ln246">}</a>
+<a name="ln247"> </a>
+<a name="ln248">bool actor::faith(bool calc_unid, bool items) const</a>
+<a name="ln249">{</a>
+<a name="ln250">    return items &amp;&amp; wearing(EQ_AMULET, AMU_FAITH, calc_unid);</a>
+<a name="ln251">}</a>
+<a name="ln252"> </a>
+<a name="ln253">int actor::archmagi(bool calc_unid, bool items) const</a>
+<a name="ln254">{</a>
+<a name="ln255">    if (!items)</a>
+<a name="ln256">        return 0;</a>
+<a name="ln257"> </a>
+<a name="ln258">    return wearing_ego(EQ_ALL_ARMOUR, SPARM_ARCHMAGI, calc_unid);</a>
+<a name="ln259">}</a>
+<a name="ln260"> </a>
+<a name="ln261">/**</a>
+<a name="ln262"> * Indicates if the actor has an active evocations enhancer.</a>
+<a name="ln263"> *</a>
+<a name="ln264"> * @param calc_unid Whether to identify unknown items that enhance evocations.</a>
+<a name="ln265"> * @param items Whether to count item powers.</a>
+<a name="ln266"> * @return The number of levels of evocations enhancement this actor has.</a>
+<a name="ln267"> */</a>
+<a name="ln268">int actor::spec_evoke(bool calc_unid, bool items) const</a>
+<a name="ln269">{</a>
+<a name="ln270">    UNUSED(calc_unid);</a>
+<a name="ln271">    UNUSED(items);</a>
+<a name="ln272">    return 0;</a>
+<a name="ln273">}</a>
+<a name="ln274"> </a>
+<a name="ln275">bool actor::no_cast(bool calc_unid, bool items) const</a>
+<a name="ln276">{</a>
+<a name="ln277">    return items &amp;&amp; scan_artefacts(ARTP_PREVENT_SPELLCASTING, calc_unid);</a>
+<a name="ln278">}</a>
+<a name="ln279"> </a>
+<a name="ln280">bool actor::reflection(bool calc_unid, bool items) const</a>
+<a name="ln281">{</a>
+<a name="ln282">    return items &amp;&amp; wearing(EQ_AMULET, AMU_REFLECTION, calc_unid);</a>
+<a name="ln283">}</a>
+<a name="ln284"> </a>
+<a name="ln285">bool actor::extra_harm(bool calc_unid, bool items) const</a>
+<a name="ln286">{</a>
+<a name="ln287">    return items &amp;&amp;</a>
+<a name="ln288">           (wearing(EQ_AMULET, AMU_HARM, calc_unid)</a>
+<a name="ln289">            || scan_artefacts(ARTP_HARM, calc_unid));</a>
+<a name="ln290">}</a>
+<a name="ln291"> </a>
+<a name="ln292">bool actor::rmut_from_item(bool calc_unid) const</a>
+<a name="ln293">{</a>
+<a name="ln294">    return scan_artefacts(ARTP_RMUT, calc_unid);</a>
+<a name="ln295">}</a>
+<a name="ln296"> </a>
+<a name="ln297">bool actor::evokable_berserk(bool calc_unid) const</a>
+<a name="ln298">{</a>
+<a name="ln299">    return wearing(EQ_AMULET, AMU_RAGE, calc_unid)</a>
+<a name="ln300">           || scan_artefacts(ARTP_BERSERK, calc_unid);</a>
+<a name="ln301">}</a>
+<a name="ln302"> </a>
+<a name="ln303">int actor::evokable_invis(bool calc_unid) const</a>
+<a name="ln304">{</a>
+<a name="ln305">    return wearing_ego(EQ_CLOAK, SPARM_INVISIBILITY, calc_unid)</a>
+<a name="ln306">           + scan_artefacts(ARTP_INVISIBLE, calc_unid);</a>
+<a name="ln307">}</a>
+<a name="ln308"> </a>
+<a name="ln309">// Return an int so we know whether an item is the sole source.</a>
+<a name="ln310">int actor::evokable_flight(bool calc_unid) const</a>
+<a name="ln311">{</a>
+<a name="ln312">    if (is_player() &amp;&amp; get_form()-&gt;forbids_flight())</a>
+<a name="ln313">        return 0;</a>
+<a name="ln314"> </a>
+<a name="ln315">    return wearing(EQ_RINGS, RING_FLIGHT, calc_unid)</a>
+<a name="ln316">           + wearing_ego(EQ_ALL_ARMOUR, SPARM_FLYING, calc_unid)</a>
+<a name="ln317">           + scan_artefacts(ARTP_FLY, calc_unid);</a>
+<a name="ln318">}</a>
+<a name="ln319"> </a>
+<a name="ln320">int actor::spirit_shield(bool calc_unid, bool items) const</a>
+<a name="ln321">{</a>
+<a name="ln322">    int ss = 0;</a>
+<a name="ln323"> </a>
+<a name="ln324">    if (items)</a>
+<a name="ln325">    {</a>
+<a name="ln326">        ss += wearing_ego(EQ_ALL_ARMOUR, SPARM_SPIRIT_SHIELD, calc_unid);</a>
+<a name="ln327">        ss += wearing(EQ_AMULET, AMU_GUARDIAN_SPIRIT, calc_unid);</a>
+<a name="ln328">    }</a>
+<a name="ln329"> </a>
+<a name="ln330">    if (is_player())</a>
+<a name="ln331">        ss += you.get_mutation_level(MUT_MANA_SHIELD);</a>
+<a name="ln332"> </a>
+<a name="ln333">    return ss;</a>
+<a name="ln334">}</a>
+<a name="ln335"> </a>
+<a name="ln336">int actor::apply_ac(int damage, int max_damage, ac_type ac_rule,</a>
+<a name="ln337">                    int stab_bypass, bool for_real) const</a>
+<a name="ln338">{</a>
+<a name="ln339">    int ac = max(armour_class() - stab_bypass, 0);</a>
+<a name="ln340">    int gdr = gdr_perc();</a>
+<a name="ln341">    int saved = 0;</a>
+<a name="ln342">    switch (ac_rule)</a>
+<a name="ln343">    {</a>
+<a name="ln344">    case ac_type::none:</a>
+<a name="ln345">        return damage; // no GDR, too</a>
+<a name="ln346">    case ac_type::proportional:</a>
+<a name="ln347">        ASSERT(stab_bypass == 0);</a>
+<a name="ln348">        saved = damage - apply_chunked_AC(damage, ac);</a>
+<a name="ln349">        saved = max(saved, div_rand_round(max_damage * gdr, 100));</a>
+<a name="ln350">        return max(damage - saved, 0);</a>
+<a name="ln351"> </a>
+<a name="ln352">    case ac_type::normal:</a>
+<a name="ln353">        saved = random2(1 + ac);</a>
+<a name="ln354">        break;</a>
+<a name="ln355">    case ac_type::half:</a>
+<a name="ln356">        saved = random2(1 + ac) / 2;</a>
+<a name="ln357">        ac /= 2;</a>
+<a name="ln358">        gdr /= 2;</a>
+<a name="ln359">        break;</a>
+<a name="ln360">    case ac_type::triple:</a>
+<a name="ln361">        saved = random2(1 + ac);</a>
+<a name="ln362">        saved += random2(1 + ac);</a>
+<a name="ln363">        saved += random2(1 + ac);</a>
+<a name="ln364">        ac *= 3;</a>
+<a name="ln365">        // apply GDR only twice rather than thrice, that's probably still waaay</a>
+<a name="ln366">        // too good. 50% gives 75% rather than 100%, too.</a>
+<a name="ln367">        gdr = 100 - gdr * gdr / 100;</a>
+<a name="ln368">        break;</a>
+<a name="ln369">    default:</a>
+<a name="ln370">        die(&quot;invalid AC rule&quot;);</a>
+<a name="ln371">    }</a>
+<a name="ln372"> </a>
+<a name="ln373">    saved = max(saved, min(gdr * max_damage / 100, ac / 2));</a>
+<a name="ln374">    if (for_real &amp;&amp; (damage &gt; 0) &amp;&amp; (saved &gt;= damage) &amp;&amp; is_player())</a>
+<a name="ln375">    {</a>
+<a name="ln376">        const item_def *body_armour = slot_item(EQ_BODY_ARMOUR);</a>
+<a name="ln377">        if (body_armour)</a>
+<a name="ln378">            count_action(CACT_ARMOUR, body_armour-&gt;sub_type);</a>
+<a name="ln379">        else</a>
+<a name="ln380">            count_action(CACT_ARMOUR, -1); // unarmoured subtype</a>
+<a name="ln381">    }</a>
+<a name="ln382"> </a>
+<a name="ln383">    return max(damage - saved, 0);</a>
+<a name="ln384">}</a>
+<a name="ln385"> </a>
+<a name="ln386">bool actor_slime_wall_immune(const actor *act)</a>
+<a name="ln387">{</a>
+<a name="ln388">    return act-&gt;is_player() &amp;&amp; have_passive(passive_t::slime_wall_immune)</a>
+<a name="ln389">        || act-&gt;res_acid() == 3</a>
+<a name="ln390">        || act-&gt;is_monster() &amp;&amp; mons_is_slime(*act-&gt;as_monster());</a>
+<a name="ln391">}</a>
+<a name="ln392"> </a>
+<a name="ln393">void actor::clear_constricted()</a>
+<a name="ln394">{</a>
+<a name="ln395">    constricted_by = 0;</a>
+<a name="ln396">    escape_attempts = 0;</a>
+<a name="ln397">}</a>
+<a name="ln398"> </a>
+<a name="ln399">// End my constriction of i-&gt;first, but don't yet update my constricting map,</a>
+<a name="ln400">// so as not to invalidate i.</a>
+<a name="ln401">void actor::end_constriction(mid_t whom, bool intentional, bool quiet)</a>
+<a name="ln402">{</a>
+<a name="ln403">    actor *const constrictee = actor_by_mid(whom);</a>
+<a name="ln404"> </a>
+<a name="ln405">    if (!constrictee)</a>
+<a name="ln406">        return;</a>
+<a name="ln407"> </a>
+<a name="ln408">    constrictee-&gt;clear_constricted();</a>
+<a name="ln409"> </a>
+<a name="ln410">    monster * const mons = monster_by_mid(whom);</a>
+<a name="ln411">    bool roots = constrictee-&gt;is_player() &amp;&amp; you.duration[DUR_GRASPING_ROOTS]</a>
+<a name="ln412">        || mons &amp;&amp; mons-&gt;has_ench(ENCH_GRASPING_ROOTS);</a>
+<a name="ln413">    bool vile_clutch = mons &amp;&amp; mons-&gt;has_ench(ENCH_VILE_CLUTCH);</a>
+<a name="ln414"> </a>
+<a name="ln415">    if (!quiet &amp;&amp; alive() &amp;&amp; constrictee-&gt;alive()</a>
+<a name="ln416">        &amp;&amp; (you.see_cell(pos()) || you.see_cell(constrictee-&gt;pos())))</a>
+<a name="ln417">    {</a>
+<a name="ln418">        string attacker_desc;</a>
+<a name="ln419">        const string verb = intentional ? &quot;release&quot; : &quot;lose&quot;;</a>
+<a name="ln420">        bool force_plural = false;</a>
+<a name="ln421"> </a>
+<a name="ln422">        if (vile_clutch)</a>
+<a name="ln423">        {</a>
+<a name="ln424">            attacker_desc = &quot;The zombie hands&quot;;</a>
+<a name="ln425">            force_plural = true;</a>
+<a name="ln426">        }</a>
+<a name="ln427">        else if (roots)</a>
+<a name="ln428">        {</a>
+<a name="ln429">            attacker_desc = &quot;The roots&quot;;</a>
+<a name="ln430">            force_plural = true;</a>
+<a name="ln431">        }</a>
+<a name="ln432">        else</a>
+<a name="ln433">            attacker_desc = name(DESC_THE);</a>
+<a name="ln434"> </a>
+<a name="ln435">        mprf(&quot;%s %s %s grip on %s.&quot;,</a>
+<a name="ln436">             attacker_desc.c_str(),</a>
+<a name="ln437">             force_plural ? verb.c_str()</a>
+<a name="ln438">                          : conj_verb(verb).c_str(),</a>
+<a name="ln439">             force_plural ? &quot;their&quot; : pronoun(PRONOUN_POSSESSIVE).c_str(),</a>
+<a name="ln440">             constrictee-&gt;name(DESC_THE).c_str());</a>
+<a name="ln441">    }</a>
+<a name="ln442"> </a>
+<a name="ln443">    if (vile_clutch)</a>
+<a name="ln444">        mons-&gt;del_ench(ENCH_VILE_CLUTCH);</a>
+<a name="ln445">    else if (roots)</a>
+<a name="ln446">    {</a>
+<a name="ln447">        if (mons)</a>
+<a name="ln448">            mons-&gt;del_ench(ENCH_GRASPING_ROOTS);</a>
+<a name="ln449">        else</a>
+<a name="ln450">            you.duration[DUR_GRASPING_ROOTS] = 0;</a>
+<a name="ln451">    }</a>
+<a name="ln452"> </a>
+<a name="ln453">    if (constrictee-&gt;is_player())</a>
+<a name="ln454">        you.redraw_evasion = true;</a>
+<a name="ln455">}</a>
+<a name="ln456"> </a>
+<a name="ln457">void actor::stop_constricting(mid_t whom, bool intentional, bool quiet)</a>
+<a name="ln458">{</a>
+<a name="ln459">    if (!constricting)</a>
+<a name="ln460">        return;</a>
+<a name="ln461"> </a>
+<a name="ln462">    auto i = constricting-&gt;find(whom);</a>
+<a name="ln463"> </a>
+<a name="ln464">    if (i != constricting-&gt;end())</a>
+<a name="ln465">    {</a>
+<a name="ln466">        end_constriction(whom, intentional, quiet);</a>
+<a name="ln467">        constricting-&gt;erase(i);</a>
+<a name="ln468"> </a>
+<a name="ln469">        if (constricting-&gt;empty())</a>
+<a name="ln470">        {</a>
+<a name="ln471">            delete constricting;</a>
+<a name="ln472">            constricting = nullptr;</a>
+<a name="ln473">        }</a>
+<a name="ln474">    }</a>
+<a name="ln475">}</a>
+<a name="ln476"> </a>
+<a name="ln477">/**</a>
+<a name="ln478"> * Stop constricting all defenders, regardless of type of constriction.</a>
+<a name="ln479"> *</a>
+<a name="ln480"> * @param intentional True if this was intentional, which affects the language</a>
+<a name="ln481"> *                    in any message.</a>
+<a name="ln482"> * @param quiet       If True, don't display a message.</a>
+<a name="ln483"> */</a>
+<a name="ln484">void actor::stop_constricting_all(bool intentional, bool quiet)</a>
+<a name="ln485">{</a>
+<a name="ln486">    if (!constricting)</a>
+<a name="ln487">        return;</a>
+<a name="ln488"> </a>
+<a name="ln489">    for (const auto &amp;entry : *constricting)</a>
+<a name="ln490">        end_constriction(entry.first, intentional, quiet);</a>
+<a name="ln491"> </a>
+<a name="ln492">    delete constricting;</a>
+<a name="ln493">    constricting = nullptr;</a>
+<a name="ln494">}</a>
+<a name="ln495"> </a>
+<a name="ln496">static bool _invalid_constricting_map_entry(const actor *constrictee)</a>
+<a name="ln497">{</a>
+<a name="ln498">    return !constrictee</a>
+<a name="ln499">        || !constrictee-&gt;alive()</a>
+<a name="ln500">        || !constrictee-&gt;is_constricted();</a>
+<a name="ln501">}</a>
+<a name="ln502"> </a>
+<a name="ln503">/**</a>
+<a name="ln504"> * Stop directly constricting all defenders.</a>
+<a name="ln505"> *</a>
+<a name="ln506"> * @param intentional True if this was intentional, which affects the language</a>
+<a name="ln507"> *                    in any message.</a>
+<a name="ln508"> * @param quiet       If True, don't display a message.</a>
+<a name="ln509"> */</a>
+<a name="ln510">void actor::stop_directly_constricting_all(bool intentional, bool quiet)</a>
+<a name="ln511">{</a>
+<a name="ln512">    if (!constricting)</a>
+<a name="ln513">        return;</a>
+<a name="ln514"> </a>
+<a name="ln515">    vector&lt;mid_t&gt; need_cleared;</a>
+<a name="ln516">    for (const auto &amp;entry : *constricting)</a>
+<a name="ln517">    {</a>
+<a name="ln518">        const actor * const constrictee = actor_by_mid(entry.first);</a>
+<a name="ln519">        if (_invalid_constricting_map_entry(constrictee)</a>
+<a name="ln520">            || constrictee-&gt;is_directly_constricted())</a>
+<a name="ln521">        {</a>
+<a name="ln522">            need_cleared.push_back(entry.first);</a>
+<a name="ln523">        }</a>
+<a name="ln524">    }</a>
+<a name="ln525"> </a>
+<a name="ln526">    for (auto whom : need_cleared)</a>
+<a name="ln527">    {</a>
+<a name="ln528">        end_constriction(whom, intentional, quiet);</a>
+<a name="ln529">        constricting-&gt;erase(whom);</a>
+<a name="ln530">    }</a>
+<a name="ln531"> </a>
+<a name="ln532">    if (constricting-&gt;empty())</a>
+<a name="ln533">    {</a>
+<a name="ln534">        delete constricting;</a>
+<a name="ln535">        constricting = nullptr;</a>
+<a name="ln536">    }</a>
+<a name="ln537">}</a>
+<a name="ln538"> </a>
+<a name="ln539">void actor::stop_being_constricted(bool quiet)</a>
+<a name="ln540">{</a>
+<a name="ln541">    // Make sure we are actually being constricted.</a>
+<a name="ln542">    actor* const constrictor = actor_by_mid(constricted_by);</a>
+<a name="ln543"> </a>
+<a name="ln544">    if (constrictor)</a>
+<a name="ln545">        constrictor-&gt;stop_constricting(mid, false, quiet);</a>
+<a name="ln546"> </a>
+<a name="ln547">    // In case the actor no longer exists.</a>
+<a name="ln548">    clear_constricted();</a>
+<a name="ln549">}</a>
+<a name="ln550"> </a>
+<a name="ln551">/**</a>
+<a name="ln552"> * Does the actor have an constrictor that's now invalid? Checks validity based</a>
+<a name="ln553"> * on the type of constriction being done to the actor.</a>
+<a name="ln554"> *</a>
+<a name="ln555"> * @param move True if we are checking after the actor has moved.</a>
+<a name="ln556"> * @returns    True if the constrictor is defined yet invalid, false</a>
+<a name="ln557"> *             otherwise.</a>
+<a name="ln558"> */</a>
+<a name="ln559">bool actor::has_invalid_constrictor(bool move) const</a>
+<a name="ln560">{</a>
+<a name="ln561">    if (!is_constricted())</a>
+<a name="ln562">        return false;</a>
+<a name="ln563"> </a>
+<a name="ln564">    const actor* const attacker = actor_by_mid(constricted_by, true);</a>
+<a name="ln565">    if (!attacker || !attacker-&gt;alive())</a>
+<a name="ln566">        return true;</a>
+<a name="ln567"> </a>
+<a name="ln568">    // When the player is at the origin, they don't have the normal</a>
+<a name="ln569">    // considerations, since they're just here to avoid messages or LOS</a>
+<a name="ln570">    // effects. Cheibriados' time step abilities are an exception to this as</a>
+<a name="ln571">    // they have the player &quot;leave the normal flow of time&quot; and so should break</a>
+<a name="ln572">    // constriction.</a>
+<a name="ln573">    const bool ignoring_player = attacker-&gt;is_player()</a>
+<a name="ln574">        &amp;&amp; attacker-&gt;pos().origin()</a>
+<a name="ln575">        &amp;&amp; !you.duration[DUR_TIME_STEP];</a>
+<a name="ln576"> </a>
+<a name="ln577">    // Direct constriction (e.g. by nagas and octopode players or AT_CONSTRICT)</a>
+<a name="ln578">    // must happen between adjacent squares.</a>
+<a name="ln579">    if (is_directly_constricted())</a>
+<a name="ln580">        return !ignoring_player &amp;&amp; !adjacent(attacker-&gt;pos(), pos());</a>
+<a name="ln581"> </a>
+<a name="ln582">    // Indirect constriction requires the defender not to move.</a>
+<a name="ln583">    return move</a>
+<a name="ln584">        // Indirect constriction requires reachable ground.</a>
+<a name="ln585">        || !feat_has_solid_floor(grd(pos()))</a>
+<a name="ln586">        // Constriction doesn't work out of LOS.</a>
+<a name="ln587">        || !ignoring_player &amp;&amp; !attacker-&gt;see_cell(pos());</a>
+<a name="ln588">}</a>
+<a name="ln589"> </a>
+<a name="ln590">/**</a>
+<a name="ln591"> * Clear any constrictions that are no longer valid.</a>
+<a name="ln592"> *</a>
+<a name="ln593"> * @param movement True if we are clearing invalid constrictions after</a>
+<a name="ln594"> *                 the actor has moved, false otherwise.</a>
+<a name="ln595"> */</a>
+<a name="ln596">void actor::clear_invalid_constrictions(bool move)</a>
+<a name="ln597">{</a>
+<a name="ln598">    if (has_invalid_constrictor(move))</a>
+<a name="ln599">        stop_being_constricted();</a>
+<a name="ln600"> </a>
+<a name="ln601">    if (!constricting)</a>
+<a name="ln602">        return;</a>
+<a name="ln603"> </a>
+<a name="ln604">    vector&lt;mid_t&gt; need_cleared;</a>
+<a name="ln605">    for (const auto &amp;entry : *constricting)</a>
+<a name="ln606">    {</a>
+<a name="ln607">        const actor * const constrictee = actor_by_mid(entry.first, true);</a>
+<a name="ln608">        if (_invalid_constricting_map_entry(constrictee)</a>
+<a name="ln609">            || constrictee-&gt;has_invalid_constrictor())</a>
+<a name="ln610">        {</a>
+<a name="ln611">            need_cleared.push_back(entry.first);</a>
+<a name="ln612">        }</a>
+<a name="ln613">    }</a>
+<a name="ln614"> </a>
+<a name="ln615">    for (auto whom : need_cleared)</a>
+<a name="ln616">        stop_constricting(whom, false, false);</a>
+<a name="ln617">}</a>
+<a name="ln618"> </a>
+<a name="ln619">void actor::start_constricting(actor &amp;whom, int dur)</a>
+<a name="ln620">{</a>
+<a name="ln621">    if (!constricting)</a>
+<a name="ln622">        constricting = new constricting_t();</a>
+<a name="ln623"> </a>
+<a name="ln624">    ASSERT(constricting-&gt;find(whom.mid) == constricting-&gt;end());</a>
+<a name="ln625"> </a>
+<a name="ln626">    (*constricting)[whom.mid] = dur;</a>
+<a name="ln627">    whom.constricted_by = mid;</a>
+<a name="ln628"> </a>
+<a name="ln629">    if (whom.is_player())</a>
+<a name="ln630">        you.redraw_evasion = true;</a>
+<a name="ln631">}</a>
+<a name="ln632"> </a>
+<a name="ln633">int actor::num_constricting() const</a>
+<a name="ln634">{</a>
+<a name="ln635">    return constricting ? constricting-&gt;size() : 0;</a>
+<a name="ln636">}</a>
+<a name="ln637"> </a>
+<a name="ln638">bool actor::is_constricting() const</a>
+<a name="ln639">{</a>
+<a name="ln640">    return constricting &amp;&amp; !constricting-&gt;empty();</a>
+<a name="ln641">}</a>
+<a name="ln642"> </a>
+<a name="ln643">bool actor::is_constricted() const</a>
+<a name="ln644">{</a>
+<a name="ln645">    return constricted_by;</a>
+<a name="ln646">}</a>
+<a name="ln647"> </a>
+<a name="ln648">bool actor::is_directly_constricted() const</a>
+<a name="ln649">{</a>
+<a name="ln650">    return is_constricted()</a>
+<a name="ln651">        &amp;&amp; (is_player() &amp;&amp; !you.duration[DUR_GRASPING_ROOTS]</a>
+<a name="ln652">            || is_monster()</a>
+<a name="ln653">               &amp;&amp; !as_monster()-&gt;has_ench(ENCH_VILE_CLUTCH)</a>
+<a name="ln654">               &amp;&amp; !as_monster()-&gt;has_ench(ENCH_GRASPING_ROOTS));</a>
+<a name="ln655">}</a>
+<a name="ln656"> </a>
+<a name="ln657">void actor::accum_has_constricted()</a>
+<a name="ln658">{</a>
+<a name="ln659">    if (!constricting)</a>
+<a name="ln660">        return;</a>
+<a name="ln661"> </a>
+<a name="ln662">    for (auto &amp;entry : *constricting)</a>
+<a name="ln663">        entry.second += you.time_taken;</a>
+<a name="ln664">}</a>
+<a name="ln665"> </a>
+<a name="ln666">bool actor::can_constrict(const actor* defender, bool direct) const</a>
+<a name="ln667">{</a>
+<a name="ln668">    ASSERT(defender); // XXX: change to actor &amp;defender</a>
+<a name="ln669"> </a>
+<a name="ln670">    if (direct)</a>
+<a name="ln671">    {</a>
+<a name="ln672">        return (!is_constricting() || has_usable_tentacle())</a>
+<a name="ln673">               &amp;&amp; !defender-&gt;is_constricted()</a>
+<a name="ln674">               &amp;&amp; can_see(*defender)</a>
+<a name="ln675">               &amp;&amp; !confused()</a>
+<a name="ln676">               &amp;&amp; body_size(PSIZE_BODY) &gt;= defender-&gt;body_size(PSIZE_BODY)</a>
+<a name="ln677">               &amp;&amp; defender-&gt;res_constrict() &lt; 3</a>
+<a name="ln678">               &amp;&amp; adjacent(pos(), defender-&gt;pos());</a>
+<a name="ln679">    }</a>
+<a name="ln680"> </a>
+<a name="ln681">    return can_see(*defender)</a>
+<a name="ln682">        &amp;&amp; !defender-&gt;is_constricted()</a>
+<a name="ln683">        &amp;&amp; defender-&gt;res_constrict() &lt; 3</a>
+<a name="ln684">        // All current indrect forms of constriction require reachable ground.</a>
+<a name="ln685">        &amp;&amp; feat_has_solid_floor(grd(defender-&gt;pos()));</a>
+<a name="ln686">}</a>
+<a name="ln687"> </a>
+<a name="ln688">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln689"># define DIAG_ONLY(x) x</a>
+<a name="ln690">#else</a>
+<a name="ln691"># define DIAG_ONLY(x) (void)0</a>
+<a name="ln692">#endif</a>
+<a name="ln693"> </a>
+<a name="ln694">/*</a>
+<a name="ln695"> * Damage the defender with constriction damage. Longer duration gives more</a>
+<a name="ln696"> * damage, but with a 50 aut step-down. Direct constriction uses strength-based</a>
+<a name="ln697"> * base damage that is modified by XL, whereas indirect, spell-based</a>
+<a name="ln698"> * constriction uses spellpower.</a>
+<a name="ln699"> *</a>
+<a name="ln700"> * @param defender The defender being constricted.</a>
+<a name="ln701"> * @param duration How long the defender has been constricted in AUT.</a>
+<a name="ln702"> */</a>
+<a name="ln703">void actor::constriction_damage_defender(actor &amp;defender, int duration)</a>
+<a name="ln704">{</a>
+<a name="ln705">    const bool direct = defender.is_directly_constricted();</a>
+<a name="ln706">    const bool vile_clutch = !direct &amp;&amp; defender.as_monster()</a>
+<a name="ln707">        &amp;&amp; defender.as_monster()-&gt;has_ench(ENCH_VILE_CLUTCH);</a>
+<a name="ln708">    int damage = constriction_damage(direct);</a>
+<a name="ln709"> </a>
+<a name="ln710">    DIAG_ONLY(const int basedam = damage);</a>
+<a name="ln711">    damage += div_rand_round(damage * stepdown((float)duration, 50.0),</a>
+<a name="ln712">                             BASELINE_DELAY * 5);</a>
+<a name="ln713">    if (is_player() &amp;&amp; direct)</a>
+<a name="ln714">        damage = div_rand_round(damage * (27 + 2 * you.experience_level), 81);</a>
+<a name="ln715"> </a>
+<a name="ln716">    DIAG_ONLY(const int durdam = damage);</a>
+<a name="ln717">    damage -= random2(1 + (defender.armour_class() / 2));</a>
+<a name="ln718">    DIAG_ONLY(const int acdam = damage);</a>
+<a name="ln719">    damage = timescale_damage(this, damage);</a>
+<a name="ln720">    DIAG_ONLY(const int timescale_dam = damage);</a>
+<a name="ln721"> </a>
+<a name="ln722">    damage = defender.hurt(this, damage, BEAM_MISSILE, KILLED_BY_MONSTER, &quot;&quot;,</a>
+<a name="ln723">                           &quot;&quot;, false);</a>
+<a name="ln724">    DIAG_ONLY(const int infdam = damage);</a>
+<a name="ln725"> </a>
+<a name="ln726">    string exclamations;</a>
+<a name="ln727">    if (damage &lt;= 0 &amp;&amp; is_player()</a>
+<a name="ln728">        &amp;&amp; you.can_see(defender))</a>
+<a name="ln729">    {</a>
+<a name="ln730">        exclamations = &quot;, but do no damage.&quot;;</a>
+<a name="ln731">    }</a>
+<a name="ln732">    else</a>
+<a name="ln733">        exclamations = attack_strength_punctuation(damage);</a>
+<a name="ln734"> </a>
+<a name="ln735">    if (is_player() || you.can_see(*this))</a>
+<a name="ln736">    {</a>
+<a name="ln737">        string attacker_desc;</a>
+<a name="ln738">        bool force_plural = false;</a>
+<a name="ln739">        if (vile_clutch)</a>
+<a name="ln740">        {</a>
+<a name="ln741">            attacker_desc = &quot;The zombie hands&quot;;</a>
+<a name="ln742">            force_plural = true;</a>
+<a name="ln743">        }</a>
+<a name="ln744">        else if (!direct)</a>
+<a name="ln745">        {</a>
+<a name="ln746">            attacker_desc = &quot;The grasping roots&quot;;</a>
+<a name="ln747">            force_plural = true;</a>
+<a name="ln748">        }</a>
+<a name="ln749">        else if (is_player())</a>
+<a name="ln750">            attacker_desc = &quot;You&quot;;</a>
+<a name="ln751">        else</a>
+<a name="ln752">            attacker_desc = name(DESC_THE);</a>
+<a name="ln753"> </a>
+<a name="ln754">        mprf(&quot;%s %s %s%s%s&quot;, attacker_desc.c_str(),</a>
+<a name="ln755">             force_plural ? &quot;constrict&quot;</a>
+<a name="ln756">                          : conj_verb(&quot;constrict&quot;).c_str(),</a>
+<a name="ln757">             defender.name(DESC_THE).c_str(),</a>
+<a name="ln758">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln759">             make_stringf(&quot; for %d&quot;, damage).c_str(),</a>
+<a name="ln760">#else</a>
+<a name="ln761">             &quot;&quot;,</a>
+<a name="ln762">#endif</a>
+<a name="ln763">             exclamations.c_str());</a>
+<a name="ln764">    }</a>
+<a name="ln765">    else if (you.can_see(defender) || defender.is_player())</a>
+<a name="ln766">    {</a>
+<a name="ln767">        mprf(&quot;%s %s constricted%s%s&quot;,</a>
+<a name="ln768">             defender.name(DESC_THE).c_str(),</a>
+<a name="ln769">             defender.conj_verb(&quot;are&quot;).c_str(),</a>
+<a name="ln770">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln771">             make_stringf(&quot; for %d&quot;, damage).c_str(),</a>
+<a name="ln772">#else</a>
+<a name="ln773">             &quot;&quot;,</a>
+<a name="ln774">#endif</a>
+<a name="ln775">             exclamations.c_str());</a>
+<a name="ln776">    }</a>
+<a name="ln777"> </a>
+<a name="ln778">    dprf(&quot;constrict at: %s df: %s base %d dur %d ac %d tsc %d inf %d&quot;,</a>
+<a name="ln779">         name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln780">         defender.name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln781">         basedam, durdam, acdam, timescale_dam, infdam);</a>
+<a name="ln782"> </a>
+<a name="ln783">    if (defender.is_monster() &amp;&amp; defender.as_monster()-&gt;hit_points &lt; 1)</a>
+<a name="ln784">        monster_die(*defender.as_monster(), this);</a>
+<a name="ln785">}</a>
+<a name="ln786"> </a>
+<a name="ln787">// Deal damage over time</a>
+<a name="ln788">void actor::handle_constriction()</a>
+<a name="ln789">{</a>
+<a name="ln790">    if (is_sanctuary(pos()))</a>
+<a name="ln791">        stop_constricting_all(true);</a>
+<a name="ln792"> </a>
+<a name="ln793">    // Constriction should have stopped the moment the actors became</a>
+<a name="ln794">    // non-adjacent; but disabling constriction by hand in every single place</a>
+<a name="ln795">    // is too error-prone.</a>
+<a name="ln796">    clear_invalid_constrictions();</a>
+<a name="ln797"> </a>
+<a name="ln798">    if (!constricting)</a>
+<a name="ln799">        return;</a>
+<a name="ln800"> </a>
+<a name="ln801">    // need to make a copy, since constriction_damage_defender can</a>
+<a name="ln802">    // unpredictably invalidate constricting</a>
+<a name="ln803">    constricting_t tmp_constricting = *constricting;</a>
+<a name="ln804">    for (auto &amp;i : tmp_constricting)</a>
+<a name="ln805">    {</a>
+<a name="ln806">        actor* const defender = actor_by_mid(i.first);</a>
+<a name="ln807">        const int duration = i.second;</a>
+<a name="ln808">        if (defender &amp;&amp; defender-&gt;alive())</a>
+<a name="ln809">            constriction_damage_defender(*defender, duration);</a>
+<a name="ln810">    }</a>
+<a name="ln811"> </a>
+<a name="ln812">    clear_invalid_constrictions();</a>
+<a name="ln813">}</a>
+<a name="ln814"> </a>
+<a name="ln815">string actor::describe_props() const</a>
+<a name="ln816">{</a>
+<a name="ln817">    ostringstream oss;</a>
+<a name="ln818"> </a>
+<a name="ln819">    if (props.size() == 0)</a>
+<a name="ln820">        return &quot;&quot;;</a>
+<a name="ln821"> </a>
+<a name="ln822">    for (auto i = props.begin(); i != props.end(); ++i)</a>
+<a name="ln823">    {</a>
+<a name="ln824">        if (i != props.begin())</a>
+<a name="ln825">            oss &lt;&lt;  &quot;, &quot;;</a>
+<a name="ln826">        oss &lt;&lt; string(i-&gt;first) &lt;&lt; &quot;: &quot;;</a>
+<a name="ln827"> </a>
+<a name="ln828">        CrawlStoreValue val = i-&gt;second;</a>
+<a name="ln829"> </a>
+<a name="ln830">        switch (val.get_type())</a>
+<a name="ln831">        {</a>
+<a name="ln832">            case SV_BOOL:</a>
+<a name="ln833">                oss &lt;&lt; val.get_bool();</a>
+<a name="ln834">                break;</a>
+<a name="ln835">            case SV_BYTE:</a>
+<a name="ln836">                oss &lt;&lt; val.get_byte();</a>
+<a name="ln837">                break;</a>
+<a name="ln838">            case SV_SHORT:</a>
+<a name="ln839">                oss &lt;&lt; val.get_short();</a>
+<a name="ln840">                break;</a>
+<a name="ln841">            case SV_INT:</a>
+<a name="ln842">                oss &lt;&lt; val.get_int();</a>
+<a name="ln843">                break;</a>
+<a name="ln844">            case SV_FLOAT:</a>
+<a name="ln845">                oss &lt;&lt; val.get_float();</a>
+<a name="ln846">                break;</a>
+<a name="ln847">            case SV_STR:</a>
+<a name="ln848">                oss &lt;&lt; val.get_string();</a>
+<a name="ln849">                break;</a>
+<a name="ln850">            case SV_COORD:</a>
+<a name="ln851">            {</a>
+<a name="ln852">                coord_def coord = val.get_coord();</a>
+<a name="ln853">                oss &lt;&lt; &quot;(&quot; &lt;&lt; coord.x &lt;&lt; &quot;, &quot; &lt;&lt; coord.y &lt;&lt; &quot;)&quot;;</a>
+<a name="ln854">                break;</a>
+<a name="ln855">            }</a>
+<a name="ln856">            case SV_MONST:</a>
+<a name="ln857">            {</a>
+<a name="ln858">                monster mon = val.get_monster();</a>
+<a name="ln859">                oss &lt;&lt; mon.name(DESC_PLAIN) &lt;&lt; &quot;(&quot; &lt;&lt; mon.mid &lt;&lt; &quot;)&quot;;</a>
+<a name="ln860">                break;</a>
+<a name="ln861">            }</a>
+<a name="ln862">            case SV_INT64:</a>
+<a name="ln863">                oss &lt;&lt; val.get_int64();</a>
+<a name="ln864">                break;</a>
+<a name="ln865"> </a>
+<a name="ln866">            default:</a>
+<a name="ln867">                oss &lt;&lt; &quot;???&quot;;</a>
+<a name="ln868">                break;</a>
+<a name="ln869">        }</a>
+<a name="ln870">    }</a>
+<a name="ln871">    return oss.str();</a>
+<a name="ln872">}</a>
+<a name="ln873"> </a>
+<a name="ln874">/**</a>
+<a name="ln875"> * Is the actor currently being slowed by a torpor snail?</a>
+<a name="ln876"> */</a>
+<a name="ln877">bool actor::torpor_slowed() const</a>
+<a name="ln878">{</a>
+<a name="ln879">    if (!props.exists(TORPOR_SLOWED_KEY) || is_sanctuary(pos())</a>
+<a name="ln880">        || is_stationary()</a>
+<a name="ln881">        || stasis())</a>
+<a name="ln882">    {</a>
+<a name="ln883">        return false;</a>
+<a name="ln884">    }</a>
+<a name="ln885"> </a>
+<a name="ln886">    for (monster_near_iterator ri(pos(), LOS_SOLID_SEE); ri; ++ri)</a>
+<a name="ln887">    {</a>
+<a name="ln888">        const monster *mons = *ri;</a>
+<a name="ln889">        if (mons &amp;&amp; mons-&gt;type == MONS_TORPOR_SNAIL</a>
+<a name="ln890">            &amp;&amp; !is_sanctuary(mons-&gt;pos())</a>
+<a name="ln891">            &amp;&amp; !mons_aligned(mons, this))</a>
+<a name="ln892">        {</a>
+<a name="ln893">            return true;</a>
+<a name="ln894">        }</a>
+<a name="ln895">    }</a>
+<a name="ln896"> </a>
+<a name="ln897">    return false;</a>
+<a name="ln898">}</a>
+<a name="ln899"> </a>
+<a name="ln900">string actor::resist_margin_phrase(int margin) const</a>
+<a name="ln901">{</a>
+<a name="ln902">    if (res_magic() == MAG_IMMUNE)</a>
+<a name="ln903">        return &quot; &quot; + conj_verb(&quot;are&quot;) + &quot; unaffected.&quot;;</a>
+<a name="ln904"> </a>
+<a name="ln905">    static const string resist_messages[][2] =</a>
+<a name="ln906">    {</a>
+<a name="ln907">      { &quot; barely %s.&quot;,                  &quot;resist&quot; },</a>
+<a name="ln908">      { &quot; %s to resist.&quot;,               &quot;struggle&quot; },</a>
+<a name="ln909">      { &quot; %s with significant effort.&quot;, &quot;resist&quot; },</a>
+<a name="ln910">      { &quot; %s with some effort.&quot;,        &quot;resist&quot; },</a>
+<a name="ln911">      { &quot; easily %s.&quot;,                  &quot;resist&quot; },</a>
+<a name="ln912">      { &quot; %s with almost no effort.&quot;,   &quot;resist&quot; },</a>
+<a name="ln913">    };</a>
+<a name="ln914"> </a>
+<a name="ln915">    const int index = max(0, min((int)ARRAYSZ(resist_messages) - 1,</a>
+<a name="ln916">                                 ((margin + 45) / 15)));</a>
+<a name="ln917"> </a>
+<a name="ln918">    return make_stringf(resist_messages[index][0].c_str(),</a>
+<a name="ln919">                        conj_verb(resist_messages[index][1]).c_str());</a>
+<a name="ln920">}</a>
+<a name="ln921"> </a>
+<a name="ln922">void actor::collide(coord_def newpos, const actor *agent, int pow)</a>
+<a name="ln923">{</a>
+<a name="ln924">    actor *other = actor_at(newpos);</a>
+<a name="ln925">    const bool fedhas_prot = agent &amp;&amp; agent-&gt;deity() == GOD_FEDHAS</a>
+<a name="ln926">                             &amp;&amp; is_monster() &amp;&amp; fedhas_protects(as_monster());</a>
+<a name="ln927">    const bool fedhas_prot_other = agent &amp;&amp; agent-&gt;deity() == GOD_FEDHAS</a>
+<a name="ln928">                                   &amp;&amp; other &amp;&amp; other-&gt;is_monster()</a>
+<a name="ln929">                                   &amp;&amp; fedhas_protects(other-&gt;as_monster());</a>
+<a name="ln930">    ASSERT(this != other);</a>
+<a name="ln931">    ASSERT(alive());</a>
+<a name="ln932"> </a>
+<a name="ln933">    if (is_insubstantial()</a>
+<a name="ln934">        || mons_is_projectile(type)</a>
+<a name="ln935">        || other &amp;&amp; mons_is_projectile(other-&gt;type))</a>
+<a name="ln936">    {</a>
+<a name="ln937">        return;</a>
+<a name="ln938">    }</a>
+<a name="ln939"> </a>
+<a name="ln940">    if (is_monster() &amp;&amp; !fedhas_prot)</a>
+<a name="ln941">        behaviour_event(as_monster(), ME_WHACK, agent);</a>
+<a name="ln942"> </a>
+<a name="ln943">    dice_def damage(2, 1 + pow / 10);</a>
+<a name="ln944"> </a>
+<a name="ln945">    if (other &amp;&amp; other-&gt;alive())</a>
+<a name="ln946">    {</a>
+<a name="ln947">        if (you.can_see(*this) || you.can_see(*other))</a>
+<a name="ln948">        {</a>
+<a name="ln949">            mprf(&quot;%s %s with %s!&quot;,</a>
+<a name="ln950">                 name(DESC_THE).c_str(),</a>
+<a name="ln951">                 conj_verb(&quot;collide&quot;).c_str(),</a>
+<a name="ln952">                 other-&gt;name(DESC_THE).c_str());</a>
+<a name="ln953">            if (fedhas_prot || fedhas_prot_other)</a>
+<a name="ln954">            {</a>
+<a name="ln955">                const bool both = fedhas_prot &amp;&amp; fedhas_prot_other;</a>
+<a name="ln956">                simple_god_message(</a>
+<a name="ln957">                    make_stringf(&quot; protects %s plant%s from harm.&quot;,</a>
+<a name="ln958">                        agent-&gt;is_player() ? &quot;your&quot; :</a>
+<a name="ln959">                        both ? &quot;some&quot; : &quot;a&quot;,</a>
+<a name="ln960">                        both ? &quot;s&quot; : &quot;&quot;).c_str(), GOD_FEDHAS);</a>
+<a name="ln961">            }</a>
+<a name="ln962">        }</a>
+<a name="ln963"> </a>
+<a name="ln964">        if (other-&gt;is_monster() &amp;&amp; !fedhas_prot_other)</a>
+<a name="ln965">            behaviour_event(other-&gt;as_monster(), ME_WHACK, agent);</a>
+<a name="ln966"> </a>
+<a name="ln967">        const string thisname = name(DESC_A, true);</a>
+<a name="ln968">        const string othername = other-&gt;name(DESC_A, true);</a>
+<a name="ln969">        if (other-&gt;alive() &amp;&amp; !fedhas_prot_other)</a>
+<a name="ln970">        {</a>
+<a name="ln971">            other-&gt;hurt(agent, other-&gt;apply_ac(damage.roll()),</a>
+<a name="ln972">                        BEAM_MISSILE, KILLED_BY_COLLISION,</a>
+<a name="ln973">                        othername, thisname);</a>
+<a name="ln974">        }</a>
+<a name="ln975">        if (alive() &amp;&amp; !fedhas_prot)</a>
+<a name="ln976">        {</a>
+<a name="ln977">            hurt(agent, apply_ac(damage.roll()), BEAM_MISSILE,</a>
+<a name="ln978">                 KILLED_BY_COLLISION, thisname, othername);</a>
+<a name="ln979">        }</a>
+<a name="ln980">        return;</a>
+<a name="ln981">    }</a>
+<a name="ln982"> </a>
+<a name="ln983">    if (you.can_see(*this))</a>
+<a name="ln984">    {</a>
+<a name="ln985">        if (!can_pass_through_feat(grd(newpos)))</a>
+<a name="ln986">        {</a>
+<a name="ln987">            mprf(&quot;%s %s into %s!&quot;,</a>
+<a name="ln988">                 name(DESC_THE).c_str(), conj_verb(&quot;slam&quot;).c_str(),</a>
+<a name="ln989">                 env.map_knowledge(newpos).known()</a>
+<a name="ln990">                 ? feature_description_at(newpos, false, DESC_THE)</a>
+<a name="ln991">                       .c_str()</a>
+<a name="ln992">                 : &quot;something&quot;);</a>
+<a name="ln993">        }</a>
+<a name="ln994">        else</a>
+<a name="ln995">        {</a>
+<a name="ln996">            mprf(&quot;%s violently %s moving!&quot;,</a>
+<a name="ln997">                 name(DESC_THE).c_str(), conj_verb(&quot;stop&quot;).c_str());</a>
+<a name="ln998">        }</a>
+<a name="ln999"> </a>
+<a name="ln1000">        if (fedhas_prot)</a>
+<a name="ln1001">        {</a>
+<a name="ln1002">            simple_god_message(</a>
+<a name="ln1003">                make_stringf(&quot; protects %s plant from harm.&quot;,</a>
+<a name="ln1004">                    agent-&gt;is_player() ? &quot;your&quot; : &quot;a&quot;).c_str(), GOD_FEDHAS);</a>
+<a name="ln1005">        }</a>
+<a name="ln1006">    }</a>
+<a name="ln1007"> </a>
+<a name="ln1008">    if (!fedhas_prot)</a>
+<a name="ln1009">    {</a>
+<a name="ln1010">        hurt(agent, apply_ac(damage.roll()), BEAM_MISSILE,</a>
+<a name="ln1011">             KILLED_BY_COLLISION, &quot;&quot;, feature_description_at(newpos));</a>
+<a name="ln1012">    }</a>
+<a name="ln1013">}</a>
+<a name="ln1014"> </a>
+<a name="ln1015">/// Is this creature despised by the so-called 'good gods'?</a>
+<a name="ln1016">bool actor::evil() const</a>
+<a name="ln1017">{</a>
+<a name="ln1018">    return bool(holiness() &amp; (MH_UNDEAD | MH_DEMONIC | MH_EVIL));</a>
+<a name="ln1019">}</a>
+<a name="ln1020"> </a>
+<a name="ln1021">/**</a>
+<a name="ln1022"> * Ensures that `act` is valid if possible. If this isn't possible,</a>
+<a name="ln1023"> * return nullptr. This will convert YOU_FAULTLESS into `you`.</a>
+<a name="ln1024"> *</a>
+<a name="ln1025"> * @param act the actor to validate.</a>
+<a name="ln1026"> *</a>
+<a name="ln1027"> * @return an actor that is either the player or passes `!invalid_monster`, or</a>
+<a name="ln1028"> *         otherwise `nullptr`.</a>
+<a name="ln1029"> */</a>
+<a name="ln1030">/* static */ const actor *actor::ensure_valid_actor(const actor *act)</a>
+<a name="ln1031">{</a>
+<a name="ln1032">    if (!act)</a>
+<a name="ln1033">        return nullptr;</a>
+<a name="ln1034">    if (act-&gt;is_player())</a>
+<a name="ln1035">        return act;</a>
+<a name="ln1036">    const monster *mon = act-&gt;as_monster();</a>
+<a name="ln1037">    if (mon-&gt;mid == MID_YOU_FAULTLESS)</a>
+<a name="ln1038">        return &amp;you;</a>
+<a name="ln1039">    if (invalid_monster(mon))</a>
+<a name="ln1040">        return nullptr;</a>
+<a name="ln1041">    return mon;</a>
+<a name="ln1042">}</a>
+<a name="ln1043"> </a>
+<a name="ln1044">/// @copydoc actor::ensure_valid_actor(const actor *act)</a>
+<a name="ln1045">/* static */ actor *actor::ensure_valid_actor(actor *act)</a>
+<a name="ln1046">{</a>
+<a name="ln1047">    // Defer to the other function. Since it returns only act, nullptr, or you,</a>
+<a name="ln1048">    // none of which points to a const object, the const_cast here is safe.</a>
+<a name="ln1049">    return const_cast&lt;actor *&gt;(ensure_valid_actor(static_cast&lt;const actor *&gt;(act)));</a>
+<a name="ln1050">}</a>
+
+</code></pre>
+<div class="balloon" rel="390"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="587"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

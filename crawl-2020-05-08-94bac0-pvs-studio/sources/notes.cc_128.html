@@ -1,0 +1,566 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>notes.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Notetaking stuff</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;notes.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;iomanip&gt;</a>
+<a name="ln11">#include &lt;sstream&gt;</a>
+<a name="ln12">#include &lt;vector&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;branch.h&quot;</a>
+<a name="ln15">#include &quot;english.h&quot;</a>
+<a name="ln16">#include &quot;hiscores.h&quot;</a>
+<a name="ln17">#include &quot;message.h&quot;</a>
+<a name="ln18">#include &quot;mutation.h&quot;</a>
+<a name="ln19">#include &quot;options.h&quot;</a>
+<a name="ln20">#include &quot;religion.h&quot;</a>
+<a name="ln21">#include &quot;skills.h&quot;</a>
+<a name="ln22">#include &quot;spl-util.h&quot;</a>
+<a name="ln23">#include &quot;state.h&quot;</a>
+<a name="ln24">#include &quot;stringutil.h&quot;</a>
+<a name="ln25">#include &quot;unicode.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">#define NOTES_VERSION_NUMBER 1002</a>
+<a name="ln28"> </a>
+<a name="ln29">vector&lt;Note&gt; note_list;</a>
+<a name="ln30"> </a>
+<a name="ln31">static bool _is_highest_skill(int skill)</a>
+<a name="ln32">{</a>
+<a name="ln33">    for (int i = 0; i &lt; NUM_SKILLS; ++i)</a>
+<a name="ln34">    {</a>
+<a name="ln35">        if (i == skill)</a>
+<a name="ln36">            continue;</a>
+<a name="ln37">        if (you.skills[i] &gt;= you.skills[skill])</a>
+<a name="ln38">            return false;</a>
+<a name="ln39">    }</a>
+<a name="ln40">    return true;</a>
+<a name="ln41">}</a>
+<a name="ln42"> </a>
+<a name="ln43">static bool _is_noteworthy_hp(int hp, int maxhp)</a>
+<a name="ln44">{</a>
+<a name="ln45">    return hp &gt; 0 &amp;&amp; Options.note_hp_percent</a>
+<a name="ln46">           &amp;&amp; hp &lt;= (maxhp * Options.note_hp_percent) / 100;</a>
+<a name="ln47">}</a>
+<a name="ln48"> </a>
+<a name="ln49">static int _dungeon_branch_depth(uint8_t branch)</a>
+<a name="ln50">{</a>
+<a name="ln51">    if (branch &gt;= NUM_BRANCHES)</a>
+<a name="ln52">        return -1;</a>
+<a name="ln53">    return brdepth[branch];</a>
+<a name="ln54">}</a>
+<a name="ln55"> </a>
+<a name="ln56">static bool _is_noteworthy_dlevel(level_id place)</a>
+<a name="ln57">{</a>
+<a name="ln58">    branch_type branch = place.branch;</a>
+<a name="ln59">    int lev = place.depth;</a>
+<a name="ln60"> </a>
+<a name="ln61">    // Entering the Abyss is noted a different way, since we care mostly about</a>
+<a name="ln62">    // the cause.</a>
+<a name="ln63">    if (branch == BRANCH_ABYSS)</a>
+<a name="ln64">        return lev == _dungeon_branch_depth(branch);</a>
+<a name="ln65"> </a>
+<a name="ln66">    // These get their note in the .des files.</a>
+<a name="ln67">    if (branch == BRANCH_WIZLAB)</a>
+<a name="ln68">        return false;</a>
+<a name="ln69"> </a>
+<a name="ln70">    // Other portal levels are always interesting.</a>
+<a name="ln71">    if (!is_connected_branch(branch))</a>
+<a name="ln72">        return true;</a>
+<a name="ln73"> </a>
+<a name="ln74">    return lev == _dungeon_branch_depth(branch)</a>
+<a name="ln75">           || branch == BRANCH_DUNGEON &amp;&amp; (lev % 5) == 0</a>
+<a name="ln76">           || branch != BRANCH_DUNGEON &amp;&amp; lev == 1;</a>
+<a name="ln77">}</a>
+<a name="ln78"> </a>
+<a name="ln79">// Is a note worth taking?</a>
+<a name="ln80">// This function assumes that game state has not changed since</a>
+<a name="ln81">// the note was taken, e.g. you.* is valid.</a>
+<a name="ln82">static bool _is_noteworthy(const Note&amp; note)</a>
+<a name="ln83">{</a>
+<a name="ln84">    // Always noteworthy.</a>
+<a name="ln85">    if (note.type == NOTE_XP_LEVEL_CHANGE</a>
+<a name="ln86">        || note.type == NOTE_LEARN_SPELL</a>
+<a name="ln87">        || note.type == NOTE_GET_GOD</a>
+<a name="ln88">        || note.type == NOTE_GOD_GIFT</a>
+<a name="ln89">        || note.type == NOTE_GET_MUTATION</a>
+<a name="ln90">        || note.type == NOTE_LOSE_MUTATION</a>
+<a name="ln91">        || note.type == NOTE_PERM_MUTATION</a>
+<a name="ln92">        || note.type == NOTE_GET_ITEM</a>
+<a name="ln93">        || note.type == NOTE_ID_ITEM</a>
+<a name="ln94">        || note.type == NOTE_BUY_ITEM</a>
+<a name="ln95">        || note.type == NOTE_DONATE_MONEY</a>
+<a name="ln96">        || note.type == NOTE_SEEN_MONSTER</a>
+<a name="ln97">        || note.type == NOTE_DEFEAT_MONSTER</a>
+<a name="ln98">        || note.type == NOTE_POLY_MONSTER</a>
+<a name="ln99">        || note.type == NOTE_USER_NOTE</a>
+<a name="ln100">        || note.type == NOTE_MESSAGE</a>
+<a name="ln101">        || note.type == NOTE_LOSE_GOD</a>
+<a name="ln102">        || note.type == NOTE_PENANCE</a>
+<a name="ln103">        || note.type == NOTE_MOLLIFY_GOD</a>
+<a name="ln104">        || note.type == NOTE_DEATH</a>
+<a name="ln105">        || note.type == NOTE_XOM_REVIVAL</a>
+<a name="ln106">        || note.type == NOTE_SEEN_FEAT</a>
+<a name="ln107">        || note.type == NOTE_PARALYSIS</a>
+<a name="ln108">        || note.type == NOTE_NAMED_ALLY</a>
+<a name="ln109">        || note.type == NOTE_ALLY_DEATH</a>
+<a name="ln110">        || note.type == NOTE_FEAT_MIMIC</a>
+<a name="ln111">        || note.type == NOTE_OFFERED_SPELL</a>
+<a name="ln112">        || note.type == NOTE_ANCESTOR_TYPE</a>
+<a name="ln113">        || note.type == NOTE_FOUND_UNRAND)</a>
+<a name="ln114">    {</a>
+<a name="ln115">        return true;</a>
+<a name="ln116">    }</a>
+<a name="ln117"> </a>
+<a name="ln118">    // Never noteworthy, hooked up for fun or future use.</a>
+<a name="ln119">    if (note.type == NOTE_MP_CHANGE</a>
+<a name="ln120">        || note.type == NOTE_MAXHP_CHANGE</a>
+<a name="ln121">        || note.type == NOTE_MAXMP_CHANGE)</a>
+<a name="ln122">    {</a>
+<a name="ln123">        return false;</a>
+<a name="ln124">    }</a>
+<a name="ln125"> </a>
+<a name="ln126">    // Xom effects are only noteworthy if the option is true.</a>
+<a name="ln127">    if (note.type == NOTE_XOM_EFFECT)</a>
+<a name="ln128">        return Options.note_xom_effects;</a>
+<a name="ln129"> </a>
+<a name="ln130">    // HP noteworthiness is handled in its own function.</a>
+<a name="ln131">    if (note.type == NOTE_HP_CHANGE</a>
+<a name="ln132">        &amp;&amp; !_is_noteworthy_hp(note.first, note.second))</a>
+<a name="ln133">    {</a>
+<a name="ln134">        return false;</a>
+<a name="ln135">    }</a>
+<a name="ln136"> </a>
+<a name="ln137">    // Skills are always noteworthy in order to construct the skill_gains table</a>
+<a name="ln138">    // in the chardump. The options to control display are used in</a>
+<a name="ln139">    // Note::hidden().</a>
+<a name="ln140">    if (note.type == NOTE_GAIN_SKILL || note.type == NOTE_LOSE_SKILL)</a>
+<a name="ln141">        return true;</a>
+<a name="ln142"> </a>
+<a name="ln143">    if (note.type == NOTE_DUNGEON_LEVEL_CHANGE)</a>
+<a name="ln144">        return _is_noteworthy_dlevel(note.place);</a>
+<a name="ln145"> </a>
+<a name="ln146">    for (const Note &amp;oldnote : note_list)</a>
+<a name="ln147">    {</a>
+<a name="ln148">        if (oldnote.type != note.type)</a>
+<a name="ln149">            continue;</a>
+<a name="ln150"> </a>
+<a name="ln151">        const Note&amp; rnote(oldnote);</a>
+<a name="ln152">        switch (note.type)</a>
+<a name="ln153">        {</a>
+<a name="ln154">        case NOTE_PIETY_RANK:</a>
+<a name="ln155">            if (rnote.first == note.first &amp;&amp; rnote.second == note.second)</a>
+<a name="ln156">                return false;</a>
+<a name="ln157">            break;</a>
+<a name="ln158"> </a>
+<a name="ln159">        case NOTE_HP_CHANGE:</a>
+<a name="ln160">            // Not if we have a recent warning</a>
+<a name="ln161">            // unless we've lost half our HP since then.</a>
+<a name="ln162">            if (note.turn - rnote.turn &lt; 5</a>
+<a name="ln163">                &amp;&amp; note.first * 2 &gt;= rnote.first)</a>
+<a name="ln164">            {</a>
+<a name="ln165">                return false;</a>
+<a name="ln166">            }</a>
+<a name="ln167">            break;</a>
+<a name="ln168"> </a>
+<a name="ln169">        default:</a>
+<a name="ln170">            mpr(&quot;Buggy note passed: unknown note type&quot;);</a>
+<a name="ln171">            // Return now, rather than give a &quot;Buggy note passed&quot; message</a>
+<a name="ln172">            // for each note of the matching type in the note list.</a>
+<a name="ln173">            return true;</a>
+<a name="ln174">        }</a>
+<a name="ln175">    }</a>
+<a name="ln176">    return true;</a>
+<a name="ln177">}</a>
+<a name="ln178"> </a>
+<a name="ln179">string Note::describe(bool when, bool where, bool what) const</a>
+<a name="ln180">{</a>
+<a name="ln181">    ostringstream result;</a>
+<a name="ln182"> </a>
+<a name="ln183">    if (when)</a>
+<a name="ln184">        result &lt;&lt; setw(6) &lt;&lt; turn &lt;&lt; &quot; &quot;;</a>
+<a name="ln185"> </a>
+<a name="ln186">    if (where)</a>
+<a name="ln187">    {</a>
+<a name="ln188">        result &lt;&lt; &quot;| &quot;</a>
+<a name="ln189">               &lt;&lt; chop_string(place.describe(), MAX_NOTE_PLACE_LEN)</a>
+<a name="ln190">               &lt;&lt; &quot; | &quot;;</a>
+<a name="ln191">    }</a>
+<a name="ln192"> </a>
+<a name="ln193">    if (what)</a>
+<a name="ln194">    {</a>
+<a name="ln195">        switch (type)</a>
+<a name="ln196">        {</a>
+<a name="ln197">        case NOTE_HP_CHANGE:</a>
+<a name="ln198">            // [ds] Shortened HP change note from &quot;Had X hitpoints&quot; to</a>
+<a name="ln199">            // accommodate the cause for the loss of hitpoints.</a>
+<a name="ln200">            result &lt;&lt; &quot;HP: &quot; &lt;&lt; first &lt;&lt; &quot;/&quot; &lt;&lt; second</a>
+<a name="ln201">                   &lt;&lt; &quot; [&quot; &lt;&lt; name &lt;&lt; &quot;]&quot;;</a>
+<a name="ln202">            break;</a>
+<a name="ln203">        case NOTE_XOM_REVIVAL:</a>
+<a name="ln204">            result &lt;&lt; &quot;Xom revived you&quot;;</a>
+<a name="ln205">            break;</a>
+<a name="ln206">        case NOTE_MP_CHANGE:</a>
+<a name="ln207">            result &lt;&lt; &quot;Magic: &quot; &lt;&lt; first &lt;&lt; &quot;/&quot; &lt;&lt; second;</a>
+<a name="ln208">            break;</a>
+<a name="ln209">        case NOTE_MAXHP_CHANGE:</a>
+<a name="ln210">            result &lt;&lt; &quot;Reached &quot; &lt;&lt; first &lt;&lt; &quot; max health&quot;;</a>
+<a name="ln211">            break;</a>
+<a name="ln212">        case NOTE_MAXMP_CHANGE:</a>
+<a name="ln213">            result &lt;&lt; &quot;Reached &quot; &lt;&lt; first &lt;&lt; &quot; max magic points&quot;;</a>
+<a name="ln214">            break;</a>
+<a name="ln215">        case NOTE_XP_LEVEL_CHANGE:</a>
+<a name="ln216">            result &lt;&lt; &quot;Reached XP level &quot; &lt;&lt; first &lt;&lt; &quot;. &quot; &lt;&lt; name;</a>
+<a name="ln217">            break;</a>
+<a name="ln218">        case NOTE_DUNGEON_LEVEL_CHANGE:</a>
+<a name="ln219">            if (!desc.empty())</a>
+<a name="ln220">                result &lt;&lt; desc;</a>
+<a name="ln221">            else</a>
+<a name="ln222">                result &lt;&lt; &quot;Entered &quot;</a>
+<a name="ln223">                       &lt;&lt; place.describe(true, true);</a>
+<a name="ln224">            break;</a>
+<a name="ln225">        case NOTE_LEARN_SPELL:</a>
+<a name="ln226">            result &lt;&lt; &quot;Learned a level &quot;</a>
+<a name="ln227">                   &lt;&lt; spell_difficulty(static_cast&lt;spell_type&gt;(first))</a>
+<a name="ln228">                   &lt;&lt; &quot; spell: &quot;</a>
+<a name="ln229">                   &lt;&lt; spell_title(static_cast&lt;spell_type&gt;(first));</a>
+<a name="ln230">            break;</a>
+<a name="ln231">        case NOTE_GET_GOD:</a>
+<a name="ln232">            result &lt;&lt; &quot;Became a worshipper of &quot;</a>
+<a name="ln233">                   &lt;&lt; god_name(static_cast&lt;god_type&gt;(first), true);</a>
+<a name="ln234">            break;</a>
+<a name="ln235">        case NOTE_LOSE_GOD:</a>
+<a name="ln236">            result &lt;&lt; &quot;Fell from the grace of &quot;</a>
+<a name="ln237">                   &lt;&lt; god_name(static_cast&lt;god_type&gt;(first));</a>
+<a name="ln238">            break;</a>
+<a name="ln239">        case NOTE_PENANCE:</a>
+<a name="ln240">            result &lt;&lt; &quot;Was placed under penance by &quot;</a>
+<a name="ln241">                   &lt;&lt; god_name(static_cast&lt;god_type&gt;(first));</a>
+<a name="ln242">            break;</a>
+<a name="ln243">        case NOTE_MOLLIFY_GOD:</a>
+<a name="ln244">            result &lt;&lt; &quot;Was forgiven by &quot;</a>
+<a name="ln245">                   &lt;&lt; god_name(static_cast&lt;god_type&gt;(first));</a>
+<a name="ln246">            break;</a>
+<a name="ln247">        case NOTE_GOD_GIFT:</a>
+<a name="ln248">            result &lt;&lt; &quot;Received a gift from &quot;</a>
+<a name="ln249">                   &lt;&lt; god_name(static_cast&lt;god_type&gt;(first));</a>
+<a name="ln250">            if (!name.empty())</a>
+<a name="ln251">                result &lt;&lt; &quot; (&quot; &lt;&lt; name &lt;&lt; &quot;)&quot;;</a>
+<a name="ln252">            break;</a>
+<a name="ln253">        case NOTE_ID_ITEM:</a>
+<a name="ln254">            result &lt;&lt; &quot;Identified &quot; &lt;&lt; name;</a>
+<a name="ln255">            if (!desc.empty())</a>
+<a name="ln256">                result &lt;&lt; &quot; (&quot; &lt;&lt; desc &lt;&lt; &quot;)&quot;;</a>
+<a name="ln257">            break;</a>
+<a name="ln258">        case NOTE_GET_ITEM:</a>
+<a name="ln259">            result &lt;&lt; &quot;Got &quot; &lt;&lt; name;</a>
+<a name="ln260">            break;</a>
+<a name="ln261">        case NOTE_BUY_ITEM:</a>
+<a name="ln262">            result &lt;&lt; &quot;Bought &quot; &lt;&lt; name &lt;&lt; &quot; for &quot; &lt;&lt; first &lt;&lt; &quot; gold piece&quot;</a>
+<a name="ln263">                   &lt;&lt; (first == 1 ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln264">            break;</a>
+<a name="ln265">        case NOTE_DONATE_MONEY:</a>
+<a name="ln266">            result &lt;&lt; &quot;Donated &quot; &lt;&lt; first &lt;&lt; &quot; gold piece&quot;</a>
+<a name="ln267">                   &lt;&lt; (first == 1 ? &quot;&quot; : &quot;s&quot;) &lt;&lt; &quot; to Zin&quot;;</a>
+<a name="ln268">            break;</a>
+<a name="ln269">        case NOTE_GAIN_SKILL:</a>
+<a name="ln270">            result &lt;&lt; &quot;Reached skill level &quot; &lt;&lt; second</a>
+<a name="ln271">                   &lt;&lt; &quot; in &quot; &lt;&lt; skill_name(static_cast&lt;skill_type&gt;(first));</a>
+<a name="ln272">            break;</a>
+<a name="ln273">        case NOTE_LOSE_SKILL:</a>
+<a name="ln274">            result &lt;&lt; &quot;Reduced skill &quot;</a>
+<a name="ln275">                   &lt;&lt; skill_name(static_cast&lt;skill_type&gt;(first))</a>
+<a name="ln276">                   &lt;&lt; &quot; to level &quot; &lt;&lt; second;</a>
+<a name="ln277">            break;</a>
+<a name="ln278">        case NOTE_SEEN_MONSTER:</a>
+<a name="ln279">            result &lt;&lt; &quot;Noticed &quot; &lt;&lt; name;</a>
+<a name="ln280">            break;</a>
+<a name="ln281">        case NOTE_DEFEAT_MONSTER:</a>
+<a name="ln282">            if (second)</a>
+<a name="ln283">                result &lt;&lt; name &lt;&lt; &quot; (ally) was &quot; &lt;&lt; desc;</a>
+<a name="ln284">            else</a>
+<a name="ln285">                result &lt;&lt; uppercase_first(desc) &lt;&lt; &quot; &quot; &lt;&lt; name;</a>
+<a name="ln286">            break;</a>
+<a name="ln287">        case NOTE_POLY_MONSTER:</a>
+<a name="ln288">            result &lt;&lt; name &lt;&lt; &quot; changed into &quot; &lt;&lt; desc;</a>
+<a name="ln289">            break;</a>
+<a name="ln290">        case NOTE_PIETY_RANK:</a>
+<a name="ln291">            result &lt;&lt; &quot;Reached &quot;</a>
+<a name="ln292">                   &lt;&lt; string(second, '*')</a>
+<a name="ln293">                   &lt;&lt; &quot; piety under &quot;</a>
+<a name="ln294">                   &lt;&lt; god_name(static_cast&lt;god_type&gt;(first));</a>
+<a name="ln295">            break;</a>
+<a name="ln296">        case NOTE_GET_MUTATION:</a>
+<a name="ln297">            result &lt;&lt; &quot;Gained mutation: &quot;</a>
+<a name="ln298">                   &lt;&lt; mutation_desc(static_cast&lt;mutation_type&gt;(first),</a>
+<a name="ln299">                                    second == 0 ? 1 : second);</a>
+<a name="ln300">            if (!name.empty())</a>
+<a name="ln301">                result &lt;&lt; &quot; [&quot; &lt;&lt; name &lt;&lt; &quot;]&quot;;</a>
+<a name="ln302">            break;</a>
+<a name="ln303">        case NOTE_LOSE_MUTATION:</a>
+<a name="ln304">            result &lt;&lt; &quot;Lost mutation: &quot;</a>
+<a name="ln305">                   &lt;&lt; mutation_desc(static_cast&lt;mutation_type&gt;(first),</a>
+<a name="ln306">                                    second == 3 ? 3 : second+1);</a>
+<a name="ln307">            if (!name.empty())</a>
+<a name="ln308">                result &lt;&lt; &quot; [&quot; &lt;&lt; name &lt;&lt; &quot;]&quot;;</a>
+<a name="ln309">            break;</a>
+<a name="ln310">        case NOTE_PERM_MUTATION:</a>
+<a name="ln311">            result &lt;&lt; &quot;Mutation became permanent: &quot;</a>
+<a name="ln312">                   &lt;&lt; mutation_desc(static_cast&lt;mutation_type&gt;(first),</a>
+<a name="ln313">                                    second == 0 ? 1 : second);</a>
+<a name="ln314">            if (!name.empty())</a>
+<a name="ln315">                result &lt;&lt; &quot; [&quot; &lt;&lt; name &lt;&lt; &quot;]&quot;;</a>
+<a name="ln316">            break;</a>
+<a name="ln317">        case NOTE_DEATH:</a>
+<a name="ln318">            result &lt;&lt; name;</a>
+<a name="ln319">            break;</a>
+<a name="ln320">        case NOTE_USER_NOTE:</a>
+<a name="ln321">            result &lt;&lt; Options.user_note_prefix &lt;&lt; name;</a>
+<a name="ln322">            break;</a>
+<a name="ln323">        case NOTE_MESSAGE:</a>
+<a name="ln324">            result &lt;&lt; name;</a>
+<a name="ln325">            break;</a>
+<a name="ln326">        case NOTE_SEEN_FEAT:</a>
+<a name="ln327">            result &lt;&lt; &quot;Found &quot; &lt;&lt; name;</a>
+<a name="ln328">            break;</a>
+<a name="ln329">        case NOTE_FEAT_MIMIC:</a>
+<a name="ln330">            result &lt;&lt; name &lt;&lt;&quot; was a mimic.&quot;;</a>
+<a name="ln331">            break;</a>
+<a name="ln332">        case NOTE_XOM_EFFECT:</a>
+<a name="ln333">            result &lt;&lt; &quot;XOM: &quot; &lt;&lt; name;</a>
+<a name="ln334">#if defined(DEBUG_XOM) || defined(NOTE_DEBUG_XOM)</a>
+<a name="ln335">            // If debugging, also take note of piety and tension.</a>
+<a name="ln336">            result &lt;&lt; &quot; (piety: &quot; &lt;&lt; first;</a>
+<a name="ln337">            if (second &gt;= 0)</a>
+<a name="ln338">                result &lt;&lt; &quot;, tension: &quot; &lt;&lt; second;</a>
+<a name="ln339">            result &lt;&lt; &quot;)&quot;;</a>
+<a name="ln340">#endif</a>
+<a name="ln341">            break;</a>
+<a name="ln342">        case NOTE_PARALYSIS:</a>
+<a name="ln343">            result &lt;&lt; &quot;Paralysed by &quot; &lt;&lt; name &lt;&lt; &quot; for &quot; &lt;&lt; first &lt;&lt; &quot; turns&quot;;</a>
+<a name="ln344">            break;</a>
+<a name="ln345">        case NOTE_NAMED_ALLY:</a>
+<a name="ln346">            result &lt;&lt; &quot;Gained &quot; &lt;&lt; name &lt;&lt; &quot; as an ally&quot;;</a>
+<a name="ln347">            break;</a>
+<a name="ln348">        case NOTE_ALLY_DEATH:</a>
+<a name="ln349">            result &lt;&lt; &quot;Your ally &quot; &lt;&lt; name &lt;&lt; &quot; died&quot;;</a>
+<a name="ln350">            break;</a>
+<a name="ln351">        case NOTE_OFFERED_SPELL:</a>
+<a name="ln352">            result &lt;&lt; &quot;Offered knowledge of &quot;</a>
+<a name="ln353">                   &lt;&lt; spell_title(static_cast&lt;spell_type&gt;(first))</a>
+<a name="ln354">                   &lt;&lt; &quot; by Vehumet.&quot;;</a>
+<a name="ln355">            break;</a>
+<a name="ln356">        case NOTE_ANCESTOR_TYPE:</a>
+<a name="ln357">            result &lt;&lt; &quot;Remembered your ancestor &quot; &lt;&lt; hepliaklqana_ally_name()</a>
+<a name="ln358">                   &lt;&lt; &quot; as &quot; &lt;&lt; name;</a>
+<a name="ln359">            break;</a>
+<a name="ln360">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln361">        case NOTE_ANCESTOR_SPECIALIZATION:</a>
+<a name="ln362">            result &lt;&lt; &quot;Remembered your ancestor &quot; &lt;&lt; hepliaklqana_ally_name()</a>
+<a name="ln363">                   &lt;&lt; &quot; &quot; &lt;&lt; name;</a>
+<a name="ln364">            break;</a>
+<a name="ln365">        case NOTE_ANCESTOR_DEATH:</a>
+<a name="ln366">            result &lt;&lt; &quot;Remembered your ancestor &quot;</a>
+<a name="ln367">                   &lt;&lt; apostrophise(hepliaklqana_ally_name())</a>
+<a name="ln368">                   &lt;&lt; &quot; &quot; &lt;&lt; name &lt;&lt; &quot; death&quot;;</a>
+<a name="ln369">            break;</a>
+<a name="ln370">#endif</a>
+<a name="ln371">          case NOTE_FOUND_UNRAND:</a>
+<a name="ln372">            result &lt;&lt; &quot;Found &quot; &lt;&lt; name;</a>
+<a name="ln373">            break;</a>
+<a name="ln374">        default:</a>
+<a name="ln375">            result &lt;&lt; &quot;Buggy note description: unknown note type&quot;;</a>
+<a name="ln376">            break;</a>
+<a name="ln377">        }</a>
+<a name="ln378">    }</a>
+<a name="ln379"> </a>
+<a name="ln380">    if (type == NOTE_SEEN_MONSTER || type == NOTE_DEFEAT_MONSTER)</a>
+<a name="ln381">    {</a>
+<a name="ln382">        if (what &amp;&amp; first == MONS_PANDEMONIUM_LORD)</a>
+<a name="ln383">            result &lt;&lt; &quot; the pandemonium lord&quot;;</a>
+<a name="ln384">    }</a>
+<a name="ln385">    return result.str();</a>
+<a name="ln386">}</a>
+<a name="ln387"> </a>
+<a name="ln388">bool Note::hidden() const</a>
+<a name="ln389">{</a>
+<a name="ln390">    // Hide skill gains that are not enabled by options.</a>
+<a name="ln391">    if (type == NOTE_GAIN_SKILL || type == NOTE_LOSE_SKILL)</a>
+<a name="ln392">    {</a>
+<a name="ln393">        return !(Options.note_all_skill_levels</a>
+<a name="ln394">                 || second &lt;= 27 &amp;&amp; Options.note_skill_levels[second]</a>
+<a name="ln395">                 || Options.note_skill_max &amp;&amp; _is_highest_skill(first));</a>
+<a name="ln396">    }</a>
+<a name="ln397">    return false;</a>
+<a name="ln398">}</a>
+<a name="ln399"> </a>
+<a name="ln400">void Note::check_milestone() const</a>
+<a name="ln401">{</a>
+<a name="ln402">    if (crawl_state.game_is_arena())</a>
+<a name="ln403">        return;</a>
+<a name="ln404"> </a>
+<a name="ln405">    if (type == NOTE_DUNGEON_LEVEL_CHANGE)</a>
+<a name="ln406">    {</a>
+<a name="ln407">        const int br = place.branch,</a>
+<a name="ln408">                 dep = place.depth;</a>
+<a name="ln409"> </a>
+<a name="ln410">        // Wizlabs report their milestones on their own.</a>
+<a name="ln411">        if (br != -1 &amp;&amp; br != BRANCH_WIZLAB)</a>
+<a name="ln412">        {</a>
+<a name="ln413">            ASSERT_RANGE(br, 0, NUM_BRANCHES);</a>
+<a name="ln414">            string branch = place.describe(true, false);</a>
+<a name="ln415"> </a>
+<a name="ln416">            if (starts_with(branch, &quot;The &quot;))</a>
+<a name="ln417">                branch[0] = tolower_safe(branch[0]);</a>
+<a name="ln418"> </a>
+<a name="ln419">            if (dep == 1)</a>
+<a name="ln420">            {</a>
+<a name="ln421">                mark_milestone(br == BRANCH_ZIGGURAT ? &quot;zig.enter&quot; : &quot;br.enter&quot;,</a>
+<a name="ln422">                               &quot;entered &quot; + branch + &quot;.&quot;, &quot;parent&quot;);</a>
+<a name="ln423">            }</a>
+<a name="ln424">            else if (dep == _dungeon_branch_depth(br)</a>
+<a name="ln425">                     || br == BRANCH_ZIGGURAT)</a>
+<a name="ln426">            {</a>
+<a name="ln427">                string level = place.describe(true, true);</a>
+<a name="ln428">                if (starts_with(level, &quot;Level &quot;))</a>
+<a name="ln429">                    level[0] = tolower_safe(level[0]);</a>
+<a name="ln430"> </a>
+<a name="ln431">                mark_milestone(br == BRANCH_ZIGGURAT ? &quot;zig&quot; : &quot;br.end&quot;,</a>
+<a name="ln432">                               &quot;reached &quot; + level + &quot;.&quot;);</a>
+<a name="ln433">            }</a>
+<a name="ln434">        }</a>
+<a name="ln435">    }</a>
+<a name="ln436">}</a>
+<a name="ln437"> </a>
+<a name="ln438">void Note::save(writer&amp; outf) const</a>
+<a name="ln439">{</a>
+<a name="ln440">    marshallInt(outf, type);</a>
+<a name="ln441">    marshallInt(outf, turn);</a>
+<a name="ln442">    place.save(outf);</a>
+<a name="ln443">    marshallInt(outf, first);</a>
+<a name="ln444">    marshallInt(outf, second);</a>
+<a name="ln445">    marshallString4(outf, name);</a>
+<a name="ln446">    marshallString4(outf, desc);</a>
+<a name="ln447">}</a>
+<a name="ln448"> </a>
+<a name="ln449">void Note::load(reader&amp; inf)</a>
+<a name="ln450">{</a>
+<a name="ln451">    type = static_cast&lt;NOTE_TYPES&gt;(unmarshallInt(inf));</a>
+<a name="ln452">    turn = unmarshallInt(inf);</a>
+<a name="ln453">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln454">    if (inf.getMinorVersion() &lt; TAG_MINOR_PLACE_UNPACK)</a>
+<a name="ln455">        place = level_id::from_packed_place(unmarshallShort(inf));</a>
+<a name="ln456">    else</a>
+<a name="ln457">#endif</a>
+<a name="ln458">    place.load(inf);</a>
+<a name="ln459">    first  = unmarshallInt(inf);</a>
+<a name="ln460">    second = unmarshallInt(inf);</a>
+<a name="ln461">    unmarshallString4(inf, name);</a>
+<a name="ln462">    unmarshallString4(inf, desc);</a>
+<a name="ln463">}</a>
+<a name="ln464"> </a>
+<a name="ln465">static bool notes_active = false;</a>
+<a name="ln466"> </a>
+<a name="ln467">bool notes_are_active()</a>
+<a name="ln468">{</a>
+<a name="ln469">    return notes_active;</a>
+<a name="ln470">}</a>
+<a name="ln471"> </a>
+<a name="ln472">void take_note(const Note&amp; note, bool force)</a>
+<a name="ln473">{</a>
+<a name="ln474">    if (notes_active &amp;&amp; (force || _is_noteworthy(note)))</a>
+<a name="ln475">    {</a>
+<a name="ln476">        note_list.push_back(note);</a>
+<a name="ln477">        note.check_milestone();</a>
+<a name="ln478">    }</a>
+<a name="ln479">}</a>
+<a name="ln480"> </a>
+<a name="ln481">void activate_notes(bool active)</a>
+<a name="ln482">{</a>
+<a name="ln483">    notes_active = active;</a>
+<a name="ln484">}</a>
+<a name="ln485"> </a>
+<a name="ln486">void save_notes(writer&amp; outf)</a>
+<a name="ln487">{</a>
+<a name="ln488">    marshallInt(outf, NOTES_VERSION_NUMBER);</a>
+<a name="ln489">    marshallInt(outf, note_list.size());</a>
+<a name="ln490">    for (const Note &amp;note : note_list)</a>
+<a name="ln491">        note.save(outf);</a>
+<a name="ln492">}</a>
+<a name="ln493"> </a>
+<a name="ln494">void load_notes(reader&amp; inf)</a>
+<a name="ln495">{</a>
+<a name="ln496">    if (unmarshallInt(inf) != NOTES_VERSION_NUMBER)</a>
+<a name="ln497">        return;</a>
+<a name="ln498"> </a>
+<a name="ln499">    const int num_notes = unmarshallInt(inf);</a>
+<a name="ln500">    for (int i = 0; i &lt; num_notes; ++i)</a>
+<a name="ln501">    {</a>
+<a name="ln502">        Note new_note;</a>
+<a name="ln503">        new_note.load(inf);</a>
+<a name="ln504">        note_list.push_back(new_note);</a>
+<a name="ln505">    }</a>
+<a name="ln506">}</a>
+<a name="ln507"> </a>
+<a name="ln508">void make_user_note()</a>
+<a name="ln509">{</a>
+<a name="ln510">    char buf[400];</a>
+<a name="ln511">    bool validline = !msgwin_get_line(&quot;Enter note: &quot;, buf, sizeof(buf));</a>
+<a name="ln512">    if (!validline || (!*buf))</a>
+<a name="ln513">        return;</a>
+<a name="ln514">    Note unote(NOTE_USER_NOTE);</a>
+<a name="ln515">    unote.name = buf;</a>
+<a name="ln516">    take_note(unote);</a>
+<a name="ln517">}</a>
+
+</code></pre>
+<div class="balloon" rel="75"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="327"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 327, 372</p></div>
+<div class="balloon" rel="318"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1037/" target="_blank">V1037</a> Two or more case-branches perform the same actions. Check lines: 318, 324</p></div>
+<div class="balloon" rel="394"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

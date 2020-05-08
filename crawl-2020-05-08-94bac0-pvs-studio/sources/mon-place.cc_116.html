@@ -1,0 +1,3345 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-place.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions used when placing monsters in the dungeon.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-place.h&quot;</a>
+<a name="ln9">#include &quot;mgen-data.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &lt;algorithm&gt;</a>
+<a name="ln12">#include &lt;functional&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;abyss.h&quot;</a>
+<a name="ln15">#include &quot;areas.h&quot;</a>
+<a name="ln16">#include &quot;arena.h&quot;</a>
+<a name="ln17">#include &quot;attitude-change.h&quot;</a>
+<a name="ln18">#include &quot;branch.h&quot;</a>
+<a name="ln19">#include &quot;cloud.h&quot;</a>
+<a name="ln20">#include &quot;colour.h&quot;</a>
+<a name="ln21">#include &quot;coordit.h&quot;</a>
+<a name="ln22">#include &quot;directn.h&quot;</a>
+<a name="ln23">#include &quot;dungeon.h&quot;</a>
+<a name="ln24">#include &quot;env.h&quot;</a>
+<a name="ln25">#include &quot;errors.h&quot;</a>
+<a name="ln26">#include &quot;fprop.h&quot;</a>
+<a name="ln27">#include &quot;gender-type.h&quot;</a>
+<a name="ln28">#include &quot;ghost.h&quot;</a>
+<a name="ln29">#include &quot;god-abil.h&quot;</a>
+<a name="ln30">#include &quot;god-passive.h&quot; // passive_t::slow_abyss, slow_orb_run</a>
+<a name="ln31">#include &quot;libutil.h&quot;</a>
+<a name="ln32">#include &quot;losglobal.h&quot;</a>
+<a name="ln33">#include &quot;message.h&quot;</a>
+<a name="ln34">#include &quot;mon-act.h&quot;</a>
+<a name="ln35">#include &quot;mon-behv.h&quot;</a>
+<a name="ln36">#include &quot;mon-death.h&quot;</a>
+<a name="ln37">#include &quot;mon-gear.h&quot;</a>
+<a name="ln38">#include &quot;mon-pick.h&quot;</a>
+<a name="ln39">#include &quot;mon-poly.h&quot;</a>
+<a name="ln40">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln41">#include &quot;random.h&quot;</a>
+<a name="ln42">#include &quot;religion.h&quot;</a>
+<a name="ln43">#include &quot;shopping.h&quot;</a>
+<a name="ln44">#include &quot;spl-clouds.h&quot;</a>
+<a name="ln45">#include &quot;spl-damage.h&quot;</a>
+<a name="ln46">#include &quot;spl-summoning.h&quot;</a>
+<a name="ln47">#include &quot;state.h&quot;</a>
+<a name="ln48">#include &quot;stringutil.h&quot;</a>
+<a name="ln49">#include &quot;terrain.h&quot;</a>
+<a name="ln50">#ifdef USE_TILE</a>
+<a name="ln51"> #include &quot;rltiles/tiledef-player.h&quot;</a>
+<a name="ln52">#endif</a>
+<a name="ln53">#include &quot;tilepick.h&quot;</a>
+<a name="ln54">#include &quot;traps.h&quot;</a>
+<a name="ln55">#include &quot;travel.h&quot;</a>
+<a name="ln56">#include &quot;unwind.h&quot;</a>
+<a name="ln57">#include &quot;view.h&quot;</a>
+<a name="ln58"> </a>
+<a name="ln59">band_type active_monster_band = BAND_NO_BAND;</a>
+<a name="ln60"> </a>
+<a name="ln61">static vector&lt;int&gt; vault_mon_types;</a>
+<a name="ln62">static vector&lt;int&gt; vault_mon_bases;</a>
+<a name="ln63">static vector&lt;level_id&gt; vault_mon_places;</a>
+<a name="ln64">static vector&lt;int&gt; vault_mon_weights;</a>
+<a name="ln65">static vector&lt;bool&gt; vault_mon_bands;</a>
+<a name="ln66"> </a>
+<a name="ln67">#if TAG_MAJOR_VERSION &gt; 34</a>
+<a name="ln68">#define VAULT_MON_TYPES_KEY   &quot;vault_mon_types&quot;</a>
+<a name="ln69">#define VAULT_MON_BASES_KEY   &quot;vault_mon_bases&quot;</a>
+<a name="ln70">#define VAULT_MON_PLACES_KEY  &quot;vault_mon_places&quot;</a>
+<a name="ln71">#define VAULT_MON_WEIGHTS_KEY &quot;vault_mon_weights&quot;</a>
+<a name="ln72">#define VAULT_MON_BANDS_KEY   &quot;vault_mon_bands&quot;</a>
+<a name="ln73">#endif</a>
+<a name="ln74"> </a>
+<a name="ln75">#define BIG_BAND        20</a>
+<a name="ln76"> </a>
+<a name="ln77">static monster_type _band_member(band_type band, int which,</a>
+<a name="ln78">                                 level_id parent_place, bool allow_ood);</a>
+<a name="ln79">static band_type _choose_band(monster_type mon_type, int *band_size_p = nullptr,</a>
+<a name="ln80">                              bool *natural_leader_p = nullptr);</a>
+<a name="ln81"> </a>
+<a name="ln82">static monster* _place_monster_aux(const mgen_data &amp;mg, const monster *leader,</a>
+<a name="ln83">                                   level_id place,</a>
+<a name="ln84">                                   bool force_pos = false,</a>
+<a name="ln85">                                   bool dont_place = false);</a>
+<a name="ln86">static monster* _place_pghost_aux(const mgen_data &amp;mg, const monster *leader,</a>
+<a name="ln87">                                   level_id place,</a>
+<a name="ln88">                                   bool force_pos, bool dont_place);</a>
+<a name="ln89"> </a>
+<a name="ln90"> </a>
+<a name="ln91">/**</a>
+<a name="ln92"> * Is this feature &quot;close enough&quot; to the one we want for monster generation?</a>
+<a name="ln93"> *</a>
+<a name="ln94"> * @param wanted_feat the preferred feature</a>
+<a name="ln95"> * @param actual_feat the feature to be compared to it</a>
+<a name="ln96"> * @returns Whether wanted_feat is considered to be similar enough to</a>
+<a name="ln97"> *          actual_feat that being able to survive in the former means you can</a>
+<a name="ln98"> *          survive in the latter.</a>
+<a name="ln99"> */</a>
+<a name="ln100">static bool _feat_compatible(dungeon_feature_type wanted_feat,</a>
+<a name="ln101">                             dungeon_feature_type actual_feat)</a>
+<a name="ln102">{</a>
+<a name="ln103">    return wanted_feat == actual_feat</a>
+<a name="ln104">           || wanted_feat == DNGN_DEEP_WATER &amp;&amp; feat_is_watery(actual_feat)</a>
+<a name="ln105">           || wanted_feat == DNGN_FLOOR &amp;&amp; feat_has_solid_floor(actual_feat);</a>
+<a name="ln106">}</a>
+<a name="ln107"> </a>
+<a name="ln108">static bool _hab_requires_mon_flight(dungeon_feature_type g)</a>
+<a name="ln109">{</a>
+<a name="ln110">    return g == DNGN_LAVA || g == DNGN_DEEP_WATER;</a>
+<a name="ln111">}</a>
+<a name="ln112"> </a>
+<a name="ln113">/**</a>
+<a name="ln114"> * Can this monster survive on actual_grid?</a>
+<a name="ln115"> *</a>
+<a name="ln116"> * @param mon         the monster to be checked.</a>
+<a name="ln117"> * @param actual_grid the feature type that mon might not be able to survive.</a>
+<a name="ln118"> * @returns whether the monster can survive being in/over the feature,</a>
+<a name="ln119"> *          regardless of whether it may be dangerous or harmful.</a>
+<a name="ln120"> */</a>
+<a name="ln121">bool monster_habitable_grid(const monster* mon,</a>
+<a name="ln122">                            dungeon_feature_type actual_grid)</a>
+<a name="ln123">{</a>
+<a name="ln124">    // Zombified monsters enjoy the same habitat as their original,</a>
+<a name="ln125">    // except lava-based monsters.</a>
+<a name="ln126">    const monster_type mt = fixup_zombie_type(mon-&gt;type,</a>
+<a name="ln127">                                              mons_base_type(*mon));</a>
+<a name="ln128"> </a>
+<a name="ln129">    bool type_safe = monster_habitable_grid(mt, actual_grid, DNGN_UNSEEN);</a>
+<a name="ln130">    return type_safe ||</a>
+<a name="ln131">                    _hab_requires_mon_flight(actual_grid) &amp;&amp; mon-&gt;airborne();</a>
+<a name="ln132">}</a>
+<a name="ln133"> </a>
+<a name="ln134">/**</a>
+<a name="ln135"> * Can monsters of this class survive on actual_grid?</a>
+<a name="ln136"> *</a>
+<a name="ln137"> * @param mt the monster class to check against</a>
+<a name="ln138"> * @param actual_grid the terrain feature being checked</a>
+<a name="ln139"> * @param wanted_grid if == DNGN_UNSEEN, or if the monster can't survive on it,</a>
+<a name="ln140"> *                    ignored. Otherwise, return false even if actual_grid is</a>
+<a name="ln141"> *                    survivable, if actual_grid isn't similar to wanted_grid.</a>
+<a name="ln142"> * @param flies if true, treat the monster as flying even if the monster class</a>
+<a name="ln143"> *              can't usually fly.</a>
+<a name="ln144"> */</a>
+<a name="ln145">bool monster_habitable_grid(monster_type mt,</a>
+<a name="ln146">                            dungeon_feature_type actual_grid,</a>
+<a name="ln147">                            dungeon_feature_type wanted_grid)</a>
+<a name="ln148">{</a>
+<a name="ln149">    // No monster may be placed in walls etc.</a>
+<a name="ln150">    if (!mons_class_can_pass(mt, actual_grid))</a>
+<a name="ln151">        return false;</a>
+<a name="ln152"> </a>
+<a name="ln153">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln154">    // Monsters can't use teleporters, and standing there would look just wrong.</a>
+<a name="ln155">    if (actual_grid == DNGN_TELEPORTER)</a>
+<a name="ln156">        return false;</a>
+<a name="ln157">#endif</a>
+<a name="ln158">    // The kraken is so large it cannot enter shallow water.</a>
+<a name="ln159">    // Its tentacles can, and will, though.</a>
+<a name="ln160">    if (actual_grid == DNGN_SHALLOW_WATER &amp;&amp; mt == MONS_KRAKEN)</a>
+<a name="ln161">        return false;</a>
+<a name="ln162"> </a>
+<a name="ln163">    const dungeon_feature_type feat_preferred =</a>
+<a name="ln164">        habitat2grid(mons_class_primary_habitat(mt));</a>
+<a name="ln165">    const dungeon_feature_type feat_nonpreferred =</a>
+<a name="ln166">        habitat2grid(mons_class_secondary_habitat(mt));</a>
+<a name="ln167"> </a>
+<a name="ln168">    // If the caller insists on a specific feature type, try to honour</a>
+<a name="ln169">    // the request. This allows the builder to place amphibious</a>
+<a name="ln170">    // creatures only on land, or flying creatures only on lava, etc.</a>
+<a name="ln171">    if (wanted_grid != DNGN_UNSEEN</a>
+<a name="ln172">        &amp;&amp; monster_habitable_grid(mt, wanted_grid, DNGN_UNSEEN))</a>
+<a name="ln173">    {</a>
+<a name="ln174">        return _feat_compatible(wanted_grid, actual_grid);</a>
+<a name="ln175">    }</a>
+<a name="ln176"> </a>
+<a name="ln177">    if (actual_grid == DNGN_MALIGN_GATEWAY)</a>
+<a name="ln178">    {</a>
+<a name="ln179">        if (mt == MONS_ELDRITCH_TENTACLE</a>
+<a name="ln180">            || mt == MONS_ELDRITCH_TENTACLE_SEGMENT)</a>
+<a name="ln181">        {</a>
+<a name="ln182">            return true;</a>
+<a name="ln183">        }</a>
+<a name="ln184">        else</a>
+<a name="ln185">            return false;</a>
+<a name="ln186">    }</a>
+<a name="ln187"> </a>
+<a name="ln188">    if (_feat_compatible(feat_preferred, actual_grid)</a>
+<a name="ln189">        || _feat_compatible(feat_nonpreferred, actual_grid))</a>
+<a name="ln190">    {</a>
+<a name="ln191">        return true;</a>
+<a name="ln192">    }</a>
+<a name="ln193"> </a>
+<a name="ln194">    // [dshaligram] Flying creatures are all HT_LAND, so we</a>
+<a name="ln195">    // only have to check for the additional valid grids of deep</a>
+<a name="ln196">    // water and lava.</a>
+<a name="ln197">    if (_hab_requires_mon_flight(actual_grid) &amp;&amp; (mons_class_flag(mt, M_FLIES)))</a>
+<a name="ln198">        return true;</a>
+<a name="ln199"> </a>
+<a name="ln200">    return false;</a>
+<a name="ln201">}</a>
+<a name="ln202"> </a>
+<a name="ln203">// Returns true if the monster can submerge in the given grid.</a>
+<a name="ln204">bool monster_can_submerge(const monster* mon, dungeon_feature_type feat)</a>
+<a name="ln205">{</a>
+<a name="ln206">    if (testbits(env.pgrid(mon-&gt;pos()), FPROP_NO_SUBMERGE))</a>
+<a name="ln207">        return false;</a>
+<a name="ln208">    if (!mon-&gt;is_habitable_feat(feat))</a>
+<a name="ln209">        return false;</a>
+<a name="ln210">    if (mons_class_flag(mon-&gt;type, M_SUBMERGES))</a>
+<a name="ln211">    {</a>
+<a name="ln212">        switch (mons_habitat(*mon))</a>
+<a name="ln213">        {</a>
+<a name="ln214">        case HT_WATER:</a>
+<a name="ln215">        case HT_AMPHIBIOUS:</a>
+<a name="ln216">            return feat_is_watery(feat);</a>
+<a name="ln217">        case HT_LAVA:</a>
+<a name="ln218">        case HT_AMPHIBIOUS_LAVA:</a>
+<a name="ln219">            return feat == DNGN_LAVA;</a>
+<a name="ln220">        case HT_LAND:</a>
+<a name="ln221">            return feat == DNGN_FLOOR;</a>
+<a name="ln222">        default:</a>
+<a name="ln223">            return false;</a>
+<a name="ln224">        }</a>
+<a name="ln225">    }</a>
+<a name="ln226">    else</a>
+<a name="ln227">        return false;</a>
+<a name="ln228">}</a>
+<a name="ln229"> </a>
+<a name="ln230">static void _apply_ood(level_id &amp;place)</a>
+<a name="ln231">{</a>
+<a name="ln232">    // OODs do not apply to any portal vaults, any 1-level branches, Zot and</a>
+<a name="ln233">    // hells. What with newnewabyss?</a>
+<a name="ln234">    if (!is_connected_branch(place)</a>
+<a name="ln235">        || place.branch == BRANCH_ZOT</a>
+<a name="ln236">        || is_hell_subbranch(place.branch)</a>
+<a name="ln237">        || brdepth[place.branch] &lt;= 1)</a>
+<a name="ln238">    {</a>
+<a name="ln239">        return;</a>
+<a name="ln240">    }</a>
+<a name="ln241"> </a>
+<a name="ln242">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln243">    level_id old_place = place;</a>
+<a name="ln244">#endif</a>
+<a name="ln245"> </a>
+<a name="ln246">    // The OOD fuzz roll is not applied on D:1, and is applied slightly less</a>
+<a name="ln247">    // often (0.75*0.14) on D:2. All other levels have a straight 14% chance of</a>
+<a name="ln248">    // moderate OOD fuzz for each monster at level generation.</a>
+<a name="ln249">    if (place.branch == BRANCH_DUNGEON</a>
+<a name="ln250">        &amp;&amp; (place.depth == 1</a>
+<a name="ln251">            || place.depth == 2 &amp;&amp; one_chance_in(4)))</a>
+<a name="ln252">    {</a>
+<a name="ln253">        return;</a>
+<a name="ln254">    }</a>
+<a name="ln255"> </a>
+<a name="ln256">    if (x_chance_in_y(14, 100))</a>
+<a name="ln257">    {</a>
+<a name="ln258">        const int fuzzspan = 5;</a>
+<a name="ln259">        const int fuzz = max(0, random_range(-fuzzspan, fuzzspan, 2));</a>
+<a name="ln260"> </a>
+<a name="ln261">        // Quite bizarre logic: why should we fail in &gt;50% cases here?</a>
+<a name="ln262">        if (fuzz)</a>
+<a name="ln263">        {</a>
+<a name="ln264">            place.depth += fuzz;</a>
+<a name="ln265">            dprf(&quot;Monster level fuzz: %d (old: %s, new: %s)&quot;,</a>
+<a name="ln266">                 fuzz, old_place.describe().c_str(), place.describe().c_str());</a>
+<a name="ln267">        }</a>
+<a name="ln268">    }</a>
+<a name="ln269">}</a>
+<a name="ln270"> </a>
+<a name="ln271">//#define DEBUG_MON_CREATION</a>
+<a name="ln272"> </a>
+<a name="ln273">/**</a>
+<a name="ln274"> * Spawn random monsters.</a>
+<a name="ln275"> </a>
+<a name="ln276"> * The spawn rate defaults to the current env.spawn_random_rate for the branch,</a>
+<a name="ln277"> * but is modified by whether the player is in the abyss and on what level, as</a>
+<a name="ln278"> * well as whether the player has the orb.</a>
+<a name="ln279"> */</a>
+<a name="ln280">void spawn_random_monsters()</a>
+<a name="ln281">{</a>
+<a name="ln282">    if (crawl_state.disables[DIS_SPAWNS])</a>
+<a name="ln283">        return;</a>
+<a name="ln284"> </a>
+<a name="ln285">    if (crawl_state.game_is_arena()</a>
+<a name="ln286">        || (crawl_state.game_is_sprint()</a>
+<a name="ln287">            &amp;&amp; player_in_connected_branch()</a>
+<a name="ln288">            &amp;&amp; you.chapter == CHAPTER_ORB_HUNTING)</a>
+<a name="ln289">        // Spawns no longer occur outside the Orb run in connected branches.</a>
+<a name="ln290">        || !player_on_orb_run() &amp;&amp; player_in_connected_branch())</a>
+<a name="ln291">    {</a>
+<a name="ln292">        return;</a>
+<a name="ln293">    }</a>
+<a name="ln294"> </a>
+<a name="ln295">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln296">    mprf(MSGCH_DIAGNOSTICS, &quot;in spawn_random_monsters()&quot;);</a>
+<a name="ln297">#endif</a>
+<a name="ln298">    int rate = env.spawn_random_rate;</a>
+<a name="ln299">    if (!rate)</a>
+<a name="ln300">    {</a>
+<a name="ln301">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln302">        mprf(MSGCH_DIAGNOSTICS, &quot;random monster gen turned off&quot;);</a>
+<a name="ln303">#endif</a>
+<a name="ln304">        return;</a>
+<a name="ln305">    }</a>
+<a name="ln306"> </a>
+<a name="ln307">    if (player_on_orb_run())</a>
+<a name="ln308">        rate = have_passive(passive_t::slow_orb_run) ? 36 : 18;</a>
+<a name="ln309"> </a>
+<a name="ln310">    if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln311">    {</a>
+<a name="ln312">        if (!player_in_starting_abyss())</a>
+<a name="ln313">            rate = 5;</a>
+<a name="ln314">        if (have_passive(passive_t::slow_abyss))</a>
+<a name="ln315">            rate *= 2;</a>
+<a name="ln316">    }</a>
+<a name="ln317"> </a>
+<a name="ln318">    if (!x_chance_in_y(5, rate))</a>
+<a name="ln319">        return;</a>
+<a name="ln320"> </a>
+<a name="ln321">    // Orb spawns. Don't generate orb spawns in Abyss to show some mercy to</a>
+<a name="ln322">    // players that get banished there on the orb run.</a>
+<a name="ln323">    if (player_on_orb_run() &amp;&amp; !player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln324">    {</a>
+<a name="ln325">        dprf(DIAG_MONPLACE, &quot;Placing monster, rate: %d, turns here: %d&quot;,</a>
+<a name="ln326">             rate, env.turns_on_level);</a>
+<a name="ln327"> </a>
+<a name="ln328">        mgen_data mg(WANDERING_MONSTER);</a>
+<a name="ln329">        mg.proximity = PROX_CLOSE_TO_PLAYER;</a>
+<a name="ln330">        mg.foe = MHITYOU;</a>
+<a name="ln331">        // Don't count orb run spawns in the xp_by_level dump</a>
+<a name="ln332">        mg.xp_tracking = XP_UNTRACKED;</a>
+<a name="ln333">        mons_place(mg);</a>
+<a name="ln334">        viewwindow();</a>
+<a name="ln335">        return;</a>
+<a name="ln336">    }</a>
+<a name="ln337"> </a>
+<a name="ln338">    mgen_data mg(WANDERING_MONSTER);</a>
+<a name="ln339">    if (player_in_branch(BRANCH_PANDEMONIUM)</a>
+<a name="ln340">        &amp;&amp; !env.properties.exists(&quot;vault_mon_weights&quot;)</a>
+<a name="ln341">        &amp;&amp; !one_chance_in(40))</a>
+<a name="ln342">    {</a>
+<a name="ln343">        mg.cls = env.mons_alloc[random2(PAN_MONS_ALLOC)];</a>
+<a name="ln344">        mg.flags |= MG_PERMIT_BANDS;</a>
+<a name="ln345">    }</a>
+<a name="ln346"> </a>
+<a name="ln347">    mons_place(mg);</a>
+<a name="ln348">    viewwindow();</a>
+<a name="ln349">}</a>
+<a name="ln350"> </a>
+<a name="ln351">static bool _is_random_monster(monster_type mt)</a>
+<a name="ln352">{</a>
+<a name="ln353">    return mt == RANDOM_MONSTER || mt == RANDOM_MOBILE_MONSTER</a>
+<a name="ln354">           || mt == RANDOM_COMPATIBLE_MONSTER</a>
+<a name="ln355">           || mt == RANDOM_BANDLESS_MONSTER</a>
+<a name="ln356">           || mt == WANDERING_MONSTER;</a>
+<a name="ln357">}</a>
+<a name="ln358"> </a>
+<a name="ln359">static bool _has_big_aura(monster_type mt)</a>
+<a name="ln360">{</a>
+<a name="ln361">    return mt == MONS_SILENT_SPECTRE;</a>
+<a name="ln362">}</a>
+<a name="ln363"> </a>
+<a name="ln364">static bool _is_incompatible_monster(monster_type mt)</a>
+<a name="ln365">{</a>
+<a name="ln366">    return mons_class_is_stationary(mt)</a>
+<a name="ln367">        || player_will_anger_monster(mt);</a>
+<a name="ln368">}</a>
+<a name="ln369"> </a>
+<a name="ln370">static bool _is_banded_monster(monster_type mt)</a>
+<a name="ln371">{</a>
+<a name="ln372">    return _choose_band(mt) != BAND_NO_BAND;</a>
+<a name="ln373">}</a>
+<a name="ln374"> </a>
+<a name="ln375">// Caller must use !invalid_monster_type to check if the return value</a>
+<a name="ln376">// is a real monster.</a>
+<a name="ln377">monster_type pick_random_monster(level_id place,</a>
+<a name="ln378">                                 monster_type kind,</a>
+<a name="ln379">                                 level_id *final_place,</a>
+<a name="ln380">                                 bool allow_ood)</a>
+<a name="ln381">{</a>
+<a name="ln382">    if (crawl_state.game_is_arena())</a>
+<a name="ln383">    {</a>
+<a name="ln384">        monster_type type = arena_pick_random_monster(place);</a>
+<a name="ln385">        if (!_is_random_monster(type))</a>
+<a name="ln386">            return type;</a>
+<a name="ln387">    }</a>
+<a name="ln388"> </a>
+<a name="ln389">    if (allow_ood)</a>
+<a name="ln390">        _apply_ood(place);</a>
+<a name="ln391"> </a>
+<a name="ln392">    place.depth = min(place.depth, branch_ood_cap(place.branch));</a>
+<a name="ln393"> </a>
+<a name="ln394">    if (final_place)</a>
+<a name="ln395">        *final_place = place;</a>
+<a name="ln396"> </a>
+<a name="ln397">    if (crawl_state.game_is_arena())</a>
+<a name="ln398">        return pick_monster(place, arena_veto_random_monster);</a>
+<a name="ln399"> </a>
+<a name="ln400">    ASSERT(_is_random_monster(kind) || kind == MONS_NO_MONSTER);</a>
+<a name="ln401"> </a>
+<a name="ln402">    if (kind == RANDOM_MOBILE_MONSTER)</a>
+<a name="ln403">        return pick_monster(place, mons_class_is_stationary);</a>
+<a name="ln404">    else if (kind == RANDOM_COMPATIBLE_MONSTER)</a>
+<a name="ln405">        return pick_monster(place, _is_incompatible_monster);</a>
+<a name="ln406">    else if (kind == RANDOM_BANDLESS_MONSTER)</a>
+<a name="ln407">        return pick_monster(place, _is_banded_monster);</a>
+<a name="ln408">    else if (crawl_state.game_is_sprint())</a>
+<a name="ln409">        return pick_monster(place, _has_big_aura);</a>
+<a name="ln410">    else</a>
+<a name="ln411">        return pick_monster(place);</a>
+<a name="ln412">}</a>
+<a name="ln413"> </a>
+<a name="ln414">bool drac_colour_incompatible(int drac, int colour)</a>
+<a name="ln415">{</a>
+<a name="ln416">    return drac == MONS_DRACONIAN_SCORCHER &amp;&amp; colour == MONS_WHITE_DRACONIAN;</a>
+<a name="ln417">}</a>
+<a name="ln418"> </a>
+<a name="ln419">bool needs_resolution(monster_type mon_type)</a>
+<a name="ln420">{</a>
+<a name="ln421">    return mon_type == RANDOM_DRACONIAN || mon_type == RANDOM_BASE_DRACONIAN</a>
+<a name="ln422">           || mon_type == RANDOM_NONBASE_DRACONIAN</a>
+<a name="ln423">           || mon_type &gt;= RANDOM_DEMON_LESSER &amp;&amp; mon_type &lt;= RANDOM_DEMON</a>
+<a name="ln424">           || mon_type == RANDOM_DEMONSPAWN</a>
+<a name="ln425">           || mon_type == RANDOM_BASE_DEMONSPAWN</a>
+<a name="ln426">           || mon_type == RANDOM_NONBASE_DEMONSPAWN</a>
+<a name="ln427">           || _is_random_monster(mon_type);</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">monster_type resolve_monster_type(monster_type mon_type,</a>
+<a name="ln431">                                  monster_type &amp;base_type,</a>
+<a name="ln432">                                  proximity_type proximity,</a>
+<a name="ln433">                                  coord_def *pos,</a>
+<a name="ln434">                                  unsigned mmask,</a>
+<a name="ln435">                                  level_id *place,</a>
+<a name="ln436">                                  bool *want_band,</a>
+<a name="ln437">                                  bool allow_ood)</a>
+<a name="ln438">{</a>
+<a name="ln439">    if (want_band)</a>
+<a name="ln440">        *want_band = false;</a>
+<a name="ln441"> </a>
+<a name="ln442">    if (mon_type == RANDOM_DRACONIAN)</a>
+<a name="ln443">    {</a>
+<a name="ln444">        // Pick any random drac, constrained by colour if requested.</a>
+<a name="ln445">        do</a>
+<a name="ln446">        {</a>
+<a name="ln447">            if (coinflip())</a>
+<a name="ln448">                mon_type = random_draconian_monster_species();</a>
+<a name="ln449">            else</a>
+<a name="ln450">                mon_type = random_draconian_job();</a>
+<a name="ln451">        }</a>
+<a name="ln452">        while (base_type != MONS_PROGRAM_BUG</a>
+<a name="ln453">               &amp;&amp; mon_type != base_type</a>
+<a name="ln454">               &amp;&amp; (mons_species(mon_type) == mon_type</a>
+<a name="ln455">                   || drac_colour_incompatible(mon_type, base_type)));</a>
+<a name="ln456">    }</a>
+<a name="ln457">    else if (mon_type == RANDOM_BASE_DRACONIAN)</a>
+<a name="ln458">        mon_type = random_draconian_monster_species();</a>
+<a name="ln459">    else if (mon_type == RANDOM_NONBASE_DRACONIAN)</a>
+<a name="ln460">        mon_type = random_draconian_job();</a>
+<a name="ln461">    else if (mon_type &gt;= RANDOM_DEMON_LESSER &amp;&amp; mon_type &lt;= RANDOM_DEMON)</a>
+<a name="ln462">        mon_type = summon_any_demon(mon_type, true);</a>
+<a name="ln463">    else if (mon_type == RANDOM_DEMONSPAWN)</a>
+<a name="ln464">    {</a>
+<a name="ln465">        do</a>
+<a name="ln466">        {</a>
+<a name="ln467">            mon_type =</a>
+<a name="ln468">                static_cast&lt;monster_type&gt;(</a>
+<a name="ln469">                    random_range(MONS_FIRST_DEMONSPAWN,</a>
+<a name="ln470">                                 MONS_LAST_DEMONSPAWN));</a>
+<a name="ln471">        }</a>
+<a name="ln472">        while (base_type != MONS_PROGRAM_BUG</a>
+<a name="ln473">               &amp;&amp; mon_type != base_type</a>
+<a name="ln474">               &amp;&amp; mons_species(mon_type) == mon_type);</a>
+<a name="ln475">    }</a>
+<a name="ln476">    else if (mon_type == RANDOM_BASE_DEMONSPAWN)</a>
+<a name="ln477">        mon_type = random_demonspawn_monster_species();</a>
+<a name="ln478">    else if (mon_type == RANDOM_NONBASE_DEMONSPAWN)</a>
+<a name="ln479">        mon_type = random_demonspawn_job();</a>
+<a name="ln480"> </a>
+<a name="ln481">    // (2) Take care of non-draconian random monsters.</a>
+<a name="ln482">    else if (_is_random_monster(mon_type))</a>
+<a name="ln483">    {</a>
+<a name="ln484">        // Only use the vault list if the monster comes from this level.</a>
+<a name="ln485">        if (!vault_mon_types.empty() &amp;&amp; *place == level_id::current())</a>
+<a name="ln486">        {</a>
+<a name="ln487">            int i = 0;</a>
+<a name="ln488">            int tries = 0;</a>
+<a name="ln489">            int type;</a>
+<a name="ln490">            do</a>
+<a name="ln491">            {</a>
+<a name="ln492">                i = choose_random_weighted(vault_mon_weights.begin(),</a>
+<a name="ln493">                                           vault_mon_weights.end());</a>
+<a name="ln494">                type = vault_mon_types[i];</a>
+<a name="ln495"> </a>
+<a name="ln496">                // Give up after enough attempts: for example, a Yred</a>
+<a name="ln497">                // worshipper casting Shadow Creatures in holy Pan.</a>
+<a name="ln498">                if (tries++ &gt;= 300)</a>
+<a name="ln499">                    type = MONS_NO_MONSTER;</a>
+<a name="ln500">                // If the monster list says not to place, or to place</a>
+<a name="ln501">                // by level, or to place a random monster, accept that.</a>
+<a name="ln502">                // If it's random, we'll be recursively calling ourselves</a>
+<a name="ln503">                // later on for the new monster type.</a>
+<a name="ln504">                if (type == MONS_NO_MONSTER || type == -1</a>
+<a name="ln505">                    || needs_resolution((monster_type)type))</a>
+<a name="ln506">                {</a>
+<a name="ln507">                    break;</a>
+<a name="ln508">                }</a>
+<a name="ln509">            }</a>
+<a name="ln510">            while (mon_type == RANDOM_MOBILE_MONSTER</a>
+<a name="ln511">                      &amp;&amp; mons_class_is_stationary((monster_type)type)</a>
+<a name="ln512">                   || mon_type == RANDOM_COMPATIBLE_MONSTER</a>
+<a name="ln513">                      &amp;&amp; _is_incompatible_monster((monster_type)type)</a>
+<a name="ln514">                   || mon_type == RANDOM_BANDLESS_MONSTER</a>
+<a name="ln515">                      &amp;&amp; _is_banded_monster((monster_type)type));</a>
+<a name="ln516"> </a>
+<a name="ln517">            int base = vault_mon_bases[i];</a>
+<a name="ln518">            bool banded = vault_mon_bands[i];</a>
+<a name="ln519"> </a>
+<a name="ln520">            if (type == -1)</a>
+<a name="ln521">                *place = vault_mon_places[i];</a>
+<a name="ln522">            else</a>
+<a name="ln523">            {</a>
+<a name="ln524">                base_type = (monster_type) base;</a>
+<a name="ln525">                mon_type  = (monster_type) type;</a>
+<a name="ln526">                if (want_band)</a>
+<a name="ln527">                    *want_band = banded;</a>
+<a name="ln528">                if (needs_resolution(mon_type))</a>
+<a name="ln529">                {</a>
+<a name="ln530">                    mon_type =</a>
+<a name="ln531">                        resolve_monster_type(mon_type, base_type,</a>
+<a name="ln532">                                             proximity, pos, mmask,</a>
+<a name="ln533">                                             place, want_band, allow_ood);</a>
+<a name="ln534">                }</a>
+<a name="ln535">                return mon_type;</a>
+<a name="ln536">            }</a>
+<a name="ln537">        }</a>
+<a name="ln538"> </a>
+<a name="ln539">        // Now pick a monster of the given branch and level.</a>
+<a name="ln540">        mon_type = pick_random_monster(*place, mon_type, place, allow_ood);</a>
+<a name="ln541">    }</a>
+<a name="ln542">    return mon_type;</a>
+<a name="ln543">}</a>
+<a name="ln544"> </a>
+<a name="ln545">// For generation purposes, don't treat simulacra of lava enemies as</a>
+<a name="ln546">// being able to place on lava.</a>
+<a name="ln547">monster_type fixup_zombie_type(const monster_type cls,</a>
+<a name="ln548">                                         const monster_type base_type)</a>
+<a name="ln549">{</a>
+<a name="ln550">    return (mons_class_is_zombified(cls)</a>
+<a name="ln551">            &amp;&amp; mons_class_secondary_habitat(base_type) != HT_LAVA)</a>
+<a name="ln552">            ? base_type</a>
+<a name="ln553">            : cls;</a>
+<a name="ln554">}</a>
+<a name="ln555"> </a>
+<a name="ln556">// Checks if the monster is ok to place at mg_pos. If force_location</a>
+<a name="ln557">// is true, then we'll be less rigorous in our checks, in particular</a>
+<a name="ln558">// allowing land monsters to be placed in shallow water and water</a>
+<a name="ln559">// creatures in fountains.</a>
+<a name="ln560">static bool _valid_monster_generation_location(const mgen_data &amp;mg,</a>
+<a name="ln561">                                                const coord_def &amp;mg_pos)</a>
+<a name="ln562">{</a>
+<a name="ln563">    if (!in_bounds(mg_pos)</a>
+<a name="ln564">        || monster_at(mg_pos)</a>
+<a name="ln565">        || you.pos() == mg_pos &amp;&amp; !fedhas_passthrough_class(mg.cls))</a>
+<a name="ln566">    {</a>
+<a name="ln567">        ASSERT(!crawl_state.generating_level</a>
+<a name="ln568">                || !in_bounds(mg_pos)</a>
+<a name="ln569">                || you.pos() != mg_pos</a>
+<a name="ln570">                || you.where_are_you == BRANCH_ABYSS);</a>
+<a name="ln571">        return false;</a>
+<a name="ln572">    }</a>
+<a name="ln573"> </a>
+<a name="ln574">    const monster_type montype = fixup_zombie_type(mg.cls, mg.base_type);</a>
+<a name="ln575">    if (!monster_habitable_grid(montype, grd(mg_pos), mg.preferred_grid_feature)</a>
+<a name="ln576">        || (mg.behaviour != BEH_FRIENDLY</a>
+<a name="ln577">            &amp;&amp; is_sanctuary(mg_pos)</a>
+<a name="ln578">            &amp;&amp; !mons_is_tentacle_segment(montype)))</a>
+<a name="ln579">    {</a>
+<a name="ln580">        return false;</a>
+<a name="ln581">    }</a>
+<a name="ln582"> </a>
+<a name="ln583">    bool close_to_player = grid_distance(you.pos(), mg_pos) &lt;= LOS_RADIUS;</a>
+<a name="ln584">    if (mg.proximity == PROX_AWAY_FROM_PLAYER &amp;&amp; close_to_player</a>
+<a name="ln585">        || mg.proximity == PROX_CLOSE_TO_PLAYER &amp;&amp; !close_to_player)</a>
+<a name="ln586">    {</a>
+<a name="ln587">        ASSERT(!crawl_state.generating_level || you.where_are_you == BRANCH_ABYSS);</a>
+<a name="ln588">        return false;</a>
+<a name="ln589">    }</a>
+<a name="ln590">    // Check that the location is not proximal to level stairs.</a>
+<a name="ln591">    else if (mg.proximity == PROX_AWAY_FROM_STAIRS)</a>
+<a name="ln592">    {</a>
+<a name="ln593">        for (distance_iterator di(mg_pos, false, false, LOS_RADIUS); di; ++di)</a>
+<a name="ln594">            if (feat_is_stone_stair(grd(*di)))</a>
+<a name="ln595">                return false;</a>
+<a name="ln596">    }</a>
+<a name="ln597">    // Check that the location is not proximal to an area where the player</a>
+<a name="ln598">    // begins the game.</a>
+<a name="ln599">    else if (mg.proximity == PROX_AWAY_FROM_DUNGEON_ENTRANCE</a>
+<a name="ln600">             &amp;&amp; env.absdepth0 == 0)</a>
+<a name="ln601">    {</a>
+<a name="ln602">        for (distance_iterator di(mg_pos, false, false, LOS_RADIUS); di; ++di)</a>
+<a name="ln603">            if (feat_is_branch_exit(grd(*di))</a>
+<a name="ln604">                // We may be checking before branch exit cleanup.</a>
+<a name="ln605">                || feat_is_stone_stair_up(grd(*di)))</a>
+<a name="ln606">            {</a>
+<a name="ln607">                return false;</a>
+<a name="ln608">            }</a>
+<a name="ln609">    }</a>
+<a name="ln610"> </a>
+<a name="ln611">    return true;</a>
+<a name="ln612">}</a>
+<a name="ln613"> </a>
+<a name="ln614">static bool _valid_monster_generation_location(mgen_data &amp;mg)</a>
+<a name="ln615">{</a>
+<a name="ln616">    return _valid_monster_generation_location(mg, mg.pos);</a>
+<a name="ln617">}</a>
+<a name="ln618"> </a>
+<a name="ln619">monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)</a>
+<a name="ln620">{</a>
+<a name="ln621">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln622">    mprf(MSGCH_DIAGNOSTICS, &quot;in place_monster()&quot;);</a>
+<a name="ln623">#endif</a>
+<a name="ln624"> </a>
+<a name="ln625">    const int mon_count = count_if(begin(menv), end(menv),</a>
+<a name="ln626">                                   [] (const monster &amp;mons) -&gt; bool</a>
+<a name="ln627">                                   { return mons.type != MONS_NO_MONSTER; });</a>
+<a name="ln628">    // All monsters have been assigned? {dlb}</a>
+<a name="ln629">    if (mon_count &gt;= MAX_MONSTERS - 1)</a>
+<a name="ln630">        return nullptr;</a>
+<a name="ln631"> </a>
+<a name="ln632">    int tries = 0;</a>
+<a name="ln633"> </a>
+<a name="ln634">    // (1) Early out (summoned to occupied grid).</a>
+<a name="ln635">    if (mg.use_position() &amp;&amp; monster_at(mg.pos))</a>
+<a name="ln636">        return 0;</a>
+<a name="ln637"> </a>
+<a name="ln638">    if (!mg.place.is_valid())</a>
+<a name="ln639">        mg.place = level_id::current();</a>
+<a name="ln640"> </a>
+<a name="ln641">    const bool allow_ood = !(mg.flags &amp; MG_NO_OOD);</a>
+<a name="ln642">    bool want_band = false;</a>
+<a name="ln643">    level_id place = mg.place;</a>
+<a name="ln644">    mg.cls = resolve_monster_type(mg.cls, mg.base_type, mg.proximity,</a>
+<a name="ln645">                                  &amp;mg.pos, mg.map_mask,</a>
+<a name="ln646">                                  &amp;place, &amp;want_band, allow_ood);</a>
+<a name="ln647">    // TODO: it doesn't seem that this check can ever come out to be true??</a>
+<a name="ln648">    bool chose_ood_monster = place.absdepth() &gt; mg.place.absdepth() + 5;</a>
+<a name="ln649">    if (want_band)</a>
+<a name="ln650">        mg.flags |= MG_PERMIT_BANDS;</a>
+<a name="ln651"> </a>
+<a name="ln652">    if (mg.cls == MONS_NO_MONSTER || mg.cls == MONS_PROGRAM_BUG)</a>
+<a name="ln653">        return 0;</a>
+<a name="ln654"> </a>
+<a name="ln655">    bool create_band = mg.permit_bands();</a>
+<a name="ln656">    // If we drew an OOD monster and the level has less absdepth than D:13</a>
+<a name="ln657">    // disable band generation. This applies only to randomly picked monsters</a>
+<a name="ln658">    // -- chose_ood_monster will never be set true for explicitly specified</a>
+<a name="ln659">    // monsters in vaults and other places.</a>
+<a name="ln660">    if (chose_ood_monster &amp;&amp; env.absdepth0 &lt; 12)</a>
+<a name="ln661">    {</a>
+<a name="ln662">        dprf(DIAG_MONPLACE,</a>
+<a name="ln663">             &quot;Chose monster with OOD roll: %s, disabling band generation&quot;,</a>
+<a name="ln664">             get_monster_data(mg.cls)-&gt;name);</a>
+<a name="ln665">        create_band = false;</a>
+<a name="ln666">    }</a>
+<a name="ln667"> </a>
+<a name="ln668">    if (mg.cls == MONS_PROGRAM_BUG)</a>
+<a name="ln669">        return 0;</a>
+<a name="ln670"> </a>
+<a name="ln671">    // (3) Decide on banding (good lord!)</a>
+<a name="ln672">    int band_size = 1;</a>
+<a name="ln673">    bool leader = false;</a>
+<a name="ln674">    monster_type band_monsters[BIG_BAND];        // band monster types</a>
+<a name="ln675">    band_type band = BAND_NO_BAND;</a>
+<a name="ln676">    band_monsters[0] = mg.cls;</a>
+<a name="ln677"> </a>
+<a name="ln678">    if (create_band)</a>
+<a name="ln679">    {</a>
+<a name="ln680">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln681">        mprf(MSGCH_DIAGNOSTICS, &quot;Choose band members...&quot;);</a>
+<a name="ln682">#endif</a>
+<a name="ln683">        band = _choose_band(mg.cls, &amp;band_size, &amp;leader);</a>
+<a name="ln684">        band_size++;</a>
+<a name="ln685">        for (int i = 1; i &lt; band_size; ++i)</a>
+<a name="ln686">        {</a>
+<a name="ln687">            band_monsters[i] = _band_member(band, i, place, allow_ood);</a>
+<a name="ln688">            if (band_monsters[i] == NUM_MONSTERS)</a>
+<a name="ln689">                die(&quot;Unhandled band type %d&quot;, band);</a>
+<a name="ln690">        }</a>
+<a name="ln691"> </a>
+<a name="ln692">        // Set the (very) ugly thing band colour.</a>
+<a name="ln693">        ugly_thing_apply_uniform_band_colour(mg, band_monsters, band_size);</a>
+<a name="ln694">    }</a>
+<a name="ln695"> </a>
+<a name="ln696">    // For first monster, choose location. This is pretty intensive.</a>
+<a name="ln697">    if (!mg.use_position() &amp;&amp; !force_pos)</a>
+<a name="ln698">    {</a>
+<a name="ln699">        tries = 0;</a>
+<a name="ln700"> </a>
+<a name="ln701">        // Try to pick a position that is</a>
+<a name="ln702">        // a) not occupied</a>
+<a name="ln703">        // b) compatible</a>
+<a name="ln704">        // c) in the 'correct' proximity to the player</a>
+<a name="ln705"> </a>
+<a name="ln706">        while (true)</a>
+<a name="ln707">        {</a>
+<a name="ln708">            if (tries++ &gt;= 45)</a>
+<a name="ln709">                return nullptr;</a>
+<a name="ln710"> </a>
+<a name="ln711">            mg.pos = random_in_bounds();</a>
+<a name="ln712"> </a>
+<a name="ln713">            if (!_valid_monster_generation_location(mg))</a>
+<a name="ln714">                continue;</a>
+<a name="ln715"> </a>
+<a name="ln716">            // Is the grid verboten?</a>
+<a name="ln717">            if (map_masked(mg.pos, mg.map_mask))</a>
+<a name="ln718">                continue;</a>
+<a name="ln719"> </a>
+<a name="ln720">            break;</a>
+<a name="ln721">        }</a>
+<a name="ln722">    }</a>
+<a name="ln723">    // Sanity check that the specified position is valid.</a>
+<a name="ln724">    else if (!_valid_monster_generation_location(mg) &amp;&amp; !dont_place)</a>
+<a name="ln725">        return nullptr;</a>
+<a name="ln726"> </a>
+<a name="ln727">    monster* mon;</a>
+<a name="ln728">    if (mg.cls == MONS_PLAYER_GHOST)</a>
+<a name="ln729">        mon = _place_pghost_aux(mg, nullptr, place, force_pos, dont_place);</a>
+<a name="ln730">    else</a>
+<a name="ln731">        mon = _place_monster_aux(mg, nullptr, place, force_pos, dont_place);</a>
+<a name="ln732"> </a>
+<a name="ln733">    if (!mon)</a>
+<a name="ln734">        return nullptr;</a>
+<a name="ln735"> </a>
+<a name="ln736">    if (mg.props.exists(MAP_KEY))</a>
+<a name="ln737">        mon-&gt;set_originating_map(mg.props[MAP_KEY].get_string());</a>
+<a name="ln738"> </a>
+<a name="ln739">    if (chose_ood_monster)</a>
+<a name="ln740">        mon-&gt;props[MON_OOD_KEY].get_bool() = true;</a>
+<a name="ln741"> </a>
+<a name="ln742">    if (mg.needs_patrol_point()</a>
+<a name="ln743">        || (mon-&gt;type == MONS_ALLIGATOR</a>
+<a name="ln744">            &amp;&amp; !testbits(mon-&gt;flags, MF_BAND_MEMBER)))</a>
+<a name="ln745">    {</a>
+<a name="ln746">        mon-&gt;patrol_point = mon-&gt;pos();</a>
+<a name="ln747">#ifdef DEBUG_PATHFIND</a>
+<a name="ln748">        mprf(&quot;Monster %s is patrolling around (%d, %d).&quot;,</a>
+<a name="ln749">             mon-&gt;name(DESC_PLAIN).c_str(), mon-&gt;pos().x, mon-&gt;pos().y);</a>
+<a name="ln750">#endif</a>
+<a name="ln751">    }</a>
+<a name="ln752"> </a>
+<a name="ln753">    if (player_in_branch(BRANCH_ABYSS) &amp;&amp; !mg.summoner</a>
+<a name="ln754">        &amp;&amp; in_bounds(mon-&gt;pos())</a>
+<a name="ln755">        &amp;&amp; !(mg.extra_flags &amp; MF_WAS_IN_VIEW)</a>
+<a name="ln756">        &amp;&amp; !cell_is_solid(mon-&gt;pos()))</a>
+<a name="ln757">    {</a>
+<a name="ln758">        big_cloud(CLOUD_TLOC_ENERGY, mon, mon-&gt;pos(), 3 + random2(3), 3, 3);</a>
+<a name="ln759">    }</a>
+<a name="ln760"> </a>
+<a name="ln761">    if (player_in_branch(BRANCH_ABYSS) &amp;&amp; you.can_see(*mon)</a>
+<a name="ln762">             &amp;&amp; !crawl_state.generating_level</a>
+<a name="ln763">             &amp;&amp; !mg.summoner</a>
+<a name="ln764">             &amp;&amp; !crawl_state.is_god_acting()</a>
+<a name="ln765">             &amp;&amp; !(mon-&gt;flags &amp; MF_WAS_IN_VIEW)) // is this possible?</a>
+<a name="ln766">    {</a>
+<a name="ln767">        mon-&gt;seen_context = SC_ABYSS;</a>
+<a name="ln768">    }</a>
+<a name="ln769"> </a>
+<a name="ln770">    // Now, forget about banding if the first placement failed, or there are</a>
+<a name="ln771">    // too many monsters already.</a>
+<a name="ln772">    if (mon-&gt;mindex() &gt;= MAX_MONSTERS - 30)</a>
+<a name="ln773">        return mon;</a>
+<a name="ln774"> </a>
+<a name="ln775">    if (band_size &gt; 1)</a>
+<a name="ln776">        mon-&gt;flags |= MF_BAND_MEMBER;</a>
+<a name="ln777"> </a>
+<a name="ln778">    const bool priest = mon-&gt;is_priest();</a>
+<a name="ln779"> </a>
+<a name="ln780">    mgen_data band_template = mg;</a>
+<a name="ln781"> </a>
+<a name="ln782">    if (leader &amp;&amp; !mg.summoner)</a>
+<a name="ln783">    {</a>
+<a name="ln784">        band_template.summoner = mon;</a>
+<a name="ln785">        band_template.flags |= MG_BAND_MINION;</a>
+<a name="ln786">    }</a>
+<a name="ln787"> </a>
+<a name="ln788">    unwind_var&lt;band_type&gt; current_band(active_monster_band, band);</a>
+<a name="ln789">    // (5) For each band monster, loop call to place_monster_aux().</a>
+<a name="ln790">    for (int i = 1; i &lt; band_size; i++)</a>
+<a name="ln791">    {</a>
+<a name="ln792">        if (band_monsters[i] == MONS_NO_MONSTER)</a>
+<a name="ln793">            break;</a>
+<a name="ln794"> </a>
+<a name="ln795">        band_template.cls = band_monsters[i];</a>
+<a name="ln796"> </a>
+<a name="ln797">        // We don't want to place a unique that has already been</a>
+<a name="ln798">        // generated.</a>
+<a name="ln799">        if (mons_is_unique(band_template.cls)</a>
+<a name="ln800">            &amp;&amp; you.unique_creatures[band_template.cls])</a>
+<a name="ln801">        {</a>
+<a name="ln802">            continue;</a>
+<a name="ln803">        }</a>
+<a name="ln804"> </a>
+<a name="ln805">        if (monster *member = _place_monster_aux(band_template, mon, place))</a>
+<a name="ln806">        {</a>
+<a name="ln807">            member-&gt;flags |= MF_BAND_MEMBER;</a>
+<a name="ln808">            member-&gt;props[&quot;band_leader&quot;].get_int() = mon-&gt;mid;</a>
+<a name="ln809">            member-&gt;set_originating_map(mon-&gt;originating_map());</a>
+<a name="ln810"> </a>
+<a name="ln811">            // Priestly band leaders should have an entourage of the</a>
+<a name="ln812">            // same religion, unless members of that entourage already</a>
+<a name="ln813">            // have a different one.</a>
+<a name="ln814">            if (priest &amp;&amp; member-&gt;god == GOD_NO_GOD)</a>
+<a name="ln815">                member-&gt;god = mon-&gt;god;</a>
+<a name="ln816"> </a>
+<a name="ln817">            if (mon-&gt;type == MONS_PIKEL)</a>
+<a name="ln818">            {</a>
+<a name="ln819">                // Don't give XP for the slaves to discourage hunting. Pikel</a>
+<a name="ln820">                // has an artificially large XP modifier to compensate for</a>
+<a name="ln821">                // this.</a>
+<a name="ln822">                member-&gt;flags |= MF_NO_REWARD;</a>
+<a name="ln823">                member-&gt;props[&quot;pikel_band&quot;] = true;</a>
+<a name="ln824">            }</a>
+<a name="ln825">            else if (mon-&gt;type == MONS_KIRKE)</a>
+<a name="ln826">                member-&gt;props[&quot;kirke_band&quot;] = true;</a>
+<a name="ln827">        }</a>
+<a name="ln828">    }</a>
+<a name="ln829">    dprf(DIAG_DNGN, &quot;Placing %s at %d,%d&quot;, mon-&gt;name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln830">                mon-&gt;pos().x, mon-&gt;pos().y);</a>
+<a name="ln831"> </a>
+<a name="ln832">    // Placement of first monster, at least, was a success.</a>
+<a name="ln833">    return mon;</a>
+<a name="ln834">}</a>
+<a name="ln835"> </a>
+<a name="ln836">monster* get_free_monster()</a>
+<a name="ln837">{</a>
+<a name="ln838">    for (auto &amp;mons : menv_real)</a>
+<a name="ln839">        if (mons.type == MONS_NO_MONSTER)</a>
+<a name="ln840">        {</a>
+<a name="ln841">            mons.reset();</a>
+<a name="ln842">            return &amp;mons;</a>
+<a name="ln843">        }</a>
+<a name="ln844"> </a>
+<a name="ln845">    return nullptr;</a>
+<a name="ln846">}</a>
+<a name="ln847"> </a>
+<a name="ln848">void mons_add_blame(monster* mon, const string &amp;blame_string)</a>
+<a name="ln849">{</a>
+<a name="ln850">    const bool exists = mon-&gt;props.exists(&quot;blame&quot;);</a>
+<a name="ln851">    CrawlStoreValue&amp; blame = mon-&gt;props[&quot;blame&quot;];</a>
+<a name="ln852">    if (!exists)</a>
+<a name="ln853">        blame.new_vector(SV_STR, SFLAG_CONST_TYPE);</a>
+<a name="ln854">    blame.get_vector().push_back(blame_string);</a>
+<a name="ln855">}</a>
+<a name="ln856"> </a>
+<a name="ln857">static void _place_twister_clouds(monster *mon)</a>
+<a name="ln858">{</a>
+<a name="ln859">    // Yay for the abj_degree having a huge granularity.</a>
+<a name="ln860">    if (mon-&gt;has_ench(ENCH_ABJ))</a>
+<a name="ln861">    {</a>
+<a name="ln862">        mon_enchant abj = mon-&gt;get_ench(ENCH_ABJ);</a>
+<a name="ln863">        mon-&gt;lose_ench_duration(abj, abj.duration / 2);</a>
+<a name="ln864">    }</a>
+<a name="ln865"> </a>
+<a name="ln866">    tornado_damage(mon, -10);</a>
+<a name="ln867">}</a>
+<a name="ln868"> </a>
+<a name="ln869">static monster* _place_monster_aux(const mgen_data &amp;mg, const monster *leader,</a>
+<a name="ln870">                                   level_id place,</a>
+<a name="ln871">                                   bool force_pos, bool dont_place)</a>
+<a name="ln872">{</a>
+<a name="ln873">    coord_def fpos;</a>
+<a name="ln874"> </a>
+<a name="ln875">    // Some sanity checks.</a>
+<a name="ln876">    if (mons_is_unique(mg.cls) &amp;&amp; you.unique_creatures[mg.cls]</a>
+<a name="ln877">            &amp;&amp; !crawl_state.game_is_arena()</a>
+<a name="ln878">        || mons_class_flag(mg.cls, M_CANT_SPAWN))</a>
+<a name="ln879">    {</a>
+<a name="ln880">        die(&quot;invalid monster to place: %s (%d)&quot;, mons_class_name(mg.cls), mg.cls);</a>
+<a name="ln881">    }</a>
+<a name="ln882"> </a>
+<a name="ln883">    const monsterentry *m_ent = get_monster_data(mg.cls);</a>
+<a name="ln884"> </a>
+<a name="ln885">    monster* mon = get_free_monster();</a>
+<a name="ln886">    if (!mon)</a>
+<a name="ln887">        return 0;</a>
+<a name="ln888"> </a>
+<a name="ln889">    const monster_type montype = fixup_zombie_type(mg.cls, mg.base_type);</a>
+<a name="ln890"> </a>
+<a name="ln891">    // Setup habitat and placement.</a>
+<a name="ln892">    // If the space is occupied, try some neighbouring square instead.</a>
+<a name="ln893">    if (dont_place)</a>
+<a name="ln894">        fpos.reset();</a>
+<a name="ln895">    else if (!leader</a>
+<a name="ln896">        &amp;&amp; in_bounds(mg.pos)</a>
+<a name="ln897">        &amp;&amp; (mg.behaviour == BEH_FRIENDLY ||</a>
+<a name="ln898">            (!is_sanctuary(mg.pos) || mons_is_tentacle_segment(montype)))</a>
+<a name="ln899">        &amp;&amp; !monster_at(mg.pos)</a>
+<a name="ln900">        &amp;&amp; (you.pos() != mg.pos || fedhas_passthrough_class(mg.cls))</a>
+<a name="ln901">        &amp;&amp; (force_pos || monster_habitable_grid(montype, grd(mg.pos))))</a>
+<a name="ln902">    {</a>
+<a name="ln903">        fpos = mg.pos;</a>
+<a name="ln904">    }</a>
+<a name="ln905">    else</a>
+<a name="ln906">    {</a>
+<a name="ln907">        int i;</a>
+<a name="ln908">        // We'll try 1000 times for a good spot.</a>
+<a name="ln909">        for (i = 0; i &lt; 1000; ++i)</a>
+<a name="ln910">        {</a>
+<a name="ln911">            fpos = mg.pos;</a>
+<a name="ln912">            fpos.x += random_range(-3, 3);</a>
+<a name="ln913">            fpos.y += random_range(-3, 3);</a>
+<a name="ln914"> </a>
+<a name="ln915">            // Place members within LOS_SOLID of their leader.</a>
+<a name="ln916">            // TODO nfm - allow placing around corners but not across walls.</a>
+<a name="ln917">            if ((leader == 0 || cell_see_cell(fpos, leader-&gt;pos(), LOS_SOLID))</a>
+<a name="ln918">                &amp;&amp; _valid_monster_generation_location(mg, fpos))</a>
+<a name="ln919">            {</a>
+<a name="ln920">                break;</a>
+<a name="ln921">            }</a>
+<a name="ln922">        }</a>
+<a name="ln923"> </a>
+<a name="ln924">        // Did we really try 1000 times?</a>
+<a name="ln925">        if (i == 1000)</a>
+<a name="ln926">            return 0;</a>
+<a name="ln927">    }</a>
+<a name="ln928"> </a>
+<a name="ln929">    ASSERT(!monster_at(fpos));</a>
+<a name="ln930"> </a>
+<a name="ln931">    if (crawl_state.game_is_arena()</a>
+<a name="ln932">        &amp;&amp; arena_veto_place_monster(mg, leader == 0, fpos))</a>
+<a name="ln933">    {</a>
+<a name="ln934">        return 0;</a>
+<a name="ln935">    }</a>
+<a name="ln936"> </a>
+<a name="ln937">    // Now, actually create the monster. (Wheeee!)</a>
+<a name="ln938">    mon-&gt;set_new_monster_id();</a>
+<a name="ln939">    mon-&gt;type         = mg.cls;</a>
+<a name="ln940">    mon-&gt;base_monster = mg.base_type;</a>
+<a name="ln941">    mon-&gt;xp_tracking  = mg.xp_tracking;</a>
+<a name="ln942"> </a>
+<a name="ln943">    // Set pos and link monster into monster grid.</a>
+<a name="ln944">    if (!dont_place &amp;&amp; !mon-&gt;move_to_pos(fpos))</a>
+<a name="ln945">    {</a>
+<a name="ln946">        env.mid_cache.erase(mon-&gt;mid);</a>
+<a name="ln947">        mon-&gt;reset();</a>
+<a name="ln948">        return 0;</a>
+<a name="ln949">    }</a>
+<a name="ln950"> </a>
+<a name="ln951">    // Pick the correct Serpent of Hell.</a>
+<a name="ln952">    if (mon-&gt;type == MONS_SERPENT_OF_HELL)</a>
+<a name="ln953">    {</a>
+<a name="ln954">        switch (place.branch)</a>
+<a name="ln955">        {</a>
+<a name="ln956">        case BRANCH_COCYTUS:</a>
+<a name="ln957">            mon-&gt;type = MONS_SERPENT_OF_HELL_COCYTUS;</a>
+<a name="ln958">            break;</a>
+<a name="ln959">        case BRANCH_DIS:</a>
+<a name="ln960">            mon-&gt;type = MONS_SERPENT_OF_HELL_DIS;</a>
+<a name="ln961">            break;</a>
+<a name="ln962">        case BRANCH_TARTARUS:</a>
+<a name="ln963">            mon-&gt;type = MONS_SERPENT_OF_HELL_TARTARUS;</a>
+<a name="ln964">            break;</a>
+<a name="ln965">        default: ; // if it spawns out of Hell (sprint, wizmode), use Gehenna</a>
+<a name="ln966">        }</a>
+<a name="ln967">    }</a>
+<a name="ln968"> </a>
+<a name="ln969">    // Generate a brand shiny new monster, or zombie.</a>
+<a name="ln970">    if (mons_class_is_zombified(mg.cls))</a>
+<a name="ln971">    {</a>
+<a name="ln972">        monster_type ztype = mg.base_type;</a>
+<a name="ln973"> </a>
+<a name="ln974">        if (ztype == MONS_NO_MONSTER || ztype == RANDOM_MONSTER)</a>
+<a name="ln975">            ztype = pick_local_zombifiable_monster(place, mg.cls, fpos);</a>
+<a name="ln976"> </a>
+<a name="ln977">        define_zombie(mon, ztype, mg.cls);</a>
+<a name="ln978">    }</a>
+<a name="ln979">    else</a>
+<a name="ln980">        define_monster(*mon);</a>
+<a name="ln981"> </a>
+<a name="ln982">    if (mons_genus(mg.cls) == MONS_HYDRA)</a>
+<a name="ln983">    {</a>
+<a name="ln984">        // We're about to check m_ent-&gt;attack[1], so we may as well add a</a>
+<a name="ln985">        // compile-time check to ensure that the array is at least 2 elements</a>
+<a name="ln986">        // large, else we risk undefined behaviour (The array's size is known at</a>
+<a name="ln987">        // compile time even though its value is not). This CHECK would only</a>
+<a name="ln988">        // ever fail if we made it impossible for monsters to have two melee</a>
+<a name="ln989">        // attacks, in which case the ASSERT becomes silly.</a>
+<a name="ln990">        COMPILE_CHECK(ARRAYSZ(m_ent-&gt;attack) &gt; 1);</a>
+<a name="ln991"> </a>
+<a name="ln992">        // Usually hydrae have exactly one attack (which is implicitly repeated</a>
+<a name="ln993">        // for each head), but a &quot;hydra&quot; may have zero if it is actually a</a>
+<a name="ln994">        // hydra-shaped block of ice. We verify here that nothing &quot;hydra-shaped&quot;</a>
+<a name="ln995">        // has more than one attack, because any that do will need cleaning up</a>
+<a name="ln996">        // to fit into the attack-per-head policy.</a>
+<a name="ln997"> </a>
+<a name="ln998">        ASSERT(m_ent-&gt;attack[1].type == AT_NONE);</a>
+<a name="ln999">    }</a>
+<a name="ln1000"> </a>
+<a name="ln1001">    if (mon-&gt;type == MONS_MUTANT_BEAST)</a>
+<a name="ln1002">    {</a>
+<a name="ln1003">        vector&lt;int&gt; gen_facets;</a>
+<a name="ln1004">        if (mg.props.exists(MUTANT_BEAST_FACETS))</a>
+<a name="ln1005">            for (auto facet : mg.props[MUTANT_BEAST_FACETS].get_vector())</a>
+<a name="ln1006">                gen_facets.push_back(facet.get_int());</a>
+<a name="ln1007"> </a>
+<a name="ln1008">        init_mutant_beast(*mon, mg.hd, gen_facets);</a>
+<a name="ln1009">    }</a>
+<a name="ln1010"> </a>
+<a name="ln1011">    // Is it a god gift?</a>
+<a name="ln1012">    if (mg.god != GOD_NO_GOD)</a>
+<a name="ln1013">        mons_make_god_gift(*mon, mg.god);</a>
+<a name="ln1014">    // Not a god gift, give priestly monsters a god.</a>
+<a name="ln1015">    else if (mon-&gt;is_priest())</a>
+<a name="ln1016">    {</a>
+<a name="ln1017">        // Berserkers belong to Trog.</a>
+<a name="ln1018">        if (mg.cls == MONS_SPRIGGAN_BERSERKER)</a>
+<a name="ln1019">            mon-&gt;god = GOD_TROG;</a>
+<a name="ln1020">        // Death knights belong to Yredelemnul.</a>
+<a name="ln1021">        else if (mg.cls == MONS_DEATH_KNIGHT)</a>
+<a name="ln1022">            mon-&gt;god = GOD_YREDELEMNUL;</a>
+<a name="ln1023">        // Asterion belongs to Mahkleb.</a>
+<a name="ln1024">        else if (mg.cls == MONS_ASTERION)</a>
+<a name="ln1025">            mon-&gt;god = GOD_MAKHLEB;</a>
+<a name="ln1026">        // Seraphim follow the Shining One.</a>
+<a name="ln1027">        else if (mg.cls == MONS_SERAPH)</a>
+<a name="ln1028">            mon-&gt;god = GOD_SHINING_ONE;</a>
+<a name="ln1029">        // Draconian stormcallers worship Qazlal.</a>
+<a name="ln1030">        else if (mg.cls == MONS_DRACONIAN_STORMCALLER)</a>
+<a name="ln1031">            mon-&gt;god = GOD_QAZLAL;</a>
+<a name="ln1032">        // Classed demonspawn.</a>
+<a name="ln1033">        else if (mg.cls == MONS_BLOOD_SAINT)</a>
+<a name="ln1034">            mon-&gt;god = GOD_MAKHLEB;</a>
+<a name="ln1035">        else if (mg.cls == MONS_BLACK_SUN)</a>
+<a name="ln1036">            mon-&gt;god = GOD_KIKUBAAQUDGHA;</a>
+<a name="ln1037">        else if (mg.cls == MONS_CORRUPTER)</a>
+<a name="ln1038">            mon-&gt;god = GOD_LUGONU;</a>
+<a name="ln1039">        else</a>
+<a name="ln1040">        {</a>
+<a name="ln1041">            switch (mons_genus(mg.cls))</a>
+<a name="ln1042">            {</a>
+<a name="ln1043">            case MONS_ORC:</a>
+<a name="ln1044">                mon-&gt;god = GOD_BEOGH;</a>
+<a name="ln1045">                break;</a>
+<a name="ln1046">            case MONS_JELLY:</a>
+<a name="ln1047">                mon-&gt;god = GOD_JIYVA;</a>
+<a name="ln1048">                break;</a>
+<a name="ln1049">            case MONS_MUMMY:</a>
+<a name="ln1050">            case MONS_DRACONIAN:</a>
+<a name="ln1051">            case MONS_ELF:</a>
+<a name="ln1052">                // [ds] Vault defs can request priest monsters of unusual types.</a>
+<a name="ln1053">            default:</a>
+<a name="ln1054">                mon-&gt;god = GOD_NAMELESS;</a>
+<a name="ln1055">                break;</a>
+<a name="ln1056">            }</a>
+<a name="ln1057">        }</a>
+<a name="ln1058">    }</a>
+<a name="ln1059">    // The Royal Jelly belongs to Jiyva.</a>
+<a name="ln1060">    else if (mg.cls == MONS_ROYAL_JELLY)</a>
+<a name="ln1061">        mon-&gt;god = GOD_JIYVA;</a>
+<a name="ln1062">    // Mennas belongs to Zin.</a>
+<a name="ln1063">    else if (mg.cls == MONS_MENNAS)</a>
+<a name="ln1064">        mon-&gt;god = GOD_ZIN;</a>
+<a name="ln1065">    // Yiuf is a faithful Xommite.</a>
+<a name="ln1066">    else if (mg.cls == MONS_CRAZY_YIUF)</a>
+<a name="ln1067">        mon-&gt;god = GOD_XOM;</a>
+<a name="ln1068">    // Grinder and Ignacio belong to Makhleb.</a>
+<a name="ln1069">    else if (mg.cls == MONS_GRINDER</a>
+<a name="ln1070">             || mg.cls == MONS_IGNACIO)</a>
+<a name="ln1071">    {</a>
+<a name="ln1072">        mon-&gt;god = GOD_MAKHLEB;</a>
+<a name="ln1073">    }</a>
+<a name="ln1074">    // 1 out of 7 non-priestly orcs are unbelievers.</a>
+<a name="ln1075">    else if (mons_genus(mg.cls) == MONS_ORC)</a>
+<a name="ln1076">    {</a>
+<a name="ln1077">        if (!one_chance_in(7))</a>
+<a name="ln1078">            mon-&gt;god = GOD_BEOGH;</a>
+<a name="ln1079">    }</a>
+<a name="ln1080">    else if (mg.cls == MONS_APIS)</a>
+<a name="ln1081">        mon-&gt;god = GOD_ELYVILON;</a>
+<a name="ln1082">    else if (mg.cls == MONS_PROFANE_SERVITOR)</a>
+<a name="ln1083">        mon-&gt;god = GOD_YREDELEMNUL;</a>
+<a name="ln1084">    // Angels (other than Mennas) and daevas belong to TSO, but 1 out of</a>
+<a name="ln1085">    // 7 in the Abyss are adopted by Xom.</a>
+<a name="ln1086">    else if (mons_class_holiness(mg.cls) == MH_HOLY)</a>
+<a name="ln1087">    {</a>
+<a name="ln1088">        if (mg.place != BRANCH_ABYSS || !one_chance_in(7))</a>
+<a name="ln1089">            mon-&gt;god = GOD_SHINING_ONE;</a>
+<a name="ln1090">        else</a>
+<a name="ln1091">            mon-&gt;god = GOD_XOM;</a>
+<a name="ln1092">    }</a>
+<a name="ln1093"> </a>
+<a name="ln1094">    // Holy monsters need their halo!</a>
+<a name="ln1095">    if (mon-&gt;holiness() &amp; MH_HOLY)</a>
+<a name="ln1096">        invalidate_agrid(true);</a>
+<a name="ln1097">    if (mg.cls == MONS_SILENT_SPECTRE || mg.cls == MONS_PROFANE_SERVITOR)</a>
+<a name="ln1098">        invalidate_agrid(true);</a>
+<a name="ln1099"> </a>
+<a name="ln1100">    // If the caller requested a specific colour for this monster, apply</a>
+<a name="ln1101">    // it now.</a>
+<a name="ln1102">    if ((mg.colour == COLOUR_INHERIT</a>
+<a name="ln1103">         &amp;&amp; mons_class_colour(mon-&gt;type) != COLOUR_UNDEF)</a>
+<a name="ln1104">        || mg.colour &gt; COLOUR_UNDEF)</a>
+<a name="ln1105">    {</a>
+<a name="ln1106">        mon-&gt;colour = mg.colour;</a>
+<a name="ln1107">    }</a>
+<a name="ln1108"> </a>
+<a name="ln1109">    if (!mg.mname.empty())</a>
+<a name="ln1110">        mon-&gt;mname = mg.mname;</a>
+<a name="ln1111"> </a>
+<a name="ln1112">    if (mg.props.exists(MGEN_NUM_HEADS))</a>
+<a name="ln1113">        mon-&gt;num_heads = mg.props[MGEN_NUM_HEADS];</a>
+<a name="ln1114">    if (mg.props.exists(MGEN_BLOB_SIZE))</a>
+<a name="ln1115">        mon-&gt;blob_size = mg.props[MGEN_BLOB_SIZE];</a>
+<a name="ln1116">    if (mg.props.exists(MGEN_TENTACLE_CONNECT))</a>
+<a name="ln1117">        mon-&gt;tentacle_connect = mg.props[MGEN_TENTACLE_CONNECT].get_int();</a>
+<a name="ln1118"> </a>
+<a name="ln1119">    if (mg.hd != 0)</a>
+<a name="ln1120">    {</a>
+<a name="ln1121">        int bonus_hp = 0;</a>
+<a name="ln1122">        if (mons_is_demonspawn(mg.cls)</a>
+<a name="ln1123">            &amp;&amp; mg.cls != MONS_DEMONSPAWN</a>
+<a name="ln1124">            &amp;&amp; mons_species(mg.cls) == MONS_DEMONSPAWN)</a>
+<a name="ln1125">        {</a>
+<a name="ln1126">            // Nonbase demonspawn get bonuses from their base type.</a>
+<a name="ln1127">            const monsterentry *mbase =</a>
+<a name="ln1128">                get_monster_data(draco_or_demonspawn_subspecies(*mon));</a>
+<a name="ln1129">            bonus_hp = mbase-&gt;avg_hp_10x;</a>
+<a name="ln1130">        }</a>
+<a name="ln1131">        mon-&gt;set_hit_dice(mg.hd);</a>
+<a name="ln1132">        mon-&gt;props[VAULT_HD_KEY] = mg.hd;</a>
+<a name="ln1133">        // Re-roll HP.</a>
+<a name="ln1134">        const int base_avg_hp = m_ent-&gt;avg_hp_10x + bonus_hp;</a>
+<a name="ln1135">        const int new_avg_hp = div_rand_round(base_avg_hp * mg.hd, m_ent-&gt;HD);</a>
+<a name="ln1136">        const int hp = hit_points(new_avg_hp);</a>
+<a name="ln1137">        // But only for monsters with random HP. (XXX: should be everything?)</a>
+<a name="ln1138">        if (hp &gt; 0)</a>
+<a name="ln1139">        {</a>
+<a name="ln1140">            mon-&gt;max_hit_points = hp;</a>
+<a name="ln1141">            mon-&gt;hit_points = hp;</a>
+<a name="ln1142">        }</a>
+<a name="ln1143">    }</a>
+<a name="ln1144"> </a>
+<a name="ln1145">    if (mg.hp != 0)</a>
+<a name="ln1146">    {</a>
+<a name="ln1147">        mon-&gt;max_hit_points = mg.hp;</a>
+<a name="ln1148">        mon-&gt;hit_points = mg.hp;</a>
+<a name="ln1149">        mon-&gt;props[KNOWN_MAX_HP_KEY] = mg.hp;</a>
+<a name="ln1150">    }</a>
+<a name="ln1151"> </a>
+<a name="ln1152">    if (!crawl_state.game_is_arena())</a>
+<a name="ln1153">    {</a>
+<a name="ln1154">        mon-&gt;max_hit_points = min(mon-&gt;max_hit_points, MAX_MONSTER_HP);</a>
+<a name="ln1155">        mon-&gt;hit_points = min(mon-&gt;hit_points, MAX_MONSTER_HP);</a>
+<a name="ln1156">    }</a>
+<a name="ln1157"> </a>
+<a name="ln1158">    // Store the extra flags here.</a>
+<a name="ln1159">    mon-&gt;flags       |= mg.extra_flags;</a>
+<a name="ln1160"> </a>
+<a name="ln1161">    // &quot;Prince Ribbit returns to his original shape as he dies.&quot;</a>
+<a name="ln1162">    if (mg.cls == MONS_PRINCE_RIBBIT)</a>
+<a name="ln1163">        mon-&gt;props[ORIGINAL_TYPE_KEY].get_int() = MONS_PRINCE_RIBBIT;</a>
+<a name="ln1164"> </a>
+<a name="ln1165">    // The return of Boris is now handled in monster_die(). Not setting</a>
+<a name="ln1166">    // this for Boris here allows for multiple Borises in the dungeon at</a>
+<a name="ln1167">    // the same time. - bwr</a>
+<a name="ln1168">    if (mons_is_unique(mg.cls))</a>
+<a name="ln1169">        you.unique_creatures.set(mg.cls);</a>
+<a name="ln1170"> </a>
+<a name="ln1171">    if (mons_class_flag(mg.cls, M_INVIS))</a>
+<a name="ln1172">        mon-&gt;add_ench(ENCH_INVIS);</a>
+<a name="ln1173"> </a>
+<a name="ln1174">    if (mons_class_flag(mg.cls, M_CONFUSED))</a>
+<a name="ln1175">        mon-&gt;add_ench(ENCH_CONFUSION);</a>
+<a name="ln1176"> </a>
+<a name="ln1177">    if (mg.cls == MONS_SHAPESHIFTER)</a>
+<a name="ln1178">        mon-&gt;add_ench(ENCH_SHAPESHIFTER);</a>
+<a name="ln1179"> </a>
+<a name="ln1180">    if (mg.cls == MONS_GLOWING_SHAPESHIFTER)</a>
+<a name="ln1181">        mon-&gt;add_ench(ENCH_GLOWING_SHAPESHIFTER);</a>
+<a name="ln1182"> </a>
+<a name="ln1183">    if ((mg.cls == MONS_TOADSTOOL</a>
+<a name="ln1184">         || mg.cls == MONS_PILLAR_OF_SALT</a>
+<a name="ln1185">         || mg.cls == MONS_BLOCK_OF_ICE)</a>
+<a name="ln1186">        &amp;&amp; !mg.props.exists(MGEN_NO_AUTO_CRUMBLE))</a>
+<a name="ln1187">    {</a>
+<a name="ln1188">        // This enchantment is a timer that counts down until death.</a>
+<a name="ln1189">        // It should last longer than the lifespan of a corpse, to avoid</a>
+<a name="ln1190">        // spawning mushrooms in the same place over and over. Aside</a>
+<a name="ln1191">        // from that, the value is slightly randomised to avoid</a>
+<a name="ln1192">        // simultaneous die-offs of mushroom rings.</a>
+<a name="ln1193">        mon-&gt;add_ench(ENCH_SLOWLY_DYING);</a>
+<a name="ln1194">    }</a>
+<a name="ln1195">    else if (mons_is_demonspawn(mon-&gt;type)</a>
+<a name="ln1196">             &amp;&amp; draco_or_demonspawn_subspecies(*mon) == MONS_GELID_DEMONSPAWN)</a>
+<a name="ln1197">    {</a>
+<a name="ln1198">        mon-&gt;add_ench(ENCH_ICEMAIL);</a>
+<a name="ln1199">    }</a>
+<a name="ln1200"> </a>
+<a name="ln1201">    if (mg.cls == MONS_TWISTER || mg.cls == MONS_DIAMOND_OBELISK)</a>
+<a name="ln1202">    {</a>
+<a name="ln1203">        mon-&gt;props[&quot;tornado_since&quot;].get_int() = you.elapsed_time;</a>
+<a name="ln1204">        mon-&gt;add_ench(mon_enchant(ENCH_TORNADO, 0, 0, INFINITE_DURATION));</a>
+<a name="ln1205">    }</a>
+<a name="ln1206"> </a>
+<a name="ln1207">    // this MUST follow hd initialization!</a>
+<a name="ln1208">    if (mons_is_hepliaklqana_ancestor(mon-&gt;type))</a>
+<a name="ln1209">    {</a>
+<a name="ln1210">        set_ancestor_spells(*mon);</a>
+<a name="ln1211">        if (mg.props.exists(MON_GENDER_KEY)) // move this out?</a>
+<a name="ln1212">            mon-&gt;props[MON_GENDER_KEY] = mg.props[MON_GENDER_KEY].get_int();</a>
+<a name="ln1213">        mon-&gt;props[&quot;dbname&quot;] = mons_class_name(mon-&gt;type);</a>
+<a name="ln1214">    }</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    if (mon-&gt;type == MONS_HELLBINDER || mon-&gt;type == MONS_CLOUD_MAGE)</a>
+<a name="ln1217">    {</a>
+<a name="ln1218">        mon-&gt;props[MON_GENDER_KEY] = random_choose(GENDER_FEMALE, GENDER_MALE,</a>
+<a name="ln1219">                                                   GENDER_NEUTRAL);</a>
+<a name="ln1220">    }</a>
+<a name="ln1221"> </a>
+<a name="ln1222">    if (mon-&gt;has_spell(SPELL_OZOCUBUS_ARMOUR))</a>
+<a name="ln1223">    {</a>
+<a name="ln1224">        const int power = (mon-&gt;spell_hd(SPELL_OZOCUBUS_ARMOUR) * 15) / 10;</a>
+<a name="ln1225">        int rnd_power = random2(power);</a>
+<a name="ln1226">        rnd_power += random2(power);</a>
+<a name="ln1227">        mon-&gt;add_ench(mon_enchant(ENCH_OZOCUBUS_ARMOUR, 20 + rnd_power, mon));</a>
+<a name="ln1228">    }</a>
+<a name="ln1229"> </a>
+<a name="ln1230">    if (mon-&gt;has_spell(SPELL_SHROUD_OF_GOLUBRIA))</a>
+<a name="ln1231">        mon-&gt;add_ench(ENCH_SHROUD);</a>
+<a name="ln1232"> </a>
+<a name="ln1233">    if (mon-&gt;has_spell(SPELL_REPEL_MISSILES))</a>
+<a name="ln1234">        mon-&gt;add_ench(ENCH_REPEL_MISSILES);</a>
+<a name="ln1235"> </a>
+<a name="ln1236">    mon-&gt;flags |= MF_JUST_SUMMONED;</a>
+<a name="ln1237"> </a>
+<a name="ln1238">    // Don't leave shifters in their starting shape.</a>
+<a name="ln1239">    if (mg.cls == MONS_SHAPESHIFTER || mg.cls == MONS_GLOWING_SHAPESHIFTER)</a>
+<a name="ln1240">    {</a>
+<a name="ln1241">        no_messages nm;</a>
+<a name="ln1242">        monster_polymorph(mon, RANDOM_MONSTER);</a>
+<a name="ln1243"> </a>
+<a name="ln1244">        // It's not actually a known shapeshifter if it happened to be</a>
+<a name="ln1245">        // placed in LOS of the player.</a>
+<a name="ln1246">        mon-&gt;flags &amp;= ~MF_KNOWN_SHIFTER;</a>
+<a name="ln1247">    }</a>
+<a name="ln1248"> </a>
+<a name="ln1249">    // dur should always be 1-6 for monsters that can be abjured.</a>
+<a name="ln1250">    const bool summoned = mg.abjuration_duration &gt;= 1</a>
+<a name="ln1251">                       &amp;&amp; mg.abjuration_duration &lt;= 6;</a>
+<a name="ln1252"> </a>
+<a name="ln1253">    if (mons_class_is_animated_weapon(mg.cls))</a>
+<a name="ln1254">    {</a>
+<a name="ln1255">        if (mg.props.exists(TUKIMA_WEAPON))</a>
+<a name="ln1256">            give_specific_item(mon, mg.props[TUKIMA_WEAPON].get_item());</a>
+<a name="ln1257">        else</a>
+<a name="ln1258">            give_item(mon, place.absdepth(), summoned);</a>
+<a name="ln1259"> </a>
+<a name="ln1260">        // Dancing weapons *always* have a weapon. Fail to create them</a>
+<a name="ln1261">        // otherwise.</a>
+<a name="ln1262">        const item_def* wpn = mon-&gt;mslot_item(MSLOT_WEAPON);</a>
+<a name="ln1263">        if (!wpn)</a>
+<a name="ln1264">        {</a>
+<a name="ln1265">            mon-&gt;destroy_inventory();</a>
+<a name="ln1266">            env.mid_cache.erase(mon-&gt;mid);</a>
+<a name="ln1267">            mon-&gt;reset();</a>
+<a name="ln1268">            mgrd(fpos) = NON_MONSTER;</a>
+<a name="ln1269">            return 0;</a>
+<a name="ln1270">        }</a>
+<a name="ln1271">        else</a>
+<a name="ln1272">            mon-&gt;colour = wpn-&gt;get_colour();</a>
+<a name="ln1273">    }</a>
+<a name="ln1274">    else if (mons_class_itemuse(mg.cls) &gt;= MONUSE_STARTING_EQUIPMENT)</a>
+<a name="ln1275">    {</a>
+<a name="ln1276">        give_item(mon, place.absdepth(), summoned);</a>
+<a name="ln1277">        // Give these monsters a second weapon. - bwr</a>
+<a name="ln1278">        if (mons_class_wields_two_weapons(mg.cls))</a>
+<a name="ln1279">            give_weapon(mon, place.absdepth());</a>
+<a name="ln1280"> </a>
+<a name="ln1281">        unwind_var&lt;int&gt; save_speedinc(mon-&gt;speed_increment);</a>
+<a name="ln1282">        mon-&gt;wield_melee_weapon(MB_FALSE);</a>
+<a name="ln1283">    }</a>
+<a name="ln1284"> </a>
+<a name="ln1285">    if (mon-&gt;type == MONS_SLIME_CREATURE &amp;&amp; mon-&gt;blob_size &gt; 1)</a>
+<a name="ln1286">    {</a>
+<a name="ln1287">        // Boost HP to what it would have been if it had grown this</a>
+<a name="ln1288">        // big by merging.</a>
+<a name="ln1289">        mon-&gt;hit_points     *= mon-&gt;blob_size;</a>
+<a name="ln1290">        mon-&gt;max_hit_points *= mon-&gt;blob_size;</a>
+<a name="ln1291">    }</a>
+<a name="ln1292"> </a>
+<a name="ln1293">    if (monster_can_submerge(mon, grd(fpos)) &amp;&amp; !summoned)</a>
+<a name="ln1294">        mon-&gt;add_ench(ENCH_SUBMERGED);</a>
+<a name="ln1295"> </a>
+<a name="ln1296">    // Set attitude, behaviour and target.</a>
+<a name="ln1297">    mon-&gt;attitude  = ATT_HOSTILE;</a>
+<a name="ln1298">    mon-&gt;behaviour = mg.behaviour;</a>
+<a name="ln1299"> </a>
+<a name="ln1300">    // Statues cannot sleep (nor wander but it means they are a bit</a>
+<a name="ln1301">    // more aware of the player than they'd be otherwise).</a>
+<a name="ln1302">    if (mons_is_statue(mg.cls))</a>
+<a name="ln1303">        mon-&gt;behaviour = BEH_WANDER;</a>
+<a name="ln1304"> </a>
+<a name="ln1305">    mon-&gt;foe_memory = 0;</a>
+<a name="ln1306"> </a>
+<a name="ln1307">    // Setting attitude will always make the monster wander...</a>
+<a name="ln1308">    // If you want sleeping hostiles, use BEH_SLEEP since the default</a>
+<a name="ln1309">    // attitude is hostile.</a>
+<a name="ln1310">    if (mg.behaviour &gt; NUM_BEHAVIOURS)</a>
+<a name="ln1311">    {</a>
+<a name="ln1312">        if (mg.behaviour == BEH_FRIENDLY)</a>
+<a name="ln1313">            mon-&gt;attitude = ATT_FRIENDLY;</a>
+<a name="ln1314"> </a>
+<a name="ln1315">        if (mg.behaviour == BEH_GOOD_NEUTRAL)</a>
+<a name="ln1316">            mon-&gt;attitude = ATT_GOOD_NEUTRAL;</a>
+<a name="ln1317"> </a>
+<a name="ln1318">        if (mg.behaviour == BEH_NEUTRAL)</a>
+<a name="ln1319">            mon-&gt;attitude = ATT_NEUTRAL;</a>
+<a name="ln1320"> </a>
+<a name="ln1321">        if (mg.behaviour == BEH_STRICT_NEUTRAL)</a>
+<a name="ln1322">            mon-&gt;attitude = ATT_STRICT_NEUTRAL;</a>
+<a name="ln1323"> </a>
+<a name="ln1324">        mon-&gt;behaviour = BEH_WANDER;</a>
+<a name="ln1325">    }</a>
+<a name="ln1326"> </a>
+<a name="ln1327">    if (summoned)</a>
+<a name="ln1328">    {</a>
+<a name="ln1329">        // Instead of looking for dancing weapons, look for Tukima's dance.</a>
+<a name="ln1330">        // Dancing weapons can be created with shadow creatures. {due}</a>
+<a name="ln1331">        mon-&gt;mark_summoned(mg.abjuration_duration,</a>
+<a name="ln1332">                           mg.summon_type != SPELL_TUKIMAS_DANCE,</a>
+<a name="ln1333">                           mg.summon_type);</a>
+<a name="ln1334"> </a>
+<a name="ln1335">        if (mg.summon_type &gt; 0 &amp;&amp; mg.summoner &amp;&amp; !(mg.flags &amp; MG_DONT_CAP))</a>
+<a name="ln1336">        {</a>
+<a name="ln1337">            // If this is a band member created by shadow creatures, link its</a>
+<a name="ln1338">            // ID and don't count it against the summon cap</a>
+<a name="ln1339">            if (mg.summon_type == SPELL_SHADOW_CREATURES &amp;&amp; leader)</a>
+<a name="ln1340">                mon-&gt;props[&quot;summon_id&quot;].get_int() = leader-&gt;mid;</a>
+<a name="ln1341">            else</a>
+<a name="ln1342">            {</a>
+<a name="ln1343">                summoned_monster(mon, mg.summoner,</a>
+<a name="ln1344">                                static_cast&lt;spell_type&gt;(mg.summon_type));</a>
+<a name="ln1345">            }</a>
+<a name="ln1346">        }</a>
+<a name="ln1347">    }</a>
+<a name="ln1348"> </a>
+<a name="ln1349">    // Perm summons shouldn't leave gear either.</a>
+<a name="ln1350">    if (mg.extra_flags &amp; MF_HARD_RESET &amp;&amp; mg.extra_flags &amp; MF_NO_REWARD)</a>
+<a name="ln1351">        mon-&gt;mark_summoned(0, true, 0, false);</a>
+<a name="ln1352"> </a>
+<a name="ln1353">    ASSERT(!invalid_monster_index(mg.foe)</a>
+<a name="ln1354">           || mg.foe == MHITYOU || mg.foe == MHITNOT);</a>
+<a name="ln1355">    mon-&gt;foe = mg.foe;</a>
+<a name="ln1356"> </a>
+<a name="ln1357">    string blame_prefix;</a>
+<a name="ln1358"> </a>
+<a name="ln1359">    if (mg.flags &amp; MG_BAND_MINION)</a>
+<a name="ln1360">        blame_prefix = &quot;led by &quot;;</a>
+<a name="ln1361">    else if (mg.abjuration_duration &gt; 0)</a>
+<a name="ln1362">    {</a>
+<a name="ln1363">        blame_prefix = &quot;summoned by &quot;;</a>
+<a name="ln1364"> </a>
+<a name="ln1365">        if (mg.summoner != nullptr &amp;&amp; mg.summoner-&gt;alive()</a>
+<a name="ln1366">            &amp;&amp; mg.summoner-&gt;type == MONS_MARA)</a>
+<a name="ln1367">        {</a>
+<a name="ln1368">            blame_prefix = &quot;woven by &quot;;</a>
+<a name="ln1369">        }</a>
+<a name="ln1370"> </a>
+<a name="ln1371">        if (mg.cls == MONS_DANCING_WEAPON)</a>
+<a name="ln1372">            blame_prefix = &quot;animated by &quot;;</a>
+<a name="ln1373"> </a>
+<a name="ln1374">        if (mg.summon_type == SPELL_SPECTRAL_CLOUD)</a>
+<a name="ln1375">            blame_prefix = &quot;called from beyond by &quot;;</a>
+<a name="ln1376">    }</a>
+<a name="ln1377">    else if (mons_class_is_zombified(mg.cls))</a>
+<a name="ln1378">        blame_prefix = &quot;animated by &quot;;</a>
+<a name="ln1379">    else if (mg.summon_type == SPELL_STICKS_TO_SNAKES)</a>
+<a name="ln1380">        blame_prefix = &quot;transmuted by &quot;;</a>
+<a name="ln1381">    else if (mg.cls == MONS_ELDRITCH_TENTACLE</a>
+<a name="ln1382">             || mg.cls == MONS_ELDRITCH_TENTACLE_SEGMENT)</a>
+<a name="ln1383">    {</a>
+<a name="ln1384">        blame_prefix = &quot;called by &quot;;</a>
+<a name="ln1385">    }</a>
+<a name="ln1386">    else if (mons_is_child_tentacle(mg.cls))</a>
+<a name="ln1387">        blame_prefix = &quot;attached to &quot;;</a>
+<a name="ln1388">    else</a>
+<a name="ln1389">        blame_prefix = &quot;created by &quot;;</a>
+<a name="ln1390"> </a>
+<a name="ln1391">    if (!mg.non_actor_summoner.empty())</a>
+<a name="ln1392">        mons_add_blame(mon, blame_prefix + mg.non_actor_summoner);</a>
+<a name="ln1393">    // NOTE: The summoner might be dead if the summoned is placed by a</a>
+<a name="ln1394">    // beam which killed the summoner first (like fire vortexes placed</a>
+<a name="ln1395">    // by the Fire Storm spell); a deceased summoner's mindex might also</a>
+<a name="ln1396">    // be reused to create its summon, so make sure the summon doesn't</a>
+<a name="ln1397">    // think it has summoned itself.</a>
+<a name="ln1398">    else if (mg.summoner != nullptr &amp;&amp; mg.summoner-&gt;alive()</a>
+<a name="ln1399">             &amp;&amp; mg.summoner != mon)</a>
+<a name="ln1400">    {</a>
+<a name="ln1401">        ASSERT(mg.summoner-&gt;alive());</a>
+<a name="ln1402">        mon-&gt;summoner = mg.summoner-&gt;mid;</a>
+<a name="ln1403">        if (mg.summoner-&gt;is_player())</a>
+<a name="ln1404">            mons_add_blame(mon, blame_prefix + &quot;the player character&quot;);</a>
+<a name="ln1405">        else</a>
+<a name="ln1406">        {</a>
+<a name="ln1407">            const monster* sum = mg.summoner-&gt;as_monster();</a>
+<a name="ln1408">            mons_add_blame(mon, (blame_prefix</a>
+<a name="ln1409">                                 + sum-&gt;full_name(DESC_A)));</a>
+<a name="ln1410">            if (sum-&gt;props.exists(&quot;blame&quot;))</a>
+<a name="ln1411">            {</a>
+<a name="ln1412">                const CrawlVector&amp; oldblame = sum-&gt;props[&quot;blame&quot;].get_vector();</a>
+<a name="ln1413">                for (const auto &amp;bl : oldblame)</a>
+<a name="ln1414">                    mons_add_blame(mon, bl.get_string());</a>
+<a name="ln1415">            }</a>
+<a name="ln1416">        }</a>
+<a name="ln1417">    }</a>
+<a name="ln1418"> </a>
+<a name="ln1419">    // Initialise (very) ugly things and pandemonium demons.</a>
+<a name="ln1420">    if (mon-&gt;type == MONS_UGLY_THING</a>
+<a name="ln1421">        || mon-&gt;type == MONS_VERY_UGLY_THING)</a>
+<a name="ln1422">    {</a>
+<a name="ln1423">        ghost_demon ghost;</a>
+<a name="ln1424">        colour_t force_colour;</a>
+<a name="ln1425">        if (mg.colour &lt; COLOUR_UNDEF)</a>
+<a name="ln1426">            force_colour = COLOUR_UNDEF;</a>
+<a name="ln1427">        else</a>
+<a name="ln1428">            force_colour = mg.colour;</a>
+<a name="ln1429">        ghost.init_ugly_thing(mon-&gt;type == MONS_VERY_UGLY_THING, false,</a>
+<a name="ln1430">                              force_colour);</a>
+<a name="ln1431">        mon-&gt;set_ghost(ghost);</a>
+<a name="ln1432">        mon-&gt;uglything_init();</a>
+<a name="ln1433">    }</a>
+<a name="ln1434">    else if (mons_class_is_animated_weapon(mon-&gt;type))</a>
+<a name="ln1435">    {</a>
+<a name="ln1436">        ghost_demon ghost;</a>
+<a name="ln1437">        // We can't use monster::weapon here because it wants to look</a>
+<a name="ln1438">        // at attack types, which are in the ghost structure we're</a>
+<a name="ln1439">        // building.</a>
+<a name="ln1440">        ASSERT(mon-&gt;mslot_item(MSLOT_WEAPON));</a>
+<a name="ln1441">        if (mon-&gt;type == MONS_DANCING_WEAPON)</a>
+<a name="ln1442">        {</a>
+<a name="ln1443">            // Dancing weapons are placed at pretty high power. Remember, the</a>
+<a name="ln1444">            // player is fighting them one-on-one, while he will often summon</a>
+<a name="ln1445">            // several.</a>
+<a name="ln1446">            ghost.init_dancing_weapon(*(mon-&gt;mslot_item(MSLOT_WEAPON)),</a>
+<a name="ln1447">                                      mg.props.exists(TUKIMA_POWER) ?</a>
+<a name="ln1448">                                          mg.props[TUKIMA_POWER].get_int() : 100);</a>
+<a name="ln1449">        }</a>
+<a name="ln1450">        else</a>
+<a name="ln1451">        {</a>
+<a name="ln1452">            // Spectral weapons are placed at pretty high power.</a>
+<a name="ln1453">            // They shouldn't ever be placed in a normal game.</a>
+<a name="ln1454">            ghost.init_spectral_weapon(*(mon-&gt;mslot_item(MSLOT_WEAPON)),</a>
+<a name="ln1455">                                       mg.props.exists(TUKIMA_POWER) ?</a>
+<a name="ln1456">                                           mg.props[TUKIMA_POWER].get_int() : 100);</a>
+<a name="ln1457">        }</a>
+<a name="ln1458">        mon-&gt;set_ghost(ghost);</a>
+<a name="ln1459">        mon-&gt;ghost_demon_init();</a>
+<a name="ln1460">    }</a>
+<a name="ln1461"> </a>
+<a name="ln1462">    tile_init_props(mon);</a>
+<a name="ln1463"> </a>
+<a name="ln1464">#ifndef DEBUG_DIAGNOSTICS</a>
+<a name="ln1465">    // A rare case of a debug message NOT showing in the debug mode.</a>
+<a name="ln1466">    if (mons_class_flag(mon-&gt;type, M_UNFINISHED))</a>
+<a name="ln1467">    {</a>
+<a name="ln1468">        mprf(MSGCH_WARN, &quot;Warning: monster '%s' is not yet fully coded.&quot;,</a>
+<a name="ln1469">             mon-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln1470">    }</a>
+<a name="ln1471">#endif</a>
+<a name="ln1472"> </a>
+<a name="ln1473">    if (crawl_state.game_is_arena())</a>
+<a name="ln1474">        arena_placed_monster(mon);</a>
+<a name="ln1475">    else if (!crawl_state.generating_level &amp;&amp; !dont_place &amp;&amp; you.can_see(*mon))</a>
+<a name="ln1476">    {</a>
+<a name="ln1477">        if (mg.flags &amp; MG_DONT_COME)</a>
+<a name="ln1478">            mons_set_just_seen(mon);</a>
+<a name="ln1479">    }</a>
+<a name="ln1480"> </a>
+<a name="ln1481">    // Area effects can produce additional messages, and thus need to be</a>
+<a name="ln1482">    // done after come in view ones.</a>
+<a name="ln1483">    if (mon-&gt;type == MONS_TWISTER &amp;&amp; !dont_place)</a>
+<a name="ln1484">        _place_twister_clouds(mon);</a>
+<a name="ln1485"> </a>
+<a name="ln1486">    if (!(mg.flags &amp; MG_FORCE_BEH)</a>
+<a name="ln1487">        &amp;&amp; !crawl_state.game_is_arena()</a>
+<a name="ln1488">        &amp;&amp; !crawl_state.generating_level)</a>
+<a name="ln1489">    {</a>
+<a name="ln1490">        gozag_set_bribe(mon);</a>
+<a name="ln1491">    }</a>
+<a name="ln1492"> </a>
+<a name="ln1493">    return mon;</a>
+<a name="ln1494">}</a>
+<a name="ln1495"> </a>
+<a name="ln1496">static monster* _place_pghost_aux(const mgen_data &amp;mg, const monster *leader,</a>
+<a name="ln1497">                                   level_id place,</a>
+<a name="ln1498">                                   bool force_pos, bool dont_place)</a>
+<a name="ln1499">{</a>
+<a name="ln1500">    // we need to isolate the generation of a pghost from the caller's RNG,</a>
+<a name="ln1501">    // since depending on the ghost, the aux call can trigger variation in</a>
+<a name="ln1502">    // things like whether an enchantment (with a random duration) is</a>
+<a name="ln1503">    // triggered.</a>
+<a name="ln1504">    rng::generator rng(rng::SYSTEM_SPECIFIC);</a>
+<a name="ln1505">    return _place_monster_aux(mg, leader, place, force_pos, dont_place);</a>
+<a name="ln1506">}</a>
+<a name="ln1507"> </a>
+<a name="ln1508">// Check base monster class against zombie type and position if set.</a>
+<a name="ln1509">static bool _good_zombie(monster_type base, monster_type cs,</a>
+<a name="ln1510">                         const coord_def&amp; pos)</a>
+<a name="ln1511">{</a>
+<a name="ln1512">    base = fixup_zombie_type(cs, base);</a>
+<a name="ln1513"> </a>
+<a name="ln1514">    // Actually pick a monster that is happy where we want to put it.</a>
+<a name="ln1515">    // Fish zombies on land are helpless and uncool.</a>
+<a name="ln1516">    if (in_bounds(pos) &amp;&amp; !monster_habitable_grid(base, grd(pos)))</a>
+<a name="ln1517">        return false;</a>
+<a name="ln1518"> </a>
+<a name="ln1519">    if (cs == MONS_NO_MONSTER)</a>
+<a name="ln1520">        return true;</a>
+<a name="ln1521"> </a>
+<a name="ln1522">    // If skeleton, monster must have a skeleton.</a>
+<a name="ln1523">    if (cs == MONS_SKELETON &amp;&amp; !mons_skeleton(base))</a>
+<a name="ln1524">        return false;</a>
+<a name="ln1525"> </a>
+<a name="ln1526">    // If zombie, monster must have unrotted meat.</a>
+<a name="ln1527">    if (cs == MONS_ZOMBIE &amp;&amp; !mons_zombifiable(base))</a>
+<a name="ln1528">        return false;</a>
+<a name="ln1529"> </a>
+<a name="ln1530">    return true;</a>
+<a name="ln1531">}</a>
+<a name="ln1532"> </a>
+<a name="ln1533">// Veto for the zombie picker class</a>
+<a name="ln1534">bool zombie_picker::veto(monster_type mt)</a>
+<a name="ln1535">{</a>
+<a name="ln1536">    monster_type corpse_type = mons_species(mt);</a>
+<a name="ln1537"> </a>
+<a name="ln1538">    // XXX: nonbase draconian leave base draconian corpses.</a>
+<a name="ln1539">    if (mt != MONS_DRACONIAN &amp;&amp; corpse_type == MONS_DRACONIAN)</a>
+<a name="ln1540">        corpse_type = random_draconian_monster_species();</a>
+<a name="ln1541"> </a>
+<a name="ln1542">    // Zombifiability in general.</a>
+<a name="ln1543">    if (!mons_class_can_leave_corpse(corpse_type))</a>
+<a name="ln1544">        return true;</a>
+<a name="ln1545">    // Monsters that don't really exist</a>
+<a name="ln1546">    if (mons_class_flag(mt, M_UNFINISHED))</a>
+<a name="ln1547">        return true;</a>
+<a name="ln1548">    // Monsters that can have derived undead, but never randomly generated.</a>
+<a name="ln1549">    if (mons_class_flag(mt, M_NO_GEN_DERIVED))</a>
+<a name="ln1550">        return true;</a>
+<a name="ln1551">    if (!mons_zombie_size(corpse_type) || mons_is_unique(mt))</a>
+<a name="ln1552">        return true;</a>
+<a name="ln1553">    if (!(mons_class_holiness(corpse_type) &amp; MH_NATURAL))</a>
+<a name="ln1554">        return true;</a>
+<a name="ln1555">    if (!_good_zombie(corpse_type, zombie_kind, pos))</a>
+<a name="ln1556">        return true;</a>
+<a name="ln1557">    return positioned_monster_picker::veto(mt);</a>
+<a name="ln1558">}</a>
+<a name="ln1559"> </a>
+<a name="ln1560">static bool _mc_too_slow_for_zombies(monster_type mon)</a>
+<a name="ln1561">{</a>
+<a name="ln1562">    // zombies slower than the player are boring!</a>
+<a name="ln1563">    return mons_class_zombie_base_speed(mons_species(mon)) &lt; BASELINE_DELAY;</a>
+<a name="ln1564">}</a>
+<a name="ln1565"> </a>
+<a name="ln1566">/**</a>
+<a name="ln1567"> * Pick a local monster type that's suitable for turning into a corpse.</a>
+<a name="ln1568"> *</a>
+<a name="ln1569"> * @param place     The branch/level that the monster type should come from,</a>
+<a name="ln1570"> *                  if possible. (Not guaranteed for e.g. branches with no</a>
+<a name="ln1571"> *                  corpses.)</a>
+<a name="ln1572"> * @return          A monster type that can be used to fill out a corpse.</a>
+<a name="ln1573"> */</a>
+<a name="ln1574">monster_type pick_local_corpsey_monster(level_id place)</a>
+<a name="ln1575">{</a>
+<a name="ln1576">    return pick_local_zombifiable_monster(place, MONS_NO_MONSTER, coord_def(),</a>
+<a name="ln1577">                                          true);</a>
+<a name="ln1578">}</a>
+<a name="ln1579"> </a>
+<a name="ln1580">monster_type pick_local_zombifiable_monster(level_id place,</a>
+<a name="ln1581">                                            monster_type cs,</a>
+<a name="ln1582">                                            const coord_def&amp; pos,</a>
+<a name="ln1583">                                            bool for_corpse)</a>
+<a name="ln1584">{</a>
+<a name="ln1585">    const bool really_in_d = place.branch == BRANCH_DUNGEON;</a>
+<a name="ln1586"> </a>
+<a name="ln1587">    if (place.branch == BRANCH_ZIGGURAT)</a>
+<a name="ln1588">    {</a>
+<a name="ln1589">        // Get Zigs something reasonable to work with, if there's no place</a>
+<a name="ln1590">        // explicitly defined.</a>
+<a name="ln1591">        place = level_id(BRANCH_DEPTHS, 14 - (27 - place.depth) / 3);</a>
+<a name="ln1592">    }</a>
+<a name="ln1593">    else</a>
+<a name="ln1594">    {</a>
+<a name="ln1595">        // Zombies tend to be weaker than their normal counterparts;</a>
+<a name="ln1596">        // thus, make them OOD proportional to the current dungeon depth.</a>
+<a name="ln1597">        place.depth += 1 + div_rand_round(place.absdepth(), 5);</a>
+<a name="ln1598">    }</a>
+<a name="ln1599"> </a>
+<a name="ln1600">    zombie_picker picker = zombie_picker(pos, cs);</a>
+<a name="ln1601"> </a>
+<a name="ln1602">    place.depth = max(1, min(place.depth, branch_ood_cap(place.branch)));</a>
+<a name="ln1603"> </a>
+<a name="ln1604">    const bool need_veto = really_in_d &amp;&amp; !for_corpse;</a>
+<a name="ln1605">    mon_pick_vetoer veto = need_veto ? _mc_too_slow_for_zombies : nullptr;</a>
+<a name="ln1606"> </a>
+<a name="ln1607">    // try to grab a proper zombifiable monster</a>
+<a name="ln1608">    monster_type mt = picker.pick_with_veto(zombie_population(place.branch),</a>
+<a name="ln1609">                                            place.depth, MONS_0, veto);</a>
+<a name="ln1610">    // there might not be one in this branch - if we can't find one, try</a>
+<a name="ln1611">    // elsewhere</a>
+<a name="ln1612">    if (!mt)</a>
+<a name="ln1613">        mt = pick_monster_all_branches(place.absdepth(), picker);</a>
+<a name="ln1614"> </a>
+<a name="ln1615">    ASSERT(mons_class_can_be_zombified(mons_species(mt)));</a>
+<a name="ln1616">    return mt;</a>
+<a name="ln1617">}</a>
+<a name="ln1618"> </a>
+<a name="ln1619">void roll_zombie_hp(monster* mon)</a>
+<a name="ln1620">{</a>
+<a name="ln1621">    ASSERT(mon); // TODO: change to monster &amp;mon</a>
+<a name="ln1622">    ASSERT(mons_class_is_zombified(mon-&gt;type));</a>
+<a name="ln1623"> </a>
+<a name="ln1624">    const int avg_hp_10x = derived_undead_avg_hp(mon-&gt;type,</a>
+<a name="ln1625">                                                 mon-&gt;get_hit_dice());</a>
+<a name="ln1626">    const int hp = hit_points(avg_hp_10x);</a>
+<a name="ln1627">    mon-&gt;max_hit_points = max(hp, 1);</a>
+<a name="ln1628">    mon-&gt;hit_points     = mon-&gt;max_hit_points;</a>
+<a name="ln1629">}</a>
+<a name="ln1630"> </a>
+<a name="ln1631">void define_zombie(monster* mon, monster_type ztype, monster_type cs)</a>
+<a name="ln1632">{</a>
+<a name="ln1633">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1634">    // Upgrading monster enums is a losing battle, they sneak through too many</a>
+<a name="ln1635">    // channels, like env props, etc. So convert them on placement, too.</a>
+<a name="ln1636">    if (cs == MONS_ZOMBIE_SMALL || cs == MONS_ZOMBIE_LARGE)</a>
+<a name="ln1637">        cs = MONS_ZOMBIE;</a>
+<a name="ln1638">    if (cs == MONS_SKELETON_SMALL || cs == MONS_SKELETON_LARGE)</a>
+<a name="ln1639">        cs = MONS_SKELETON;</a>
+<a name="ln1640">    if (cs == MONS_SIMULACRUM_SMALL || cs == MONS_SIMULACRUM_LARGE)</a>
+<a name="ln1641">        cs = MONS_SIMULACRUM;</a>
+<a name="ln1642">#endif</a>
+<a name="ln1643"> </a>
+<a name="ln1644">    ASSERT(ztype != MONS_NO_MONSTER);</a>
+<a name="ln1645">    ASSERT(!invalid_monster_type(ztype));</a>
+<a name="ln1646">    ASSERT(mons_class_is_zombified(cs));</a>
+<a name="ln1647"> </a>
+<a name="ln1648">    // Set type to the original type to calculate appropriate stats.</a>
+<a name="ln1649">    mon-&gt;type         = ztype;</a>
+<a name="ln1650">    mon-&gt;base_monster = MONS_PROGRAM_BUG;</a>
+<a name="ln1651">    define_monster(*mon);</a>
+<a name="ln1652"> </a>
+<a name="ln1653">    // Zombies and such can't cast spells, except they should still be</a>
+<a name="ln1654">    // able to make tentacles!</a>
+<a name="ln1655">    monster_spells oldspells = mon-&gt;spells;</a>
+<a name="ln1656">    mon-&gt;spells.clear();</a>
+<a name="ln1657">    for (const mon_spell_slot &amp;slot : oldspells)</a>
+<a name="ln1658">        if (slot.spell == SPELL_CREATE_TENTACLES)</a>
+<a name="ln1659">            mon-&gt;spells.push_back(slot);</a>
+<a name="ln1660"> </a>
+<a name="ln1661">    // handle zombies with jobs &amp; ghostdemon zombies; they otherwise</a>
+<a name="ln1662">    // wouldn't store enough information for us to recreate them right.</a>
+<a name="ln1663">    if (mons_is_job(ztype) || mons_is_ghost_demon(ztype))</a>
+<a name="ln1664">    {</a>
+<a name="ln1665">        mon-&gt;props[ZOMBIE_BASE_AC_KEY] = mon-&gt;base_armour_class();</a>
+<a name="ln1666">        mon-&gt;props[ZOMBIE_BASE_EV_KEY] = mon-&gt;base_evasion();</a>
+<a name="ln1667">    }</a>
+<a name="ln1668"> </a>
+<a name="ln1669">    mon-&gt;type         = cs;</a>
+<a name="ln1670">    mon-&gt;base_monster = ztype;</a>
+<a name="ln1671"> </a>
+<a name="ln1672">    mon-&gt;colour       = COLOUR_INHERIT;</a>
+<a name="ln1673">    mon-&gt;speed        = (cs == MONS_SPECTRAL_THING</a>
+<a name="ln1674">                            ? mons_class_base_speed(mon-&gt;base_monster)</a>
+<a name="ln1675">                            : mons_class_zombie_base_speed(mon-&gt;base_monster));</a>
+<a name="ln1676"> </a>
+<a name="ln1677">    // Turn off all melee ability flags except dual-wielding.</a>
+<a name="ln1678">    mon-&gt;flags       &amp;= (~MF_MELEE_MASK | MF_TWO_WEAPONS);</a>
+<a name="ln1679"> </a>
+<a name="ln1680">    // Turn off regeneration if the base monster cannot regenerate.</a>
+<a name="ln1681">    // This is needed for e.g. spectral things of non-regenerating</a>
+<a name="ln1682">    // monsters.</a>
+<a name="ln1683">    if (!mons_class_can_regenerate(mon-&gt;base_monster))</a>
+<a name="ln1684">        mon-&gt;flags   |= MF_NO_REGEN;</a>
+<a name="ln1685"> </a>
+<a name="ln1686">    roll_zombie_hp(mon);</a>
+<a name="ln1687">}</a>
+<a name="ln1688"> </a>
+<a name="ln1689">bool downgrade_zombie_to_skeleton(monster* mon)</a>
+<a name="ln1690">{</a>
+<a name="ln1691">    if (mon-&gt;type != MONS_ZOMBIE || !mons_skeleton(mon-&gt;base_monster))</a>
+<a name="ln1692">        return false;</a>
+<a name="ln1693"> </a>
+<a name="ln1694">    const int old_hp    = mon-&gt;hit_points;</a>
+<a name="ln1695">    const int old_maxhp = mon-&gt;max_hit_points;</a>
+<a name="ln1696"> </a>
+<a name="ln1697">    mon-&gt;type           = MONS_SKELETON;</a>
+<a name="ln1698">    mon-&gt;speed          = mons_class_zombie_base_speed(mon-&gt;base_monster);</a>
+<a name="ln1699">    roll_zombie_hp(mon);</a>
+<a name="ln1700"> </a>
+<a name="ln1701">    // Scale the skeleton HP to the zombie HP.</a>
+<a name="ln1702">    mon-&gt;hit_points     = old_hp * mon-&gt;max_hit_points / old_maxhp;</a>
+<a name="ln1703">    mon-&gt;hit_points     = max(mon-&gt;hit_points, 1);</a>
+<a name="ln1704"> </a>
+<a name="ln1705">    return true;</a>
+<a name="ln1706">}</a>
+<a name="ln1707"> </a>
+<a name="ln1708">/// Under what conditions should a band spawn with a monster?</a>
+<a name="ln1709">struct band_conditions</a>
+<a name="ln1710">{</a>
+<a name="ln1711">    int chance_denom; ///&lt; A 1/x chance for the band to appear.</a>
+<a name="ln1712">    int min_depth; ///&lt; The minimum absdepth for the band.</a>
+<a name="ln1713">    function&lt;bool()&gt; custom_condition; ///&lt; Additional conditions.</a>
+<a name="ln1714"> </a>
+<a name="ln1715">    /// Are the conditions met?</a>
+<a name="ln1716">    bool met() const</a>
+<a name="ln1717">    {</a>
+<a name="ln1718">        return (!chance_denom || one_chance_in(chance_denom))</a>
+<a name="ln1719">               &amp;&amp; (!min_depth || env.absdepth0 &gt;= min_depth)</a>
+<a name="ln1720">               &amp;&amp; (!custom_condition || custom_condition());</a>
+<a name="ln1721">    }</a>
+<a name="ln1722">};</a>
+<a name="ln1723"> </a>
+<a name="ln1724">/// Information about a band of followers that may spawn with some monster.</a>
+<a name="ln1725">struct band_info</a>
+<a name="ln1726">{</a>
+<a name="ln1727">    /// The type of the band; used to determine the type of followers.</a>
+<a name="ln1728">    band_type type;</a>
+<a name="ln1729">    /// The min &amp; max # of followers; doesn't count the leader.</a>
+<a name="ln1730">    random_var range;</a>
+<a name="ln1731">    /// Should the band followers try very hard to stick to the leader?</a>
+<a name="ln1732">    bool natural_leader;</a>
+<a name="ln1733">};</a>
+<a name="ln1734"> </a>
+<a name="ln1735">/// One or more band_infos, with conditions.</a>
+<a name="ln1736">struct band_set</a>
+<a name="ln1737">{</a>
+<a name="ln1738">    /// When should the band actually be generated?</a>
+<a name="ln1739">    band_conditions conditions;</a>
+<a name="ln1740">    /// The bands to be selected between, with equal weight.</a>
+<a name="ln1741">    vector&lt;band_info&gt; bands;</a>
+<a name="ln1742">};</a>
+<a name="ln1743"> </a>
+<a name="ln1744">static const band_conditions centaur_band_condition</a>
+<a name="ln1745">    = { 3, 10, []() { return !player_in_branch(BRANCH_SHOALS); }};</a>
+<a name="ln1746"> </a>
+<a name="ln1747">// warrior &amp; mage spawn alone more frequently at shallow depths of Snake</a>
+<a name="ln1748">static const band_conditions naga_band_condition</a>
+<a name="ln1749">    = { 0, 0, []() { return !player_in_branch(BRANCH_SNAKE)</a>
+<a name="ln1750">                            || x_chance_in_y(you.depth, 5); }};</a>
+<a name="ln1751"> </a>
+<a name="ln1752">/// can we spawn dracs in the current branch?</a>
+<a name="ln1753">static const function&lt;bool()&gt; drac_branch</a>
+<a name="ln1754">    = []() { return player_in_connected_branch(); };</a>
+<a name="ln1755"> </a>
+<a name="ln1756">/// non-classed draconian band description</a>
+<a name="ln1757">static const band_set basic_drac_set = { {3, 19, drac_branch},</a>
+<a name="ln1758">                                         {{BAND_DRACONIAN, {2, 5} }}};</a>
+<a name="ln1759"> </a>
+<a name="ln1760">/// classed draconian band description</a>
+<a name="ln1761">static const band_set classy_drac_set = { {0, 21, drac_branch},</a>
+<a name="ln1762">                                          {{BAND_DRACONIAN, {3, 7} }}};</a>
+<a name="ln1763"> </a>
+<a name="ln1764">// javelineer &amp; impaler</a>
+<a name="ln1765">static const band_conditions mf_band_condition = { 0, 0, []() {</a>
+<a name="ln1766">    return !player_in_branch(BRANCH_DEPTHS) &amp;&amp;</a>
+<a name="ln1767">          (!player_in_branch(BRANCH_SHOALS) || x_chance_in_y(you.depth, 5));</a>
+<a name="ln1768">}};</a>
+<a name="ln1769"> </a>
+<a name="ln1770">/// For each monster, what band or bands may follow them?</a>
+<a name="ln1771">static const map&lt;monster_type, band_set&gt; bands_by_leader = {</a>
+<a name="ln1772">    { MONS_ORC,             { {2}, {{ BAND_ORCS, {2, 5} }}}},</a>
+<a name="ln1773">    { MONS_ORC_WIZARD,      { {}, {{ BAND_ORCS, {2, 5} }}}},</a>
+<a name="ln1774">    { MONS_ORC_PRIEST,      { {}, {{ BAND_ORC_WARRIOR, {2, 5} }}}},</a>
+<a name="ln1775">    { MONS_ORC_WARRIOR,     { {}, {{ BAND_ORC_WARRIOR, {2, 5} }}}},</a>
+<a name="ln1776">    { MONS_ORC_WARLORD,     { {}, {{ BAND_ORC_KNIGHT, {8, 16}, true }}}},</a>
+<a name="ln1777">    { MONS_SAINT_ROKA,      { {}, {{ BAND_ORC_KNIGHT, {8, 16}, true }}}},</a>
+<a name="ln1778">    { MONS_ORC_KNIGHT,      { {}, {{ BAND_ORC_KNIGHT, {3, 7}, true }}}},</a>
+<a name="ln1779">    { MONS_ORC_HIGH_PRIEST, { {}, {{ BAND_ORC_KNIGHT, {4, 8}, true }}}},</a>
+<a name="ln1780">    { MONS_BIG_KOBOLD,      { {0, 4}, {{ BAND_KOBOLDS, {2, 8} }}}},</a>
+<a name="ln1781">    { MONS_KILLER_BEE,      { {}, {{ BAND_KILLER_BEES, {2, 6} }}}},</a>
+<a name="ln1782">    { MONS_CAUSTIC_SHRIKE,  { {}, {{ BAND_CAUSTIC_SHRIKE, {2, 5} }}}},</a>
+<a name="ln1783">    { MONS_SHARD_SHRIKE,    { {}, {{ BAND_SHARD_SHRIKE, {1, 4} }}}},</a>
+<a name="ln1784">    { MONS_FLYING_SKULL,    { {}, {{ BAND_FLYING_SKULLS, {2, 6} }}}},</a>
+<a name="ln1785">    { MONS_SLIME_CREATURE,  { {}, {{ BAND_SLIME_CREATURES, {2, 6} }}}},</a>
+<a name="ln1786">    { MONS_YAK,             { {}, {{ BAND_YAKS, {2, 6} }}}},</a>
+<a name="ln1787">    { MONS_VERY_UGLY_THING, { {0, 19}, {{ BAND_VERY_UGLY_THINGS, {2, 6} }}}},</a>
+<a name="ln1788">    { MONS_UGLY_THING,      { {0, 13}, {{ BAND_UGLY_THINGS, {2, 6} }}}},</a>
+<a name="ln1789">    { MONS_HELL_HOUND,      { {}, {{ BAND_HELL_HOUNDS, {2, 5} }}}},</a>
+<a name="ln1790">    { MONS_JACKAL,          { {}, {{ BAND_JACKALS, {1, 4} }}}},</a>
+<a name="ln1791">    { MONS_MARGERY,         { {}, {{ BAND_HELL_KNIGHTS, {4, 8}, true }}}},</a>
+<a name="ln1792">    { MONS_HELL_KNIGHT,     { {}, {{ BAND_HELL_KNIGHTS, {4, 8} }}}},</a>
+<a name="ln1793">    { MONS_JOSEPHINE,       { {}, {{ BAND_JOSEPHINE, {3, 6}, true }}}},</a>
+<a name="ln1794">    { MONS_NECROMANCER,     { {}, {{ BAND_NECROMANCER, {3, 6}, true }}}},</a>
+<a name="ln1795">    { MONS_VAMPIRE_MAGE,    { {3}, {{ BAND_JIANGSHI, {2, 4}, true }}}},</a>
+<a name="ln1796">    { MONS_JIANGSHI,        { {}, {{ BAND_JIANGSHI, {0, 2} }}}},</a>
+<a name="ln1797">    { MONS_GNOLL,           { {0, 1}, {{ BAND_GNOLLS, {2, 4} }}}},</a>
+<a name="ln1798">    { MONS_GNOLL_SHAMAN,    { {}, {{ BAND_GNOLLS, {3, 6} }}}},</a>
+<a name="ln1799">    { MONS_GNOLL_SERGEANT,  { {}, {{ BAND_GNOLLS, {3, 6} }}}},</a>
+<a name="ln1800">    { MONS_DEATH_KNIGHT,    { {0, 0, []() { return x_chance_in_y(2, 3); }},</a>
+<a name="ln1801">                                  {{ BAND_DEATH_KNIGHT, {3, 5}, true }}}},</a>
+<a name="ln1802">    { MONS_GRUM,            { {}, {{ BAND_WOLVES, {2, 5}, true }}}},</a>
+<a name="ln1803">    { MONS_WOLF,            { {}, {{ BAND_WOLVES, {2, 6} }}}},</a>
+<a name="ln1804">    { MONS_CENTAUR_WARRIOR, { centaur_band_condition,</a>
+<a name="ln1805">                                  {{ BAND_CENTAURS, {2, 6}, true }}}},</a>
+<a name="ln1806">    { MONS_CENTAUR, { centaur_band_condition, {{ BAND_CENTAURS, {2, 6} }}}},</a>
+<a name="ln1807">    { MONS_YAKTAUR_CAPTAIN, { {2}, {{ BAND_YAKTAURS, {2, 5}, true }}}},</a>
+<a name="ln1808">    { MONS_YAKTAUR,         { {2}, {{ BAND_YAKTAURS, {2, 5} }}}},</a>
+<a name="ln1809">    { MONS_DEATH_YAK,       { {}, {{ BAND_DEATH_YAKS, {2, 6} }}}},</a>
+<a name="ln1810">    { MONS_INSUBSTANTIAL_WISP, { {}, {{ BAND_INSUBSTANTIAL_WISPS, {2, 6} }}}},</a>
+<a name="ln1811">    { MONS_OGRE_MAGE,       { {}, {{ BAND_OGRE_MAGE, {4, 8} }}}},</a>
+<a name="ln1812">    { MONS_BALRUG,          { {}, {{ BAND_BALRUG, {2, 5}, true }}}},</a>
+<a name="ln1813">    { MONS_CACODEMON,       { {}, {{ BAND_CACODEMON, {1, 4}, true }}}},</a>
+<a name="ln1814">    { MONS_EXECUTIONER,     { {2}, {{ BAND_EXECUTIONER, {1, 4}, true }}}},</a>
+<a name="ln1815">    { MONS_PANDEMONIUM_LORD, { {}, {{ BAND_PANDEMONIUM_LORD, {1, 4}, true }}}},</a>
+<a name="ln1816">    { MONS_HELLWING,        { {2}, {{ BAND_HELLWING, {1, 5} }}}},</a>
+<a name="ln1817">    { MONS_DEEP_ELF_KNIGHT, { {2}, {{ BAND_DEEP_ELF_KNIGHT, {3, 5} }}}},</a>
+<a name="ln1818">    { MONS_DEEP_ELF_ARCHER, { {2}, {{ BAND_DEEP_ELF_KNIGHT, {3, 5} }}}},</a>
+<a name="ln1819">    { MONS_DEEP_ELF_HIGH_PRIEST, { {2}, {{ BAND_DEEP_ELF_HIGH_PRIEST, {3, 7},</a>
+<a name="ln1820">                                           true }}}},</a>
+<a name="ln1821">    { MONS_KOBOLD_DEMONOLOGIST, { {2}, {{ BAND_KOBOLD_DEMONOLOGIST, {3, 9} }}}},</a>
+<a name="ln1822">    { MONS_GUARDIAN_SERPENT, { {}, {{ BAND_GUARDIAN_SERPENT, {2, 6} }}}},</a>
+<a name="ln1823">    { MONS_NAGA_MAGE,       { naga_band_condition, {{ BAND_NAGAS, {2, 5} }}}},</a>
+<a name="ln1824">    { MONS_NAGA_WARRIOR,    { naga_band_condition, {{ BAND_NAGAS, {2, 5} }}}},</a>
+<a name="ln1825">    { MONS_NAGA_SHARPSHOOTER, { {2}, {{ BAND_NAGA_SHARPSHOOTER, {1, 4} }}}},</a>
+<a name="ln1826">    { MONS_NAGA_RITUALIST,  { {}, {{ BAND_NAGA_RITUALIST, {3, 6} }}}},</a>
+<a name="ln1827">    { MONS_RIVER_RAT,       { {}, {{ BAND_GREEN_RATS, {4, 10} }}}},</a>
+<a name="ln1828">    { MONS_HELL_RAT,        { {}, {{ BAND_HELL_RATS, {3, 7} }}}},</a>
+<a name="ln1829">    { MONS_DREAM_SHEEP,     { {}, {{ BAND_DREAM_SHEEP, {3, 7} }}}},</a>
+<a name="ln1830">    { MONS_GHOUL,           { {}, {{ BAND_GHOULS, {2, 5} }}}},</a>
+<a name="ln1831">    { MONS_KIRKE,           { {}, {{ BAND_HOGS, {3, 8}, true }}}},</a>
+<a name="ln1832">    { MONS_HOG,             { {}, {{ BAND_HOGS, {1, 4} }}}},</a>
+<a name="ln1833">    { MONS_VAMPIRE_MOSQUITO, { {}, {{ BAND_VAMPIRE_MOSQUITOES, {1, 4} }}}},</a>
+<a name="ln1834">    { MONS_FIRE_BAT,        { {}, {{ BAND_FIRE_BATS, {1, 4} }}}},</a>
+<a name="ln1835">    { MONS_DEEP_TROLL_EARTH_MAGE, { {}, {{ BAND_DEEP_TROLLS, {3, 6} }}}},</a>
+<a name="ln1836">    { MONS_DEEP_TROLL_SHAMAN, { {}, {{ BAND_DEEP_TROLL_SHAMAN, {3, 6} }}}},</a>
+<a name="ln1837">    { MONS_HELL_HOG,        { {}, {{ BAND_HELL_HOGS, {2, 4} }}}},</a>
+<a name="ln1838">    { MONS_BOGGART,         { {}, {{ BAND_BOGGARTS, {2, 5} }}}},</a>
+<a name="ln1839">    { MONS_PRINCE_RIBBIT,   { {}, {{ BAND_BLINK_FROGS, {2, 5}, true }}}},</a>
+<a name="ln1840">    { MONS_BLINK_FROG,      { {}, {{ BAND_BLINK_FROGS, {2, 5} }}}},</a>
+<a name="ln1841">    { MONS_WIGHT,           { {}, {{ BAND_WIGHTS, {2, 5} }}}},</a>
+<a name="ln1842">    { MONS_ANCIENT_CHAMPION, { {2}, {{ BAND_SKELETAL_WARRIORS, {2, 5}, true}}}},</a>
+<a name="ln1843">    { MONS_SKELETAL_WARRIOR, { {}, {{ BAND_SKELETAL_WARRIORS, {2, 5}, true }}}},</a>
+<a name="ln1844">    { MONS_CYCLOPS,         { { 0, 0, []() {</a>
+<a name="ln1845">        return player_in_branch(BRANCH_SHOALS); }},</a>
+<a name="ln1846">                                  {{ BAND_DREAM_SHEEP, {2, 5}, true }}}},</a>
+<a name="ln1847">    { MONS_ALLIGATOR,       { { 5, 0, []() {</a>
+<a name="ln1848">        return !player_in_branch(BRANCH_LAIR); }},</a>
+<a name="ln1849">                                  {{ BAND_ALLIGATOR, {1, 2}, true }}}},</a>
+<a name="ln1850">    { MONS_POLYPHEMUS,      { {}, {{ BAND_POLYPHEMUS, {3, 6}, true }}}},</a>
+<a name="ln1851">    { MONS_HARPY,           { {}, {{ BAND_HARPIES, {2, 5} }}}},</a>
+<a name="ln1852">    { MONS_SALTLING,        { {}, {{ BAND_SALTLINGS, {2, 4} }}}},</a>
+<a name="ln1853">    // Journey -- Added Draconian Packs</a>
+<a name="ln1854">    { MONS_WHITE_DRACONIAN, basic_drac_set },</a>
+<a name="ln1855">    { MONS_RED_DRACONIAN,   basic_drac_set },</a>
+<a name="ln1856">    { MONS_PURPLE_DRACONIAN, basic_drac_set },</a>
+<a name="ln1857">    { MONS_YELLOW_DRACONIAN, basic_drac_set },</a>
+<a name="ln1858">    { MONS_BLACK_DRACONIAN, basic_drac_set },</a>
+<a name="ln1859">    { MONS_GREEN_DRACONIAN, basic_drac_set },</a>
+<a name="ln1860">    { MONS_GREY_DRACONIAN, basic_drac_set },</a>
+<a name="ln1861">    { MONS_PALE_DRACONIAN, basic_drac_set },</a>
+<a name="ln1862">    { MONS_DRACONIAN_STORMCALLER, classy_drac_set },</a>
+<a name="ln1863">    { MONS_DRACONIAN_MONK, classy_drac_set },</a>
+<a name="ln1864">    { MONS_DRACONIAN_SCORCHER, classy_drac_set },</a>
+<a name="ln1865">    { MONS_DRACONIAN_KNIGHT, classy_drac_set },</a>
+<a name="ln1866">    { MONS_DRACONIAN_ANNIHILATOR, classy_drac_set },</a>
+<a name="ln1867">    { MONS_DRACONIAN_SHIFTER, classy_drac_set },</a>
+<a name="ln1868">    // yup, scary</a>
+<a name="ln1869">    { MONS_TIAMAT,          { {}, {{ BAND_DRACONIAN, {8, 15}, true }}}},</a>
+<a name="ln1870">    { MONS_ILSUIW,          { {}, {{ BAND_ILSUIW, {3, 6} }}}},</a>
+<a name="ln1871">    { MONS_AZRAEL,          { {}, {{ BAND_AZRAEL, {4, 9}, true }}}},</a>
+<a name="ln1872">    { MONS_DUVESSA,         { {}, {{ BAND_DUVESSA, {1, 2} }}}},</a>
+<a name="ln1873">    { MONS_KHUFU,           { {}, {{ BAND_KHUFU, {3, 4}, true }}}},</a>
+<a name="ln1874">    { MONS_GOLDEN_EYE,      { {}, {{ BAND_GOLDEN_EYE, {1, 6} }}}},</a>
+<a name="ln1875">    { MONS_PIKEL,           { {}, {{ BAND_PIKEL, {4, 5}, true }}}},</a>
+<a name="ln1876">    { MONS_MERFOLK_AQUAMANCER, { {}, {{ BAND_MERFOLK_AQUAMANCER, {3, 5} }}}},</a>
+<a name="ln1877">    { MONS_MERFOLK_JAVELINEER, { mf_band_condition,</a>
+<a name="ln1878">                                  {{ BAND_MERFOLK_JAVELINEER, {2, 5} }}}},</a>
+<a name="ln1879">    { MONS_MERFOLK_IMPALER, { mf_band_condition,</a>
+<a name="ln1880">                                  {{ BAND_MERFOLK_IMPALER, {2, 5} }}}},</a>
+<a name="ln1881">    { MONS_ELEPHANT,        { {}, {{ BAND_ELEPHANT, {2, 6} }}}},</a>
+<a name="ln1882">    { MONS_REDBACK,         { {}, {{ BAND_REDBACK, {1, 6} }}}},</a>
+<a name="ln1883">    { MONS_ENTROPY_WEAVER,  { {}, {{ BAND_REDBACK, {1, 5} }}}},</a>
+<a name="ln1884">    { MONS_JUMPING_SPIDER,  { {2}, {{ BAND_JUMPING_SPIDER, {1, 6} }}}},</a>
+<a name="ln1885">    { MONS_TARANTELLA,      { {2}, {{ BAND_TARANTELLA, {1, 5} }}}},</a>
+<a name="ln1886">    { MONS_VAULT_WARDEN,    { {}, {{ BAND_YAKTAURS, {2, 6}, true },</a>
+<a name="ln1887">                                   { BAND_VAULT_WARDEN, {2, 5}, true }}}},</a>
+<a name="ln1888">    { MONS_IRONHEART_PRESERVER, { {}, {{ BAND_DEEP_TROLLS, {3, 6}, true },</a>
+<a name="ln1889">                                    { BAND_DEEP_ELF_HIGH_PRIEST, {3, 7}, true },</a>
+<a name="ln1890">                                    { BAND_OGRE_MAGE_EXTERN, {4, 8}, true }}}},</a>
+<a name="ln1891">    { MONS_TENGU_CONJURER,  { {2}, {{ BAND_TENGU, {1, 2}, true }}}},</a>
+<a name="ln1892">    { MONS_TENGU_WARRIOR,   { {2}, {{ BAND_TENGU, {1, 2}, true }}}},</a>
+<a name="ln1893">    { MONS_SOJOBO,          { {}, {{ BAND_SOJOBO, {2, 3}, true }}}},</a>
+<a name="ln1894">    { MONS_SPRIGGAN_RIDER,  { {3}, {{ BAND_SPRIGGAN_RIDERS, {1, 3} }}}},</a>
+<a name="ln1895">    { MONS_SPRIGGAN_BERSERKER, { {2}, {{ BAND_SPRIGGANS, {2, 4} }}}},</a>
+<a name="ln1896">    { MONS_SPRIGGAN_DEFENDER, { {}, {{ BAND_SPRIGGAN_ELITES, {2, 5}, true }}}},</a>
+<a name="ln1897">    { MONS_THE_ENCHANTRESS, { {}, {{ BAND_ENCHANTRESS, {6, 11}, true }}}},</a>
+<a name="ln1898">    { MONS_SHAMBLING_MANGROVE, { {4}, {{ BAND_SPRIGGAN_RIDERS, {1, 2} }}}},</a>
+<a name="ln1899">    { MONS_VAMPIRE_KNIGHT,  { {4}, {{ BAND_PHANTASMAL_WARRIORS, {2, 3} }}}},</a>
+<a name="ln1900">    { MONS_RAIJU,           { {}, {{ BAND_RAIJU, {2, 4} }}}},</a>
+<a name="ln1901">    { MONS_SALAMANDER_MYSTIC, { {}, {{ BAND_SALAMANDERS, {2, 4} }}}},</a>
+<a name="ln1902">    { MONS_MONSTROUS_DEMONSPAWN, { {2, 0, []() {</a>
+<a name="ln1903">        return !player_in_branch(BRANCH_WIZLAB); // hack for wizlab_wucad_mu</a>
+<a name="ln1904">    }},                             {{ BAND_MONSTROUS_DEMONSPAWN, {1, 3}}}}},</a>
+<a name="ln1905">    { MONS_GELID_DEMONSPAWN, { {2}, {{ BAND_GELID_DEMONSPAWN, {1, 3} }}}},</a>
+<a name="ln1906">    { MONS_INFERNAL_DEMONSPAWN, { {2}, {{ BAND_INFERNAL_DEMONSPAWN, {1, 3} }}}},</a>
+<a name="ln1907">    { MONS_TORTUROUS_DEMONSPAWN, {{2}, {{ BAND_TORTUROUS_DEMONSPAWN, {1, 3}}}}},</a>
+<a name="ln1908">    { MONS_BLOOD_SAINT,     { {}, {{ BAND_BLOOD_SAINT, {1, 4} }}}},</a>
+<a name="ln1909">    { MONS_WARMONGER,       { {}, {{ BAND_WARMONGER, {2, 4} }}}},</a>
+<a name="ln1910">    { MONS_CORRUPTER,       { {}, {{ BAND_CORRUPTER, {1, 4} }}}},</a>
+<a name="ln1911">    { MONS_BLACK_SUN,       { {}, {{ BAND_BLACK_SUN, {2, 4} }}}},</a>
+<a name="ln1912">    { MONS_VASHNIA,         { {}, {{ BAND_VASHNIA, {3, 6}, true }}}},</a>
+<a name="ln1913">    { MONS_ROBIN,           { {}, {{ BAND_ROBIN, {10, 13}, true }}}},</a>
+<a name="ln1914">    { MONS_RAKSHASA,        { {2, 0, []() {</a>
+<a name="ln1915">        return branch_has_monsters(you.where_are_you)</a>
+<a name="ln1916">            || !vault_mon_types.empty();</a>
+<a name="ln1917">    }},                           {{ BAND_RANDOM_SINGLE, {1, 2} }}}},</a>
+<a name="ln1918">    { MONS_CEREBOV,         { {}, {{ BAND_CEREBOV, {5, 8}, true }}}},</a>
+<a name="ln1919">    { MONS_GLOORX_VLOQ,     { {}, {{ BAND_GLOORX_VLOQ, {5, 8}, true }}}},</a>
+<a name="ln1920">    { MONS_MNOLEG,          { {}, {{ BAND_MNOLEG, {5, 8}, true }}}},</a>
+<a name="ln1921">    { MONS_LOM_LOBON,       { {}, {{ BAND_LOM_LOBON, {5, 8}, true }}}},</a>
+<a name="ln1922">    { MONS_DEATH_SCARAB,    { {}, {{ BAND_DEATH_SCARABS, {3, 6} }}}},</a>
+<a name="ln1923">    { MONS_SERAPH,          { {}, {{ BAND_HOLIES, {1, 4}, true }}}},</a>
+<a name="ln1924">    { MONS_IRON_GIANT,      { {}, {{ BAND_ANCIENT_CHAMPIONS, {2, 3}, true }}}},</a>
+<a name="ln1925">    { MONS_SPARK_WASP,      { {0, 0, []() {</a>
+<a name="ln1926">        return you.where_are_you == BRANCH_DEPTHS;</a>
+<a name="ln1927">    }},                           {{ BAND_SPARK_WASPS, {1, 4} }}}},</a>
+<a name="ln1928">    { MONS_HOWLER_MONKEY,   { {2, 6}, {{ BAND_HOWLER_MONKEY, {1, 3} }}}},</a>
+<a name="ln1929">    { MONS_FLOATING_EYE,   { {0, 0, []() {</a>
+<a name="ln1930">        return branch_has_monsters(you.where_are_you)</a>
+<a name="ln1931">            || !vault_mon_types.empty();</a>
+<a name="ln1932">    }},                           {{ BAND_RANDOM_SINGLE, {1, 2} }}}},</a>
+<a name="ln1933">    { MONS_EYE_OF_DRAINING, { {0, 0, []() {</a>
+<a name="ln1934">        return branch_has_monsters(you.where_are_you)</a>
+<a name="ln1935">            || !vault_mon_types.empty();</a>
+<a name="ln1936">    }},                           {{ BAND_RANDOM_SINGLE, {1, 2} }}}},</a>
+<a name="ln1937">    { MONS_MELIAI,          { {}, {{ BAND_MELIAI, {2, 3} }}}},</a>
+<a name="ln1938">    { MONS_DANCING_WEAPON,  { {0, 0, []() {</a>
+<a name="ln1939">        return you.where_are_you == BRANCH_DESOLATION;</a>
+<a name="ln1940">    }},                            {{ BAND_DANCING_WEAPONS, {2, 3} }}}},</a>
+<a name="ln1941">    { MONS_MOLTEN_GARGOYLE,  { {0, 0, []() {</a>
+<a name="ln1942">        return you.where_are_you == BRANCH_DESOLATION;</a>
+<a name="ln1943">    }},                            {{ BAND_MOLTEN_GARGOYLES, {2, 3} }}}},</a>
+<a name="ln1944"> </a>
+<a name="ln1945">    // special-cased band-sizes</a>
+<a name="ln1946">    { MONS_SPRIGGAN_DRUID,  { {3}, {{ BAND_SPRIGGAN_DRUID, {0, 1} }}}},</a>
+<a name="ln1947">    { MONS_THRASHING_HORROR, { {}, {{ BAND_THRASHING_HORRORS, {0, 1} }}}},</a>
+<a name="ln1948">};</a>
+<a name="ln1949"> </a>
+<a name="ln1950">static band_type _choose_band(monster_type mon_type, int *band_size_p,</a>
+<a name="ln1951">                              bool *natural_leader_p)</a>
+<a name="ln1952">{</a>
+<a name="ln1953">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln1954">    mprf(MSGCH_DIAGNOSTICS, &quot;in _choose_band()&quot;);</a>
+<a name="ln1955">#endif</a>
+<a name="ln1956">    // Access outparameters by reference, or local dummies if they were null.</a>
+<a name="ln1957">    int bs, &amp;band_size = band_size_p ? *band_size_p : bs;</a>
+<a name="ln1958">    bool nl, &amp;natural_leader = natural_leader_p ? *natural_leader_p : nl;</a>
+<a name="ln1959"> </a>
+<a name="ln1960">    // Band size describes the number of monsters in addition to</a>
+<a name="ln1961">    // the band leader.</a>
+<a name="ln1962">    band_size = 0; // Single monster, no band.</a>
+<a name="ln1963">    natural_leader = false;</a>
+<a name="ln1964">    band_type band = BAND_NO_BAND;</a>
+<a name="ln1965"> </a>
+<a name="ln1966">    const band_set* bands = map_find(bands_by_leader, mon_type);</a>
+<a name="ln1967">    if (bands &amp;&amp; bands-&gt;conditions.met())</a>
+<a name="ln1968">    {</a>
+<a name="ln1969">        ASSERT(bands-&gt;bands.size() &gt; 0);</a>
+<a name="ln1970">        const band_info&amp; band_desc = *random_iterator(bands-&gt;bands);</a>
+<a name="ln1971">        band = band_desc.type;</a>
+<a name="ln1972">        band_size = band_desc.range.roll();</a>
+<a name="ln1973">        natural_leader = band_desc.natural_leader;</a>
+<a name="ln1974">    }</a>
+<a name="ln1975"> </a>
+<a name="ln1976">    // special cases...</a>
+<a name="ln1977">    switch (mon_type)</a>
+<a name="ln1978">    {</a>
+<a name="ln1979">    case MONS_TORPOR_SNAIL:</a>
+<a name="ln1980">    {</a>
+<a name="ln1981">        natural_leader = true; // snails are natural-born leaders. fact.</a>
+<a name="ln1982"> </a>
+<a name="ln1983">        struct band_choice { band_type band; int min; int max; };</a>
+<a name="ln1984">        typedef vector&lt;pair&lt;band_choice, int&gt;&gt; band_weights;</a>
+<a name="ln1985">        const static map&lt;branch_type, band_weights&gt; band_pick =</a>
+<a name="ln1986">        {</a>
+<a name="ln1987">            // branch              band             #min #max weight</a>
+<a name="ln1988">            { BRANCH_LAIR,   { { { BAND_YAKS,          2, 5 },  3 },</a>
+<a name="ln1989">                               { { BAND_DEATH_YAKS,    1, 2 },  1 },</a>
+<a name="ln1990">                               { { BAND_DREAM_SHEEP,   2, 4 },  1 },</a>
+<a name="ln1991">                             } },</a>
+<a name="ln1992">            { BRANCH_SPIDER, { { { BAND_REDBACK,       2, 4 },  1 },</a>
+<a name="ln1993">                               { { BAND_RANDOM_SINGLE, 1, 1 },  1 },</a>
+<a name="ln1994">                             } },</a>
+<a name="ln1995">            { BRANCH_DEPTHS, { { { BAND_RANDOM_SINGLE, 1, 1 },  1 },</a>
+<a name="ln1996">                             } },</a>
+<a name="ln1997">        };</a>
+<a name="ln1998"> </a>
+<a name="ln1999">        if (const auto *weights = map_find(band_pick, you.where_are_you))</a>
+<a name="ln2000">        {</a>
+<a name="ln2001">            if (const auto *chosen = random_choose_weighted(*weights))</a>
+<a name="ln2002">            {</a>
+<a name="ln2003">                band = chosen-&gt;band;</a>
+<a name="ln2004">                band_size = random_range(chosen-&gt;min, chosen-&gt;max);</a>
+<a name="ln2005">            }</a>
+<a name="ln2006">        }</a>
+<a name="ln2007">        break;</a>
+<a name="ln2008">    }</a>
+<a name="ln2009"> </a>
+<a name="ln2010">    case MONS_SATYR:</a>
+<a name="ln2011">        if (!one_chance_in(3))</a>
+<a name="ln2012">        {</a>
+<a name="ln2013">            natural_leader = true;</a>
+<a name="ln2014">            band = one_chance_in(5) ? BAND_FAUN_PARTY : BAND_FAUNS;</a>
+<a name="ln2015">            band_size = 3 + random2(2);</a>
+<a name="ln2016">        }</a>
+<a name="ln2017">        break;</a>
+<a name="ln2018"> </a>
+<a name="ln2019">    case MONS_FAUN:</a>
+<a name="ln2020">        if (!one_chance_in(3))</a>
+<a name="ln2021">        {</a>
+<a name="ln2022">            band = random_choose(BAND_FAUNS, BAND_FAUN_PARTY);</a>
+<a name="ln2023">            band_size = 2 + random2(2);</a>
+<a name="ln2024">        }</a>
+<a name="ln2025">        break;</a>
+<a name="ln2026"> </a>
+<a name="ln2027">    case MONS_SPRIGGAN_DRUID:</a>
+<a name="ln2028">        if (band != BAND_NO_BAND)</a>
+<a name="ln2029">            band_size = (one_chance_in(4) ? 3 : 2);</a>
+<a name="ln2030">        break;</a>
+<a name="ln2031"> </a>
+<a name="ln2032">    case MONS_THRASHING_HORROR:</a>
+<a name="ln2033">        // XXX: rewrite this - wrong &amp; bad if horrors aren't in abyss</a>
+<a name="ln2034">        band_size = random2(min(brdepth[BRANCH_ABYSS], you.depth));</a>
+<a name="ln2035">        break;</a>
+<a name="ln2036"> </a>
+<a name="ln2037">    default: ;</a>
+<a name="ln2038">    }</a>
+<a name="ln2039"> </a>
+<a name="ln2040">    if (band != BAND_NO_BAND &amp;&amp; band_size == 0)</a>
+<a name="ln2041">        band = BAND_NO_BAND;</a>
+<a name="ln2042"> </a>
+<a name="ln2043">    if (band_size &gt;= BIG_BAND)</a>
+<a name="ln2044">        band_size = BIG_BAND - 1;</a>
+<a name="ln2045"> </a>
+<a name="ln2046">    return band;</a>
+<a name="ln2047">}</a>
+<a name="ln2048"> </a>
+<a name="ln2049">/// a weighted list of possible monsters for a given band slot.</a>
+<a name="ln2050">typedef vector&lt;pair&lt;monster_type, int&gt;&gt; member_possibilites;</a>
+<a name="ln2051"> </a>
+<a name="ln2052">/**</a>
+<a name="ln2053"> * For each band type, a list of weighted lists of monsters that can appear</a>
+<a name="ln2054"> * in that band.</a>
+<a name="ln2055"> *</a>
+<a name="ln2056"> * Each element in the list, other than the last, is a list of candidates for</a>
+<a name="ln2057"> * that slot in the band. The final element lists candidates for all further</a>
+<a name="ln2058"> * slots.</a>
+<a name="ln2059"> *</a>
+<a name="ln2060"> * An example: Let's say we have {BAND_FOO,</a>
+<a name="ln2061"> *                                  {{{MONS_A, 1}},</a>
+<a name="ln2062"> *                                   {{MONS_B, 1}},</a>
+<a name="ln2063"> *                                   {{MONS_C, 1}, {MONS_D, 1}}}}.</a>
+<a name="ln2064"> * This indicates that the first member of these bands (not the leader, but</a>
+<a name="ln2065"> * their first follower) will be a MONS_A, the second will be a MONS_B, and</a>
+<a name="ln2066"> * the third, fourth, etc monsters will either be MONS_C or MONS_D with equal</a>
+<a name="ln2067"> * likelihood.</a>
+<a name="ln2068"> */</a>
+<a name="ln2069">static const map&lt;band_type, vector&lt;member_possibilites&gt;&gt; band_membership = {</a>
+<a name="ln2070">    { BAND_HOGS,                {{{MONS_HOG, 1}}}},</a>
+<a name="ln2071">    { BAND_YAKS,                {{{MONS_YAK, 1}}}},</a>
+<a name="ln2072">    { BAND_FAUNS,               {{{MONS_FAUN, 1}}}},</a>
+<a name="ln2073">    { BAND_WOLVES,              {{{MONS_WOLF, 1}}}},</a>
+<a name="ln2074">    { BAND_DUVESSA,             {{{MONS_DOWAN, 1}}}},</a>
+<a name="ln2075">    { BAND_GNOLLS,              {{{MONS_GNOLL, 1}}}},</a>
+<a name="ln2076">    { BAND_HARPIES,             {{{MONS_HARPY, 1}}}},</a>
+<a name="ln2077">    { BAND_RAIJU,               {{{MONS_RAIJU, 1}}}},</a>
+<a name="ln2078">    { BAND_PIKEL,               {{{MONS_SLAVE, 1}}}},</a>
+<a name="ln2079">    { BAND_WIGHTS,              {{{MONS_WIGHT, 1}}}},</a>
+<a name="ln2080">    { BAND_JACKALS,             {{{MONS_JACKAL, 1}}}},</a>
+<a name="ln2081">    { BAND_KOBOLDS,             {{{MONS_KOBOLD, 1}}}},</a>
+<a name="ln2082">    { BAND_JOSEPHINE,           {{{MONS_WRAITH, 1}}}},</a>
+<a name="ln2083">    { BAND_MELIAI,              {{{MONS_MELIAI, 1}}}},</a>
+<a name="ln2084">    { BAND_BOGGARTS,            {{{MONS_BOGGART, 1}}}},</a>
+<a name="ln2085">    { BAND_CENTAURS,            {{{MONS_CENTAUR, 1}}}},</a>
+<a name="ln2086">    { BAND_YAKTAURS,            {{{MONS_YAKTAUR, 1}}}},</a>
+<a name="ln2087">    { BAND_MERFOLK_IMPALER,     {{{MONS_MERFOLK, 1}}}},</a>
+<a name="ln2088">    { BAND_MERFOLK_JAVELINEER,  {{{MONS_MERFOLK, 1}}}},</a>
+<a name="ln2089">    { BAND_ELEPHANT,            {{{MONS_ELEPHANT, 1}}}},</a>
+<a name="ln2090">    { BAND_FIRE_BATS,           {{{MONS_FIRE_BAT, 1}}}},</a>
+<a name="ln2091">    { BAND_HELL_HOGS,           {{{MONS_HELL_HOG, 1}}}},</a>
+<a name="ln2092">    { BAND_HELL_RATS,           {{{MONS_HELL_RAT, 1}}}},</a>
+<a name="ln2093">    { BAND_JIANGSHI,            {{{MONS_JIANGSHI, 1}}}},</a>
+<a name="ln2094">    { BAND_ALLIGATOR,           {{{MONS_ALLIGATOR, 1}}}},</a>
+<a name="ln2095">    { BAND_DEATH_YAKS,          {{{MONS_DEATH_YAK, 1}}}},</a>
+<a name="ln2096">    { BAND_GREEN_RATS,          {{{MONS_RIVER_RAT, 1}}}},</a>
+<a name="ln2097">    { BAND_BLINK_FROGS,         {{{MONS_BLINK_FROG, 1}}}},</a>
+<a name="ln2098">    { BAND_GOLDEN_EYE,          {{{MONS_GOLDEN_EYE, 1}}}},</a>
+<a name="ln2099">    { BAND_HELL_HOUNDS,         {{{MONS_HELL_HOUND, 1}}}},</a>
+<a name="ln2100">    { BAND_KILLER_BEES,         {{{MONS_KILLER_BEE, 1}}}},</a>
+<a name="ln2101">    { BAND_SALAMANDERS,         {{{MONS_SALAMANDER, 1}}}},</a>
+<a name="ln2102">    { BAND_SPARK_WASPS,         {{{MONS_SPARK_WASP, 1}}}},</a>
+<a name="ln2103">    { BAND_UGLY_THINGS,         {{{MONS_UGLY_THING, 1}}}},</a>
+<a name="ln2104">    { BAND_DREAM_SHEEP,         {{{MONS_DREAM_SHEEP, 1}}}},</a>
+<a name="ln2105">    { BAND_DEATH_SCARABS,       {{{MONS_DEATH_SCARAB, 1}}}},</a>
+<a name="ln2106">    { BAND_FLYING_SKULLS,       {{{MONS_FLYING_SKULL, 1}}}},</a>
+<a name="ln2107">    { BAND_SHARD_SHRIKE,        {{{MONS_SHARD_SHRIKE, 1}}}},</a>
+<a name="ln2108">    { BAND_SOJOBO,              {{{MONS_TENGU_REAVER, 1}}}},</a>
+<a name="ln2109">    { BAND_HOWLER_MONKEY,       {{{MONS_HOWLER_MONKEY, 1}}}},</a>
+<a name="ln2110">    { BAND_CAUSTIC_SHRIKE,      {{{MONS_CAUSTIC_SHRIKE, 1}}}},</a>
+<a name="ln2111">    { BAND_DANCING_WEAPONS,     {{{MONS_DANCING_WEAPON, 1}}}},</a>
+<a name="ln2112">    { BAND_SLIME_CREATURES,     {{{MONS_SLIME_CREATURE, 1}}}},</a>
+<a name="ln2113">    { BAND_SPRIGGAN_RIDERS,     {{{MONS_SPRIGGAN_RIDER, 1}}}},</a>
+<a name="ln2114">    { BAND_MOLTEN_GARGOYLES,    {{{MONS_MOLTEN_GARGOYLE, 1}}}},</a>
+<a name="ln2115">    { BAND_SKELETAL_WARRIORS,   {{{MONS_SKELETAL_WARRIOR, 1}}}},</a>
+<a name="ln2116">    { BAND_THRASHING_HORRORS,   {{{MONS_THRASHING_HORROR, 1}}}},</a>
+<a name="ln2117">    { BAND_VAMPIRE_MOSQUITOES,  {{{MONS_VAMPIRE_MOSQUITO, 1}}}},</a>
+<a name="ln2118">    { BAND_ANCIENT_CHAMPIONS,   {{{MONS_ANCIENT_CHAMPION, 1}}}},</a>
+<a name="ln2119">    { BAND_EXECUTIONER,         {{{MONS_ABOMINATION_LARGE, 1}}}},</a>
+<a name="ln2120">    { BAND_VASHNIA,             {{{MONS_NAGA_SHARPSHOOTER, 1}}}},</a>
+<a name="ln2121">    { BAND_INSUBSTANTIAL_WISPS, {{{MONS_INSUBSTANTIAL_WISP, 1}}}},</a>
+<a name="ln2122">    { BAND_PHANTASMAL_WARRIORS, {{{MONS_PHANTASMAL_WARRIOR, 1}}}},</a>
+<a name="ln2123">    { BAND_DEEP_ELF_KNIGHT,     {{{MONS_DEEP_ELF_MAGE, 92},</a>
+<a name="ln2124">                                  {MONS_DEEP_ELF_KNIGHT, 24},</a>
+<a name="ln2125">                                  {MONS_DEEP_ELF_ARCHER, 24},</a>
+<a name="ln2126">                                  {MONS_DEEP_ELF_DEATH_MAGE, 3},</a>
+<a name="ln2127">                                  {MONS_DEEP_ELF_DEMONOLOGIST, 2},</a>
+<a name="ln2128">                                  {MONS_DEEP_ELF_ANNIHILATOR, 2},</a>
+<a name="ln2129">                                  {MONS_DEEP_ELF_SORCERER, 2}}}},</a>
+<a name="ln2130">    { BAND_DEEP_ELF_HIGH_PRIEST, {{{MONS_DEEP_ELF_MAGE, 5},</a>
+<a name="ln2131">                                   {MONS_DEEP_ELF_KNIGHT, 2},</a>
+<a name="ln2132">                                   {MONS_DEEP_ELF_ARCHER, 2},</a>
+<a name="ln2133">                                   {MONS_DEEP_ELF_DEMONOLOGIST, 1},</a>
+<a name="ln2134">                                   {MONS_DEEP_ELF_ANNIHILATOR, 1},</a>
+<a name="ln2135">                                   {MONS_DEEP_ELF_SORCERER, 1},</a>
+<a name="ln2136">                                   {MONS_DEEP_ELF_DEATH_MAGE, 1}}}},</a>
+<a name="ln2137">    { BAND_BALRUG,              {{{MONS_SUN_DEMON, 1},</a>
+<a name="ln2138">                                  {MONS_RED_DEVIL, 1}}}},</a>
+<a name="ln2139">    { BAND_HELLWING,            {{{MONS_HELLWING, 1},</a>
+<a name="ln2140">                                  {MONS_SMOKE_DEMON, 1}}}},</a>
+<a name="ln2141">    { BAND_CACODEMON,           {{{MONS_SIXFIRHY, 1},</a>
+<a name="ln2142">                                  {MONS_ORANGE_DEMON, 1}}}},</a>
+<a name="ln2143">    { BAND_NECROMANCER,         {{{MONS_ZOMBIE, 2},</a>
+<a name="ln2144">                                  {MONS_SKELETON, 2},</a>
+<a name="ln2145">                                  {MONS_SIMULACRUM, 1}}}},</a>
+<a name="ln2146">    { BAND_HELL_KNIGHTS,        {{{MONS_HELL_KNIGHT, 3},</a>
+<a name="ln2147">                                  {MONS_NECROMANCER, 1}}}},</a>
+<a name="ln2148">    { BAND_POLYPHEMUS,          {{{MONS_CATOBLEPAS, 1}},</a>
+<a name="ln2149"> </a>
+<a name="ln2150">                                 {{MONS_DEATH_YAK, 1}}}},</a>
+<a name="ln2151">    { BAND_VERY_UGLY_THINGS,    {{{MONS_UGLY_THING, 3},</a>
+<a name="ln2152">                                  {MONS_VERY_UGLY_THING, 4}}}},</a>
+<a name="ln2153">    { BAND_ORCS,                {{{MONS_ORC_PRIEST, 6},</a>
+<a name="ln2154">                                  {MONS_ORC_WIZARD, 7},</a>
+<a name="ln2155">                                  {MONS_ORC, 35}}}},</a>
+<a name="ln2156">    { BAND_ORC_WARRIOR,         {{{MONS_ORC_PRIEST, 5},</a>
+<a name="ln2157">                                  {MONS_ORC_WIZARD, 7},</a>
+<a name="ln2158">                                  {MONS_ORC,       22}}}},</a>
+<a name="ln2159">    // XXX: For Beogh punishment, ogres and trolls look out of place...</a>
+<a name="ln2160">    // (For normal generation, they're okay, of course.)</a>
+<a name="ln2161">    { BAND_ORC_KNIGHT,          {{{MONS_ORC, 12},</a>
+<a name="ln2162">                                  {MONS_ORC_WARRIOR, 9},</a>
+<a name="ln2163">                                  {MONS_WARG, 2},</a>
+<a name="ln2164">                                  {MONS_ORC_WIZARD, 2},</a>
+<a name="ln2165">                                  {MONS_ORC_PRIEST, 2},</a>
+<a name="ln2166">                                  {MONS_OGRE, 1},</a>
+<a name="ln2167">                                  {MONS_TROLL, 1},</a>
+<a name="ln2168">                                  {MONS_ORC_SORCERER, 1}}}},</a>
+<a name="ln2169">    { BAND_OGRE_MAGE,           {{{MONS_TWO_HEADED_OGRE, 2},</a>
+<a name="ln2170">                                  {MONS_OGRE, 1}}}},</a>
+<a name="ln2171">    { BAND_OGRE_MAGE_EXTERN,    {{{MONS_OGRE_MAGE, 1}},</a>
+<a name="ln2172">                                 {{MONS_TWO_HEADED_OGRE, 1},</a>
+<a name="ln2173">                                  {MONS_OGRE, 2}}}},</a>
+<a name="ln2174">    { BAND_KOBOLD_DEMONOLOGIST, {{{MONS_KOBOLD, 4},</a>
+<a name="ln2175">                                  {MONS_BIG_KOBOLD, 2},</a>
+<a name="ln2176">                                  {MONS_KOBOLD_DEMONOLOGIST, 1}}}},</a>
+<a name="ln2177">    // Favour tougher naga suited to melee, compared to normal naga bands</a>
+<a name="ln2178">    { BAND_GUARDIAN_SERPENT,    {{{MONS_NAGA_MAGE, 5}, {MONS_NAGA_WARRIOR, 10}},</a>
+<a name="ln2179"> </a>
+<a name="ln2180">                                 {{MONS_NAGA_MAGE, 5}, {MONS_NAGA_WARRIOR, 10},</a>
+<a name="ln2181">                                  {MONS_SALAMANDER, 3}, {MONS_NAGA, 12}},</a>
+<a name="ln2182"> </a>
+<a name="ln2183">                                 {{MONS_SALAMANDER, 3}, {MONS_NAGA, 12}}}},</a>
+<a name="ln2184">    { BAND_NAGA_RITUALIST,      {{{MONS_BLACK_MAMBA, 15},</a>
+<a name="ln2185">                                  {MONS_MANA_VIPER, 7},</a>
+<a name="ln2186">                                  {MONS_ANACONDA, 4}}}},</a>
+<a name="ln2187">    { BAND_NAGA_SHARPSHOOTER,   {{{MONS_NAGA_SHARPSHOOTER, 1},</a>
+<a name="ln2188">                                  {MONS_NAGA, 2}}}},</a>
+<a name="ln2189">    { BAND_GHOULS,              {{{MONS_GHOUL, 4},</a>
+<a name="ln2190">                                  {MONS_NECROPHAGE, 3},</a>
+<a name="ln2191">                                  {MONS_BOG_BODY, 2}}}},</a>
+<a name="ln2192">    { BAND_ILSUIW,              {{{MONS_MERFOLK_SIREN, 6},</a>
+<a name="ln2193">                                  {MONS_MERFOLK, 3},</a>
+<a name="ln2194">                                  {MONS_MERFOLK_JAVELINEER, 2},</a>
+<a name="ln2195">                                  {MONS_MERFOLK_IMPALER, 2}}}},</a>
+<a name="ln2196">    { BAND_AZRAEL,              {{{MONS_FIRE_ELEMENTAL, 1},</a>
+<a name="ln2197">                                  {MONS_HELL_HOUND, 1}}}},</a>
+<a name="ln2198">    { BAND_KHUFU,               {{{MONS_GREATER_MUMMY, 1},</a>
+<a name="ln2199">                                  {MONS_MUMMY, 1}}}},</a>
+<a name="ln2200">    { BAND_MERFOLK_AQUAMANCER,  {{{MONS_MERFOLK, 4},</a>
+<a name="ln2201">                                  {MONS_WATER_ELEMENTAL, 11}}}},</a>
+<a name="ln2202">    { BAND_DEEP_TROLLS,         {{{MONS_DEEP_TROLL, 18},</a>
+<a name="ln2203">                                  {MONS_DEEP_TROLL_EARTH_MAGE, 3},</a>
+<a name="ln2204">                                  {MONS_DEEP_TROLL_SHAMAN, 3}}}},</a>
+<a name="ln2205">    { BAND_DEEP_TROLL_SHAMAN,   {{{MONS_DEEP_TROLL, 18},</a>
+<a name="ln2206">                                  {MONS_IRON_TROLL, 8},</a>
+<a name="ln2207">                                  {MONS_DEEP_TROLL_EARTH_MAGE, 3},</a>
+<a name="ln2208">                                  {MONS_DEEP_TROLL_SHAMAN, 3}}}},</a>
+<a name="ln2209">    { BAND_REDBACK,             {{{MONS_REDBACK, 6},</a>
+<a name="ln2210">                                  {MONS_TARANTELLA, 1},</a>
+<a name="ln2211">                                  {MONS_JUMPING_SPIDER, 1}}}},</a>
+<a name="ln2212">    { BAND_JUMPING_SPIDER,      {{{MONS_JUMPING_SPIDER, 12},</a>
+<a name="ln2213">                                  {MONS_WOLF_SPIDER, 8},</a>
+<a name="ln2214">                                  {MONS_ORB_SPIDER, 7},</a>
+<a name="ln2215">                                  {MONS_REDBACK, 5},</a>
+<a name="ln2216">                                  {MONS_DEMONIC_CRAWLER, 2}}}},</a>
+<a name="ln2217">    { BAND_TARANTELLA,          {{{MONS_TARANTELLA, 10},</a>
+<a name="ln2218">                                  {MONS_REDBACK, 8},</a>
+<a name="ln2219">                                  {MONS_WOLF_SPIDER, 7},</a>
+<a name="ln2220">                                  {MONS_ORB_SPIDER, 3},</a>
+<a name="ln2221">                                  {MONS_DEMONIC_CRAWLER, 2}}}},</a>
+<a name="ln2222"> </a>
+<a name="ln2223">    { BAND_VAULT_WARDEN,        {{{MONS_VAULT_SENTINEL, 4},</a>
+<a name="ln2224">                                  {MONS_IRONBRAND_CONVOKER, 6},</a>
+<a name="ln2225">                                  {MONS_IRONHEART_PRESERVER, 5}},</a>
+<a name="ln2226">        // one fancy pal, and a 50% chance of another</a>
+<a name="ln2227">                                {{MONS_VAULT_SENTINEL, 4},</a>
+<a name="ln2228">                                 {MONS_IRONBRAND_CONVOKER, 6},</a>
+<a name="ln2229">                                 {MONS_IRONHEART_PRESERVER, 5},</a>
+<a name="ln2230">                                 {MONS_VAULT_GUARD, 15}},</a>
+<a name="ln2231"> </a>
+<a name="ln2232">                                {{MONS_VAULT_GUARD, 1}}}},</a>
+<a name="ln2233"> </a>
+<a name="ln2234">    { BAND_FAUN_PARTY,          {{{MONS_MERFOLK_SIREN, 1}},</a>
+<a name="ln2235"> </a>
+<a name="ln2236">                                 {{MONS_FAUN, 1}}}},</a>
+<a name="ln2237"> </a>
+<a name="ln2238">    { BAND_TENGU,               {{{MONS_TENGU_WARRIOR, 1},</a>
+<a name="ln2239">                                  {MONS_TENGU_CONJURER, 1}}}},</a>
+<a name="ln2240"> </a>
+<a name="ln2241">    { BAND_SPRIGGANS,           {{{MONS_SPRIGGAN_RIDER, 11},</a>
+<a name="ln2242">                                  {MONS_SPRIGGAN_AIR_MAGE, 4},</a>
+<a name="ln2243">                                  {MONS_SPRIGGAN_BERSERKER, 3}}}},</a>
+<a name="ln2244"> </a>
+<a name="ln2245">    { BAND_SPRIGGAN_ELITES,     {{{MONS_SPRIGGAN_DEFENDER, 18},</a>
+<a name="ln2246">                                  {MONS_SPRIGGAN_RIDER, 11},</a>
+<a name="ln2247">                                  {MONS_SPRIGGAN_AIR_MAGE, 4},</a>
+<a name="ln2248">                                  {MONS_SPRIGGAN_BERSERKER, 3}},</a>
+<a name="ln2249"> </a>
+<a name="ln2250">                                 {{MONS_SPRIGGAN_RIDER, 11},</a>
+<a name="ln2251">                                  {MONS_SPRIGGAN_AIR_MAGE, 4},</a>
+<a name="ln2252">                                  {MONS_SPRIGGAN_BERSERKER, 3}}}},</a>
+<a name="ln2253"> </a>
+<a name="ln2254">    { BAND_ENCHANTRESS,         {{{MONS_SPRIGGAN_DEFENDER, 1}},</a>
+<a name="ln2255"> </a>
+<a name="ln2256">                                 {{MONS_SPRIGGAN_DEFENDER, 1}},</a>
+<a name="ln2257"> </a>
+<a name="ln2258">                                 {{MONS_SPRIGGAN_DEFENDER, 1}},</a>
+<a name="ln2259"> </a>
+<a name="ln2260">                                 {{MONS_SPRIGGAN_AIR_MAGE, 1}},</a>
+<a name="ln2261"> </a>
+<a name="ln2262">                                 {{MONS_SPRIGGAN_AIR_MAGE, 1},</a>
+<a name="ln2263">                                  {MONS_SPRIGGAN_BERSERKER, 1},</a>
+<a name="ln2264">                                  {MONS_SPRIGGAN_RIDER, 1},</a>
+<a name="ln2265">                                  {MONS_SPRIGGAN, 3}}}},</a>
+<a name="ln2266"> </a>
+<a name="ln2267">    { BAND_SPRIGGAN_DRUID,      {{{MONS_SPRIGGAN, 2},</a>
+<a name="ln2268">                                  {MONS_SPRIGGAN_RIDER, 1}}}},</a>
+<a name="ln2269"> </a>
+<a name="ln2270">    { BAND_SALAMANDER_ELITES,   {{{MONS_SALAMANDER_MYSTIC, 1},</a>
+<a name="ln2271">                                  {MONS_SALAMANDER, 1}},</a>
+<a name="ln2272"> </a>
+<a name="ln2273">                                 {{MONS_SALAMANDER, 1}}}},</a>
+<a name="ln2274">    { BAND_ROBIN,               {{{MONS_GOBLIN, 3},</a>
+<a name="ln2275">                                  {MONS_HOBGOBLIN, 1}}}},</a>
+<a name="ln2276"> </a>
+<a name="ln2277">    { BAND_CEREBOV,             {{{MONS_BRIMSTONE_FIEND, 1}},</a>
+<a name="ln2278"> </a>
+<a name="ln2279">                                 {{MONS_BALRUG, 1},</a>
+<a name="ln2280">                                  {MONS_SUN_DEMON, 3},</a>
+<a name="ln2281">                                  {MONS_EFREET, 3}}}},</a>
+<a name="ln2282"> </a>
+<a name="ln2283">    { BAND_GLOORX_VLOQ,         {{{MONS_CURSE_SKULL, 1}},</a>
+<a name="ln2284"> </a>
+<a name="ln2285">                                 {{MONS_EXECUTIONER, 1}},</a>
+<a name="ln2286"> </a>
+<a name="ln2287">                                 {{MONS_SHADOW_DEMON, 1},</a>
+<a name="ln2288">                                  {MONS_DEMONIC_CRAWLER, 3},</a>
+<a name="ln2289">                                  {MONS_SHADOW_WRAITH, 3}}}},</a>
+<a name="ln2290"> </a>
+<a name="ln2291">    { BAND_MNOLEG,              {{{MONS_TENTACLED_MONSTROSITY, 1}},</a>
+<a name="ln2292"> </a>
+<a name="ln2293">                                 {{MONS_TENTACLED_MONSTROSITY, 1},</a>
+<a name="ln2294">                                  {MONS_CACODEMON, 2},</a>
+<a name="ln2295">                                  {MONS_ABOMINATION_LARGE, 3},</a>
+<a name="ln2296">                                  {MONS_VERY_UGLY_THING, 3},</a>
+<a name="ln2297">                                  {MONS_NEQOXEC, 3}}}},</a>
+<a name="ln2298"> </a>
+<a name="ln2299">    { BAND_LOM_LOBON,           {{{MONS_SPRIGGAN_AIR_MAGE, 1},</a>
+<a name="ln2300">                                  {MONS_TITAN, 1},</a>
+<a name="ln2301">                                  {MONS_LICH, 1},</a>
+<a name="ln2302">                                  {MONS_DRACONIAN_ANNIHILATOR, 2},</a>
+<a name="ln2303">                                  {MONS_DEEP_ELF_ANNIHILATOR, 2},</a>
+<a name="ln2304">                                  {MONS_GLOWING_ORANGE_BRAIN, 2},</a>
+<a name="ln2305">                                  {MONS_BLIZZARD_DEMON, 2},</a>
+<a name="ln2306">                                  {MONS_GREEN_DEATH, 2},</a>
+<a name="ln2307">                                  {MONS_RAKSHASA, 4},</a>
+<a name="ln2308">                                  {MONS_WIZARD, 4}}}},</a>
+<a name="ln2309"> </a>
+<a name="ln2310">    { BAND_HOLIES,              {{{MONS_ANGEL, 100},</a>
+<a name="ln2311">                                  {MONS_CHERUB, 80},</a>
+<a name="ln2312">                                  {MONS_DAEVA, 50},</a>
+<a name="ln2313">                                  {MONS_OPHAN, 1}}}}, // !?</a>
+<a name="ln2314"> </a>
+<a name="ln2315">    // one supporter, and maybe more</a>
+<a name="ln2316">    { BAND_SALTLINGS,           {{{MONS_GUARDIAN_SERPENT, 1},</a>
+<a name="ln2317">                                  {MONS_IRONBRAND_CONVOKER, 1},</a>
+<a name="ln2318">                                  {MONS_RAGGED_HIEROPHANT, 2},</a>
+<a name="ln2319">                                  {MONS_SERVANT_OF_WHISPERS, 2},</a>
+<a name="ln2320">                                  {MONS_PEACEKEEPER, 2}},</a>
+<a name="ln2321"> </a>
+<a name="ln2322">                                 {{MONS_SALTLING, 150},</a>
+<a name="ln2323">                                  {MONS_RAGGED_HIEROPHANT, 5},</a>
+<a name="ln2324">                                  {MONS_SERVANT_OF_WHISPERS, 5},</a>
+<a name="ln2325">                                  {MONS_PEACEKEEPER, 5},</a>
+<a name="ln2326">                                  {MONS_MOLTEN_GARGOYLE, 5},</a>
+<a name="ln2327">                                  {MONS_IRONBRAND_CONVOKER, 2},</a>
+<a name="ln2328">                                  {MONS_GUARDIAN_SERPENT, 2},</a>
+<a name="ln2329">                                  {MONS_IMPERIAL_MYRMIDON, 2}}}},</a>
+<a name="ln2330">};</a>
+<a name="ln2331"> </a>
+<a name="ln2332">/**</a>
+<a name="ln2333"> * Return the type of the nth monster in a band.</a>
+<a name="ln2334"> *</a>
+<a name="ln2335"> * @param band      The type of band</a>
+<a name="ln2336"> * @param which     The index of the monster (starting from 1)</a>
+<a name="ln2337"> * @return          The type of monster to create</a>
+<a name="ln2338"> */</a>
+<a name="ln2339">static monster_type _band_member(band_type band, int which,</a>
+<a name="ln2340">                                 level_id parent_place, bool allow_ood)</a>
+<a name="ln2341">{</a>
+<a name="ln2342">    if (band == BAND_NO_BAND)</a>
+<a name="ln2343">        return MONS_PROGRAM_BUG;</a>
+<a name="ln2344">    ASSERT(which &gt; 0);</a>
+<a name="ln2345"> </a>
+<a name="ln2346">    if (const auto *membership = map_find(band_membership, band))</a>
+<a name="ln2347">    {</a>
+<a name="ln2348">        ASSERT(membership-&gt;size() &gt; 0);</a>
+<a name="ln2349">        const size_t idx = min&lt;size_t&gt;(which, membership-&gt;size()) - 1;</a>
+<a name="ln2350">        const auto *choice = random_choose_weighted((*membership)[idx]);</a>
+<a name="ln2351">        ASSERT(choice); /* empty weights vector */</a>
+<a name="ln2352">        return *choice;</a>
+<a name="ln2353">    }</a>
+<a name="ln2354"> </a>
+<a name="ln2355">    switch (band)</a>
+<a name="ln2356">    {</a>
+<a name="ln2357"> </a>
+<a name="ln2358">    case BAND_PANDEMONIUM_LORD:</a>
+<a name="ln2359">        if (one_chance_in(7))</a>
+<a name="ln2360">        {</a>
+<a name="ln2361">            return random_choose_weighted(50, MONS_LICH,</a>
+<a name="ln2362">                                          10, MONS_ANCIENT_LICH);</a>
+<a name="ln2363">        }</a>
+<a name="ln2364">        else if (one_chance_in(6))</a>
+<a name="ln2365">        {</a>
+<a name="ln2366">            return random_choose_weighted(50, MONS_ABOMINATION_SMALL,</a>
+<a name="ln2367">                                          40, MONS_ABOMINATION_LARGE,</a>
+<a name="ln2368">                                          10, MONS_TENTACLED_MONSTROSITY);</a>
+<a name="ln2369">        }</a>
+<a name="ln2370">        else</a>
+<a name="ln2371">        {</a>
+<a name="ln2372">            return summon_any_demon(random_choose_weighted(</a>
+<a name="ln2373">                                          50, RANDOM_DEMON_COMMON,</a>
+<a name="ln2374">                                          20, RANDOM_DEMON_GREATER,</a>
+<a name="ln2375">                                          10, RANDOM_DEMON),</a>
+<a name="ln2376">                                    true);</a>
+<a name="ln2377">        }</a>
+<a name="ln2378">        break;</a>
+<a name="ln2379"> </a>
+<a name="ln2380">    case BAND_NAGAS:</a>
+<a name="ln2381">        if (which == 1 &amp;&amp; coinflip() || which == 2 &amp;&amp; one_chance_in(4))</a>
+<a name="ln2382">        {</a>
+<a name="ln2383">            return random_choose_weighted( 8, MONS_NAGA_WARRIOR,</a>
+<a name="ln2384">                                          11, MONS_NAGA_MAGE,</a>
+<a name="ln2385">                                           6, MONS_NAGA_RITUALIST,</a>
+<a name="ln2386">                                           8, MONS_NAGA_SHARPSHOOTER,</a>
+<a name="ln2387">                                           6, MONS_SALAMANDER_MYSTIC);</a>
+<a name="ln2388">        }</a>
+<a name="ln2389">        else</a>
+<a name="ln2390">            return one_chance_in(7) ? MONS_SALAMANDER : MONS_NAGA;</a>
+<a name="ln2391"> </a>
+<a name="ln2392"> </a>
+<a name="ln2393">    case BAND_DRACONIAN:</a>
+<a name="ln2394">        if (env.absdepth0 &gt;= 24 &amp;&amp; x_chance_in_y(13, 40))</a>
+<a name="ln2395">        {</a>
+<a name="ln2396">            // Hack: race is rolled elsewhere.</a>
+<a name="ln2397">            return random_choose_weighted(</a>
+<a name="ln2398">                1, MONS_DRACONIAN_STORMCALLER,</a>
+<a name="ln2399">                2, MONS_DRACONIAN_KNIGHT,</a>
+<a name="ln2400">                2, MONS_DRACONIAN_MONK,</a>
+<a name="ln2401">                2, MONS_DRACONIAN_SHIFTER,</a>
+<a name="ln2402">                2, MONS_DRACONIAN_ANNIHILATOR,</a>
+<a name="ln2403">                2, MONS_DRACONIAN_SCORCHER);</a>
+<a name="ln2404">        }</a>
+<a name="ln2405"> </a>
+<a name="ln2406">        return random_draconian_monster_species();</a>
+<a name="ln2407"> </a>
+<a name="ln2408">    case BAND_DEATH_KNIGHT:</a>
+<a name="ln2409">        if (!player_in_branch(BRANCH_DUNGEON)</a>
+<a name="ln2410">            &amp;&amp; which == 1 &amp;&amp; x_chance_in_y(2, 3))</a>
+<a name="ln2411">        {</a>
+<a name="ln2412">            return one_chance_in(3) ? MONS_GHOUL : MONS_FLAYED_GHOST;</a>
+<a name="ln2413">        }</a>
+<a name="ln2414">        else</a>
+<a name="ln2415">            return random_choose_weighted(5, MONS_WRAITH,</a>
+<a name="ln2416">                                          6, MONS_FREEZING_WRAITH,</a>
+<a name="ln2417">                                          3, MONS_PHANTASMAL_WARRIOR,</a>
+<a name="ln2418">                                          3, MONS_SKELETAL_WARRIOR);</a>
+<a name="ln2419"> </a>
+<a name="ln2420">    case BAND_MONSTROUS_DEMONSPAWN:</a>
+<a name="ln2421">        if (which == 1 || x_chance_in_y(2, 3))</a>
+<a name="ln2422">        {</a>
+<a name="ln2423">            return random_choose_weighted( 2, MONS_DEMONIC_CRAWLER,</a>
+<a name="ln2424">                                           2, MONS_SIXFIRHY,</a>
+<a name="ln2425">                                           3, MONS_MONSTROUS_DEMONSPAWN);</a>
+<a name="ln2426">        }</a>
+<a name="ln2427">        return random_demonspawn_monster_species();</a>
+<a name="ln2428"> </a>
+<a name="ln2429">    case BAND_GELID_DEMONSPAWN:</a>
+<a name="ln2430">        if (which == 1 || x_chance_in_y(2, 3))</a>
+<a name="ln2431">        {</a>
+<a name="ln2432">            return random_choose_weighted( 4, MONS_ICE_DEVIL,</a>
+<a name="ln2433">                                           3, MONS_GELID_DEMONSPAWN);</a>
+<a name="ln2434">        }</a>
+<a name="ln2435">        return random_demonspawn_monster_species();</a>
+<a name="ln2436"> </a>
+<a name="ln2437">    case BAND_INFERNAL_DEMONSPAWN:</a>
+<a name="ln2438">        if (which == 1 || x_chance_in_y(2, 3))</a>
+<a name="ln2439">        {</a>
+<a name="ln2440">            return random_choose_weighted( 2, MONS_RED_DEVIL,</a>
+<a name="ln2441">                                           2, MONS_SUN_DEMON,</a>
+<a name="ln2442">                                           3, MONS_INFERNAL_DEMONSPAWN);</a>
+<a name="ln2443">        }</a>
+<a name="ln2444">        return random_demonspawn_monster_species();</a>
+<a name="ln2445"> </a>
+<a name="ln2446">    case BAND_TORTUROUS_DEMONSPAWN:</a>
+<a name="ln2447">        if (which == 1 || x_chance_in_y(2, 3))</a>
+<a name="ln2448">        {</a>
+<a name="ln2449">            return random_choose_weighted( 2, MONS_ORANGE_DEMON,</a>
+<a name="ln2450">                                           2, MONS_SIXFIRHY,</a>
+<a name="ln2451">                                           3, MONS_TORTUROUS_DEMONSPAWN);</a>
+<a name="ln2452">        }</a>
+<a name="ln2453">        return random_demonspawn_monster_species();</a>
+<a name="ln2454"> </a>
+<a name="ln2455">    case BAND_BLOOD_SAINT:</a>
+<a name="ln2456">        if (which == 1 || which == 2 &amp;&amp; one_chance_in(3))</a>
+<a name="ln2457">        {</a>
+<a name="ln2458">            if (x_chance_in_y(2, 3))</a>
+<a name="ln2459">                return random_choose(MONS_BALRUG, MONS_BLIZZARD_DEMON);</a>
+<a name="ln2460">            else</a>
+<a name="ln2461">                return random_demonspawn_job();</a>
+<a name="ln2462">        }</a>
+<a name="ln2463">        return random_demonspawn_monster_species();</a>
+<a name="ln2464"> </a>
+<a name="ln2465">    case BAND_WARMONGER:</a>
+<a name="ln2466">        if (which == 1 || which == 2 &amp;&amp; one_chance_in(3))</a>
+<a name="ln2467">        {</a>
+<a name="ln2468">            if (x_chance_in_y(2, 3))</a>
+<a name="ln2469">                return one_chance_in(4) ? MONS_EXECUTIONER : MONS_REAPER;</a>
+<a name="ln2470">            else</a>
+<a name="ln2471">                return random_demonspawn_job();</a>
+<a name="ln2472">        }</a>
+<a name="ln2473">        return random_demonspawn_monster_species();</a>
+<a name="ln2474"> </a>
+<a name="ln2475">    case BAND_CORRUPTER:</a>
+<a name="ln2476">        if (which == 1 || which == 2 &amp;&amp; one_chance_in(3))</a>
+<a name="ln2477">        {</a>
+<a name="ln2478">            if (x_chance_in_y(2, 3))</a>
+<a name="ln2479">                return one_chance_in(4) ? MONS_CACODEMON : MONS_SHADOW_DEMON;</a>
+<a name="ln2480">            else</a>
+<a name="ln2481">                return random_demonspawn_job();</a>
+<a name="ln2482">        }</a>
+<a name="ln2483">        return random_demonspawn_monster_species();</a>
+<a name="ln2484"> </a>
+<a name="ln2485">    case BAND_BLACK_SUN:</a>
+<a name="ln2486">        if (which == 1 || which == 2 &amp;&amp; one_chance_in(3))</a>
+<a name="ln2487">        {</a>
+<a name="ln2488">            if (x_chance_in_y(2, 3))</a>
+<a name="ln2489">                return one_chance_in(3) ? MONS_LOROCYPROCA : MONS_SOUL_EATER;</a>
+<a name="ln2490">            else</a>
+<a name="ln2491">                return random_demonspawn_job();</a>
+<a name="ln2492">        }</a>
+<a name="ln2493">        return random_demonspawn_monster_species();</a>
+<a name="ln2494"> </a>
+<a name="ln2495">    case BAND_RANDOM_SINGLE:</a>
+<a name="ln2496">    {</a>
+<a name="ln2497">        monster_type tmptype = MONS_PROGRAM_BUG;</a>
+<a name="ln2498">        coord_def tmppos;</a>
+<a name="ln2499">        return resolve_monster_type(RANDOM_BANDLESS_MONSTER, tmptype,</a>
+<a name="ln2500">                                    PROX_ANYWHERE, &amp;tmppos, 0,</a>
+<a name="ln2501">                                    &amp;parent_place, nullptr, allow_ood);</a>
+<a name="ln2502">    }</a>
+<a name="ln2503"> </a>
+<a name="ln2504">    default:</a>
+<a name="ln2505">        return NUM_MONSTERS;</a>
+<a name="ln2506">    }</a>
+<a name="ln2507">}</a>
+<a name="ln2508"> </a>
+<a name="ln2509">/// Check to make sure that all band types are handled.</a>
+<a name="ln2510">void debug_bands()</a>
+<a name="ln2511">{</a>
+<a name="ln2512">    vector&lt;int&gt; unhandled_bands;</a>
+<a name="ln2513">    for (int i = 0; i &lt; NUM_BANDS; ++i)</a>
+<a name="ln2514">        if (_band_member((band_type)i, 1, BRANCH_DUNGEON, true) == NUM_MONSTERS)</a>
+<a name="ln2515">            unhandled_bands.push_back(i);</a>
+<a name="ln2516"> </a>
+<a name="ln2517">    if (!unhandled_bands.empty())</a>
+<a name="ln2518">    {</a>
+<a name="ln2519">        const string fails = &quot;Unhandled bands: &quot;</a>
+<a name="ln2520">           + comma_separated_fn(unhandled_bands.begin(), unhandled_bands.end(),</a>
+<a name="ln2521">                                [](int i){ return make_stringf(&quot;%d&quot;, i); });</a>
+<a name="ln2522"> </a>
+<a name="ln2523">        dump_test_fails(fails, &quot;mon-bands&quot;);</a>
+<a name="ln2524">    }</a>
+<a name="ln2525">}</a>
+<a name="ln2526"> </a>
+<a name="ln2527">// PUBLIC FUNCTION -- mons_place().</a>
+<a name="ln2528"> </a>
+<a name="ln2529">static monster_type _pick_zot_exit_defender()</a>
+<a name="ln2530">{</a>
+<a name="ln2531">    // 10% Pan lord or Boris</a>
+<a name="ln2532">    //  - ~1% named pan lord / seraph / Boris</a>
+<a name="ln2533">    //  - ~9% random pan lord</a>
+<a name="ln2534">    // 15% Orb Guardian</a>
+<a name="ln2535">    // 40% Demon</a>
+<a name="ln2536">    //  - 25% greater demon</a>
+<a name="ln2537">    //  - 10% common demon</a>
+<a name="ln2538">    // 40% Pan spawn (can also include pan lords and demons)</a>
+<a name="ln2539">    if (one_chance_in(10))</a>
+<a name="ln2540">    {</a>
+<a name="ln2541">        for (int i = 0; i &lt; 4; i++)</a>
+<a name="ln2542">        {</a>
+<a name="ln2543">            // Sometimes pick an unique lord whose rune you've stolen.</a>
+<a name="ln2544">            if (you.runes[RUNE_MNOLEG + i]</a>
+<a name="ln2545">                &amp;&amp; !you.unique_creatures[MONS_MNOLEG + i]</a>
+<a name="ln2546">                &amp;&amp; one_chance_in(10))</a>
+<a name="ln2547">            {</a>
+<a name="ln2548">                return static_cast&lt;monster_type&gt;(MONS_MNOLEG + i);</a>
+<a name="ln2549">            }</a>
+<a name="ln2550">        }</a>
+<a name="ln2551"> </a>
+<a name="ln2552">        // If Boris has spawned once and is not</a>
+<a name="ln2553">        // currently alive he has a chance of coming for you on</a>
+<a name="ln2554">        // the orb run</a>
+<a name="ln2555">        if (you.props[&quot;killed_boris_once&quot;]</a>
+<a name="ln2556">            &amp;&amp; !you.unique_creatures[MONS_BORIS] &amp;&amp; one_chance_in(10))</a>
+<a name="ln2557">        {</a>
+<a name="ln2558">            return MONS_BORIS;</a>
+<a name="ln2559">        }</a>
+<a name="ln2560"> </a>
+<a name="ln2561">        if (one_chance_in(10))</a>
+<a name="ln2562">            return MONS_SERAPH;</a>
+<a name="ln2563"> </a>
+<a name="ln2564">        return MONS_PANDEMONIUM_LORD;</a>
+<a name="ln2565">    }</a>
+<a name="ln2566"> </a>
+<a name="ln2567">    return random_choose_weighted(</a>
+<a name="ln2568">        15, MONS_ORB_GUARDIAN,</a>
+<a name="ln2569">        25, RANDOM_DEMON_GREATER,</a>
+<a name="ln2570">        10, RANDOM_DEMON_COMMON,</a>
+<a name="ln2571">        40, pick_monster_no_rarity(BRANCH_PANDEMONIUM));</a>
+<a name="ln2572">}</a>
+<a name="ln2573"> </a>
+<a name="ln2574">monster* mons_place(mgen_data mg)</a>
+<a name="ln2575">{</a>
+<a name="ln2576">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln2577">    mprf(MSGCH_DIAGNOSTICS, &quot;in mons_place()&quot;);</a>
+<a name="ln2578">#endif</a>
+<a name="ln2579"> </a>
+<a name="ln2580">    if (mg.cls == WANDERING_MONSTER)</a>
+<a name="ln2581">    {</a>
+<a name="ln2582">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln2583">        mprf(MSGCH_DIAGNOSTICS, &quot;Set class RANDOM_MONSTER&quot;);</a>
+<a name="ln2584">#endif</a>
+<a name="ln2585">        mg.cls = RANDOM_MONSTER;</a>
+<a name="ln2586">    }</a>
+<a name="ln2587"> </a>
+<a name="ln2588">    // This gives a slight challenge to the player as they ascend the</a>
+<a name="ln2589">    // dungeon with the Orb.</a>
+<a name="ln2590">    if (_is_random_monster(mg.cls) &amp;&amp; player_on_orb_run()</a>
+<a name="ln2591">        &amp;&amp; !player_in_branch(BRANCH_ABYSS) &amp;&amp; !mg.summoned())</a>
+<a name="ln2592">    {</a>
+<a name="ln2593">#ifdef DEBUG_MON_CREATION</a>
+<a name="ln2594">        mprf(MSGCH_DIAGNOSTICS, &quot;Call _pick_zot_exit_defender()&quot;);</a>
+<a name="ln2595">#endif</a>
+<a name="ln2596">        mg.cls    = _pick_zot_exit_defender();</a>
+<a name="ln2597">        mg.flags |= MG_PERMIT_BANDS;</a>
+<a name="ln2598">    }</a>
+<a name="ln2599">    else if (_is_random_monster(mg.cls))</a>
+<a name="ln2600">        mg.flags |= MG_PERMIT_BANDS;</a>
+<a name="ln2601"> </a>
+<a name="ln2602">    if (mg.behaviour == BEH_COPY)</a>
+<a name="ln2603">    {</a>
+<a name="ln2604">        mg.behaviour = (mg.summoner &amp;&amp; mg.summoner-&gt;is_player())</a>
+<a name="ln2605">                        ? BEH_FRIENDLY</a>
+<a name="ln2606">                        : SAME_ATTITUDE(mg.summoner-&gt;as_monster());</a>
+<a name="ln2607">    }</a>
+<a name="ln2608"> </a>
+<a name="ln2609">    monster* creation = place_monster(mg);</a>
+<a name="ln2610">    if (!creation)</a>
+<a name="ln2611">        return 0;</a>
+<a name="ln2612"> </a>
+<a name="ln2613">    dprf(DIAG_MONPLACE, &quot;Created %s.&quot;, creation-&gt;base_name(DESC_A, true).c_str());</a>
+<a name="ln2614"> </a>
+<a name="ln2615">    // Look at special cases: CHARMED, FRIENDLY, NEUTRAL, GOOD_NEUTRAL,</a>
+<a name="ln2616">    // HOSTILE.</a>
+<a name="ln2617">    if (mg.behaviour &gt; NUM_BEHAVIOURS)</a>
+<a name="ln2618">    {</a>
+<a name="ln2619">        if (mg.behaviour == BEH_FRIENDLY)</a>
+<a name="ln2620">            creation-&gt;flags |= MF_NO_REWARD;</a>
+<a name="ln2621"> </a>
+<a name="ln2622">        if (mg.behaviour == BEH_NEUTRAL || mg.behaviour == BEH_GOOD_NEUTRAL</a>
+<a name="ln2623">            || mg.behaviour == BEH_STRICT_NEUTRAL)</a>
+<a name="ln2624">        {</a>
+<a name="ln2625">            creation-&gt;flags |= MF_WAS_NEUTRAL;</a>
+<a name="ln2626">        }</a>
+<a name="ln2627"> </a>
+<a name="ln2628">        if (mg.behaviour == BEH_CHARMED)</a>
+<a name="ln2629">        {</a>
+<a name="ln2630">            creation-&gt;attitude = ATT_HOSTILE;</a>
+<a name="ln2631">            creation-&gt;add_ench(ENCH_CHARM);</a>
+<a name="ln2632">        }</a>
+<a name="ln2633"> </a>
+<a name="ln2634">        if (!(mg.flags &amp; MG_FORCE_BEH) &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln2635">            player_angers_monster(creation);</a>
+<a name="ln2636"> </a>
+<a name="ln2637">        behaviour_event(creation, ME_EVAL);</a>
+<a name="ln2638">    }</a>
+<a name="ln2639"> </a>
+<a name="ln2640">    if (mg.flags &amp; MG_AUTOFOE &amp;&amp; (creation-&gt;attitude == ATT_FRIENDLY</a>
+<a name="ln2641">                                  || mg.behaviour == BEH_CHARMED))</a>
+<a name="ln2642">    {</a>
+<a name="ln2643">        set_nearest_monster_foe(creation, true);</a>
+<a name="ln2644">    }</a>
+<a name="ln2645"> </a>
+<a name="ln2646">    return creation;</a>
+<a name="ln2647">}</a>
+<a name="ln2648"> </a>
+<a name="ln2649">static dungeon_feature_type _monster_primary_habitat_feature(monster_type mc)</a>
+<a name="ln2650">{</a>
+<a name="ln2651">    if (_is_random_monster(mc))</a>
+<a name="ln2652">        return DNGN_FLOOR;</a>
+<a name="ln2653">    return habitat2grid(mons_class_primary_habitat(mc));</a>
+<a name="ln2654">}</a>
+<a name="ln2655"> </a>
+<a name="ln2656">static dungeon_feature_type _monster_secondary_habitat_feature(monster_type mc)</a>
+<a name="ln2657">{</a>
+<a name="ln2658">    if (_is_random_monster(mc))</a>
+<a name="ln2659">        return DNGN_FLOOR;</a>
+<a name="ln2660">    return habitat2grid(mons_class_secondary_habitat(mc));</a>
+<a name="ln2661">}</a>
+<a name="ln2662"> </a>
+<a name="ln2663">static bool _valid_spot(coord_def pos)</a>
+<a name="ln2664">{</a>
+<a name="ln2665">    if (actor_at(pos))</a>
+<a name="ln2666">        return false;</a>
+<a name="ln2667">    if (env.level_map_mask(pos) &amp; MMT_NO_MONS)</a>
+<a name="ln2668">        return false;</a>
+<a name="ln2669">    return true;</a>
+<a name="ln2670">}</a>
+<a name="ln2671"> </a>
+<a name="ln2672">class newmons_square_find : public travel_pathfind</a>
+<a name="ln2673">{</a>
+<a name="ln2674">private:</a>
+<a name="ln2675">    dungeon_feature_type feat_wanted;</a>
+<a name="ln2676">    int maxdistance;</a>
+<a name="ln2677"> </a>
+<a name="ln2678">    int best_distance;</a>
+<a name="ln2679">    int nfound;</a>
+<a name="ln2680">public:</a>
+<a name="ln2681">    // Terrain that we can't spawn on, but that we can skip through.</a>
+<a name="ln2682">    set&lt;dungeon_feature_type&gt; passable;</a>
+<a name="ln2683">public:</a>
+<a name="ln2684">    newmons_square_find(dungeon_feature_type grdw,</a>
+<a name="ln2685">                        const coord_def &amp;pos,</a>
+<a name="ln2686">                        int maxdist = 0)</a>
+<a name="ln2687">        :  feat_wanted(grdw), maxdistance(maxdist),</a>
+<a name="ln2688">           best_distance(0), nfound(0)</a>
+<a name="ln2689">    {</a>
+<a name="ln2690">        start = pos;</a>
+<a name="ln2691">    }</a>
+<a name="ln2692"> </a>
+<a name="ln2693">    // This is an overload, not an override!</a>
+<a name="ln2694">    coord_def pathfind()</a>
+<a name="ln2695">    {</a>
+<a name="ln2696">        set_floodseed(start);</a>
+<a name="ln2697">        return travel_pathfind::pathfind(RMODE_CONNECTIVITY);</a>
+<a name="ln2698">    }</a>
+<a name="ln2699"> </a>
+<a name="ln2700">    bool path_flood(const coord_def &amp;/*c*/, const coord_def &amp;dc) override</a>
+<a name="ln2701">    {</a>
+<a name="ln2702">        if (best_distance &amp;&amp; traveled_distance &gt; best_distance)</a>
+<a name="ln2703">            return true;</a>
+<a name="ln2704"> </a>
+<a name="ln2705">        if (!in_bounds(dc)</a>
+<a name="ln2706">            || (maxdistance &gt; 0 &amp;&amp; traveled_distance &gt; maxdistance))</a>
+<a name="ln2707">        {</a>
+<a name="ln2708">            return false;</a>
+<a name="ln2709">        }</a>
+<a name="ln2710">        if (!_feat_compatible(feat_wanted, grd(dc)))</a>
+<a name="ln2711">        {</a>
+<a name="ln2712">            if (passable.count(grd(dc)))</a>
+<a name="ln2713">                good_square(dc);</a>
+<a name="ln2714">            return false;</a>
+<a name="ln2715">        }</a>
+<a name="ln2716">        if (_valid_spot(dc) &amp;&amp; one_chance_in(++nfound))</a>
+<a name="ln2717">        {</a>
+<a name="ln2718">            greedy_dist = traveled_distance;</a>
+<a name="ln2719">            greedy_place = dc;</a>
+<a name="ln2720">            best_distance = traveled_distance;</a>
+<a name="ln2721">        }</a>
+<a name="ln2722">        else</a>
+<a name="ln2723">            good_square(dc);</a>
+<a name="ln2724">        return false;</a>
+<a name="ln2725">    }</a>
+<a name="ln2726">};</a>
+<a name="ln2727"> </a>
+<a name="ln2728">// Finds a square for a monster of the given class, pathfinding</a>
+<a name="ln2729">// through only contiguous squares of habitable terrain.</a>
+<a name="ln2730">coord_def find_newmons_square_contiguous(monster_type mons_class,</a>
+<a name="ln2731">                                         const coord_def &amp;start,</a>
+<a name="ln2732">                                         int distance)</a>
+<a name="ln2733">{</a>
+<a name="ln2734">    coord_def p;</a>
+<a name="ln2735"> </a>
+<a name="ln2736">    const dungeon_feature_type feat_preferred =</a>
+<a name="ln2737">        _monster_primary_habitat_feature(mons_class);</a>
+<a name="ln2738">    const dungeon_feature_type feat_nonpreferred =</a>
+<a name="ln2739">        _monster_secondary_habitat_feature(mons_class);</a>
+<a name="ln2740"> </a>
+<a name="ln2741">    newmons_square_find nmpfind(feat_preferred, start, distance);</a>
+<a name="ln2742">    const coord_def pp = nmpfind.pathfind();</a>
+<a name="ln2743">    p = pp;</a>
+<a name="ln2744"> </a>
+<a name="ln2745">    if (feat_nonpreferred != feat_preferred &amp;&amp; !in_bounds(pp))</a>
+<a name="ln2746">    {</a>
+<a name="ln2747">        newmons_square_find nmsfind(feat_nonpreferred, start, distance);</a>
+<a name="ln2748">        const coord_def ps = nmsfind.pathfind();</a>
+<a name="ln2749">        p = ps;</a>
+<a name="ln2750">    }</a>
+<a name="ln2751"> </a>
+<a name="ln2752">    return in_bounds(p) ? p : coord_def(-1, -1);</a>
+<a name="ln2753">}</a>
+<a name="ln2754"> </a>
+<a name="ln2755">coord_def find_newmons_square(monster_type mons_class, const coord_def &amp;p,</a>
+<a name="ln2756">                              const monster* viable_mon)</a>
+<a name="ln2757">{</a>
+<a name="ln2758">    coord_def empty;</a>
+<a name="ln2759">    coord_def pos(-1, -1);</a>
+<a name="ln2760"> </a>
+<a name="ln2761">    if (mons_class == WANDERING_MONSTER)</a>
+<a name="ln2762">        mons_class = RANDOM_MONSTER;</a>
+<a name="ln2763"> </a>
+<a name="ln2764">    // Might be better if we chose a space and tried to match the monster</a>
+<a name="ln2765">    // to it in the case of RANDOM_MONSTER, that way if the target square</a>
+<a name="ln2766">    // is surrounded by water or lava this function would work.  -- bwr</a>
+<a name="ln2767"> </a>
+<a name="ln2768">    if (find_habitable_spot_near(p, mons_class, 2, true, empty, viable_mon))</a>
+<a name="ln2769">        pos = empty;</a>
+<a name="ln2770"> </a>
+<a name="ln2771">    return pos;</a>
+<a name="ln2772">}</a>
+<a name="ln2773"> </a>
+<a name="ln2774">bool can_spawn_mushrooms(coord_def where)</a>
+<a name="ln2775">{</a>
+<a name="ln2776">    cloud_struct *cloud = cloud_at(where);</a>
+<a name="ln2777">    if (!cloud)</a>
+<a name="ln2778">        return true;</a>
+<a name="ln2779">    if (you_worship(GOD_FEDHAS)</a>
+<a name="ln2780">        &amp;&amp; (cloud-&gt;whose == KC_YOU || cloud-&gt;whose == KC_FRIENDLY))</a>
+<a name="ln2781">    {</a>
+<a name="ln2782">        return true;</a>
+<a name="ln2783">    }</a>
+<a name="ln2784"> </a>
+<a name="ln2785">    monster dummy;</a>
+<a name="ln2786">    dummy.type = MONS_TOADSTOOL;</a>
+<a name="ln2787">    define_monster(dummy);</a>
+<a name="ln2788"> </a>
+<a name="ln2789">    return actor_cloud_immune(dummy, *cloud);</a>
+<a name="ln2790">}</a>
+<a name="ln2791"> </a>
+<a name="ln2792">conduct_type player_will_anger_monster(monster_type type)</a>
+<a name="ln2793">{</a>
+<a name="ln2794">    monster dummy;</a>
+<a name="ln2795">    dummy.type = type;</a>
+<a name="ln2796"> </a>
+<a name="ln2797">    // no spellcasting/etc zombies currently; pick something that always works</a>
+<a name="ln2798">    if (mons_class_is_zombified(type))</a>
+<a name="ln2799">        define_zombie(&amp;dummy, MONS_GOBLIN, type);</a>
+<a name="ln2800">    else</a>
+<a name="ln2801">        define_monster(dummy);</a>
+<a name="ln2802"> </a>
+<a name="ln2803">    return player_will_anger_monster(dummy);</a>
+<a name="ln2804">}</a>
+<a name="ln2805"> </a>
+<a name="ln2806">/**</a>
+<a name="ln2807"> * Does the player's current religion conflict with the given monster? If so,</a>
+<a name="ln2808"> * why?</a>
+<a name="ln2809"> *</a>
+<a name="ln2810"> * XXX: this should ideally return a list of conducts that can be filtered by</a>
+<a name="ln2811"> *      callers by god; we're duplicating god-conduct.cc right now.</a>
+<a name="ln2812"> *</a>
+<a name="ln2813"> * @param mon   The monster in question.</a>
+<a name="ln2814"> * @return      The reason the player's religion conflicts with the monster</a>
+<a name="ln2815"> *              (e.g. DID_EVIL for evil monsters), or DID_NOTHING.</a>
+<a name="ln2816"> */</a>
+<a name="ln2817">conduct_type player_will_anger_monster(const monster &amp;mon)</a>
+<a name="ln2818">{</a>
+<a name="ln2819">    if (you.get_mutation_level(MUT_NO_LOVE) &amp;&amp; !mons_is_conjured(mon.type))</a>
+<a name="ln2820">    {</a>
+<a name="ln2821">        // Player angers all real monsters</a>
+<a name="ln2822">        return DID_SACRIFICE_LOVE;</a>
+<a name="ln2823">    }</a>
+<a name="ln2824"> </a>
+<a name="ln2825">    if (is_good_god(you.religion) &amp;&amp; mon.evil())</a>
+<a name="ln2826">        return DID_EVIL;</a>
+<a name="ln2827"> </a>
+<a name="ln2828">    if (is_evil_god(you.religion) &amp;&amp; mon.is_holy())</a>
+<a name="ln2829">        return DID_HOLY;</a>
+<a name="ln2830"> </a>
+<a name="ln2831">    if (you_worship(GOD_ZIN))</a>
+<a name="ln2832">    {</a>
+<a name="ln2833">        if (mon.how_unclean())</a>
+<a name="ln2834">            return DID_UNCLEAN;</a>
+<a name="ln2835">        if (mon.how_chaotic())</a>
+<a name="ln2836">            return DID_CHAOS;</a>
+<a name="ln2837">    }</a>
+<a name="ln2838">    if (god_hates_spellcasting(you.religion) &amp;&amp; mon.is_actual_spellcaster())</a>
+<a name="ln2839">        return DID_SPELL_CASTING;</a>
+<a name="ln2840"> </a>
+<a name="ln2841">    return DID_NOTHING;</a>
+<a name="ln2842">}</a>
+<a name="ln2843"> </a>
+<a name="ln2844">bool player_angers_monster(monster* mon, bool real)</a>
+<a name="ln2845">{</a>
+<a name="ln2846">    ASSERT(mon); // XXX: change to monster &amp;mon</a>
+<a name="ln2847"> </a>
+<a name="ln2848">    // Get the drawbacks, not the benefits... (to prevent e.g. demon-scumming).</a>
+<a name="ln2849">    conduct_type why = player_will_anger_monster(*mon);</a>
+<a name="ln2850">    if (why &amp;&amp; (!real || mon-&gt;wont_attack()))</a>
+<a name="ln2851">    {</a>
+<a name="ln2852">        if (real)</a>
+<a name="ln2853">        {</a>
+<a name="ln2854">            mon-&gt;attitude = ATT_HOSTILE;</a>
+<a name="ln2855">            mon-&gt;del_ench(ENCH_CHARM);</a>
+<a name="ln2856">            behaviour_event(mon, ME_ALERT, &amp;you);</a>
+<a name="ln2857">        }</a>
+<a name="ln2858">        const string modal = real</a>
+<a name="ln2859">                             ? ((why == DID_SACRIFICE_LOVE) ? &quot;can &quot; : &quot;&quot;)</a>
+<a name="ln2860">                             : &quot;would &quot;;</a>
+<a name="ln2861">        const string verb = (why == DID_SACRIFICE_LOVE)</a>
+<a name="ln2862">                             ? &quot;feel&quot;</a>
+<a name="ln2863">                             : real ? &quot;is&quot; : &quot;be&quot;;</a>
+<a name="ln2864">        const string vcomplex = modal + verb;</a>
+<a name="ln2865"> </a>
+<a name="ln2866">        if (you.can_see(*mon))</a>
+<a name="ln2867">        {</a>
+<a name="ln2868">            const string mname = mon-&gt;name(DESC_THE);</a>
+<a name="ln2869"> </a>
+<a name="ln2870">            switch (why)</a>
+<a name="ln2871">            {</a>
+<a name="ln2872">            case DID_EVIL:</a>
+<a name="ln2873">                mprf(&quot;%s %s enraged by your holy aura!&quot;,</a>
+<a name="ln2874">                    mname.c_str(), vcomplex.c_str());</a>
+<a name="ln2875">                break;</a>
+<a name="ln2876">            case DID_HOLY:</a>
+<a name="ln2877">                mprf(&quot;%s %s enraged by your evilness!&quot;,</a>
+<a name="ln2878">                    mname.c_str(), vcomplex.c_str());</a>
+<a name="ln2879">                break;</a>
+<a name="ln2880">            case DID_UNCLEAN:</a>
+<a name="ln2881">            case DID_CHAOS:</a>
+<a name="ln2882">                mprf(&quot;%s %s enraged by your lawfulness!&quot;,</a>
+<a name="ln2883">                    mname.c_str(), vcomplex.c_str());</a>
+<a name="ln2884">                break;</a>
+<a name="ln2885">            case DID_SPELL_CASTING:</a>
+<a name="ln2886">                mprf(&quot;%s %s enraged by your magic-hating god!&quot;,</a>
+<a name="ln2887">                    mname.c_str(), vcomplex.c_str());</a>
+<a name="ln2888">                break;</a>
+<a name="ln2889">            case DID_SACRIFICE_LOVE:</a>
+<a name="ln2890">                mprf(&quot;%s %s only hate for you!&quot;,</a>
+<a name="ln2891">                    mname.c_str(), vcomplex.c_str());</a>
+<a name="ln2892">                break;</a>
+<a name="ln2893">            default:</a>
+<a name="ln2894">                mprf(&quot;%s %s enraged by a buggy thing about you!&quot;,</a>
+<a name="ln2895">                    mname.c_str(), vcomplex.c_str());</a>
+<a name="ln2896">                break;</a>
+<a name="ln2897">            }</a>
+<a name="ln2898">        }</a>
+<a name="ln2899"> </a>
+<a name="ln2900">        return true;</a>
+<a name="ln2901">    }</a>
+<a name="ln2902"> </a>
+<a name="ln2903">    return false;</a>
+<a name="ln2904">}</a>
+<a name="ln2905"> </a>
+<a name="ln2906">monster* create_monster(mgen_data mg, bool fail_msg)</a>
+<a name="ln2907">{</a>
+<a name="ln2908">    ASSERT(in_bounds(mg.pos)); // otherwise it's a guaranteed fail</a>
+<a name="ln2909"> </a>
+<a name="ln2910">    const monster_type montype = fixup_zombie_type(mg.cls, mg.base_type);</a>
+<a name="ln2911"> </a>
+<a name="ln2912">    monster *summd = 0;</a>
+<a name="ln2913"> </a>
+<a name="ln2914">    if (!mg.force_place()</a>
+<a name="ln2915">        || monster_at(mg.pos)</a>
+<a name="ln2916">        || you.pos() == mg.pos &amp;&amp; !fedhas_passthrough_class(mg.cls)</a>
+<a name="ln2917">        || !mons_class_can_pass(montype, grd(mg.pos)))</a>
+<a name="ln2918">    {</a>
+<a name="ln2919">        // Gods other than Xom will try to avoid placing their monsters</a>
+<a name="ln2920">        // directly in harm's way.</a>
+<a name="ln2921">        if (mg.god != GOD_NO_GOD &amp;&amp; mg.god != GOD_XOM)</a>
+<a name="ln2922">        {</a>
+<a name="ln2923">            monster dummy;</a>
+<a name="ln2924">            const monster_type resistless_mon = MONS_HUMAN;</a>
+<a name="ln2925">            // If the type isn't known yet assume no resists or anything.</a>
+<a name="ln2926">            dummy.type         = needs_resolution(mg.cls) ? resistless_mon</a>
+<a name="ln2927">                                                          : mg.cls;</a>
+<a name="ln2928">            dummy.base_monster = mg.base_type;</a>
+<a name="ln2929">            dummy.god          = mg.god;</a>
+<a name="ln2930">            dummy.behaviour    = mg.behaviour;</a>
+<a name="ln2931"> </a>
+<a name="ln2932">            // Monsters that have resistance info in the ghost</a>
+<a name="ln2933">            // structure cannot be handled as dummies, so treat them</a>
+<a name="ln2934">            // as a known no-resist monster. mons_avoids_cloud() will</a>
+<a name="ln2935">            // crash for dummy monsters which should have a</a>
+<a name="ln2936">            // ghost_demon setup.</a>
+<a name="ln2937">            if (mons_is_ghost_demon(dummy.type))</a>
+<a name="ln2938">                dummy.type = resistless_mon;</a>
+<a name="ln2939">            mg.pos = find_newmons_square(montype, mg.pos, &amp;dummy);</a>
+<a name="ln2940">        }</a>
+<a name="ln2941">        else</a>
+<a name="ln2942">            mg.pos = find_newmons_square(montype, mg.pos);</a>
+<a name="ln2943">    }</a>
+<a name="ln2944"> </a>
+<a name="ln2945">    if (in_bounds(mg.pos))</a>
+<a name="ln2946">    {</a>
+<a name="ln2947">        summd = mons_place(mg);</a>
+<a name="ln2948">        // If the arena vetoed the placement then give no fail message.</a>
+<a name="ln2949">        if (crawl_state.game_is_arena())</a>
+<a name="ln2950">            fail_msg = false;</a>
+<a name="ln2951"> </a>
+<a name="ln2952">        if (!summd &amp;&amp; fail_msg &amp;&amp; you.see_cell(mg.pos))</a>
+<a name="ln2953">            mpr(&quot;You see a puff of smoke.&quot;);</a>
+<a name="ln2954">    }</a>
+<a name="ln2955"> </a>
+<a name="ln2956">    return summd;</a>
+<a name="ln2957">}</a>
+<a name="ln2958"> </a>
+<a name="ln2959">bool find_habitable_spot_near(const coord_def&amp; where, monster_type mon_type,</a>
+<a name="ln2960">                              int radius, bool allow_centre, coord_def&amp; empty,</a>
+<a name="ln2961">                              const monster* viable_mon)</a>
+<a name="ln2962">{</a>
+<a name="ln2963">    // XXX: A lot of hacks that could be avoided by passing the</a>
+<a name="ln2964">    //      monster generation data through.</a>
+<a name="ln2965"> </a>
+<a name="ln2966">    int good_count = 0;</a>
+<a name="ln2967"> </a>
+<a name="ln2968">    for (radius_iterator ri(where, radius, C_SQUARE, !allow_centre);</a>
+<a name="ln2969">         ri; ++ri)</a>
+<a name="ln2970">    {</a>
+<a name="ln2971">        bool success = false;</a>
+<a name="ln2972"> </a>
+<a name="ln2973">        if (actor_at(*ri))</a>
+<a name="ln2974">            continue;</a>
+<a name="ln2975"> </a>
+<a name="ln2976">        if (!cell_see_cell(where, *ri, LOS_NO_TRANS))</a>
+<a name="ln2977">            continue;</a>
+<a name="ln2978"> </a>
+<a name="ln2979">        success = monster_habitable_grid(mon_type, grd(*ri));</a>
+<a name="ln2980">        if (success &amp;&amp; viable_mon)</a>
+<a name="ln2981">            success = !mons_avoids_cloud(viable_mon, *ri, true);</a>
+<a name="ln2982"> </a>
+<a name="ln2983">        if (success &amp;&amp; one_chance_in(++good_count))</a>
+<a name="ln2984">            empty = *ri;</a>
+<a name="ln2985">    }</a>
+<a name="ln2986"> </a>
+<a name="ln2987">    return good_count &gt; 0;</a>
+<a name="ln2988">}</a>
+<a name="ln2989"> </a>
+<a name="ln2990">static void _get_vault_mon_list(vector&lt;mons_spec&gt; &amp;list);</a>
+<a name="ln2991"> </a>
+<a name="ln2992">monster_type random_demon_by_tier(int tier)</a>
+<a name="ln2993">{</a>
+<a name="ln2994">    switch (tier)</a>
+<a name="ln2995">    {</a>
+<a name="ln2996">    case 5:</a>
+<a name="ln2997">        return random_choose(MONS_CRIMSON_IMP,</a>
+<a name="ln2998">                             MONS_QUASIT,</a>
+<a name="ln2999">                             MONS_WHITE_IMP,</a>
+<a name="ln3000">                             MONS_UFETUBUS,</a>
+<a name="ln3001">                             MONS_IRON_IMP,</a>
+<a name="ln3002">                             MONS_SHADOW_IMP);</a>
+<a name="ln3003">    case 4:</a>
+<a name="ln3004">        return random_choose(MONS_ICE_DEVIL,</a>
+<a name="ln3005">                             MONS_RUST_DEVIL,</a>
+<a name="ln3006">                             MONS_ORANGE_DEMON,</a>
+<a name="ln3007">                             MONS_RED_DEVIL,</a>
+<a name="ln3008">                             MONS_CHAOS_SPAWN,</a>
+<a name="ln3009">                             MONS_HELLWING);</a>
+<a name="ln3010">    case 3:</a>
+<a name="ln3011">        return random_choose(MONS_SUN_DEMON,</a>
+<a name="ln3012">                             MONS_SOUL_EATER,</a>
+<a name="ln3013">                             MONS_SMOKE_DEMON,</a>
+<a name="ln3014">                             MONS_NEQOXEC,</a>
+<a name="ln3015">                             MONS_YNOXINUL,</a>
+<a name="ln3016">                             MONS_SIXFIRHY);</a>
+<a name="ln3017">    case 2:</a>
+<a name="ln3018">        return random_choose(MONS_GREEN_DEATH,</a>
+<a name="ln3019">                             MONS_BLIZZARD_DEMON,</a>
+<a name="ln3020">                             MONS_BALRUG,</a>
+<a name="ln3021">                             MONS_CACODEMON,</a>
+<a name="ln3022">                             MONS_HELL_BEAST,</a>
+<a name="ln3023">                             MONS_HELLION,</a>
+<a name="ln3024">                             MONS_REAPER,</a>
+<a name="ln3025">                             MONS_LOROCYPROCA,</a>
+<a name="ln3026">                             MONS_TORMENTOR,</a>
+<a name="ln3027">                             MONS_SHADOW_DEMON);</a>
+<a name="ln3028">    case 1:</a>
+<a name="ln3029">        return random_choose(MONS_BRIMSTONE_FIEND,</a>
+<a name="ln3030">                             MONS_ICE_FIEND,</a>
+<a name="ln3031">                             MONS_TZITZIMITL,</a>
+<a name="ln3032">                             MONS_HELL_SENTINEL,</a>
+<a name="ln3033">                             MONS_EXECUTIONER);</a>
+<a name="ln3034">    default:</a>
+<a name="ln3035">        die(&quot;invalid demon tier&quot;);</a>
+<a name="ln3036">    }</a>
+<a name="ln3037">}</a>
+<a name="ln3038"> </a>
+<a name="ln3039">monster_type summon_any_demon(monster_type dct, bool use_local_demons)</a>
+<a name="ln3040">{</a>
+<a name="ln3041">    // Draw random demon types in Pan from the local pools first.</a>
+<a name="ln3042">    if (use_local_demons</a>
+<a name="ln3043">        &amp;&amp; player_in_branch(BRANCH_PANDEMONIUM)</a>
+<a name="ln3044">        &amp;&amp; !one_chance_in(40))</a>
+<a name="ln3045">    {</a>
+<a name="ln3046">        monster_type typ = MONS_0;</a>
+<a name="ln3047">        int count = 0;</a>
+<a name="ln3048">        vector&lt;mons_spec&gt; list;</a>
+<a name="ln3049">        _get_vault_mon_list(list);</a>
+<a name="ln3050">        const bool list_set = !list.empty();</a>
+<a name="ln3051">        const int max = list_set ? list.size() : PAN_MONS_ALLOC;</a>
+<a name="ln3052">        for (int i = 0; i &lt; max; i++)</a>
+<a name="ln3053">        {</a>
+<a name="ln3054">            const monster_type cur = list_set ? list[i].monbase</a>
+<a name="ln3055">                                              : env.mons_alloc[i];</a>
+<a name="ln3056">            if (invalid_monster_type(cur))</a>
+<a name="ln3057">                continue;</a>
+<a name="ln3058">            if (dct == RANDOM_DEMON &amp;&amp; !mons_is_demon(cur)</a>
+<a name="ln3059">                || dct == RANDOM_DEMON_LESSER &amp;&amp; mons_demon_tier(cur) != 5</a>
+<a name="ln3060">                || dct == RANDOM_DEMON_COMMON</a>
+<a name="ln3061">                   &amp;&amp; mons_demon_tier(cur) != 4</a>
+<a name="ln3062">                   &amp;&amp; mons_demon_tier(cur) != 3</a>
+<a name="ln3063">                || dct == RANDOM_DEMON_GREATER</a>
+<a name="ln3064">                   &amp;&amp; mons_demon_tier(cur) != 2</a>
+<a name="ln3065">                   &amp;&amp; mons_demon_tier(cur) != 1)</a>
+<a name="ln3066">            {</a>
+<a name="ln3067">                continue;</a>
+<a name="ln3068">            }</a>
+<a name="ln3069">            const int weight = list_set ? list[i].genweight : 1;</a>
+<a name="ln3070">            count += weight;</a>
+<a name="ln3071">            if (x_chance_in_y(weight, count))</a>
+<a name="ln3072">                typ = cur;</a>
+<a name="ln3073">        }</a>
+<a name="ln3074">        if (count)</a>
+<a name="ln3075">            return typ;</a>
+<a name="ln3076">    }</a>
+<a name="ln3077"> </a>
+<a name="ln3078">    if (dct == RANDOM_DEMON)</a>
+<a name="ln3079">    {</a>
+<a name="ln3080">        dct = random_choose(RANDOM_DEMON_LESSER, RANDOM_DEMON_COMMON,</a>
+<a name="ln3081">                            RANDOM_DEMON_GREATER);</a>
+<a name="ln3082">    }</a>
+<a name="ln3083"> </a>
+<a name="ln3084">    switch (dct)</a>
+<a name="ln3085">    {</a>
+<a name="ln3086">    case RANDOM_DEMON_LESSER:</a>
+<a name="ln3087">        return random_demon_by_tier(5);</a>
+<a name="ln3088"> </a>
+<a name="ln3089">    case RANDOM_DEMON_COMMON:</a>
+<a name="ln3090">        if (x_chance_in_y(6, 10))</a>
+<a name="ln3091">            return random_demon_by_tier(4);</a>
+<a name="ln3092">        else</a>
+<a name="ln3093">            return random_demon_by_tier(3);</a>
+<a name="ln3094"> </a>
+<a name="ln3095">    case RANDOM_DEMON_GREATER:</a>
+<a name="ln3096">        if (x_chance_in_y(6, 10))</a>
+<a name="ln3097">            return random_demon_by_tier(2);</a>
+<a name="ln3098">        else</a>
+<a name="ln3099">            return random_demon_by_tier(1);</a>
+<a name="ln3100"> </a>
+<a name="ln3101">    default:</a>
+<a name="ln3102">        return dct;</a>
+<a name="ln3103">    }</a>
+<a name="ln3104">}</a>
+<a name="ln3105"> </a>
+<a name="ln3106">void replace_boris()</a>
+<a name="ln3107">{</a>
+<a name="ln3108">    // Initial generation is governed by the vault uniq_boris. Once he is killed</a>
+<a name="ln3109">    // a first time, as long as he isn't alive somewhere, he can regenerate when</a>
+<a name="ln3110">    // a new level is entered.</a>
+<a name="ln3111">    if (!you.props[&quot;killed_boris_once&quot;]</a>
+<a name="ln3112">        || you.unique_creatures[MONS_BORIS]</a>
+<a name="ln3113">        || !one_chance_in(6))</a>
+<a name="ln3114">    {</a>
+<a name="ln3115">        return;</a>
+<a name="ln3116">    }</a>
+<a name="ln3117"> </a>
+<a name="ln3118">    // TODO: kind of ad hoc, maybe read from uniq_boris vault?</a>
+<a name="ln3119">    switch (you.where_are_you)</a>
+<a name="ln3120">    {</a>
+<a name="ln3121">    case BRANCH_DEPTHS:</a>
+<a name="ln3122">    case BRANCH_VAULTS:</a>
+<a name="ln3123">    case BRANCH_TOMB:</a>
+<a name="ln3124">    case BRANCH_CRYPT:</a>
+<a name="ln3125">        break;</a>
+<a name="ln3126">    default:</a>
+<a name="ln3127">        return;</a>
+<a name="ln3128">    }</a>
+<a name="ln3129"> </a>
+<a name="ln3130">    mgen_data boris = mgen_data(MONS_BORIS);</a>
+<a name="ln3131">    mons_place(boris);</a>
+<a name="ln3132">}</a>
+<a name="ln3133"> </a>
+<a name="ln3134">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln3135">//</a>
+<a name="ln3136">// Random monsters for portal vaults. Used for e.g. shadow creatures.</a>
+<a name="ln3137">//</a>
+<a name="ln3138">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln3139"> </a>
+<a name="ln3140">void set_vault_mon_list(const vector&lt;mons_spec&gt; &amp;list)</a>
+<a name="ln3141">{</a>
+<a name="ln3142">    CrawlHashTable &amp;props = env.properties;</a>
+<a name="ln3143"> </a>
+<a name="ln3144">    props.erase(VAULT_MON_TYPES_KEY);</a>
+<a name="ln3145">    props.erase(VAULT_MON_BASES_KEY);</a>
+<a name="ln3146">    props.erase(VAULT_MON_PLACES_KEY);</a>
+<a name="ln3147">    props.erase(VAULT_MON_WEIGHTS_KEY);</a>
+<a name="ln3148">    props.erase(VAULT_MON_BANDS_KEY);</a>
+<a name="ln3149"> </a>
+<a name="ln3150">    size_t size = list.size();</a>
+<a name="ln3151">    if (size == 0)</a>
+<a name="ln3152">    {</a>
+<a name="ln3153">        setup_vault_mon_list();</a>
+<a name="ln3154">        return;</a>
+<a name="ln3155">    }</a>
+<a name="ln3156"> </a>
+<a name="ln3157">    props[VAULT_MON_TYPES_KEY].new_vector(SV_INT).resize(size);</a>
+<a name="ln3158">    props[VAULT_MON_BASES_KEY].new_vector(SV_INT).resize(size);</a>
+<a name="ln3159">    props[VAULT_MON_PLACES_KEY].new_vector(SV_LEV_ID).resize(size);</a>
+<a name="ln3160">    props[VAULT_MON_WEIGHTS_KEY].new_vector(SV_INT).resize(size);</a>
+<a name="ln3161">    props[VAULT_MON_BANDS_KEY].new_vector(SV_BOOL).resize(size);</a>
+<a name="ln3162"> </a>
+<a name="ln3163">    CrawlVector &amp;type_vec   = props[VAULT_MON_TYPES_KEY].get_vector();</a>
+<a name="ln3164">    CrawlVector &amp;base_vec   = props[VAULT_MON_BASES_KEY].get_vector();</a>
+<a name="ln3165">    CrawlVector &amp;place_vec  = props[VAULT_MON_PLACES_KEY].get_vector();</a>
+<a name="ln3166">    CrawlVector &amp;weight_vec = props[VAULT_MON_WEIGHTS_KEY].get_vector();</a>
+<a name="ln3167">    CrawlVector &amp;band_vec   = props[VAULT_MON_BANDS_KEY].get_vector();</a>
+<a name="ln3168"> </a>
+<a name="ln3169">    for (size_t i = 0; i &lt; size; i++)</a>
+<a name="ln3170">    {</a>
+<a name="ln3171">        const mons_spec &amp;spec = list[i];</a>
+<a name="ln3172"> </a>
+<a name="ln3173">        if (spec.place.is_valid())</a>
+<a name="ln3174">        {</a>
+<a name="ln3175">            ASSERT(branch_has_monsters(spec.place.branch));</a>
+<a name="ln3176">            type_vec[i] = -1;</a>
+<a name="ln3177">            base_vec[i] = -1;</a>
+<a name="ln3178">            place_vec[i] = spec.place;</a>
+<a name="ln3179">        }</a>
+<a name="ln3180">        else</a>
+<a name="ln3181">        {</a>
+<a name="ln3182">            ASSERT(!_is_random_monster(spec.type)</a>
+<a name="ln3183">                   &amp;&amp; !_is_random_monster(spec.monbase));</a>
+<a name="ln3184">            type_vec[i] = spec.type;</a>
+<a name="ln3185">            base_vec[i] = spec.monbase;</a>
+<a name="ln3186">            band_vec[i] = spec.band;</a>
+<a name="ln3187">            place_vec[i] = level_id();</a>
+<a name="ln3188">        }</a>
+<a name="ln3189">        weight_vec[i] = spec.genweight;</a>
+<a name="ln3190">    }</a>
+<a name="ln3191"> </a>
+<a name="ln3192">    setup_vault_mon_list();</a>
+<a name="ln3193">}</a>
+<a name="ln3194"> </a>
+<a name="ln3195">static void _get_vault_mon_list(vector&lt;mons_spec&gt; &amp;list)</a>
+<a name="ln3196">{</a>
+<a name="ln3197">    list.clear();</a>
+<a name="ln3198"> </a>
+<a name="ln3199">    CrawlHashTable &amp;props = env.properties;</a>
+<a name="ln3200"> </a>
+<a name="ln3201">    if (!props.exists(VAULT_MON_TYPES_KEY))</a>
+<a name="ln3202">        return;</a>
+<a name="ln3203"> </a>
+<a name="ln3204">    ASSERT(props.exists(VAULT_MON_BASES_KEY));</a>
+<a name="ln3205">    ASSERT(props.exists(VAULT_MON_WEIGHTS_KEY));</a>
+<a name="ln3206">    ASSERT(props.exists(VAULT_MON_BANDS_KEY));</a>
+<a name="ln3207">    ASSERT(props.exists(VAULT_MON_PLACES_KEY));</a>
+<a name="ln3208"> </a>
+<a name="ln3209">    CrawlVector &amp;type_vec   = props[VAULT_MON_TYPES_KEY].get_vector();</a>
+<a name="ln3210">    CrawlVector &amp;base_vec   = props[VAULT_MON_BASES_KEY].get_vector();</a>
+<a name="ln3211">    CrawlVector &amp;place_vec  = props[VAULT_MON_PLACES_KEY].get_vector();</a>
+<a name="ln3212">    CrawlVector &amp;weight_vec = props[VAULT_MON_WEIGHTS_KEY].get_vector();</a>
+<a name="ln3213">    CrawlVector &amp;band_vec   = props[VAULT_MON_BANDS_KEY].get_vector();</a>
+<a name="ln3214"> </a>
+<a name="ln3215">    size_t size = type_vec.size();</a>
+<a name="ln3216">    ASSERT(size == base_vec.size());</a>
+<a name="ln3217">    ASSERT(size == place_vec.size());</a>
+<a name="ln3218">    ASSERT(size == weight_vec.size());</a>
+<a name="ln3219">    ASSERT(size == band_vec.size());</a>
+<a name="ln3220"> </a>
+<a name="ln3221">    for (size_t i = 0; i &lt; size; i++)</a>
+<a name="ln3222">    {</a>
+<a name="ln3223">        monster_type type = static_cast&lt;monster_type&gt;(type_vec[i].get_int());</a>
+<a name="ln3224">        monster_type base = static_cast&lt;monster_type&gt;(base_vec[i].get_int());</a>
+<a name="ln3225">        level_id    place = place_vec[i];</a>
+<a name="ln3226"> </a>
+<a name="ln3227">        mons_spec spec;</a>
+<a name="ln3228"> </a>
+<a name="ln3229">        if (place.is_valid())</a>
+<a name="ln3230">        {</a>
+<a name="ln3231">            ASSERT(branch_has_monsters(place.branch));</a>
+<a name="ln3232">            spec.place = place;</a>
+<a name="ln3233">        }</a>
+<a name="ln3234">        else</a>
+<a name="ln3235">        {</a>
+<a name="ln3236">            spec.type    = type;</a>
+<a name="ln3237">            spec.monbase = base;</a>
+<a name="ln3238">            ASSERT(!_is_random_monster(spec.type)</a>
+<a name="ln3239">                   &amp;&amp; !_is_random_monster(spec.monbase));</a>
+<a name="ln3240">        }</a>
+<a name="ln3241">        spec.genweight = weight_vec[i];</a>
+<a name="ln3242">        spec.band = band_vec[i];</a>
+<a name="ln3243"> </a>
+<a name="ln3244">        list.push_back(spec);</a>
+<a name="ln3245">    }</a>
+<a name="ln3246">}</a>
+<a name="ln3247"> </a>
+<a name="ln3248">void setup_vault_mon_list()</a>
+<a name="ln3249">{</a>
+<a name="ln3250">    vault_mon_types.clear();</a>
+<a name="ln3251">    vault_mon_bases.clear();</a>
+<a name="ln3252">    vault_mon_places.clear();</a>
+<a name="ln3253">    vault_mon_weights.clear();</a>
+<a name="ln3254">    vault_mon_bands.clear();</a>
+<a name="ln3255"> </a>
+<a name="ln3256">    vector&lt;mons_spec&gt; list;</a>
+<a name="ln3257">    _get_vault_mon_list(list);</a>
+<a name="ln3258"> </a>
+<a name="ln3259">    unsigned int size = list.size();</a>
+<a name="ln3260"> </a>
+<a name="ln3261">    vault_mon_types.resize(size);</a>
+<a name="ln3262">    vault_mon_bases.resize(size);</a>
+<a name="ln3263">    vault_mon_places.resize(size);</a>
+<a name="ln3264">    vault_mon_weights.resize(size);</a>
+<a name="ln3265">    vault_mon_bands.resize(size);</a>
+<a name="ln3266"> </a>
+<a name="ln3267">    for (size_t i = 0; i &lt; size; i++)</a>
+<a name="ln3268">    {</a>
+<a name="ln3269">        if (list[i].place.is_valid())</a>
+<a name="ln3270">        {</a>
+<a name="ln3271">            vault_mon_types[i] = -1;</a>
+<a name="ln3272">            vault_mon_bases[i] = -1;</a>
+<a name="ln3273">            vault_mon_places[i] = list[i].place;</a>
+<a name="ln3274">        }</a>
+<a name="ln3275">        else</a>
+<a name="ln3276">        {</a>
+<a name="ln3277">            vault_mon_types[i] = list[i].type;</a>
+<a name="ln3278">            vault_mon_bases[i] = list[i].monbase;</a>
+<a name="ln3279">            vault_mon_places[i] = level_id();</a>
+<a name="ln3280">        }</a>
+<a name="ln3281">        vault_mon_bands[i] = list[i].band;</a>
+<a name="ln3282">        vault_mon_weights[i] = list[i].genweight;</a>
+<a name="ln3283">    }</a>
+<a name="ln3284">    if (size)</a>
+<a name="ln3285">        dprf(DIAG_MONPLACE, &quot;Level has a custom monster set.&quot;);</a>
+<a name="ln3286">}</a>
+
+</code></pre>
+<div class="balloon" rel="104"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="131"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="251"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="290"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="367"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'player_will_anger_monster(mt)' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+<div class="balloon" rel="423"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="565"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="668"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'mg.cls == MONS_PROGRAM_BUG' is always false.</p></div>
+<div class="balloon" rel="2456"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="2466"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="2476"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="2486"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="2850"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The variable 'why' is of enum type. It is odd that it is used as a variable of a Boolean-type.</p></div>
+<div class="balloon" rel="2916"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

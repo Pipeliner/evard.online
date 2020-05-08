@@ -1,0 +1,551 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <title>stringutil.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief String manipulation functions that don't fit elsewhere.</a>
+<a name="ln4"> **/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;stringutil.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cwctype&gt;</a>
+<a name="ln11">#include &lt;sstream&gt;</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;libutil.h&quot;</a>
+<a name="ln14">#include &quot;random.h&quot;</a>
+<a name="ln15">#include &quot;unicode.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">#ifndef CRAWL_HAVE_STRLCPY</a>
+<a name="ln18">size_t strlcpy(char *dst, const char *src, size_t n)</a>
+<a name="ln19">{</a>
+<a name="ln20">    if (!n)</a>
+<a name="ln21">        return strlen(src);</a>
+<a name="ln22"> </a>
+<a name="ln23">    const char *s = src;</a>
+<a name="ln24"> </a>
+<a name="ln25">    while (--n &gt; 0)</a>
+<a name="ln26">        if (!(*dst++ = *s++))</a>
+<a name="ln27">            break;</a>
+<a name="ln28"> </a>
+<a name="ln29">    if (!n)</a>
+<a name="ln30">    {</a>
+<a name="ln31">        *dst++ = 0;</a>
+<a name="ln32">        while (*s++)</a>
+<a name="ln33">            ;</a>
+<a name="ln34">    }</a>
+<a name="ln35"> </a>
+<a name="ln36">    return s - src - 1;</a>
+<a name="ln37">}</a>
+<a name="ln38">#endif</a>
+<a name="ln39"> </a>
+<a name="ln40"> </a>
+<a name="ln41">string lowercase_string(const string &amp;s)</a>
+<a name="ln42">{</a>
+<a name="ln43">    string res;</a>
+<a name="ln44">    char32_t c;</a>
+<a name="ln45">    char buf[4];</a>
+<a name="ln46">    for (const char *tp = s.c_str(); int len = utf8towc(&amp;c, tp); tp += len)</a>
+<a name="ln47">    {</a>
+<a name="ln48">        // crawl breaks horribly if this is allowed to affect ascii chars,</a>
+<a name="ln49">        // so override locale-specific casing for ascii. (For example, in</a>
+<a name="ln50">        // Turkish; tr_TR.utf8 lowercase I is a dotless i that is not</a>
+<a name="ln51">        // ascii, which breaks many things.)</a>
+<a name="ln52">        if (isaalpha(tp[0]))</a>
+<a name="ln53">            res.append(1, toalower(tp[0]));</a>
+<a name="ln54">        else</a>
+<a name="ln55">            res.append(buf, wctoutf8(buf, towlower(c)));</a>
+<a name="ln56">    }</a>
+<a name="ln57">    return res;</a>
+<a name="ln58">}</a>
+<a name="ln59"> </a>
+<a name="ln60">string &amp;lowercase(string &amp;s)</a>
+<a name="ln61">{</a>
+<a name="ln62">    s = lowercase_string(s);</a>
+<a name="ln63">    return s;</a>
+<a name="ln64">}</a>
+<a name="ln65"> </a>
+<a name="ln66">string &amp;uppercase(string &amp;s)</a>
+<a name="ln67">{</a>
+<a name="ln68">    for (char &amp;ch : s)</a>
+<a name="ln69">        ch = toupper_safe(ch);</a>
+<a name="ln70">    return s;</a>
+<a name="ln71">}</a>
+<a name="ln72"> </a>
+<a name="ln73">string uppercase_string(string s)</a>
+<a name="ln74">{</a>
+<a name="ln75">    return uppercase(s);</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">// Warning: this (and uppercase_first()) relies on no libc (glibc, BSD libc,</a>
+<a name="ln79">// MSVC crt) supporting letters that expand or contract, like German ß (-&gt; SS)</a>
+<a name="ln80">// upon capitalization / lowercasing. This is mostly a fault of the API --</a>
+<a name="ln81">// there's no way to return two characters in one code point.</a>
+<a name="ln82">// Also, all characters must have the same length in bytes before and after</a>
+<a name="ln83">// lowercasing, all platforms currently have this property.</a>
+<a name="ln84">//</a>
+<a name="ln85">// A non-hacky version would be slower for no gain other than sane code; at</a>
+<a name="ln86">// least unless you use some more powerful API.</a>
+<a name="ln87">string lowercase_first(string s)</a>
+<a name="ln88">{</a>
+<a name="ln89">    char32_t c;</a>
+<a name="ln90">    if (!s.empty())</a>
+<a name="ln91">    {</a>
+<a name="ln92">        utf8towc(&amp;c, &amp;s[0]);</a>
+<a name="ln93">        wctoutf8(&amp;s[0], towlower(c));</a>
+<a name="ln94">    }</a>
+<a name="ln95">    return s;</a>
+<a name="ln96">}</a>
+<a name="ln97"> </a>
+<a name="ln98">string uppercase_first(string s)</a>
+<a name="ln99">{</a>
+<a name="ln100">    // Incorrect due to those pesky Dutch having &quot;ij&quot; as a single letter (wtf?).</a>
+<a name="ln101">    // Too bad, there's no standard function to handle that character, and I</a>
+<a name="ln102">    // don't care enough.</a>
+<a name="ln103">    char32_t c;</a>
+<a name="ln104">    if (!s.empty())</a>
+<a name="ln105">    {</a>
+<a name="ln106">        utf8towc(&amp;c, &amp;s[0]);</a>
+<a name="ln107">        wctoutf8(&amp;s[0], towupper(c));</a>
+<a name="ln108">    }</a>
+<a name="ln109">    return s;</a>
+<a name="ln110">}</a>
+<a name="ln111"> </a>
+<a name="ln112">int ends_with(const string &amp;s, const char * const suffixes[])</a>
+<a name="ln113">{</a>
+<a name="ln114">    if (!suffixes)</a>
+<a name="ln115">        return 0;</a>
+<a name="ln116"> </a>
+<a name="ln117">    for (int i = 0; suffixes[i]; ++i)</a>
+<a name="ln118">        if (ends_with(s, suffixes[i]))</a>
+<a name="ln119">            return 1 + i;</a>
+<a name="ln120"> </a>
+<a name="ln121">    return 0;</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124"> </a>
+<a name="ln125">static const string _get_indent(const string &amp;s)</a>
+<a name="ln126">{</a>
+<a name="ln127">    size_t prefix = 0;</a>
+<a name="ln128">    if (starts_with(s, &quot;\&quot;&quot;)    // ASCII quotes</a>
+<a name="ln129">        || starts_with(s, &quot;“&quot;)  // English quotes</a>
+<a name="ln130">        || starts_with(s, &quot;„&quot;)  // Polish/German/... quotes</a>
+<a name="ln131">        || starts_with(s, &quot;«&quot;)  // French quotes</a>
+<a name="ln132">        || starts_with(s, &quot;»&quot;)  // Danish/... quotes</a>
+<a name="ln133">        || starts_with(s, &quot;•&quot;)) // bulleted lists</a>
+<a name="ln134">    {</a>
+<a name="ln135">        prefix = 1;</a>
+<a name="ln136">    }</a>
+<a name="ln137">    else if (starts_with(s, &quot;「&quot;))  // Chinese/Japanese quotes</a>
+<a name="ln138">        prefix = 2;</a>
+<a name="ln139"> </a>
+<a name="ln140">    size_t nspaces = s.find_first_not_of(' ', prefix);</a>
+<a name="ln141">    if (nspaces == string::npos)</a>
+<a name="ln142">        nspaces = 0;</a>
+<a name="ln143">    if (!(prefix += nspaces))</a>
+<a name="ln144">        return &quot;&quot;;</a>
+<a name="ln145">    return string(prefix, ' ');</a>
+<a name="ln146">}</a>
+<a name="ln147"> </a>
+<a name="ln148"> </a>
+<a name="ln149">// The provided string is consumed!</a>
+<a name="ln150">string wordwrap_line(string &amp;s, int width, bool tags, bool indent)</a>
+<a name="ln151">{</a>
+<a name="ln152">    ASSERT(width &gt; 0);</a>
+<a name="ln153"> </a>
+<a name="ln154">    const char *cp0 = s.c_str();</a>
+<a name="ln155">    const char *cp = cp0, *space = 0;</a>
+<a name="ln156">    char32_t c;</a>
+<a name="ln157">    bool seen_nonspace = false;</a>
+<a name="ln158"> </a>
+<a name="ln159">    while (int clen = utf8towc(&amp;c, cp))</a>
+<a name="ln160">    {</a>
+<a name="ln161">        int cw = wcwidth(c);</a>
+<a name="ln162">        if (c == ' ')</a>
+<a name="ln163">        {</a>
+<a name="ln164">            if (seen_nonspace)</a>
+<a name="ln165">                space = cp;</a>
+<a name="ln166">        }</a>
+<a name="ln167">        else if (c == '\n')</a>
+<a name="ln168">        {</a>
+<a name="ln169">            space = cp;</a>
+<a name="ln170">            break;</a>
+<a name="ln171">        }</a>
+<a name="ln172">        else</a>
+<a name="ln173">            seen_nonspace = true;</a>
+<a name="ln174"> </a>
+<a name="ln175">        if (c == '&lt;' &amp;&amp; tags)</a>
+<a name="ln176">        {</a>
+<a name="ln177">            ASSERT(cw == 1);</a>
+<a name="ln178">            if (cp[1] == '&lt;') // &quot;&lt;&lt;&quot; escape</a>
+<a name="ln179">            {</a>
+<a name="ln180">                // Note: this must be after a possible wrap, otherwise we could</a>
+<a name="ln181">                // split the escape between lines.</a>
+<a name="ln182">                cp++;</a>
+<a name="ln183">            }</a>
+<a name="ln184">            else</a>
+<a name="ln185">            {</a>
+<a name="ln186">                cw = 0;</a>
+<a name="ln187">                // Skip the whole tag.</a>
+<a name="ln188">                while (*cp != '&gt;')</a>
+<a name="ln189">                {</a>
+<a name="ln190">                    if (!*cp)</a>
+<a name="ln191">                    {</a>
+<a name="ln192">                        // Everything so far fitted, report error.</a>
+<a name="ln193">                        string ret = s + &quot;&gt;&quot;;</a>
+<a name="ln194">                        s = &quot;&lt;lightred&gt;ERROR: string above had unterminated tag&lt;/lightred&gt;&quot;;</a>
+<a name="ln195">                        return ret;</a>
+<a name="ln196">                    }</a>
+<a name="ln197">                    cp++;</a>
+<a name="ln198">                }</a>
+<a name="ln199">            }</a>
+<a name="ln200">        }</a>
+<a name="ln201"> </a>
+<a name="ln202">        if (cw &gt; width)</a>
+<a name="ln203">            break;</a>
+<a name="ln204"> </a>
+<a name="ln205">        if (cw &gt;= 0)</a>
+<a name="ln206">            width -= cw;</a>
+<a name="ln207">        cp += clen;</a>
+<a name="ln208">    }</a>
+<a name="ln209"> </a>
+<a name="ln210">    if (!c)</a>
+<a name="ln211">    {</a>
+<a name="ln212">        // everything fits</a>
+<a name="ln213">        string ret = s;</a>
+<a name="ln214">        s.clear();</a>
+<a name="ln215">        return ret;</a>
+<a name="ln216">    }</a>
+<a name="ln217"> </a>
+<a name="ln218">    if (space)</a>
+<a name="ln219">        cp = space;</a>
+<a name="ln220">    const string ret = s.substr(0, cp - cp0);</a>
+<a name="ln221"> </a>
+<a name="ln222">    const string indentation = (indent &amp;&amp; c != '\n' &amp;&amp; seen_nonspace)</a>
+<a name="ln223">                               ? _get_indent(s) : &quot;&quot;;</a>
+<a name="ln224"> </a>
+<a name="ln225">    // eat all trailing spaces and up to one newline</a>
+<a name="ln226">    while (*cp == ' ')</a>
+<a name="ln227">        cp++;</a>
+<a name="ln228">    if (*cp == '\n')</a>
+<a name="ln229">        cp++;</a>
+<a name="ln230"> </a>
+<a name="ln231">#ifdef ASSERTS</a>
+<a name="ln232">    const size_t inputlength = s.length();</a>
+<a name="ln233">#endif</a>
+<a name="ln234">    s.erase(0, cp - cp0);</a>
+<a name="ln235"> </a>
+<a name="ln236">    // if we had to break a line, reinsert the indendation</a>
+<a name="ln237">    if (indent &amp;&amp; c != '\n')</a>
+<a name="ln238">        s = indentation + s;</a>
+<a name="ln239"> </a>
+<a name="ln240">    // Make sure the remaining string actually shrank, or else we're likely</a>
+<a name="ln241">    // to throw our caller into an infinite loop.</a>
+<a name="ln242">    ASSERT(inputlength &gt; s.length());</a>
+<a name="ln243">    return ret;</a>
+<a name="ln244">}</a>
+<a name="ln245"> </a>
+<a name="ln246">string strip_filename_unsafe_chars(const string &amp;s)</a>
+<a name="ln247">{</a>
+<a name="ln248">    return replace_all_of(s, &quot; .&amp;`\&quot;\'|;{}()[]&lt;&gt;*%$#@!~?&quot;, &quot;&quot;);</a>
+<a name="ln249">}</a>
+<a name="ln250"> </a>
+<a name="ln251">string vmake_stringf(const char* s, va_list args)</a>
+<a name="ln252">{</a>
+<a name="ln253">    char buf1[8000];</a>
+<a name="ln254">    va_list orig_args;</a>
+<a name="ln255">    va_copy(orig_args, args);</a>
+<a name="ln256">    size_t len = vsnprintf(buf1, sizeof buf1, s, orig_args);</a>
+<a name="ln257">    va_end(orig_args);</a>
+<a name="ln258">    if (len &lt; sizeof buf1)</a>
+<a name="ln259">        return buf1;</a>
+<a name="ln260"> </a>
+<a name="ln261">    char *buf2 = (char*)malloc(len + 1);</a>
+<a name="ln262">    va_copy(orig_args, args);</a>
+<a name="ln263">    vsnprintf(buf2, len + 1, s, orig_args);</a>
+<a name="ln264">    va_end(orig_args);</a>
+<a name="ln265">    string ret(buf2);</a>
+<a name="ln266">    free(buf2);</a>
+<a name="ln267"> </a>
+<a name="ln268">    return ret;</a>
+<a name="ln269">}</a>
+<a name="ln270"> </a>
+<a name="ln271">string make_stringf(const char *s, ...)</a>
+<a name="ln272">{</a>
+<a name="ln273">    va_list args;</a>
+<a name="ln274">    va_start(args, s);</a>
+<a name="ln275">    string ret = vmake_stringf(s, args);</a>
+<a name="ln276">    va_end(args);</a>
+<a name="ln277">    return ret;</a>
+<a name="ln278">}</a>
+<a name="ln279"> </a>
+<a name="ln280">bool strip_suffix(string &amp;s, const string &amp;suffix)</a>
+<a name="ln281">{</a>
+<a name="ln282">    if (ends_with(s, suffix))</a>
+<a name="ln283">    {</a>
+<a name="ln284">        s.erase(s.length() - suffix.length(), suffix.length());</a>
+<a name="ln285">        trim_string(s);</a>
+<a name="ln286">        return true;</a>
+<a name="ln287">    }</a>
+<a name="ln288">    return false;</a>
+<a name="ln289">}</a>
+<a name="ln290"> </a>
+<a name="ln291">string replace_all(string s, const string &amp;find, const string &amp;repl)</a>
+<a name="ln292">{</a>
+<a name="ln293">    ASSERT(!find.empty());</a>
+<a name="ln294">    string::size_type start = 0;</a>
+<a name="ln295">    string::size_type found;</a>
+<a name="ln296"> </a>
+<a name="ln297">    while ((found = s.find(find, start)) != string::npos)</a>
+<a name="ln298">    {</a>
+<a name="ln299">        s.replace(found, find.length(), repl);</a>
+<a name="ln300">        start = found + repl.length();</a>
+<a name="ln301">    }</a>
+<a name="ln302"> </a>
+<a name="ln303">    return s;</a>
+<a name="ln304">}</a>
+<a name="ln305"> </a>
+<a name="ln306">// Replaces all occurrences of any of the characters in tofind with the</a>
+<a name="ln307">// replacement string.</a>
+<a name="ln308">string replace_all_of(string s, const string &amp;tofind, const string &amp;replacement)</a>
+<a name="ln309">{</a>
+<a name="ln310">    ASSERT(!tofind.empty());</a>
+<a name="ln311">    string::size_type start = 0;</a>
+<a name="ln312">    string::size_type found;</a>
+<a name="ln313"> </a>
+<a name="ln314">    while ((found = s.find_first_of(tofind, start)) != string::npos)</a>
+<a name="ln315">    {</a>
+<a name="ln316">        s.replace(found, 1, replacement);</a>
+<a name="ln317">        start = found + replacement.length();</a>
+<a name="ln318">    }</a>
+<a name="ln319"> </a>
+<a name="ln320">    return s;</a>
+<a name="ln321">}</a>
+<a name="ln322"> </a>
+<a name="ln323">// Capitalise phrases encased in @CAPS@ ... @NOCAPS@. If @NOCAPS@ is</a>
+<a name="ln324">// missing, change the rest of the line to uppercase.</a>
+<a name="ln325">string maybe_capitalise_substring(string s)</a>
+<a name="ln326">{</a>
+<a name="ln327">    string::size_type start = 0;</a>
+<a name="ln328">    while ((start = s.find(&quot;@CAPS@&quot;, start)) != string::npos)</a>
+<a name="ln329">    {</a>
+<a name="ln330">        string::size_type cap_start  = start + 6;</a>
+<a name="ln331">        string::size_type cap_end    = string::npos;</a>
+<a name="ln332">        string::size_type end        = s.find(&quot;@NOCAPS@&quot;, cap_start);</a>
+<a name="ln333">        string::size_type length     = string::npos;</a>
+<a name="ln334">        string::size_type cap_length = string::npos;</a>
+<a name="ln335">        if (end != string::npos)</a>
+<a name="ln336">        {</a>
+<a name="ln337">            cap_end = end + 8;</a>
+<a name="ln338">            cap_length = end - cap_start;</a>
+<a name="ln339">            length = cap_end - start;</a>
+<a name="ln340">        }</a>
+<a name="ln341">        string substring = s.substr(cap_start, cap_length);</a>
+<a name="ln342">        trim_string(substring);</a>
+<a name="ln343">        s.replace(start, length, uppercase(substring));</a>
+<a name="ln344">    }</a>
+<a name="ln345">    return s;</a>
+<a name="ln346">}</a>
+<a name="ln347"> </a>
+<a name="ln348">/**</a>
+<a name="ln349"> * Make @-replacements on the given text.</a>
+<a name="ln350"> *</a>
+<a name="ln351"> * @param text         the string to be processed</a>
+<a name="ln352"> * @param replacements contains information on what replacements are to be made.</a>
+<a name="ln353"> * @returns a string with substitutions based on the arguments. For example, if</a>
+<a name="ln354"> *          given &quot;baz@foo@&quot; and { &quot;foo&quot;, &quot;bar&quot; } then this returns &quot;bazbar&quot;.</a>
+<a name="ln355"> *          If a string not in replacements is found between @ signs, then the</a>
+<a name="ln356"> *          original, unedited string is returned.</a>
+<a name="ln357"> */</a>
+<a name="ln358">string replace_keys(const string &amp;text, const map&lt;string, string&gt;&amp; replacements)</a>
+<a name="ln359">{</a>
+<a name="ln360">    string::size_type at = 0, last = 0;</a>
+<a name="ln361">    ostringstream res;</a>
+<a name="ln362">    while ((at = text.find('@', last)) != string::npos)</a>
+<a name="ln363">    {</a>
+<a name="ln364">        res &lt;&lt; text.substr(last, at - last);</a>
+<a name="ln365">        const string::size_type end = text.find('@', at + 1);</a>
+<a name="ln366">        if (end == string::npos)</a>
+<a name="ln367">            break;</a>
+<a name="ln368"> </a>
+<a name="ln369">        const string key = text.substr(at + 1, end - at - 1);</a>
+<a name="ln370">        const string* value = map_find(replacements, key);</a>
+<a name="ln371"> </a>
+<a name="ln372">        if (!value)</a>
+<a name="ln373">            return text;</a>
+<a name="ln374"> </a>
+<a name="ln375">        res &lt;&lt; *value;</a>
+<a name="ln376"> </a>
+<a name="ln377">        last = end + 1;</a>
+<a name="ln378">    }</a>
+<a name="ln379">    if (!last)</a>
+<a name="ln380">        return text;</a>
+<a name="ln381"> </a>
+<a name="ln382">    res &lt;&lt; text.substr(last);</a>
+<a name="ln383">    return res.str();</a>
+<a name="ln384">}</a>
+<a name="ln385"> </a>
+<a name="ln386">// For each set of [phrase|term|word] contained in the string, replace the set with a random subphrase.</a>
+<a name="ln387">// NOTE: Doesn't work for nested patterns!</a>
+<a name="ln388">string maybe_pick_random_substring(string s)</a>
+<a name="ln389">{</a>
+<a name="ln390">    string::size_type start = 0;</a>
+<a name="ln391">    while ((start = s.find(&quot;[&quot;, start)) != string::npos)</a>
+<a name="ln392">    {</a>
+<a name="ln393">        string::size_type end = s.find(&quot;]&quot;, start);</a>
+<a name="ln394">        if (end == string::npos)</a>
+<a name="ln395">            break;</a>
+<a name="ln396"> </a>
+<a name="ln397">        string substring = s.substr(start + 1, end - start - 1);</a>
+<a name="ln398">        vector&lt;string&gt; split = split_string(&quot;|&quot;, substring, false, true);</a>
+<a name="ln399">        int index = random2(split.size());</a>
+<a name="ln400">        s.replace(start, end + 1 - start, split[index]);</a>
+<a name="ln401">    }</a>
+<a name="ln402">    return s;</a>
+<a name="ln403">}</a>
+<a name="ln404"> </a>
+<a name="ln405">int count_occurrences(const string &amp;text, const string &amp;s)</a>
+<a name="ln406">{</a>
+<a name="ln407">    ASSERT(!s.empty());</a>
+<a name="ln408">    int nfound = 0;</a>
+<a name="ln409">    string::size_type pos = 0;</a>
+<a name="ln410"> </a>
+<a name="ln411">    while ((pos = text.find(s, pos)) != string::npos)</a>
+<a name="ln412">    {</a>
+<a name="ln413">        ++nfound;</a>
+<a name="ln414">        pos += s.length();</a>
+<a name="ln415">    }</a>
+<a name="ln416"> </a>
+<a name="ln417">    return nfound;</a>
+<a name="ln418">}</a>
+<a name="ln419"> </a>
+<a name="ln420">// also used with macros</a>
+<a name="ln421">string &amp;trim_string(string &amp;str)</a>
+<a name="ln422">{</a>
+<a name="ln423">    str.erase(0, str.find_first_not_of(&quot; \t\n\r&quot;));</a>
+<a name="ln424">    str.erase(str.find_last_not_of(&quot; \t\n\r&quot;) + 1);</a>
+<a name="ln425"> </a>
+<a name="ln426">    return str;</a>
+<a name="ln427">}</a>
+<a name="ln428"> </a>
+<a name="ln429">string &amp;trim_string_right(string &amp;str)</a>
+<a name="ln430">{</a>
+<a name="ln431">    str.erase(str.find_last_not_of(&quot; \t\n\r&quot;) + 1);</a>
+<a name="ln432">    return str;</a>
+<a name="ln433">}</a>
+<a name="ln434"> </a>
+<a name="ln435">string trimmed_string(string s)</a>
+<a name="ln436">{</a>
+<a name="ln437">    trim_string(s);</a>
+<a name="ln438">    return s;</a>
+<a name="ln439">}</a>
+<a name="ln440"> </a>
+<a name="ln441">static void add_segment(vector&lt;string&gt; &amp;segs, string s, bool trim,</a>
+<a name="ln442">                        bool accept_empty)</a>
+<a name="ln443">{</a>
+<a name="ln444">    if (trim &amp;&amp; !s.empty())</a>
+<a name="ln445">        trim_string(s);</a>
+<a name="ln446"> </a>
+<a name="ln447">    if (accept_empty || !s.empty())</a>
+<a name="ln448">        segs.push_back(s);</a>
+<a name="ln449">}</a>
+<a name="ln450"> </a>
+<a name="ln451">vector&lt;string&gt; split_string(const string &amp;sep, string s, bool trim_segments,</a>
+<a name="ln452">                            bool accept_empty_segments, int nsplits)</a>
+<a name="ln453">{</a>
+<a name="ln454">    vector&lt;string&gt; segments;</a>
+<a name="ln455">    int separator_length = sep.length();</a>
+<a name="ln456"> </a>
+<a name="ln457">    string::size_type pos;</a>
+<a name="ln458">    while (nsplits &amp;&amp; (pos = s.find(sep)) != string::npos)</a>
+<a name="ln459">    {</a>
+<a name="ln460">        add_segment(segments, s.substr(0, pos),</a>
+<a name="ln461">                    trim_segments, accept_empty_segments);</a>
+<a name="ln462"> </a>
+<a name="ln463">        s.erase(0, pos + separator_length);</a>
+<a name="ln464"> </a>
+<a name="ln465">        if (nsplits &gt; 0)</a>
+<a name="ln466">            --nsplits;</a>
+<a name="ln467">    }</a>
+<a name="ln468"> </a>
+<a name="ln469">    add_segment(segments, s, trim_segments, accept_empty_segments);</a>
+<a name="ln470"> </a>
+<a name="ln471">    return segments;</a>
+<a name="ln472">}</a>
+<a name="ln473"> </a>
+<a name="ln474"> </a>
+<a name="ln475">// Crude, but functional.</a>
+<a name="ln476">string make_time_string(time_t abs_time, bool terse)</a>
+<a name="ln477">{</a>
+<a name="ln478">    const int days  = abs_time / 86400;</a>
+<a name="ln479">    const int hours = (abs_time % 86400) / 3600;</a>
+<a name="ln480">    const int mins  = (abs_time % 3600) / 60;</a>
+<a name="ln481">    const int secs  = abs_time % 60;</a>
+<a name="ln482"> </a>
+<a name="ln483">    string buff;</a>
+<a name="ln484">    if (days &gt; 0)</a>
+<a name="ln485">    {</a>
+<a name="ln486">        buff += make_stringf(&quot;%d %s &quot;, days, terse ? &quot;,&quot;</a>
+<a name="ln487">                             : days &gt; 1 ? &quot;days&quot; : &quot;day&quot;);</a>
+<a name="ln488">    }</a>
+<a name="ln489">    return buff + make_stringf(&quot;%02d:%02d:%02d&quot;, hours, mins, secs);</a>
+<a name="ln490">}</a>
+<a name="ln491"> </a>
+<a name="ln492">string make_file_time(time_t when)</a>
+<a name="ln493">{</a>
+<a name="ln494">    if (tm *loc = TIME_FN(&amp;when))</a>
+<a name="ln495">    {</a>
+<a name="ln496">        return make_stringf(&quot;%04d%02d%02d-%02d%02d%02d&quot;,</a>
+<a name="ln497">                            loc-&gt;tm_year + 1900,</a>
+<a name="ln498">                            loc-&gt;tm_mon + 1,</a>
+<a name="ln499">                            loc-&gt;tm_mday,</a>
+<a name="ln500">                            loc-&gt;tm_hour,</a>
+<a name="ln501">                            loc-&gt;tm_min,</a>
+<a name="ln502">                            loc-&gt;tm_sec);</a>
+<a name="ln503">    }</a>
+<a name="ln504">    return &quot;&quot;;</a>
+<a name="ln505">}</a>
+
+</code></pre>
+<div class="balloon" rel="265"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'buf2'. A constructor of the string class expects a valid pointer.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

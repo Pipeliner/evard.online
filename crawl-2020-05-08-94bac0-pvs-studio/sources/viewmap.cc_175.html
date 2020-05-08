@@ -1,0 +1,1279 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>viewmap.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Showing the level map (X and background).</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;viewmap.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;branch.h&quot;</a>
+<a name="ln13">#include &quot;colour.h&quot;</a>
+<a name="ln14">#include &quot;command.h&quot;</a>
+<a name="ln15">#include &quot;coord.h&quot;</a>
+<a name="ln16">#include &quot;coordit.h&quot;</a>
+<a name="ln17">#include &quot;dgn-overview.h&quot;</a>
+<a name="ln18">#include &quot;directn.h&quot;</a>
+<a name="ln19">#include &quot;env.h&quot;</a>
+<a name="ln20">#include &quot;files.h&quot;</a>
+<a name="ln21">#include &quot;format.h&quot;</a>
+<a name="ln22">#include &quot;fprop.h&quot;</a>
+<a name="ln23">#include &quot;libutil.h&quot;</a>
+<a name="ln24">#include &quot;macro.h&quot;</a>
+<a name="ln25">#include &quot;map-knowledge.h&quot;</a>
+<a name="ln26">#include &quot;message.h&quot;</a>
+<a name="ln27">#include &quot;options.h&quot;</a>
+<a name="ln28">#include &quot;output.h&quot;</a>
+<a name="ln29">#include &quot;showsymb.h&quot;</a>
+<a name="ln30">#include &quot;state.h&quot;</a>
+<a name="ln31">#include &quot;stringutil.h&quot;</a>
+<a name="ln32">#include &quot;terrain.h&quot;</a>
+<a name="ln33">#include &quot;tileview.h&quot;</a>
+<a name="ln34">#include &quot;tiles-build-specific.h&quot;</a>
+<a name="ln35">#include &quot;travel.h&quot;</a>
+<a name="ln36">#include &quot;ui.h&quot;</a>
+<a name="ln37">#include &quot;unicode.h&quot;</a>
+<a name="ln38">#include &quot;view.h&quot;</a>
+<a name="ln39">#include &quot;viewchar.h&quot;</a>
+<a name="ln40">#include &quot;viewgeom.h&quot;</a>
+<a name="ln41"> </a>
+<a name="ln42">#ifdef USE_TILE</a>
+<a name="ln43">#endif</a>
+<a name="ln44"> </a>
+<a name="ln45">#ifndef USE_TILE_LOCAL</a>
+<a name="ln46">/**</a>
+<a name="ln47"> * Get a console colour for representing the travel possibility at the given</a>
+<a name="ln48"> * position based on the last travel update. Used when drawing the console map.</a>
+<a name="ln49"> *</a>
+<a name="ln50"> * @param p The position.</a>
+<a name="ln51"> * @returns An unsigned int value for the colour.</a>
+<a name="ln52">*/</a>
+<a name="ln53">static unsigned _get_travel_colour(const coord_def&amp; p)</a>
+<a name="ln54">{</a>
+<a name="ln55">#ifdef WIZARD</a>
+<a name="ln56">    if (you.wizard &amp;&amp; testbits(env.pgrid(p), FPROP_HIGHLIGHT))</a>
+<a name="ln57">        return LIGHTGREEN;</a>
+<a name="ln58">#endif</a>
+<a name="ln59"> </a>
+<a name="ln60">    if (is_waypoint(p))</a>
+<a name="ln61">        return LIGHTGREEN;</a>
+<a name="ln62"> </a>
+<a name="ln63">    if (is_stair_exclusion(p))</a>
+<a name="ln64">        return Options.tc_excluded;</a>
+<a name="ln65"> </a>
+<a name="ln66">    const unsigned no_travel_col</a>
+<a name="ln67">        = feat_is_traversable(grd(p)) ? Options.tc_forbidden</a>
+<a name="ln68">                                      : Options.tc_dangerous;</a>
+<a name="ln69"> </a>
+<a name="ln70">    const short dist = travel_point_distance[p.x][p.y];</a>
+<a name="ln71">    return dist &gt; 0?                    Options.tc_reachable        :</a>
+<a name="ln72">           dist == PD_EXCLUDED ?        Options.tc_excluded         :</a>
+<a name="ln73">           dist == PD_EXCLUDED_RADIUS ? Options.tc_exclude_circle   :</a>
+<a name="ln74">           dist &lt; 0?                    no_travel_col               :</a>
+<a name="ln75">                                        Options.tc_disconnected;</a>
+<a name="ln76">}</a>
+<a name="ln77">#endif</a>
+<a name="ln78"> </a>
+<a name="ln79">#ifndef USE_TILE_LOCAL</a>
+<a name="ln80">bool travel_colour_override(const coord_def&amp; p)</a>
+<a name="ln81">{</a>
+<a name="ln82">    if (is_waypoint(p) || is_stair_exclusion(p)</a>
+<a name="ln83">       || travel_point_distance[p.x][p.y] == PD_EXCLUDED)</a>
+<a name="ln84">    {</a>
+<a name="ln85">        return true;</a>
+<a name="ln86">    }</a>
+<a name="ln87">#ifdef WIZARD</a>
+<a name="ln88">    if (you.wizard &amp;&amp; testbits(env.pgrid(p), FPROP_HIGHLIGHT))</a>
+<a name="ln89">        return true;</a>
+<a name="ln90">#endif</a>
+<a name="ln91"> </a>
+<a name="ln92">    const map_cell&amp; cell = env.map_knowledge(p);</a>
+<a name="ln93">    show_class cls = get_cell_show_class(cell);</a>
+<a name="ln94">    if (cls == SH_FEATURE)</a>
+<a name="ln95">    {</a>
+<a name="ln96">        switch (cell.feat())</a>
+<a name="ln97">        {</a>
+<a name="ln98">        case DNGN_FLOOR:</a>
+<a name="ln99">        case DNGN_LAVA:</a>
+<a name="ln100">        case DNGN_DEEP_WATER:</a>
+<a name="ln101">        case DNGN_SHALLOW_WATER:</a>
+<a name="ln102">            return true;</a>
+<a name="ln103">        default:</a>
+<a name="ln104">            return false;</a>
+<a name="ln105">        }</a>
+<a name="ln106">    }</a>
+<a name="ln107">    else</a>
+<a name="ln108">        return false;</a>
+<a name="ln109">}</a>
+<a name="ln110"> </a>
+<a name="ln111">static char32_t _get_sightmap_char(dungeon_feature_type feat)</a>
+<a name="ln112">{</a>
+<a name="ln113">    return get_feature_def(feat).symbol();</a>
+<a name="ln114">}</a>
+<a name="ln115"> </a>
+<a name="ln116">static char32_t _get_magicmap_char(dungeon_feature_type feat)</a>
+<a name="ln117">{</a>
+<a name="ln118">    return get_feature_def(feat).magic_symbol();</a>
+<a name="ln119">}</a>
+<a name="ln120">#endif</a>
+<a name="ln121"> </a>
+<a name="ln122">static bool _is_player_defined_feature(char32_t feature)</a>
+<a name="ln123">{</a>
+<a name="ln124">    return feature == 'E' || feature == 'F' || feature == 'W';</a>
+<a name="ln125">}</a>
+<a name="ln126"> </a>
+<a name="ln127">// Determines if the given feature is present at (x, y) in _feat_ coordinates.</a>
+<a name="ln128">// If you have map coords, add (1, 1) to get grid coords.</a>
+<a name="ln129">// Use one of</a>
+<a name="ln130">// 1. '&lt;' and '&gt;' to look for stairs</a>
+<a name="ln131">// 2. '\t' or '\\' for shops, portals.</a>
+<a name="ln132">// 3. '^' for traps</a>
+<a name="ln133">// 4. '_' for altars</a>
+<a name="ln134">// 5. Anything else will look for the exact same character in the level map.</a>
+<a name="ln135">bool is_feature(char32_t feature, const coord_def&amp; where)</a>
+<a name="ln136">{</a>
+<a name="ln137">    if (!env.map_knowledge(where).known() &amp;&amp; !you.see_cell(where) &amp;&amp; !_is_player_defined_feature(feature))</a>
+<a name="ln138">        return false;</a>
+<a name="ln139"> </a>
+<a name="ln140">    dungeon_feature_type grid = env.map_knowledge(where).feat();</a>
+<a name="ln141"> </a>
+<a name="ln142">    switch (feature)</a>
+<a name="ln143">    {</a>
+<a name="ln144">    case 'E':</a>
+<a name="ln145">        return is_exclude_root(where);</a>
+<a name="ln146">    case 'F':</a>
+<a name="ln147">    case 'W':</a>
+<a name="ln148">        return is_waypoint(where);</a>
+<a name="ln149">    case 'I':</a>
+<a name="ln150">        return is_stash(where);</a>
+<a name="ln151">    case '_':</a>
+<a name="ln152">        return feat_is_altar(grid) || grid == DNGN_UNKNOWN_ALTAR;</a>
+<a name="ln153">    case '\t':</a>
+<a name="ln154">    case '\\':</a>
+<a name="ln155">        return feat_is_gate(grid) || grid == DNGN_ENTER_SHOP</a>
+<a name="ln156">               || grid == DNGN_UNKNOWN_PORTAL;</a>
+<a name="ln157">    case '&lt;':</a>
+<a name="ln158">        // DNGN_UNKNOWN_ALTAR doesn't need to be excluded here, because</a>
+<a name="ln159">        // feat_is_altar doesn't include it in the first place.</a>
+<a name="ln160">        return feat_stair_direction(grid) == CMD_GO_UPSTAIRS</a>
+<a name="ln161">                &amp;&amp; !feat_is_altar(grid)</a>
+<a name="ln162">                &amp;&amp; grid != DNGN_ENTER_SHOP</a>
+<a name="ln163">                &amp;&amp; grid != DNGN_TRANSPORTER;</a>
+<a name="ln164">    case '&gt;':</a>
+<a name="ln165">        return feat_stair_direction(grid) == CMD_GO_DOWNSTAIRS</a>
+<a name="ln166">                &amp;&amp; !feat_is_altar(grid)</a>
+<a name="ln167">                &amp;&amp; grid != DNGN_ENTER_SHOP</a>
+<a name="ln168">                &amp;&amp; grid != DNGN_TRANSPORTER;</a>
+<a name="ln169">    case '^':</a>
+<a name="ln170">        return feat_is_trap(grid);</a>
+<a name="ln171">    default:</a>
+<a name="ln172">        return get_cell_glyph(where).ch == feature;</a>
+<a name="ln173">    }</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">static bool _is_feature_fudged(char32_t glyph, const coord_def&amp; where)</a>
+<a name="ln177">{</a>
+<a name="ln178">    if (!env.map_knowledge(where).known() &amp;&amp; !_is_player_defined_feature(glyph))</a>
+<a name="ln179">        return false;</a>
+<a name="ln180"> </a>
+<a name="ln181">    if (is_feature(glyph, where))</a>
+<a name="ln182">        return true;</a>
+<a name="ln183"> </a>
+<a name="ln184">    if (glyph == '&lt;')</a>
+<a name="ln185">    {</a>
+<a name="ln186">        return grd(where) == DNGN_EXIT_ABYSS</a>
+<a name="ln187">               || grd(where) == DNGN_EXIT_PANDEMONIUM</a>
+<a name="ln188">               || grd(where) == DNGN_ENTER_HELL &amp;&amp; player_in_hell();</a>
+<a name="ln189">    }</a>
+<a name="ln190">    else if (glyph == '&gt;')</a>
+<a name="ln191">    {</a>
+<a name="ln192">        return grd(where) == DNGN_TRANSIT_PANDEMONIUM</a>
+<a name="ln193">               || grd(where) == DNGN_TRANSPORTER;</a>
+<a name="ln194">    }</a>
+<a name="ln195"> </a>
+<a name="ln196">    return false;</a>
+<a name="ln197">}</a>
+<a name="ln198"> </a>
+<a name="ln199">vector&lt;coord_def&gt; search_path_around_point(coord_def centre)</a>
+<a name="ln200">{</a>
+<a name="ln201">    vector&lt;coord_def&gt; points;</a>
+<a name="ln202"> </a>
+<a name="ln203">    int cx = centre.x, cy = centre.y;</a>
+<a name="ln204"> </a>
+<a name="ln205">    // Find the first occurrence of given glyph, spiralling around (x,y)</a>
+<a name="ln206">    int maxradius = GXM &gt; GYM ? GXM : GYM;</a>
+<a name="ln207">    for (int radius = 1; radius &lt; maxradius; ++radius)</a>
+<a name="ln208">        for (int axis = -2; axis &lt; 2; ++axis)</a>
+<a name="ln209">        {</a>
+<a name="ln210">            int rad = radius - (axis &lt; 0);</a>
+<a name="ln211">            for (int var = -rad; var &lt;= rad; ++var)</a>
+<a name="ln212">            {</a>
+<a name="ln213">                int dx = radius, dy = var;</a>
+<a name="ln214">                if (axis % 2)</a>
+<a name="ln215">                    dx = -dx;</a>
+<a name="ln216">                if (axis &lt; 0)</a>
+<a name="ln217">                {</a>
+<a name="ln218">                    int temp = dx;</a>
+<a name="ln219">                    dx = dy;</a>
+<a name="ln220">                    dy = temp;</a>
+<a name="ln221">                }</a>
+<a name="ln222"> </a>
+<a name="ln223">                const auto x = cx + dx, y = cy + dy;</a>
+<a name="ln224"> </a>
+<a name="ln225">                if (in_bounds(x, y))</a>
+<a name="ln226">                    points.emplace_back(x, y);</a>
+<a name="ln227">            }</a>
+<a name="ln228">        }</a>
+<a name="ln229"> </a>
+<a name="ln230">    return points;</a>
+<a name="ln231">}</a>
+<a name="ln232"> </a>
+<a name="ln233">static int _find_feature(const vector&lt;coord_def&gt;&amp; features,</a>
+<a name="ln234">                         char32_t feature,</a>
+<a name="ln235">                         int ignore_count,</a>
+<a name="ln236">                         coord_def &amp;out_pos,</a>
+<a name="ln237">                         bool forward)</a>
+<a name="ln238">{</a>
+<a name="ln239">    int firstx = -1, firsty = -1, firstmatch = -1;</a>
+<a name="ln240">    int matchcount = 0;</a>
+<a name="ln241"> </a>
+<a name="ln242">    for (coord_def coord : features)</a>
+<a name="ln243">    {</a>
+<a name="ln244">        if (_is_feature_fudged(feature, coord))</a>
+<a name="ln245">        {</a>
+<a name="ln246">            ++matchcount;</a>
+<a name="ln247">            if (forward? !ignore_count-- : --ignore_count == 1)</a>
+<a name="ln248">            {</a>
+<a name="ln249">                out_pos = coord;</a>
+<a name="ln250">                // We want to cursor to (x,y)</a>
+<a name="ln251">                return matchcount;</a>
+<a name="ln252">            }</a>
+<a name="ln253">            else if (!forward || firstx == -1)</a>
+<a name="ln254">            {</a>
+<a name="ln255">                firstx = coord.x;</a>
+<a name="ln256">                firsty = coord.y;</a>
+<a name="ln257">                firstmatch = matchcount;</a>
+<a name="ln258">            }</a>
+<a name="ln259">        }</a>
+<a name="ln260">    }</a>
+<a name="ln261"> </a>
+<a name="ln262">    // We found something, but ignored it because of an ignorecount</a>
+<a name="ln263">    if (firstx != -1)</a>
+<a name="ln264">    {</a>
+<a name="ln265">        out_pos = coord_def(firstx, firsty);</a>
+<a name="ln266">        return firstmatch;</a>
+<a name="ln267">    }</a>
+<a name="ln268">    return 0;</a>
+<a name="ln269">}</a>
+<a name="ln270"> </a>
+<a name="ln271">static int _get_number_of_lines_levelmap()</a>
+<a name="ln272">{</a>
+<a name="ln273">    return get_number_of_lines() - 1;</a>
+<a name="ln274">}</a>
+<a name="ln275"> </a>
+<a name="ln276">#ifndef USE_TILE_LOCAL</a>
+<a name="ln277">static void _draw_level_map(int start_x, int start_y, bool travel_mode,</a>
+<a name="ln278">        bool on_level)</a>
+<a name="ln279">{</a>
+<a name="ln280">    const int num_lines = min(_get_number_of_lines_levelmap(), GYM);</a>
+<a name="ln281">    const int num_cols  = min(get_number_of_cols(),            GXM);</a>
+<a name="ln282"> </a>
+<a name="ln283">    const coord_def extents(num_cols, num_lines);</a>
+<a name="ln284">    crawl_view_buffer vbuf(extents);</a>
+<a name="ln285">    screen_cell_t *cell= vbuf;</a>
+<a name="ln286"> </a>
+<a name="ln287">    cursor_control cs(false);</a>
+<a name="ln288"> </a>
+<a name="ln289">    int top = 2;</a>
+<a name="ln290">    cgotoxy(1, top);</a>
+<a name="ln291">    for (int screen_y = 0; screen_y &lt; num_lines; screen_y++)</a>
+<a name="ln292">        for (int screen_x = 0; screen_x &lt; num_cols; screen_x++)</a>
+<a name="ln293">        {</a>
+<a name="ln294">            coord_def c(start_x + screen_x, start_y + screen_y);</a>
+<a name="ln295"> </a>
+<a name="ln296">            if (!map_bounds(c))</a>
+<a name="ln297">            {</a>
+<a name="ln298">                cell-&gt;colour = DARKGREY;</a>
+<a name="ln299">                cell-&gt;glyph  = 0;</a>
+<a name="ln300">            }</a>
+<a name="ln301">            else</a>
+<a name="ln302">            {</a>
+<a name="ln303">                cglyph_t g = get_cell_glyph(c, false, -1);</a>
+<a name="ln304">                cell-&gt;glyph = g.ch;</a>
+<a name="ln305">                cell-&gt;colour = g.col;</a>
+<a name="ln306"> </a>
+<a name="ln307">                const show_class show = get_cell_show_class(env.map_knowledge(c));</a>
+<a name="ln308"> </a>
+<a name="ln309">                if (show == SH_NOTHING &amp;&amp; is_explore_horizon(c))</a>
+<a name="ln310">                {</a>
+<a name="ln311">                    const feature_def&amp; fd = get_feature_def(DNGN_EXPLORE_HORIZON);</a>
+<a name="ln312">                    cell-&gt;glyph = fd.symbol();</a>
+<a name="ln313">                    cell-&gt;colour = fd.colour();</a>
+<a name="ln314">                }</a>
+<a name="ln315"> </a>
+<a name="ln316">                if (travel_mode &amp;&amp; travel_colour_override(c))</a>
+<a name="ln317">                    cell-&gt;colour = _get_travel_colour(c);</a>
+<a name="ln318"> </a>
+<a name="ln319">                if (c == you.pos() &amp;&amp; !crawl_state.arena_suspended &amp;&amp; on_level)</a>
+<a name="ln320">                {</a>
+<a name="ln321">                    // [dshaligram] Draw the @ symbol on the</a>
+<a name="ln322">                    // level-map. It's no longer saved into the</a>
+<a name="ln323">                    // env.map_knowledge, so we need to draw it</a>
+<a name="ln324">                    // directly.</a>
+<a name="ln325">                    cell-&gt;colour = WHITE;</a>
+<a name="ln326">                    cell-&gt;glyph  = mons_char(you.symbol);</a>
+<a name="ln327">                }</a>
+<a name="ln328"> </a>
+<a name="ln329">                // If we've a waypoint on the current square, *and* the</a>
+<a name="ln330">                // square is a normal floor square with nothing on it,</a>
+<a name="ln331">                // show the waypoint number.</a>
+<a name="ln332">                // XXX: This is a horrible hack.</a>
+<a name="ln333">                char32_t bc   = cell-&gt;glyph;</a>
+<a name="ln334">                uint8_t ch = is_waypoint(c);</a>
+<a name="ln335">                if (ch &amp;&amp; (bc == _get_sightmap_char(DNGN_FLOOR)</a>
+<a name="ln336">                           || bc == _get_magicmap_char(DNGN_FLOOR)))</a>
+<a name="ln337">                {</a>
+<a name="ln338">                    cell-&gt;glyph = ch;</a>
+<a name="ln339">                }</a>
+<a name="ln340"> </a>
+<a name="ln341">                if (Options.show_travel_trail &amp;&amp; travel_trail_index(c) &gt;= 0)</a>
+<a name="ln342">                    cell-&gt;colour |= COLFLAG_REVERSE;</a>
+<a name="ln343">            }</a>
+<a name="ln344"> </a>
+<a name="ln345">            cell++;</a>
+<a name="ln346">        }</a>
+<a name="ln347"> </a>
+<a name="ln348">    puttext(1, top, vbuf);</a>
+<a name="ln349">}</a>
+<a name="ln350">#endif // USE_TILE_LOCAL</a>
+<a name="ln351"> </a>
+<a name="ln352">static void _reset_travel_colours(vector&lt;coord_def&gt; &amp;features, bool on_level)</a>
+<a name="ln353">{</a>
+<a name="ln354">    // We now need to redo travel colours.</a>
+<a name="ln355">    features.clear();</a>
+<a name="ln356"> </a>
+<a name="ln357">    if (on_level)</a>
+<a name="ln358">        find_travel_pos(you.pos(), nullptr, nullptr, &amp;features);</a>
+<a name="ln359">    else</a>
+<a name="ln360">    {</a>
+<a name="ln361">        travel_pathfind tp;</a>
+<a name="ln362">        tp.set_feature_vector(&amp;features);</a>
+<a name="ln363">        tp.get_features();</a>
+<a name="ln364">    }</a>
+<a name="ln365">}</a>
+<a name="ln366"> </a>
+<a name="ln367">// Sort glyphs within a group, for the feature list.</a>
+<a name="ln368">static bool _comp_glyphs(const cglyph_t&amp; g1, const cglyph_t&amp; g2)</a>
+<a name="ln369">{</a>
+<a name="ln370">    return g1.ch &lt; g2.ch || g1.ch == g2.ch &amp;&amp; g1.col &lt; g2.col;</a>
+<a name="ln371">}</a>
+<a name="ln372"> </a>
+<a name="ln373">#ifndef USE_TILE_LOCAL</a>
+<a name="ln374">static cglyph_t _get_feat_glyph(const coord_def&amp; gc);</a>
+<a name="ln375">#endif</a>
+<a name="ln376"> </a>
+<a name="ln377">class feature_list</a>
+<a name="ln378">{</a>
+<a name="ln379">    enum group</a>
+<a name="ln380">    {</a>
+<a name="ln381">        G_UP, G_DOWN, G_PORTAL, G_OTHER, G_NONE, NUM_GROUPS = G_NONE</a>
+<a name="ln382">    };</a>
+<a name="ln383"> </a>
+<a name="ln384">    vector&lt;cglyph_t&gt; data[NUM_GROUPS];</a>
+<a name="ln385"> </a>
+<a name="ln386">    static group feat_dir(dungeon_feature_type feat)</a>
+<a name="ln387">    {</a>
+<a name="ln388">        switch (feat_stair_direction(feat))</a>
+<a name="ln389">        {</a>
+<a name="ln390">        case CMD_GO_UPSTAIRS:</a>
+<a name="ln391">            return G_UP;</a>
+<a name="ln392">        case CMD_GO_DOWNSTAIRS:</a>
+<a name="ln393">            return G_DOWN;</a>
+<a name="ln394">        default:</a>
+<a name="ln395">            return G_NONE;</a>
+<a name="ln396">        }</a>
+<a name="ln397">    }</a>
+<a name="ln398"> </a>
+<a name="ln399">    group get_group(const coord_def&amp; gc)</a>
+<a name="ln400">    {</a>
+<a name="ln401">        dungeon_feature_type feat = env.map_knowledge(gc).feat();</a>
+<a name="ln402"> </a>
+<a name="ln403">        if (feat_is_staircase(feat) || feat_is_escape_hatch(feat))</a>
+<a name="ln404">            return feat_dir(feat);</a>
+<a name="ln405">        if (feat == DNGN_TRAP_SHAFT)</a>
+<a name="ln406">            return G_DOWN;</a>
+<a name="ln407">        if (feat_is_altar(feat) || feat == DNGN_ENTER_SHOP)</a>
+<a name="ln408">            return G_OTHER;</a>
+<a name="ln409">        if (get_feature_dchar(feat) == DCHAR_ARCH)</a>
+<a name="ln410">            return G_PORTAL;</a>
+<a name="ln411">        return G_NONE;</a>
+<a name="ln412">    }</a>
+<a name="ln413"> </a>
+<a name="ln414">    void maybe_add(const coord_def&amp; gc)</a>
+<a name="ln415">    {</a>
+<a name="ln416">#ifndef USE_TILE_LOCAL</a>
+<a name="ln417">        if (!env.map_knowledge(gc).known())</a>
+<a name="ln418">            return;</a>
+<a name="ln419"> </a>
+<a name="ln420">        group grp = get_group(gc);</a>
+<a name="ln421">        if (grp != G_NONE)</a>
+<a name="ln422">            data[grp].push_back(_get_feat_glyph(gc));</a>
+<a name="ln423">#else</a>
+<a name="ln424">        UNUSED(gc);</a>
+<a name="ln425">#endif</a>
+<a name="ln426">    }</a>
+<a name="ln427"> </a>
+<a name="ln428">public:</a>
+<a name="ln429">    void init()</a>
+<a name="ln430">    {</a>
+<a name="ln431">        for (vector&lt;cglyph_t&gt; &amp;groupdata : data)</a>
+<a name="ln432">            groupdata.clear();</a>
+<a name="ln433">        for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln434">            maybe_add(*ri);</a>
+<a name="ln435">        for (vector&lt;cglyph_t&gt; &amp;groupdata : data)</a>
+<a name="ln436">            sort(begin(groupdata), end(groupdata), _comp_glyphs);</a>
+<a name="ln437">    }</a>
+<a name="ln438"> </a>
+<a name="ln439">    formatted_string format() const</a>
+<a name="ln440">    {</a>
+<a name="ln441">        formatted_string s;</a>
+<a name="ln442">        for (const vector&lt;cglyph_t&gt; &amp;groupdata : data)</a>
+<a name="ln443">            for (cglyph_t gly : groupdata)</a>
+<a name="ln444">                s.add_glyph(gly);</a>
+<a name="ln445">        return s;</a>
+<a name="ln446">    }</a>
+<a name="ln447">};</a>
+<a name="ln448"> </a>
+<a name="ln449">#ifndef USE_TILE_LOCAL</a>
+<a name="ln450">static void _draw_title(const coord_def&amp; cpos, const feature_list&amp; feats)</a>
+<a name="ln451">{</a>
+<a name="ln452">    const int columns = get_number_of_cols();</a>
+<a name="ln453">    const formatted_string help =</a>
+<a name="ln454">        formatted_string::parse_string(&quot;(Press &lt;w&gt;?&lt;/w&gt; for help)&quot;);</a>
+<a name="ln455">    const int helplen = help.width();</a>
+<a name="ln456"> </a>
+<a name="ln457">    if (columns &lt; helplen)</a>
+<a name="ln458">        return;</a>
+<a name="ln459"> </a>
+<a name="ln460">    const formatted_string title = feats.format();</a>
+<a name="ln461">    const int titlelen = title.width();</a>
+<a name="ln462">    if (columns &lt; titlelen)</a>
+<a name="ln463">        return;</a>
+<a name="ln464"> </a>
+<a name="ln465">    string pstr = &quot;&quot;;</a>
+<a name="ln466">#ifdef WIZARD</a>
+<a name="ln467">    if (you.wizard)</a>
+<a name="ln468">    {</a>
+<a name="ln469">        char buf[10];</a>
+<a name="ln470">        snprintf(buf, sizeof(buf), &quot; (%d, %d)&quot;, cpos.x, cpos.y);</a>
+<a name="ln471">        pstr = string(buf);</a>
+<a name="ln472">    }</a>
+<a name="ln473">#endif // WIZARD</a>
+<a name="ln474"> </a>
+<a name="ln475">    cgotoxy(1, 1);</a>
+<a name="ln476">    textcolour(WHITE);</a>
+<a name="ln477"> </a>
+<a name="ln478">    cprintf(&quot;%s&quot;, chop_string(</a>
+<a name="ln479">                    uppercase_first(level_id::current().describe(true, true))</a>
+<a name="ln480">                      + pstr, columns - helplen).c_str());</a>
+<a name="ln481"> </a>
+<a name="ln482">    cgotoxy(max(1, (columns - titlelen) / 2), 1);</a>
+<a name="ln483">    title.display();</a>
+<a name="ln484"> </a>
+<a name="ln485">    textcolour(LIGHTGREY);</a>
+<a name="ln486">    cgotoxy(max(1, columns - helplen + 1), 1);</a>
+<a name="ln487">    help.display();</a>
+<a name="ln488">}</a>
+<a name="ln489">#endif</a>
+<a name="ln490"> </a>
+<a name="ln491">static level_pos _stair_dest(const coord_def&amp; p, command_type dir)</a>
+<a name="ln492">{</a>
+<a name="ln493">    if (!in_bounds(p))</a>
+<a name="ln494">        return level_pos();</a>
+<a name="ln495"> </a>
+<a name="ln496">    if (feat_stair_direction(env.map_knowledge(p).feat()) != dir)</a>
+<a name="ln497">        return level_pos();</a>
+<a name="ln498"> </a>
+<a name="ln499">    LevelInfo *linf = travel_cache.find_level_info(level_id::current());</a>
+<a name="ln500">    if (!linf)</a>
+<a name="ln501">        return level_pos();</a>
+<a name="ln502"> </a>
+<a name="ln503">    const stair_info *sinf = linf-&gt;get_stair(p);</a>
+<a name="ln504">    if (!sinf)</a>
+<a name="ln505">        return level_pos();</a>
+<a name="ln506"> </a>
+<a name="ln507">    return sinf-&gt;destination;</a>
+<a name="ln508">}</a>
+<a name="ln509"> </a>
+<a name="ln510">static void _unforget_map()</a>
+<a name="ln511">{</a>
+<a name="ln512">    ASSERT(env.map_forgotten);</a>
+<a name="ln513">    MapKnowledge &amp;old(*env.map_forgotten);</a>
+<a name="ln514"> </a>
+<a name="ln515">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln516">        if (!env.map_knowledge(*ri).seen() &amp;&amp; old(*ri).seen())</a>
+<a name="ln517">        {</a>
+<a name="ln518">            // Don't overwrite known squares, nor magic-mapped with</a>
+<a name="ln519">            // magic-mapped data -- what was forgotten is less up to date.</a>
+<a name="ln520">            env.map_knowledge(*ri) = old(*ri);</a>
+<a name="ln521">            env.map_seen.set(*ri);</a>
+<a name="ln522">#ifdef USE_TILE</a>
+<a name="ln523">            tiles.update_minimap(*ri);</a>
+<a name="ln524">#endif</a>
+<a name="ln525">        }</a>
+<a name="ln526">}</a>
+<a name="ln527"> </a>
+<a name="ln528">static void _forget_map(bool wizard_forget = false)</a>
+<a name="ln529">{</a>
+<a name="ln530">    for (rectangle_iterator ri(0); ri; ++ri)</a>
+<a name="ln531">    {</a>
+<a name="ln532">        auto&amp; flags = env.map_knowledge(*ri).flags;</a>
+<a name="ln533">        // don't touch squares we can currently see</a>
+<a name="ln534">        if (flags &amp; MAP_VISIBLE_FLAG)</a>
+<a name="ln535">            continue;</a>
+<a name="ln536">        if (wizard_forget)</a>
+<a name="ln537">        {</a>
+<a name="ln538">            env.map_knowledge(*ri).clear();</a>
+<a name="ln539">#ifdef USE_TILE</a>
+<a name="ln540">            tile_forget_map(*ri);</a>
+<a name="ln541">#endif</a>
+<a name="ln542">        }</a>
+<a name="ln543">        else if (flags &amp; MAP_SEEN_FLAG)</a>
+<a name="ln544">        {</a>
+<a name="ln545">            // squares we've seen in the past, pretend we've mapped instead</a>
+<a name="ln546">            flags |= MAP_MAGIC_MAPPED_FLAG;</a>
+<a name="ln547">            flags &amp;= ~MAP_SEEN_FLAG;</a>
+<a name="ln548">        }</a>
+<a name="ln549">        env.map_seen.set(*ri, false);</a>
+<a name="ln550">#ifdef USE_TILE</a>
+<a name="ln551">        tiles.update_minimap(*ri);</a>
+<a name="ln552">#endif</a>
+<a name="ln553">    }</a>
+<a name="ln554">}</a>
+<a name="ln555"> </a>
+<a name="ln556">map_control_state process_map_command(command_type cmd, const map_control_state &amp;state);</a>
+<a name="ln557"> </a>
+<a name="ln558">static coord_def _recentre_map_target(const level_id level,</a>
+<a name="ln559">                                      const level_id original)</a>
+<a name="ln560">{</a>
+<a name="ln561">    if (level == original)</a>
+<a name="ln562">        return you.pos();</a>
+<a name="ln563"> </a>
+<a name="ln564">    const auto bounds = known_map_bounds();</a>
+<a name="ln565">    return (bounds.first + bounds.second + 1) / 2;</a>
+<a name="ln566">}</a>
+<a name="ln567"> </a>
+<a name="ln568">static map_view_state _get_view_state(const map_control_state&amp; state)</a>
+<a name="ln569">{</a>
+<a name="ln570">    map_view_state view;</a>
+<a name="ln571"> </a>
+<a name="ln572">    const int num_lines = _get_number_of_lines_levelmap();</a>
+<a name="ln573">    const int half_screen = (num_lines - 1) / 2;</a>
+<a name="ln574"> </a>
+<a name="ln575">    const auto bounds = known_map_bounds();</a>
+<a name="ln576">    const auto min_x = bounds.first.x;</a>
+<a name="ln577">    const auto min_y = bounds.first.y;</a>
+<a name="ln578">    const auto max_x = bounds.second.x;</a>
+<a name="ln579">    const auto max_y = bounds.second.y;</a>
+<a name="ln580"> </a>
+<a name="ln581">    const auto map_lines = max_y - min_y + 1;</a>
+<a name="ln582"> </a>
+<a name="ln583">    view.start.x = (min_x + max_x + 1) / 2 - 40;  // no x scrolling.</a>
+<a name="ln584">    view.start.y = 0;                             // y does scroll.</a>
+<a name="ln585"> </a>
+<a name="ln586">    auto screen_y = state.lpos.pos.y;</a>
+<a name="ln587"> </a>
+<a name="ln588">    // If close to top of known map, put min_y on top</a>
+<a name="ln589">    // else if close to bottom of known map, put max_y on bottom.</a>
+<a name="ln590">    //</a>
+<a name="ln591">    // The num_lines comparisons are done to keep things neat, by</a>
+<a name="ln592">    // keeping things at the top of the screen. By shifting an</a>
+<a name="ln593">    // additional one in the num_lines &gt; map_lines case, we can</a>
+<a name="ln594">    // keep the top line clear... which makes things look a whole</a>
+<a name="ln595">    // lot better for small maps.</a>
+<a name="ln596">    if (num_lines &gt; map_lines)</a>
+<a name="ln597">        screen_y = min_y + half_screen - 1;</a>
+<a name="ln598">    else if (num_lines == map_lines || screen_y - half_screen &lt; min_y)</a>
+<a name="ln599">        screen_y = min_y + half_screen;</a>
+<a name="ln600">    else if (screen_y + half_screen &gt; max_y)</a>
+<a name="ln601">        screen_y = max_y - half_screen;</a>
+<a name="ln602"> </a>
+<a name="ln603">    view.cursor.x = state.lpos.pos.x - view.start.x + 1;</a>
+<a name="ln604">    view.cursor.y = state.lpos.pos.y - screen_y + half_screen + 1;</a>
+<a name="ln605"> </a>
+<a name="ln606">    view.start.y = screen_y - half_screen;</a>
+<a name="ln607"> </a>
+<a name="ln608">    return view;</a>
+<a name="ln609">}</a>
+<a name="ln610"> </a>
+<a name="ln611">// show_map() now centers the known map along x or y. This prevents</a>
+<a name="ln612">// the player from getting &quot;artificial&quot; location clues by using the</a>
+<a name="ln613">// map to see how close to the end they are. They'll need to explore</a>
+<a name="ln614">// to get that. This function is still a mess, though. -- bwr</a>
+<a name="ln615">bool show_map(level_pos &amp;lpos, bool travel_mode, bool allow_offlevel)</a>
+<a name="ln616">{</a>
+<a name="ln617">#ifdef USE_TILE_LOCAL</a>
+<a name="ln618">    bool first_run  = true;</a>
+<a name="ln619"> </a>
+<a name="ln620">    mouse_control mc(MOUSE_MODE_NORMAL);</a>
+<a name="ln621">    tiles.do_map_display();</a>
+<a name="ln622">#endif</a>
+<a name="ln623"> </a>
+<a name="ln624">#ifdef USE_TILE</a>
+<a name="ln625">    ui::cutoff_point ui_cutoff_point;</a>
+<a name="ln626">#endif</a>
+<a name="ln627">#ifdef USE_TILE_WEB</a>
+<a name="ln628">    tiles_ui_control ui(UI_VIEW_MAP);</a>
+<a name="ln629">#endif</a>
+<a name="ln630"> </a>
+<a name="ln631">    levelview_excursion le(travel_mode);</a>
+<a name="ln632"> </a>
+<a name="ln633">    if (!lpos.id.is_valid() || !allow_offlevel)</a>
+<a name="ln634">        lpos.id = level_id::current();</a>
+<a name="ln635"> </a>
+<a name="ln636">    cursor_control ccon(!Options.use_fake_cursor);</a>
+<a name="ln637"> </a>
+<a name="ln638">    bool new_level = true;</a>
+<a name="ln639"> </a>
+<a name="ln640">    // Vector to track all features we can travel to, in order of distance.</a>
+<a name="ln641">    vector&lt;coord_def&gt; features;</a>
+<a name="ln642">    // List of all interesting features for display in the (console) title.</a>
+<a name="ln643">    feature_list feats;</a>
+<a name="ln644"> </a>
+<a name="ln645">#ifndef USE_TILE_LOCAL</a>
+<a name="ln646">    const int top = 2;</a>
+<a name="ln647">    clrscr();</a>
+<a name="ln648">#endif</a>
+<a name="ln649">    textcolour(DARKGREY);</a>
+<a name="ln650"> </a>
+<a name="ln651">    map_control_state state;</a>
+<a name="ln652">    state.lpos = lpos;</a>
+<a name="ln653">    state.features = &amp;features;</a>
+<a name="ln654">    state.feats = &amp;feats;</a>
+<a name="ln655">    state.excursion = &amp;le;</a>
+<a name="ln656">    state.allow_offlevel = allow_offlevel;</a>
+<a name="ln657">    state.travel_mode = travel_mode;</a>
+<a name="ln658">    state.original = level_id::current();</a>
+<a name="ln659">    state.map_alive = true;</a>
+<a name="ln660">    state.redraw_map = true;</a>
+<a name="ln661">    state.search_anchor = coord_def(-1, -1);</a>
+<a name="ln662">    state.chose = false;</a>
+<a name="ln663"> </a>
+<a name="ln664">    while (state.map_alive)</a>
+<a name="ln665">    {</a>
+<a name="ln666">        if (state.lpos.id != level_id::current())</a>
+<a name="ln667">        {</a>
+<a name="ln668">            le.go_to(state.lpos.id);</a>
+<a name="ln669">            new_level = true;</a>
+<a name="ln670">        }</a>
+<a name="ln671"> </a>
+<a name="ln672">        if (new_level)</a>
+<a name="ln673">        {</a>
+<a name="ln674">            state.on_level = (level_id::current() == state.original);</a>
+<a name="ln675"> </a>
+<a name="ln676">            // Vector to track all state.features we can travel to, in</a>
+<a name="ln677">            // order of distance.</a>
+<a name="ln678">            if (travel_mode)</a>
+<a name="ln679">                _reset_travel_colours(*state.features, state.on_level);</a>
+<a name="ln680">            state.feats-&gt;init();</a>
+<a name="ln681">            state.search_index = 0;</a>
+<a name="ln682">            state.search_anchor.reset();</a>
+<a name="ln683"> </a>
+<a name="ln684">            // This happens when CMD_MAP_PREV_LEVEL etc. assign dest to lpos,</a>
+<a name="ln685">            // with a position == (-1, -1).</a>
+<a name="ln686">            if (!map_bounds(state.lpos.pos))</a>
+<a name="ln687">            {</a>
+<a name="ln688">                state.lpos.pos = _recentre_map_target(state.lpos.id,</a>
+<a name="ln689">                        state.original);</a>
+<a name="ln690">                state.lpos.id = level_id::current();</a>
+<a name="ln691">            }</a>
+<a name="ln692"> </a>
+<a name="ln693">            state.redraw_map = true;</a>
+<a name="ln694">            new_level = false;</a>
+<a name="ln695">        }</a>
+<a name="ln696"> </a>
+<a name="ln697">        // If we've received a HUP signal then the user can't choose a</a>
+<a name="ln698">        // location, so indicate this by returning an invalid position.</a>
+<a name="ln699">        if (crawl_state.seen_hups)</a>
+<a name="ln700">        {</a>
+<a name="ln701">            state.lpos = level_pos();</a>
+<a name="ln702">            state.chose = false;</a>
+<a name="ln703">        }</a>
+<a name="ln704"> </a>
+<a name="ln705">#ifndef USE_TILE_LOCAL</a>
+<a name="ln706">        const auto view = _get_view_state(state);</a>
+<a name="ln707">#endif</a>
+<a name="ln708"> </a>
+<a name="ln709">        if (state.redraw_map)</a>
+<a name="ln710">        {</a>
+<a name="ln711">            // Note: Tile versions just center on the current cursor</a>
+<a name="ln712">            // location. It silently ignores everything else going</a>
+<a name="ln713">            // on in this function.  --Enne</a>
+<a name="ln714">#ifdef USE_TILE_LOCAL</a>
+<a name="ln715">            if (first_run)</a>
+<a name="ln716">            {</a>
+<a name="ln717">                tiles.update_tabs();</a>
+<a name="ln718">                first_run = false;</a>
+<a name="ln719">            }</a>
+<a name="ln720">#endif</a>
+<a name="ln721">#ifdef USE_TILE</a>
+<a name="ln722">            tiles.load_dungeon(state.lpos.pos);</a>
+<a name="ln723">#endif</a>
+<a name="ln724">#ifndef USE_TILE_LOCAL</a>
+<a name="ln725">            _draw_title(state.lpos.pos, *state.feats);</a>
+<a name="ln726">            _draw_level_map(view.start.x, view.start.y, state.travel_mode, state.on_level);</a>
+<a name="ln727">#endif</a>
+<a name="ln728">        }</a>
+<a name="ln729">#ifndef USE_TILE_LOCAL</a>
+<a name="ln730">        cursorxy(view.cursor.x, view.cursor.y + top - 1);</a>
+<a name="ln731">#endif</a>
+<a name="ln732">        state.redraw_map = true;</a>
+<a name="ln733"> </a>
+<a name="ln734">        c_input_reset(true);</a>
+<a name="ln735">#ifdef USE_TILE_LOCAL</a>
+<a name="ln736">        const int key = getchm(KMC_LEVELMAP);</a>
+<a name="ln737">        command_type cmd = key_to_command(key, KMC_LEVELMAP);</a>
+<a name="ln738">#else</a>
+<a name="ln739">        const int key = unmangle_direction_keys(getchm(KMC_LEVELMAP),</a>
+<a name="ln740">                                                KMC_LEVELMAP);</a>
+<a name="ln741">        command_type cmd = key_to_command(key, KMC_LEVELMAP);</a>
+<a name="ln742">#endif</a>
+<a name="ln743">        if (cmd &lt; CMD_MIN_OVERMAP || cmd &gt; CMD_MAX_OVERMAP)</a>
+<a name="ln744">            cmd = CMD_NO_CMD;</a>
+<a name="ln745"> </a>
+<a name="ln746">        if (key == CK_MOUSE_CLICK)</a>
+<a name="ln747">        {</a>
+<a name="ln748">#ifdef USE_TILE_LOCAL</a>
+<a name="ln749">            const coord_def grdp = tiles.get_cursor();</a>
+<a name="ln750">            const coord_def delta = grdp - state.lpos.pos;</a>
+<a name="ln751"> </a>
+<a name="ln752">            if (delta.zero()) // clicked on current position</a>
+<a name="ln753">                cmd = CMD_MAP_GOTO_TARGET; // go to current cursor pos</a>
+<a name="ln754">            else</a>
+<a name="ln755">                cmd = CMD_NEXT_CMD; // a dummy command</a>
+<a name="ln756">#else</a>
+<a name="ln757">            const c_mouse_event cme = get_mouse_event();</a>
+<a name="ln758">            const coord_def grdp = cme.pos + view.start - coord_def(1, top);</a>
+<a name="ln759"> </a>
+<a name="ln760">            if (cme.left_clicked() &amp;&amp; in_bounds(grdp))</a>
+<a name="ln761">            {</a>
+<a name="ln762">                state.lpos       = level_pos(level_id::current(), grdp);</a>
+<a name="ln763">                state.chose      = true;</a>
+<a name="ln764">                state.map_alive  = false;</a>
+<a name="ln765">            }</a>
+<a name="ln766">            else if (cme.scroll_up())</a>
+<a name="ln767">                cmd = CMD_MAP_SCROLL_UP;</a>
+<a name="ln768">            else if (cme.scroll_down())</a>
+<a name="ln769">                cmd = CMD_MAP_SCROLL_DOWN;</a>
+<a name="ln770">#endif</a>
+<a name="ln771">        }</a>
+<a name="ln772"> </a>
+<a name="ln773">        if (key == CK_REDRAW)</a>
+<a name="ln774">        {</a>
+<a name="ln775">            if (Options.messages_at_top)</a>
+<a name="ln776">            {</a>
+<a name="ln777">                display_message_window();</a>
+<a name="ln778">                viewwindow();</a>
+<a name="ln779">            }</a>
+<a name="ln780">            else</a>
+<a name="ln781">            {</a>
+<a name="ln782">                viewwindow();</a>
+<a name="ln783">                display_message_window();</a>
+<a name="ln784">            }</a>
+<a name="ln785">            continue;</a>
+<a name="ln786">        }</a>
+<a name="ln787"> </a>
+<a name="ln788">        c_input_reset(false);</a>
+<a name="ln789"> </a>
+<a name="ln790">        state = process_map_command(cmd, state);</a>
+<a name="ln791">        if (!state.map_alive)</a>
+<a name="ln792">            break;</a>
+<a name="ln793">        if (map_bounds(state.lpos.pos))</a>
+<a name="ln794">            state.lpos.pos = state.lpos.pos.clamped(known_map_bounds());</a>
+<a name="ln795">    }</a>
+<a name="ln796"> </a>
+<a name="ln797">#ifdef USE_TILE</a>
+<a name="ln798">    tiles.place_cursor(CURSOR_MAP, NO_CURSOR);</a>
+<a name="ln799">#endif</a>
+<a name="ln800"> </a>
+<a name="ln801">    redraw_screen();</a>
+<a name="ln802">#ifdef USE_TILE_LOCAL</a>
+<a name="ln803">    tiles.set_map_display(false);</a>
+<a name="ln804">#endif</a>
+<a name="ln805"> </a>
+<a name="ln806">    if (state.chose)</a>
+<a name="ln807">        lpos = state.lpos;</a>
+<a name="ln808"> </a>
+<a name="ln809">    return state.chose;</a>
+<a name="ln810">}</a>
+<a name="ln811"> </a>
+<a name="ln812">map_control_state process_map_command(command_type cmd, const map_control_state&amp; prev_state)</a>
+<a name="ln813">{</a>
+<a name="ln814">    map_control_state state = prev_state;</a>
+<a name="ln815">    state.map_alive = true;</a>
+<a name="ln816">    state.chose = false;</a>
+<a name="ln817"> </a>
+<a name="ln818">    const auto block_step = Options.level_map_cursor_step;</a>
+<a name="ln819"> </a>
+<a name="ln820">    switch (cmd)</a>
+<a name="ln821">    {</a>
+<a name="ln822">    case CMD_MAP_HELP:</a>
+<a name="ln823">        show_levelmap_help();</a>
+<a name="ln824">        break;</a>
+<a name="ln825"> </a>
+<a name="ln826">    case CMD_MAP_CLEAR_MAP:</a>
+<a name="ln827">        clear_map_or_travel_trail();</a>
+<a name="ln828">        break;</a>
+<a name="ln829"> </a>
+<a name="ln830">#ifdef WIZARD</a>
+<a name="ln831">    case CMD_MAP_WIZARD_FORGET:</a>
+<a name="ln832">        {</a>
+<a name="ln833">            // this doesn't seem useful outside of debugging and may</a>
+<a name="ln834">            // be buggy in unexpected ways, so wizmode-only. (Though</a>
+<a name="ln835">            // it doesn't leak information or anything.)</a>
+<a name="ln836">            if (!you.wizard)</a>
+<a name="ln837">                break;</a>
+<a name="ln838">            if (env.map_forgotten)</a>
+<a name="ln839">                _unforget_map();</a>
+<a name="ln840">            MapKnowledge *old = new MapKnowledge(env.map_knowledge);</a>
+<a name="ln841">            // completely wipe out map</a>
+<a name="ln842">            _forget_map(true);</a>
+<a name="ln843">            env.map_forgotten.reset(old);</a>
+<a name="ln844">            mpr(&quot;Level map wiped.&quot;);</a>
+<a name="ln845">            break;</a>
+<a name="ln846">        }</a>
+<a name="ln847">#endif</a>
+<a name="ln848"> </a>
+<a name="ln849">    case CMD_MAP_FORGET:</a>
+<a name="ln850">        {</a>
+<a name="ln851">            // Merge it with already forgotten data first.</a>
+<a name="ln852">            if (env.map_forgotten)</a>
+<a name="ln853">                _unforget_map();</a>
+<a name="ln854">            MapKnowledge *old = new MapKnowledge(env.map_knowledge);</a>
+<a name="ln855">            _forget_map();</a>
+<a name="ln856">            env.map_forgotten.reset(old);</a>
+<a name="ln857">            mpr(&quot;Level map cleared.&quot;);</a>
+<a name="ln858">        }</a>
+<a name="ln859">        break;</a>
+<a name="ln860"> </a>
+<a name="ln861">    case CMD_MAP_UNFORGET:</a>
+<a name="ln862">        if (env.map_forgotten)</a>
+<a name="ln863">        {</a>
+<a name="ln864">            _unforget_map();</a>
+<a name="ln865">            env.map_forgotten.reset();</a>
+<a name="ln866">            mpr(&quot;Remembered map restored.&quot;);</a>
+<a name="ln867">        }</a>
+<a name="ln868">        else</a>
+<a name="ln869">            mpr(&quot;No remembered map.&quot;);</a>
+<a name="ln870">        break;</a>
+<a name="ln871"> </a>
+<a name="ln872">    case CMD_MAP_ADD_WAYPOINT:</a>
+<a name="ln873">        travel_cache.add_waypoint(state.lpos.pos.x, state.lpos.pos.y);</a>
+<a name="ln874">        // We need to do this all over again so that the user can jump</a>
+<a name="ln875">        // to the waypoint he just created.</a>
+<a name="ln876">        _reset_travel_colours(*state.features, state.on_level);</a>
+<a name="ln877">        state.feats-&gt;init();</a>
+<a name="ln878">        break;</a>
+<a name="ln879"> </a>
+<a name="ln880">        // Cycle the radius of an exclude.</a>
+<a name="ln881">    case CMD_MAP_EXCLUDE_AREA:</a>
+<a name="ln882">        if (!is_map_persistent())</a>
+<a name="ln883">            break;</a>
+<a name="ln884"> </a>
+<a name="ln885">        cycle_exclude_radius(state.lpos.pos);</a>
+<a name="ln886"> </a>
+<a name="ln887">        _reset_travel_colours(*state.features, state.on_level);</a>
+<a name="ln888">        state.feats-&gt;init();</a>
+<a name="ln889">        break;</a>
+<a name="ln890"> </a>
+<a name="ln891">    case CMD_MAP_CLEAR_EXCLUDES:</a>
+<a name="ln892">        clear_excludes();</a>
+<a name="ln893">        _reset_travel_colours(*state.features, state.on_level);</a>
+<a name="ln894">        state.feats-&gt;init();</a>
+<a name="ln895">        break;</a>
+<a name="ln896"> </a>
+<a name="ln897">#ifdef WIZARD</a>
+<a name="ln898">    case CMD_MAP_EXCLUDE_RADIUS:</a>
+<a name="ln899">        set_exclude(state.lpos.pos, getchm() - '0');</a>
+<a name="ln900"> </a>
+<a name="ln901">        _reset_travel_colours(*state.features, state.on_level);</a>
+<a name="ln902">        state.feats-&gt;init();</a>
+<a name="ln903">        break;</a>
+<a name="ln904">#endif</a>
+<a name="ln905"> </a>
+<a name="ln906">    case CMD_MAP_MOVE_DOWN_LEFT:</a>
+<a name="ln907">        state.lpos.pos += coord_def(-1, 1);</a>
+<a name="ln908">        break;</a>
+<a name="ln909"> </a>
+<a name="ln910">    case CMD_MAP_MOVE_DOWN:</a>
+<a name="ln911">        state.lpos.pos += coord_def(0, 1);</a>
+<a name="ln912">        break;</a>
+<a name="ln913"> </a>
+<a name="ln914">    case CMD_MAP_MOVE_UP_RIGHT:</a>
+<a name="ln915">        state.lpos.pos += coord_def(1, -1);</a>
+<a name="ln916">        break;</a>
+<a name="ln917"> </a>
+<a name="ln918">    case CMD_MAP_MOVE_UP:</a>
+<a name="ln919">        state.lpos.pos += coord_def(0, -1);</a>
+<a name="ln920">        break;</a>
+<a name="ln921"> </a>
+<a name="ln922">    case CMD_MAP_MOVE_UP_LEFT:</a>
+<a name="ln923">        state.lpos.pos += coord_def(-1, -1);</a>
+<a name="ln924">        break;</a>
+<a name="ln925"> </a>
+<a name="ln926">    case CMD_MAP_MOVE_LEFT:</a>
+<a name="ln927">        state.lpos.pos += coord_def(-1, 0);</a>
+<a name="ln928">        break;</a>
+<a name="ln929"> </a>
+<a name="ln930">    case CMD_MAP_MOVE_DOWN_RIGHT:</a>
+<a name="ln931">        state.lpos.pos += coord_def(1, 1);</a>
+<a name="ln932">        break;</a>
+<a name="ln933"> </a>
+<a name="ln934">    case CMD_MAP_MOVE_RIGHT:</a>
+<a name="ln935">        state.lpos.pos += coord_def(1, 0);</a>
+<a name="ln936">        break;</a>
+<a name="ln937"> </a>
+<a name="ln938">    case CMD_MAP_PREV_LEVEL:</a>
+<a name="ln939">    case CMD_MAP_NEXT_LEVEL:</a>
+<a name="ln940">    {</a>
+<a name="ln941">        if (!state.allow_offlevel)</a>
+<a name="ln942">            break;</a>
+<a name="ln943"> </a>
+<a name="ln944">        const bool up = (cmd == CMD_MAP_PREV_LEVEL);</a>
+<a name="ln945">        level_pos dest =</a>
+<a name="ln946">            _stair_dest(state.lpos.pos,</a>
+<a name="ln947">                        up ? CMD_GO_UPSTAIRS : CMD_GO_DOWNSTAIRS);</a>
+<a name="ln948"> </a>
+<a name="ln949">        if (!dest.id.is_valid())</a>
+<a name="ln950">        {</a>
+<a name="ln951">            dest.id = up ? find_up_level(level_id::current())</a>
+<a name="ln952">                : find_down_level(level_id::current());</a>
+<a name="ln953">            dest.pos = coord_def(-1, -1);</a>
+<a name="ln954">        }</a>
+<a name="ln955"> </a>
+<a name="ln956">        if (dest.id.is_valid() &amp;&amp; dest.id != level_id::current()</a>
+<a name="ln957">            &amp;&amp; you.level_visited(dest.id))</a>
+<a name="ln958">        {</a>
+<a name="ln959">            state.lpos = dest;</a>
+<a name="ln960">        }</a>
+<a name="ln961">        los_changed();</a>
+<a name="ln962">        break;</a>
+<a name="ln963">    }</a>
+<a name="ln964"> </a>
+<a name="ln965">    case CMD_MAP_GOTO_LEVEL:</a>
+<a name="ln966">        if (!state.allow_offlevel)</a>
+<a name="ln967">            break;</a>
+<a name="ln968"> </a>
+<a name="ln969">        {</a>
+<a name="ln970">            string name;</a>
+<a name="ln971">#ifdef USE_TILE_WEB</a>
+<a name="ln972">            tiles_ui_control msgwin(UI_NORMAL);</a>
+<a name="ln973">#endif</a>
+<a name="ln974">            const level_pos pos</a>
+<a name="ln975">                = prompt_translevel_target(TPF_DEFAULT_OPTIONS, name);</a>
+<a name="ln976"> </a>
+<a name="ln977">            if (pos.id.depth &lt; 1</a>
+<a name="ln978">                || pos.id.depth &gt; brdepth[pos.id.branch]</a>
+<a name="ln979">                || !you.level_visited(pos.id))</a>
+<a name="ln980">            {</a>
+<a name="ln981">                canned_msg(MSG_OK);</a>
+<a name="ln982">                state.redraw_map = true;</a>
+<a name="ln983">                break;</a>
+<a name="ln984">            }</a>
+<a name="ln985"> </a>
+<a name="ln986">            state.lpos = pos;</a>
+<a name="ln987">        }</a>
+<a name="ln988">        break;</a>
+<a name="ln989"> </a>
+<a name="ln990">    case CMD_MAP_JUMP_DOWN_LEFT:</a>
+<a name="ln991">        state.lpos.pos += coord_def(-block_step, block_step);</a>
+<a name="ln992">        break;</a>
+<a name="ln993"> </a>
+<a name="ln994">    case CMD_MAP_JUMP_DOWN:</a>
+<a name="ln995">        state.lpos.pos += coord_def(0, block_step);</a>
+<a name="ln996">        break;</a>
+<a name="ln997"> </a>
+<a name="ln998">    case CMD_MAP_JUMP_UP_RIGHT:</a>
+<a name="ln999">        state.lpos.pos += coord_def(block_step, -block_step);</a>
+<a name="ln1000">        break;</a>
+<a name="ln1001"> </a>
+<a name="ln1002">    case CMD_MAP_JUMP_UP:</a>
+<a name="ln1003">        state.lpos.pos += coord_def(0, -block_step);</a>
+<a name="ln1004">        break;</a>
+<a name="ln1005"> </a>
+<a name="ln1006">    case CMD_MAP_JUMP_UP_LEFT:</a>
+<a name="ln1007">        state.lpos.pos += coord_def(-block_step, -block_step);</a>
+<a name="ln1008">        break;</a>
+<a name="ln1009"> </a>
+<a name="ln1010">    case CMD_MAP_JUMP_LEFT:</a>
+<a name="ln1011">        state.lpos.pos += coord_def(-block_step, 0);</a>
+<a name="ln1012">        break;</a>
+<a name="ln1013"> </a>
+<a name="ln1014">    case CMD_MAP_JUMP_DOWN_RIGHT:</a>
+<a name="ln1015">        state.lpos.pos += coord_def(block_step, block_step);</a>
+<a name="ln1016">        break;</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    case CMD_MAP_JUMP_RIGHT:</a>
+<a name="ln1019">        state.lpos.pos += coord_def(block_step, 0);</a>
+<a name="ln1020">        break;</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    case CMD_MAP_SCROLL_DOWN:</a>
+<a name="ln1023">        state.lpos.pos += coord_def(0, 20);</a>
+<a name="ln1024">        break;</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    case CMD_MAP_SCROLL_UP:</a>
+<a name="ln1027">        state.lpos.pos += coord_def(0, -20);</a>
+<a name="ln1028">        break;</a>
+<a name="ln1029"> </a>
+<a name="ln1030">    case CMD_MAP_FIND_YOU:</a>
+<a name="ln1031">        if (state.on_level)</a>
+<a name="ln1032">            state.lpos.pos += you.pos() - state.lpos.pos;</a>
+<a name="ln1033">        break;</a>
+<a name="ln1034"> </a>
+<a name="ln1035">#ifdef USE_TILE</a>
+<a name="ln1036">    case CMD_MAP_ZOOM_IN:</a>
+<a name="ln1037">    case CMD_MAP_ZOOM_OUT:</a>
+<a name="ln1038">        tiles.zoom_dungeon(cmd == CMD_MAP_ZOOM_IN);</a>
+<a name="ln1039">        break;</a>
+<a name="ln1040">#endif</a>
+<a name="ln1041"> </a>
+<a name="ln1042">    case CMD_MAP_FIND_UPSTAIR:</a>
+<a name="ln1043">    case CMD_MAP_FIND_DOWNSTAIR:</a>
+<a name="ln1044">    case CMD_MAP_FIND_PORTAL:</a>
+<a name="ln1045">    case CMD_MAP_FIND_TRAP:</a>
+<a name="ln1046">    case CMD_MAP_FIND_ALTAR:</a>
+<a name="ln1047">    case CMD_MAP_FIND_EXCLUDED:</a>
+<a name="ln1048">    case CMD_MAP_FIND_WAYPOINT:</a>
+<a name="ln1049">    case CMD_MAP_FIND_STASH:</a>
+<a name="ln1050">    case CMD_MAP_FIND_STASH_REVERSE:</a>
+<a name="ln1051">    {</a>
+<a name="ln1052">        bool forward = (cmd != CMD_MAP_FIND_STASH_REVERSE);</a>
+<a name="ln1053"> </a>
+<a name="ln1054">        char32_t getty;</a>
+<a name="ln1055">        switch (cmd)</a>
+<a name="ln1056">        {</a>
+<a name="ln1057">        case CMD_MAP_FIND_UPSTAIR:</a>
+<a name="ln1058">            getty = '&lt;';</a>
+<a name="ln1059">            break;</a>
+<a name="ln1060">        case CMD_MAP_FIND_DOWNSTAIR:</a>
+<a name="ln1061">            getty = '&gt;';</a>
+<a name="ln1062">            break;</a>
+<a name="ln1063">        case CMD_MAP_FIND_PORTAL:</a>
+<a name="ln1064">            getty = '\t';</a>
+<a name="ln1065">            break;</a>
+<a name="ln1066">        case CMD_MAP_FIND_TRAP:</a>
+<a name="ln1067">            getty = '^';</a>
+<a name="ln1068">            break;</a>
+<a name="ln1069">        case CMD_MAP_FIND_ALTAR:</a>
+<a name="ln1070">            getty = '_';</a>
+<a name="ln1071">            break;</a>
+<a name="ln1072">        case CMD_MAP_FIND_EXCLUDED:</a>
+<a name="ln1073">            getty = 'E';</a>
+<a name="ln1074">            break;</a>
+<a name="ln1075">        case CMD_MAP_FIND_WAYPOINT:</a>
+<a name="ln1076">            getty = 'W';</a>
+<a name="ln1077">            break;</a>
+<a name="ln1078">        default:</a>
+<a name="ln1079">        case CMD_MAP_FIND_STASH:</a>
+<a name="ln1080">        case CMD_MAP_FIND_STASH_REVERSE:</a>
+<a name="ln1081">            getty = 'I';</a>
+<a name="ln1082">            break;</a>
+<a name="ln1083">        }</a>
+<a name="ln1084"> </a>
+<a name="ln1085">        if (state.search_anchor.zero())</a>
+<a name="ln1086">            state.search_anchor = state.lpos.pos;</a>
+<a name="ln1087"> </a>
+<a name="ln1088">        if (state.travel_mode &amp;&amp; !_is_player_defined_feature(getty))</a>
+<a name="ln1089">        {</a>
+<a name="ln1090">            state.search_index = _find_feature(*state.features, getty,</a>
+<a name="ln1091">                                            state.search_index,</a>
+<a name="ln1092">                                            state.lpos.pos,</a>
+<a name="ln1093">                                            forward);</a>
+<a name="ln1094">        }</a>
+<a name="ln1095">        else</a>
+<a name="ln1096">        {</a>
+<a name="ln1097">            const auto search_path =</a>
+<a name="ln1098">                search_path_around_point(state.search_anchor);</a>
+<a name="ln1099">            state.search_index = _find_feature(*state.features, getty,</a>
+<a name="ln1100">                                            state.search_index,</a>
+<a name="ln1101">                                            state.lpos.pos,</a>
+<a name="ln1102">                                            true);</a>
+<a name="ln1103">        }</a>
+<a name="ln1104">        break;</a>
+<a name="ln1105">    }</a>
+<a name="ln1106"> </a>
+<a name="ln1107">    case CMD_MAP_GOTO_TARGET:</a>
+<a name="ln1108">        if (state.travel_mode &amp;&amp; state.on_level &amp;&amp; state.lpos.pos == you.pos())</a>
+<a name="ln1109">        {</a>
+<a name="ln1110">            if (you.travel_x &gt; 0 &amp;&amp; you.travel_y &gt; 0)</a>
+<a name="ln1111">            {</a>
+<a name="ln1112">                if (you.travel_z == level_id::current())</a>
+<a name="ln1113">                    state.lpos.pos = coord_def(you.travel_x, you.travel_y);</a>
+<a name="ln1114">                else if (state.allow_offlevel &amp;&amp; you.travel_z.is_valid()</a>
+<a name="ln1115">                                &amp;&amp; can_travel_to(you.travel_z)</a>
+<a name="ln1116">                                &amp;&amp; you.level_visited(you.travel_z))</a>
+<a name="ln1117">                {</a>
+<a name="ln1118">                    // previous travel target is offlevel</a>
+<a name="ln1119">                    state.lpos = level_pos(you.travel_z,</a>
+<a name="ln1120">                                coord_def(you.travel_x, you.travel_y));</a>
+<a name="ln1121">                    los_changed();</a>
+<a name="ln1122">                }</a>
+<a name="ln1123">            }</a>
+<a name="ln1124">        }</a>
+<a name="ln1125">        else</a>
+<a name="ln1126">        {</a>
+<a name="ln1127">            state.chose = true;</a>
+<a name="ln1128">            state.map_alive = false;</a>
+<a name="ln1129">        }</a>
+<a name="ln1130"> </a>
+<a name="ln1131">        break;</a>
+<a name="ln1132"> </a>
+<a name="ln1133">    case CMD_MAP_ANNOTATE_LEVEL:</a>
+<a name="ln1134">        state.excursion-&gt;go_to(state.original);</a>
+<a name="ln1135">        redraw_screen();</a>
+<a name="ln1136">        state.excursion-&gt;go_to(state.lpos.id);</a>
+<a name="ln1137"> </a>
+<a name="ln1138">        if (!is_map_persistent())</a>
+<a name="ln1139">            mpr(&quot;You can't annotate this level.&quot;);</a>
+<a name="ln1140">        else</a>
+<a name="ln1141">        {</a>
+<a name="ln1142">#ifdef USE_TILE_WEB</a>
+<a name="ln1143">            tiles_ui_control msgwin(UI_NORMAL);</a>
+<a name="ln1144">#endif</a>
+<a name="ln1145">            do_annotate(state.lpos.id);</a>
+<a name="ln1146">        }</a>
+<a name="ln1147"> </a>
+<a name="ln1148">        state.redraw_map = true;</a>
+<a name="ln1149">        break;</a>
+<a name="ln1150"> </a>
+<a name="ln1151">    case CMD_MAP_EXPLORE:</a>
+<a name="ln1152">        if (state.on_level)</a>
+<a name="ln1153">        {</a>
+<a name="ln1154">            travel_pathfind tp;</a>
+<a name="ln1155">            tp.set_floodseed(you.pos(), true);</a>
+<a name="ln1156"> </a>
+<a name="ln1157">            coord_def whereto = tp.pathfind(Options.explore_greedy</a>
+<a name="ln1158">                                            ? RMODE_EXPLORE_GREEDY</a>
+<a name="ln1159">                                            : RMODE_EXPLORE);</a>
+<a name="ln1160">            _reset_travel_colours(*state.features, state.on_level);</a>
+<a name="ln1161"> </a>
+<a name="ln1162">            if (!whereto.zero())</a>
+<a name="ln1163">                state.lpos.pos = whereto;</a>
+<a name="ln1164">        }</a>
+<a name="ln1165">        break;</a>
+<a name="ln1166"> </a>
+<a name="ln1167">#ifdef WIZARD</a>
+<a name="ln1168">    case CMD_MAP_WIZARD_TELEPORT:</a>
+<a name="ln1169">        if (!you.wizard || !state.on_level || !in_bounds(state.lpos.pos))</a>
+<a name="ln1170">            break;</a>
+<a name="ln1171">        if (cell_is_solid(state.lpos.pos))</a>
+<a name="ln1172">            you.wizmode_teleported_into_rock = true;</a>
+<a name="ln1173">        you.moveto(state.lpos.pos);</a>
+<a name="ln1174">        state.map_alive = false;</a>
+<a name="ln1175">        break;</a>
+<a name="ln1176">#endif</a>
+<a name="ln1177"> </a>
+<a name="ln1178">    case CMD_MAP_EXIT_MAP:</a>
+<a name="ln1179">        state.lpos = level_pos();</a>
+<a name="ln1180">        state.map_alive = false;</a>
+<a name="ln1181">        break;</a>
+<a name="ln1182"> </a>
+<a name="ln1183">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1184">    case CMD_NEXT_CMD:</a>
+<a name="ln1185">        break; // allow mouse clicks to move cursor without leaving map mode</a>
+<a name="ln1186">#endif</a>
+<a name="ln1187">    case CMD_MAP_DESCRIBE:</a>
+<a name="ln1188">        if (map_bounds(state.lpos.pos) &amp;&amp; env.map_knowledge(state.lpos.pos).known())</a>
+<a name="ln1189">        {</a>
+<a name="ln1190">            full_describe_square(state.lpos.pos, false);</a>
+<a name="ln1191">            state.redraw_map = true;</a>
+<a name="ln1192">        }</a>
+<a name="ln1193">        break;</a>
+<a name="ln1194"> </a>
+<a name="ln1195">    default:</a>
+<a name="ln1196">        if (!state.travel_mode)</a>
+<a name="ln1197">            state.redraw_map = false;</a>
+<a name="ln1198">        break;</a>
+<a name="ln1199">    }</a>
+<a name="ln1200"> </a>
+<a name="ln1201">    return state;</a>
+<a name="ln1202">}</a>
+<a name="ln1203"> </a>
+<a name="ln1204">bool emphasise(const coord_def&amp; where)</a>
+<a name="ln1205">{</a>
+<a name="ln1206">    return is_unknown_stair(where) &amp;&amp; !player_in_branch(BRANCH_VESTIBULE)</a>
+<a name="ln1207">           || is_unknown_transporter(where);</a>
+<a name="ln1208">}</a>
+<a name="ln1209"> </a>
+<a name="ln1210">#ifndef USE_TILE_LOCAL</a>
+<a name="ln1211">// Get glyph for feature list; here because it's so similar</a>
+<a name="ln1212">// to get_map_col.</a>
+<a name="ln1213">// Except that that function doesn't exist...</a>
+<a name="ln1214">static cglyph_t _get_feat_glyph(const coord_def&amp; gc)</a>
+<a name="ln1215">{</a>
+<a name="ln1216">    // XXX: it's unclear whether we want to display all features</a>
+<a name="ln1217">    // or just those not obscured by remembered/detected stuff.</a>
+<a name="ln1218">    dungeon_feature_type feat = env.map_knowledge(gc).feat();</a>
+<a name="ln1219">    const bool terrain_seen = env.map_knowledge(gc).seen();</a>
+<a name="ln1220">    const feature_def &amp;fdef = get_feature_def(feat);</a>
+<a name="ln1221">    cglyph_t g;</a>
+<a name="ln1222">    g.ch  = terrain_seen ? fdef.symbol() : fdef.magic_symbol();</a>
+<a name="ln1223">    unsigned col;</a>
+<a name="ln1224">    if (travel_colour_override(gc))</a>
+<a name="ln1225">        col = _get_travel_colour(gc);</a>
+<a name="ln1226">    else if (emphasise(gc))</a>
+<a name="ln1227">        col = fdef.seen_em_colour();</a>
+<a name="ln1228">    else</a>
+<a name="ln1229">        col = fdef.seen_colour();</a>
+<a name="ln1230">    g.col = real_colour(col);</a>
+<a name="ln1231">    return g;</a>
+<a name="ln1232">}</a>
+<a name="ln1233">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="188"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

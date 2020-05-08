@@ -1,0 +1,1280 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>throw.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Throwing and launching stuff.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;throw.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;cmath&gt;</a>
+<a name="ln11">#include &lt;sstream&gt;</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;art-enum.h&quot;</a>
+<a name="ln14">#include &quot;artefact.h&quot;</a>
+<a name="ln15">#include &quot;chardump.h&quot;</a>
+<a name="ln16">#include &quot;command.h&quot;</a>
+<a name="ln17">#include &quot;coordit.h&quot;</a>
+<a name="ln18">#include &quot;directn.h&quot;</a>
+<a name="ln19">#include &quot;english.h&quot;</a>
+<a name="ln20">#include &quot;env.h&quot;</a>
+<a name="ln21">#include &quot;exercise.h&quot;</a>
+<a name="ln22">#include &quot;fight.h&quot;</a>
+<a name="ln23">#include &quot;god-conduct.h&quot;</a>
+<a name="ln24">#include &quot;god-passive.h&quot; // passive_t::shadow_attacks</a>
+<a name="ln25">#include &quot;hints.h&quot;</a>
+<a name="ln26">#include &quot;invent.h&quot;</a>
+<a name="ln27">#include &quot;item-prop.h&quot;</a>
+<a name="ln28">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln29">#include &quot;items.h&quot;</a>
+<a name="ln30">#include &quot;item-use.h&quot;</a>
+<a name="ln31">#include &quot;macro.h&quot;</a>
+<a name="ln32">#include &quot;message.h&quot;</a>
+<a name="ln33">#include &quot;mon-behv.h&quot;</a>
+<a name="ln34">#include &quot;output.h&quot;</a>
+<a name="ln35">#include &quot;prompt.h&quot;</a>
+<a name="ln36">#include &quot;religion.h&quot;</a>
+<a name="ln37">#include &quot;rot.h&quot;</a>
+<a name="ln38">#include &quot;shout.h&quot;</a>
+<a name="ln39">#include &quot;showsymb.h&quot;</a>
+<a name="ln40">#include &quot;skills.h&quot;</a>
+<a name="ln41">#include &quot;sound.h&quot;</a>
+<a name="ln42">#include &quot;state.h&quot;</a>
+<a name="ln43">#include &quot;stringutil.h&quot;</a>
+<a name="ln44">#include &quot;terrain.h&quot;</a>
+<a name="ln45">#include &quot;transform.h&quot;</a>
+<a name="ln46">#include &quot;traps.h&quot;</a>
+<a name="ln47">#include &quot;viewchar.h&quot;</a>
+<a name="ln48">#include &quot;view.h&quot;</a>
+<a name="ln49"> </a>
+<a name="ln50">static int  _fire_prompt_for_item();</a>
+<a name="ln51">static bool _fire_validate_item(int selected, string&amp; err);</a>
+<a name="ln52">static int  _get_dart_chance(const int hd);</a>
+<a name="ln53"> </a>
+<a name="ln54">bool is_penetrating_attack(const actor&amp; attacker, const item_def* weapon,</a>
+<a name="ln55">                           const item_def&amp; projectile)</a>
+<a name="ln56">{</a>
+<a name="ln57">    return is_launched(&amp;attacker, weapon, projectile) != launch_retval::FUMBLED</a>
+<a name="ln58">            &amp;&amp; projectile.base_type == OBJ_MISSILES</a>
+<a name="ln59">            &amp;&amp; projectile.sub_type == MI_JAVELIN</a>
+<a name="ln60">           || weapon</a>
+<a name="ln61">              &amp;&amp; is_launched(&amp;attacker, weapon, projectile) == launch_retval::LAUNCHED</a>
+<a name="ln62">              &amp;&amp; (get_weapon_brand(*weapon) == SPWPN_PENETRATION</a>
+<a name="ln63">                  || is_unrandom_artefact(*weapon, UNRAND_STORM_BOW));</a>
+<a name="ln64">}</a>
+<a name="ln65"> </a>
+<a name="ln66">bool item_is_quivered(const item_def &amp;item)</a>
+<a name="ln67">{</a>
+<a name="ln68">    return in_inventory(item) &amp;&amp; item.link == you.m_quiver.get_fire_item();</a>
+<a name="ln69">}</a>
+<a name="ln70"> </a>
+<a name="ln71">int get_next_fire_item(int current, int direction)</a>
+<a name="ln72">{</a>
+<a name="ln73">    vector&lt;int&gt; fire_order;</a>
+<a name="ln74">    you.m_quiver.get_fire_order(fire_order, true);</a>
+<a name="ln75"> </a>
+<a name="ln76">    if (fire_order.empty())</a>
+<a name="ln77">        return -1;</a>
+<a name="ln78"> </a>
+<a name="ln79">    int next = direction &gt; 0 ? 0 : -1;</a>
+<a name="ln80">    for (unsigned i = 0; i &lt; fire_order.size(); i++)</a>
+<a name="ln81">    {</a>
+<a name="ln82">        if (fire_order[i] == current)</a>
+<a name="ln83">        {</a>
+<a name="ln84">            next = i + direction;</a>
+<a name="ln85">            break;</a>
+<a name="ln86">        }</a>
+<a name="ln87">    }</a>
+<a name="ln88"> </a>
+<a name="ln89">    next = (next + fire_order.size()) % fire_order.size();</a>
+<a name="ln90">    return fire_order[next];</a>
+<a name="ln91">}</a>
+<a name="ln92"> </a>
+<a name="ln93">class fire_target_behaviour : public targeting_behaviour</a>
+<a name="ln94">{</a>
+<a name="ln95">public:</a>
+<a name="ln96">    fire_target_behaviour()</a>
+<a name="ln97">        : chosen_ammo(false),</a>
+<a name="ln98">          selected_from_inventory(false),</a>
+<a name="ln99">          need_redraw(false)</a>
+<a name="ln100">    {</a>
+<a name="ln101">        m_slot = you.m_quiver.get_fire_item(&amp;m_noitem_reason);</a>
+<a name="ln102">        set_prompt();</a>
+<a name="ln103">    }</a>
+<a name="ln104"> </a>
+<a name="ln105">    // targeting_behaviour API</a>
+<a name="ln106">    virtual command_type get_command(int key = -1) override;</a>
+<a name="ln107">    virtual bool should_redraw() const override { return need_redraw; }</a>
+<a name="ln108">    virtual void clear_redraw()        override { need_redraw = false; }</a>
+<a name="ln109">    virtual void update_top_prompt(string* p_top_prompt) override;</a>
+<a name="ln110">    virtual vector&lt;string&gt; get_monster_desc(const monster_info&amp; mi) override;</a>
+<a name="ln111"> </a>
+<a name="ln112">public:</a>
+<a name="ln113">    const item_def* active_item() const;</a>
+<a name="ln114">    // FIXME: these should be privatized and given accessors.</a>
+<a name="ln115">    int m_slot;</a>
+<a name="ln116">    bool chosen_ammo;</a>
+<a name="ln117"> </a>
+<a name="ln118">private:</a>
+<a name="ln119">    void set_prompt();</a>
+<a name="ln120">    void cycle_fire_item(bool forward);</a>
+<a name="ln121">    void pick_fire_item_from_inventory();</a>
+<a name="ln122">    void display_help();</a>
+<a name="ln123"> </a>
+<a name="ln124">    string prompt;</a>
+<a name="ln125">    string m_noitem_reason;</a>
+<a name="ln126">    string internal_prompt;</a>
+<a name="ln127">    bool selected_from_inventory;</a>
+<a name="ln128">    bool need_redraw;</a>
+<a name="ln129">};</a>
+<a name="ln130"> </a>
+<a name="ln131">void fire_target_behaviour::update_top_prompt(string* p_top_prompt)</a>
+<a name="ln132">{</a>
+<a name="ln133">    *p_top_prompt = internal_prompt;</a>
+<a name="ln134">}</a>
+<a name="ln135"> </a>
+<a name="ln136">const item_def* fire_target_behaviour::active_item() const</a>
+<a name="ln137">{</a>
+<a name="ln138">    if (m_slot == -1)</a>
+<a name="ln139">        return nullptr;</a>
+<a name="ln140">    else</a>
+<a name="ln141">        return &amp;you.inv[m_slot];</a>
+<a name="ln142">}</a>
+<a name="ln143"> </a>
+<a name="ln144">void fire_target_behaviour::set_prompt()</a>
+<a name="ln145">{</a>
+<a name="ln146">    string old_prompt = internal_prompt; // Keep for comparison at the end.</a>
+<a name="ln147">    internal_prompt.clear();</a>
+<a name="ln148"> </a>
+<a name="ln149">    // Figure out if we have anything else to cycle to.</a>
+<a name="ln150">    const int next_item = get_next_fire_item(m_slot, +1);</a>
+<a name="ln151">    const bool no_other_items = (next_item == -1 || next_item == m_slot);</a>
+<a name="ln152"> </a>
+<a name="ln153">    ostringstream msg;</a>
+<a name="ln154"> </a>
+<a name="ln155">    // Build the action.</a>
+<a name="ln156">    if (!active_item())</a>
+<a name="ln157">        msg &lt;&lt; &quot;Firing &quot;;</a>
+<a name="ln158">    else</a>
+<a name="ln159">    {</a>
+<a name="ln160">        const launch_retval projected = is_launched(&amp;you, you.weapon(),</a>
+<a name="ln161">                                                    *active_item());</a>
+<a name="ln162">        switch (projected)</a>
+<a name="ln163">        {</a>
+<a name="ln164">        case launch_retval::FUMBLED:  msg &lt;&lt; &quot;Tossing away &quot;; break;</a>
+<a name="ln165">        case launch_retval::LAUNCHED: msg &lt;&lt; &quot;Firing &quot;;             break;</a>
+<a name="ln166">        case launch_retval::THROWN:   msg &lt;&lt; &quot;Throwing &quot;;           break;</a>
+<a name="ln167">        case launch_retval::BUGGY:    msg &lt;&lt; &quot;Bugging &quot;; break;</a>
+<a name="ln168">        }</a>
+<a name="ln169">    }</a>
+<a name="ln170"> </a>
+<a name="ln171">    // And a key hint.</a>
+<a name="ln172">    string key_hint = no_other_items</a>
+<a name="ln173">                        ? &quot;(&lt;w&gt;%&lt;/w&gt; - inventory) &quot;</a>
+<a name="ln174">                        : &quot;(&lt;w&gt;%&lt;/w&gt; - inventory. &lt;w&gt;%&lt;/w&gt;/&lt;w&gt;%&lt;/w&gt; - cycle) &quot;;</a>
+<a name="ln175">    insert_commands(key_hint,</a>
+<a name="ln176">                    { CMD_DISPLAY_INVENTORY,</a>
+<a name="ln177">                      CMD_CYCLE_QUIVER_BACKWARD,</a>
+<a name="ln178">                      CMD_CYCLE_QUIVER_FORWARD });</a>
+<a name="ln179">    msg &lt;&lt; key_hint;</a>
+<a name="ln180"> </a>
+<a name="ln181">    // Describe the selected item for firing.</a>
+<a name="ln182">    if (!active_item())</a>
+<a name="ln183">        msg &lt;&lt; &quot;&lt;red&gt;&quot; &lt;&lt; m_noitem_reason &lt;&lt; &quot;&lt;/red&gt;&quot;;</a>
+<a name="ln184">    else</a>
+<a name="ln185">    {</a>
+<a name="ln186">        const char* colour = (selected_from_inventory ? &quot;lightgrey&quot; : &quot;w&quot;);</a>
+<a name="ln187">        msg &lt;&lt; &quot;&lt;&quot; &lt;&lt; colour &lt;&lt; &quot;&gt;&quot;</a>
+<a name="ln188">            &lt;&lt; active_item()-&gt;name(DESC_INVENTORY_EQUIP)</a>
+<a name="ln189">            &lt;&lt; &quot;&lt;/&quot; &lt;&lt; colour &lt;&lt; &quot;&gt;&quot;;</a>
+<a name="ln190">    }</a>
+<a name="ln191"> </a>
+<a name="ln192">    // Write it out.</a>
+<a name="ln193">    internal_prompt += msg.str();</a>
+<a name="ln194"> </a>
+<a name="ln195">    // Never unset need_redraw here, because we might have cleared the</a>
+<a name="ln196">    // screen or something else which demands a redraw.</a>
+<a name="ln197">    if (internal_prompt != old_prompt)</a>
+<a name="ln198">        need_redraw = true;</a>
+<a name="ln199">}</a>
+<a name="ln200"> </a>
+<a name="ln201">// Cycle to the next (forward == true) or previous (forward == false)</a>
+<a name="ln202">// fire item.</a>
+<a name="ln203">void fire_target_behaviour::cycle_fire_item(bool forward)</a>
+<a name="ln204">{</a>
+<a name="ln205">    const int next = get_next_fire_item(m_slot, forward ? 1 : -1);</a>
+<a name="ln206">    if (next != m_slot &amp;&amp; next != -1)</a>
+<a name="ln207">    {</a>
+<a name="ln208">        m_slot = next;</a>
+<a name="ln209">        selected_from_inventory = false;</a>
+<a name="ln210">        chosen_ammo = true;</a>
+<a name="ln211">    }</a>
+<a name="ln212">    set_prompt();</a>
+<a name="ln213">}</a>
+<a name="ln214"> </a>
+<a name="ln215">void fire_target_behaviour::pick_fire_item_from_inventory()</a>
+<a name="ln216">{</a>
+<a name="ln217">    need_redraw = true;</a>
+<a name="ln218">    string err;</a>
+<a name="ln219">    const int selected = _fire_prompt_for_item();</a>
+<a name="ln220">    if (selected &gt;= 0 &amp;&amp; _fire_validate_item(selected, err))</a>
+<a name="ln221">    {</a>
+<a name="ln222">        m_slot = selected;</a>
+<a name="ln223">        selected_from_inventory = true;</a>
+<a name="ln224">        chosen_ammo = true;</a>
+<a name="ln225">    }</a>
+<a name="ln226">    else if (!err.empty())</a>
+<a name="ln227">    {</a>
+<a name="ln228">        mpr(err);</a>
+<a name="ln229">        more();</a>
+<a name="ln230">    }</a>
+<a name="ln231">    set_prompt();</a>
+<a name="ln232">}</a>
+<a name="ln233"> </a>
+<a name="ln234">void fire_target_behaviour::display_help()</a>
+<a name="ln235">{</a>
+<a name="ln236">    show_targeting_help();</a>
+<a name="ln237">    redraw_screen();</a>
+<a name="ln238">    need_redraw = true;</a>
+<a name="ln239">    set_prompt();</a>
+<a name="ln240">}</a>
+<a name="ln241"> </a>
+<a name="ln242">command_type fire_target_behaviour::get_command(int key)</a>
+<a name="ln243">{</a>
+<a name="ln244">    if (key == -1)</a>
+<a name="ln245">        key = get_key();</a>
+<a name="ln246"> </a>
+<a name="ln247">    if (key == CMD_TARGET_CANCEL)</a>
+<a name="ln248">        chosen_ammo = false;</a>
+<a name="ln249">    else if (!(-key &gt; CMD_NO_CMD &amp;&amp; -key &lt; CMD_MIN_SYNTHETIC)</a>
+<a name="ln250">                    || context_for_command((command_type) -key) == KMC_DEFAULT)</a>
+<a name="ln251">    {</a>
+<a name="ln252">        // that check is really hacky, but if we don't do it mouse targeting</a>
+<a name="ln253">        // produces all sorts of errors in the call below because the context</a>
+<a name="ln254">        // isn't right; really we are in a targeting context now, and the use of</a>
+<a name="ln255">        // KMC_DEFAULT below is also a hack. This whole context system could use</a>
+<a name="ln256">        // some serious refactoring if commands are really supposed to work in</a>
+<a name="ln257">        // multiple contexts.</a>
+<a name="ln258">        switch (key_to_command(key, KMC_DEFAULT))</a>
+<a name="ln259">        {</a>
+<a name="ln260">        case CMD_CYCLE_QUIVER_BACKWARD: cycle_fire_item(true);  return CMD_NO_CMD;</a>
+<a name="ln261">        case CMD_CYCLE_QUIVER_FORWARD: cycle_fire_item(false); return CMD_NO_CMD;</a>
+<a name="ln262">        case CMD_DISPLAY_INVENTORY: pick_fire_item_from_inventory(); return CMD_NO_CMD;</a>
+<a name="ln263">        case CMD_DISPLAY_COMMANDS: display_help(); return CMD_NO_CMD;</a>
+<a name="ln264">        default: break;</a>
+<a name="ln265">        }</a>
+<a name="ln266">    }</a>
+<a name="ln267"> </a>
+<a name="ln268">    return targeting_behaviour::get_command(key);</a>
+<a name="ln269">}</a>
+<a name="ln270"> </a>
+<a name="ln271">vector&lt;string&gt; fire_target_behaviour::get_monster_desc(const monster_info&amp; mi)</a>
+<a name="ln272">{</a>
+<a name="ln273">    vector&lt;string&gt; descs;</a>
+<a name="ln274">    if (const item_def* item = active_item())</a>
+<a name="ln275">    {</a>
+<a name="ln276">        if (get_ammo_brand(*item) == SPMSL_SILVER &amp;&amp; mi.is(MB_CHAOTIC))</a>
+<a name="ln277">            descs.emplace_back(&quot;chaotic&quot;);</a>
+<a name="ln278">        if (item-&gt;is_type(OBJ_MISSILES, MI_THROWING_NET)</a>
+<a name="ln279">            &amp;&amp; (mi.body_size() &gt;= SIZE_GIANT</a>
+<a name="ln280">                || mons_class_is_stationary(mi.type)</a>
+<a name="ln281">                || mons_class_flag(mi.type, M_INSUBSTANTIAL)))</a>
+<a name="ln282">        {</a>
+<a name="ln283">            descs.emplace_back(&quot;immune to nets&quot;);</a>
+<a name="ln284">        }</a>
+<a name="ln285"> </a>
+<a name="ln286">        // Display the chance for a dart of para/confuse/sleep/frenzy</a>
+<a name="ln287">        // to affect monster</a>
+<a name="ln288">        if (item-&gt;is_type(OBJ_MISSILES, MI_DART))</a>
+<a name="ln289">        {</a>
+<a name="ln290">            special_missile_type brand = get_ammo_brand(*item);</a>
+<a name="ln291">            if (brand == SPMSL_FRENZY || brand == SPMSL_BLINDING)</a>
+<a name="ln292">            {</a>
+<a name="ln293">                int chance = _get_dart_chance(mi.hd);</a>
+<a name="ln294">                bool immune = brand == SPMSL_FRENZY &amp;&amp; !mi.can_go_frenzy;</a>
+<a name="ln295">                if (mi.holi &amp; (MH_UNDEAD | MH_NONLIVING))</a>
+<a name="ln296">                    immune = true;</a>
+<a name="ln297"> </a>
+<a name="ln298">                string verb = brand == SPMSL_FRENZY ? &quot;frenzy&quot; : &quot;blind&quot;;</a>
+<a name="ln299"> </a>
+<a name="ln300">                string chance_string = immune ? &quot;immune&quot; :</a>
+<a name="ln301">                                       make_stringf(&quot;chance to %s on hit: %d%%&quot;,</a>
+<a name="ln302">                                                    verb.c_str(), chance);</a>
+<a name="ln303">                descs.emplace_back(chance_string);</a>
+<a name="ln304">            }</a>
+<a name="ln305">        }</a>
+<a name="ln306">    }</a>
+<a name="ln307">    return descs;</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">/**</a>
+<a name="ln311"> *  Chance for a dart fired by the player to affect a monster of a particular</a>
+<a name="ln312"> *  hit dice, given the player's throwing skill.</a>
+<a name="ln313"> *</a>
+<a name="ln314"> *    @param hd     The monster's hit dice.</a>
+<a name="ln315"> *    @return       The percentage chance for the player to affect the monster,</a>
+<a name="ln316"> *                  rounded down.</a>
+<a name="ln317"> *</a>
+<a name="ln318"> *  This chance is rolled in ranged_attack::dart_check using this formula for</a>
+<a name="ln319"> *  success:</a>
+<a name="ln320"> *      if hd &lt; 15, fixed 3% chance to succeed regardless of roll</a>
+<a name="ln321"> *      else, or if the 3% chance fails,</a>
+<a name="ln322"> *            succeed if 2 + random2(4 + (2/3)*(throwing + stealth) ) &gt;= hd</a>
+<a name="ln323"> */</a>
+<a name="ln324">static int _get_dart_chance(const int hd)</a>
+<a name="ln325">{</a>
+<a name="ln326">    const int pow = (2 * (you.skill_rdiv(SK_THROWING)</a>
+<a name="ln327">                          + you.skill_rdiv(SK_STEALTH))) / 3;</a>
+<a name="ln328"> </a>
+<a name="ln329">    int chance = 10000 - 10000 * (hd - 2) / (4 + pow);</a>
+<a name="ln330">    chance = min(max(chance, 0), 10000);</a>
+<a name="ln331">    if (hd &lt; 15)</a>
+<a name="ln332">    {</a>
+<a name="ln333">        chance *= 97;</a>
+<a name="ln334">        chance /= 100;</a>
+<a name="ln335">        chance += 300; // 3% chance to ignore HD and affect enemy anyway</a>
+<a name="ln336">    }</a>
+<a name="ln337">    return chance / 100;</a>
+<a name="ln338">}</a>
+<a name="ln339"> </a>
+<a name="ln340">/**</a>
+<a name="ln341"> *  Validate any item selected to be fired, and choose a target to fire at.</a>
+<a name="ln342"> *</a>
+<a name="ln343"> *  @param slot         The slot the item to be fired is in, or -1 if</a>
+<a name="ln344"> *                      an item has not yet been chosen.</a>
+<a name="ln345"> *  @param target       An empty variable of the dist class to store the</a>
+<a name="ln346"> *                      target information in.</a>
+<a name="ln347"> *  @param teleport     Does the player have portal projectile active?</a>
+<a name="ln348"> *  @param fired_normally  True if the projectile was fired through the f</a>
+<a name="ln349"> *                      command, false if fired through the F command.</a>
+<a name="ln350"> *                      If true, if the player changes their mind about which</a>
+<a name="ln351"> *                      item to fire, update the quivered item accordingly.</a>
+<a name="ln352"> *  @return             Whether the item validation and target selection</a>
+<a name="ln353"> *                      was successful.</a>
+<a name="ln354"> */</a>
+<a name="ln355">static bool _fire_choose_item_and_target(int&amp; slot, dist&amp; target,</a>
+<a name="ln356">                                         bool teleport = false,</a>
+<a name="ln357">                                         bool fired_normally = true)</a>
+<a name="ln358">{</a>
+<a name="ln359">    fire_target_behaviour beh;</a>
+<a name="ln360">    const bool was_chosen = (slot != -1);</a>
+<a name="ln361"> </a>
+<a name="ln362">    if (was_chosen)</a>
+<a name="ln363">    {</a>
+<a name="ln364">        string warn;</a>
+<a name="ln365">        if (!_fire_validate_item(slot, warn))</a>
+<a name="ln366">        {</a>
+<a name="ln367">            mpr(warn);</a>
+<a name="ln368">            return false;</a>
+<a name="ln369">        }</a>
+<a name="ln370">        // Force item to be the prechosen one.</a>
+<a name="ln371">        beh.m_slot = slot;</a>
+<a name="ln372">    }</a>
+<a name="ln373"> </a>
+<a name="ln374">    direction_chooser_args args;</a>
+<a name="ln375">    args.mode = TARG_HOSTILE;</a>
+<a name="ln376">    args.needs_path = !teleport;</a>
+<a name="ln377">    args.behaviour = &amp;beh;</a>
+<a name="ln378"> </a>
+<a name="ln379">    direction(target, args);</a>
+<a name="ln380"> </a>
+<a name="ln381">    if (!beh.active_item())</a>
+<a name="ln382">    {</a>
+<a name="ln383">        canned_msg(MSG_OK);</a>
+<a name="ln384">        return false;</a>
+<a name="ln385">    }</a>
+<a name="ln386">    if (!target.isValid)</a>
+<a name="ln387">    {</a>
+<a name="ln388">        if (target.isCancel)</a>
+<a name="ln389">            canned_msg(MSG_OK);</a>
+<a name="ln390">        return false;</a>
+<a name="ln391">    }</a>
+<a name="ln392">    if (teleport &amp;&amp; cell_is_solid(target.target))</a>
+<a name="ln393">    {</a>
+<a name="ln394">        const char *feat = feat_type_name(grd(target.target));</a>
+<a name="ln395">        mprf(&quot;There is %s there.&quot;, article_a(feat).c_str());</a>
+<a name="ln396">        return false;</a>
+<a name="ln397">    }</a>
+<a name="ln398"> </a>
+<a name="ln399">    if (fired_normally)</a>
+<a name="ln400">    {</a>
+<a name="ln401">        you.m_quiver.on_item_fired(*beh.active_item(), beh.chosen_ammo);</a>
+<a name="ln402">        you.redraw_quiver = true;</a>
+<a name="ln403">    }</a>
+<a name="ln404">    slot = beh.m_slot;</a>
+<a name="ln405"> </a>
+<a name="ln406">    return true;</a>
+<a name="ln407">}</a>
+<a name="ln408"> </a>
+<a name="ln409">// Bring up an inventory screen and have user choose an item.</a>
+<a name="ln410">// Returns an item slot, or -1 on abort/failure</a>
+<a name="ln411">// On failure, returns error text, if any.</a>
+<a name="ln412">static int _fire_prompt_for_item()</a>
+<a name="ln413">{</a>
+<a name="ln414">    if (inv_count() &lt; 1)</a>
+<a name="ln415">        return -1;</a>
+<a name="ln416"> </a>
+<a name="ln417">    int slot = prompt_invent_item(&quot;Fire/throw which item? (* to show all)&quot;,</a>
+<a name="ln418">                                   menu_type::invlist,</a>
+<a name="ln419">                                   OSEL_THROWABLE, OPER_FIRE);</a>
+<a name="ln420"> </a>
+<a name="ln421">    if (slot == PROMPT_ABORT || slot == PROMPT_NOTHING)</a>
+<a name="ln422">        return -1;</a>
+<a name="ln423"> </a>
+<a name="ln424">    return slot;</a>
+<a name="ln425">}</a>
+<a name="ln426"> </a>
+<a name="ln427">// Returns false and err text if this item can't be fired.</a>
+<a name="ln428">static bool _fire_validate_item(int slot, string &amp;err)</a>
+<a name="ln429">{</a>
+<a name="ln430">    if (slot == you.equip[EQ_WEAPON]</a>
+<a name="ln431">        &amp;&amp; is_weapon(you.inv[slot])</a>
+<a name="ln432">        &amp;&amp; you.inv[slot].cursed())</a>
+<a name="ln433">    {</a>
+<a name="ln434">        err = &quot;That weapon is stuck to your &quot; + you.hand_name(false) + &quot;!&quot;;</a>
+<a name="ln435">        return false;</a>
+<a name="ln436">    }</a>
+<a name="ln437">    else if (item_is_worn(slot))</a>
+<a name="ln438">    {</a>
+<a name="ln439">        err = &quot;You are wearing that object!&quot;;</a>
+<a name="ln440">        return false;</a>
+<a name="ln441">    }</a>
+<a name="ln442">    return true;</a>
+<a name="ln443">}</a>
+<a name="ln444"> </a>
+<a name="ln445">// Returns true if warning is given.</a>
+<a name="ln446">bool fire_warn_if_impossible(bool silent)</a>
+<a name="ln447">{</a>
+<a name="ln448">    if (you.species == SP_FELID)</a>
+<a name="ln449">    {</a>
+<a name="ln450">        if (!silent)</a>
+<a name="ln451">            mpr(&quot;You can't grasp things well enough to throw them.&quot;);</a>
+<a name="ln452">        return true;</a>
+<a name="ln453">    }</a>
+<a name="ln454"> </a>
+<a name="ln455">    // If you can't wield it, you can't throw it.</a>
+<a name="ln456">    if (!form_can_wield())</a>
+<a name="ln457">    {</a>
+<a name="ln458">        if (!silent)</a>
+<a name="ln459">            canned_msg(MSG_PRESENT_FORM);</a>
+<a name="ln460">        return true;</a>
+<a name="ln461">    }</a>
+<a name="ln462"> </a>
+<a name="ln463">    if (you.attribute[ATTR_HELD])</a>
+<a name="ln464">    {</a>
+<a name="ln465">        const item_def *weapon = you.weapon();</a>
+<a name="ln466">        if (!weapon || !is_range_weapon(*weapon))</a>
+<a name="ln467">        {</a>
+<a name="ln468">            if (!silent)</a>
+<a name="ln469">                mprf(&quot;You cannot throw anything while %s.&quot;, held_status());</a>
+<a name="ln470">            return true;</a>
+<a name="ln471">        }</a>
+<a name="ln472">        else</a>
+<a name="ln473">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln474">             if (weapon-&gt;sub_type != WPN_BLOWGUN)</a>
+<a name="ln475">#endif</a>
+<a name="ln476">        {</a>
+<a name="ln477">            if (!silent)</a>
+<a name="ln478">            {</a>
+<a name="ln479">                mprf(&quot;You cannot shoot with your %s while %s.&quot;,</a>
+<a name="ln480">                     weapon-&gt;name(DESC_BASENAME).c_str(), held_status());</a>
+<a name="ln481">            }</a>
+<a name="ln482">            return true;</a>
+<a name="ln483">        }</a>
+<a name="ln484">        // Else shooting is possible.</a>
+<a name="ln485">    }</a>
+<a name="ln486">    if (you.berserk())</a>
+<a name="ln487">    {</a>
+<a name="ln488">        if (!silent)</a>
+<a name="ln489">            canned_msg(MSG_TOO_BERSERK);</a>
+<a name="ln490">        return true;</a>
+<a name="ln491">    }</a>
+<a name="ln492">    return false;</a>
+<a name="ln493">}</a>
+<a name="ln494"> </a>
+<a name="ln495">static bool _autoswitch_to_ranged()</a>
+<a name="ln496">{</a>
+<a name="ln497">    int item_slot;</a>
+<a name="ln498">    if (you.equip[EQ_WEAPON] == letter_to_index('a'))</a>
+<a name="ln499">        item_slot = letter_to_index('b');</a>
+<a name="ln500">    else if (you.equip[EQ_WEAPON] == letter_to_index('b'))</a>
+<a name="ln501">        item_slot = letter_to_index('a');</a>
+<a name="ln502">    else</a>
+<a name="ln503">        return false;</a>
+<a name="ln504"> </a>
+<a name="ln505">    const item_def&amp; launcher = you.inv[item_slot];</a>
+<a name="ln506">    if (!is_range_weapon(launcher))</a>
+<a name="ln507">        return false;</a>
+<a name="ln508">    if (none_of(you.inv.begin(), you.inv.end(), [&amp;launcher](const item_def&amp; it)</a>
+<a name="ln509">                { return it.launched_by(launcher);}))</a>
+<a name="ln510">    {</a>
+<a name="ln511">        return false;</a>
+<a name="ln512">    }</a>
+<a name="ln513"> </a>
+<a name="ln514">    if (!wield_weapon(true, item_slot))</a>
+<a name="ln515">        return false;</a>
+<a name="ln516"> </a>
+<a name="ln517">    you.turn_is_over = true;</a>
+<a name="ln518">    //XXX Hacky. Should use a delay instead.</a>
+<a name="ln519">    macro_buf_add(command_to_key(CMD_FIRE));</a>
+<a name="ln520">    return true;</a>
+<a name="ln521">}</a>
+<a name="ln522"> </a>
+<a name="ln523">int get_ammo_to_shoot(int item, dist &amp;target, bool teleport)</a>
+<a name="ln524">{</a>
+<a name="ln525">    if (fire_warn_if_impossible())</a>
+<a name="ln526">    {</a>
+<a name="ln527">        flush_input_buffer(FLUSH_ON_FAILURE);</a>
+<a name="ln528">        return -1;</a>
+<a name="ln529">    }</a>
+<a name="ln530"> </a>
+<a name="ln531">    if (Options.auto_switch &amp;&amp; you.m_quiver.get_fire_item() == -1</a>
+<a name="ln532">       &amp;&amp; _autoswitch_to_ranged())</a>
+<a name="ln533">    {</a>
+<a name="ln534">        return -1;</a>
+<a name="ln535">    }</a>
+<a name="ln536"> </a>
+<a name="ln537">    if (!_fire_choose_item_and_target(item, target, teleport))</a>
+<a name="ln538">        return -1;</a>
+<a name="ln539"> </a>
+<a name="ln540">    string warn;</a>
+<a name="ln541">    if (!_fire_validate_item(item, warn))</a>
+<a name="ln542">    {</a>
+<a name="ln543">        mpr(warn);</a>
+<a name="ln544">        return -1;</a>
+<a name="ln545">    }</a>
+<a name="ln546">    return item;</a>
+<a name="ln547">}</a>
+<a name="ln548"> </a>
+<a name="ln549">// Portal Projectile requires MP per shot.</a>
+<a name="ln550">bool is_pproj_active()</a>
+<a name="ln551">{</a>
+<a name="ln552">    return !you.confused() &amp;&amp; you.duration[DUR_PORTAL_PROJECTILE]</a>
+<a name="ln553">           &amp;&amp; enough_mp(1, true, false);</a>
+<a name="ln554">}</a>
+<a name="ln555"> </a>
+<a name="ln556">// If item == -1, prompt the user.</a>
+<a name="ln557">// If item passed, it will be put into the quiver.</a>
+<a name="ln558">void fire_thing(int item)</a>
+<a name="ln559">{</a>
+<a name="ln560">#ifdef USE_SOUND</a>
+<a name="ln561">    parse_sound(FIRE_PROMPT_SOUND);</a>
+<a name="ln562">#endif</a>
+<a name="ln563"> </a>
+<a name="ln564">    dist target;</a>
+<a name="ln565">    item = get_ammo_to_shoot(item, target, is_pproj_active());</a>
+<a name="ln566">    if (item == -1)</a>
+<a name="ln567">        return;</a>
+<a name="ln568"> </a>
+<a name="ln569">    if (check_warning_inscriptions(you.inv[item], OPER_FIRE)</a>
+<a name="ln570">        &amp;&amp; (!you.weapon()</a>
+<a name="ln571">            || is_launched(&amp;you, you.weapon(), you.inv[item]) != launch_retval::LAUNCHED</a>
+<a name="ln572">            || check_warning_inscriptions(*you.weapon(), OPER_FIRE)))</a>
+<a name="ln573">    {</a>
+<a name="ln574">        bolt beam;</a>
+<a name="ln575">        throw_it(beam, item, &amp;target);</a>
+<a name="ln576">    }</a>
+<a name="ln577">}</a>
+<a name="ln578"> </a>
+<a name="ln579">// Basically does what throwing used to do: throw an item without changing</a>
+<a name="ln580">// the quiver.</a>
+<a name="ln581">void throw_item_no_quiver()</a>
+<a name="ln582">{</a>
+<a name="ln583">    if (fire_warn_if_impossible())</a>
+<a name="ln584">    {</a>
+<a name="ln585">        flush_input_buffer(FLUSH_ON_FAILURE);</a>
+<a name="ln586">        return;</a>
+<a name="ln587">    }</a>
+<a name="ln588"> </a>
+<a name="ln589">    if (inv_count() &lt; 1)</a>
+<a name="ln590">    {</a>
+<a name="ln591">        canned_msg(MSG_NOTHING_CARRIED);</a>
+<a name="ln592">        return;</a>
+<a name="ln593">    }</a>
+<a name="ln594"> </a>
+<a name="ln595">    string warn;</a>
+<a name="ln596">    int slot = _fire_prompt_for_item();</a>
+<a name="ln597"> </a>
+<a name="ln598">    if (slot == -1)</a>
+<a name="ln599">    {</a>
+<a name="ln600">        canned_msg(MSG_OK);</a>
+<a name="ln601">        return;</a>
+<a name="ln602">    }</a>
+<a name="ln603"> </a>
+<a name="ln604">    if (!_fire_validate_item(slot, warn))</a>
+<a name="ln605">    {</a>
+<a name="ln606">        mpr(warn);</a>
+<a name="ln607">        return;</a>
+<a name="ln608">    }</a>
+<a name="ln609"> </a>
+<a name="ln610">    dist target;</a>
+<a name="ln611">    if (!_fire_choose_item_and_target(slot, target, is_pproj_active(), false))</a>
+<a name="ln612">        return;</a>
+<a name="ln613"> </a>
+<a name="ln614">    bolt beam;</a>
+<a name="ln615">    throw_it(beam, slot, &amp;target);</a>
+<a name="ln616">}</a>
+<a name="ln617"> </a>
+<a name="ln618">static bool _setup_missile_beam(const actor *agent, bolt &amp;beam, item_def &amp;item,</a>
+<a name="ln619">                                string &amp;ammo_name, bool &amp;returning)</a>
+<a name="ln620">{</a>
+<a name="ln621">    const auto cglyph = get_item_glyph(item);</a>
+<a name="ln622">    beam.glyph  = cglyph.ch;</a>
+<a name="ln623">    beam.colour = cglyph.col;</a>
+<a name="ln624">    beam.was_missile = true;</a>
+<a name="ln625"> </a>
+<a name="ln626">    item_def *launcher  = agent-&gt;weapon(0);</a>
+<a name="ln627">    if (launcher &amp;&amp; !item.launched_by(*launcher))</a>
+<a name="ln628">        launcher = nullptr;</a>
+<a name="ln629"> </a>
+<a name="ln630">    if (agent-&gt;is_player())</a>
+<a name="ln631">    {</a>
+<a name="ln632">        beam.attitude      = ATT_FRIENDLY;</a>
+<a name="ln633">        beam.thrower       = KILL_YOU_MISSILE;</a>
+<a name="ln634">    }</a>
+<a name="ln635">    else</a>
+<a name="ln636">    {</a>
+<a name="ln637">        const monster* mon = agent-&gt;as_monster();</a>
+<a name="ln638"> </a>
+<a name="ln639">        beam.attitude      = mons_attitude(*mon);</a>
+<a name="ln640">        beam.thrower       = KILL_MON_MISSILE;</a>
+<a name="ln641">    }</a>
+<a name="ln642"> </a>
+<a name="ln643">    beam.range        = you.current_vision;</a>
+<a name="ln644">    beam.source_id    = agent-&gt;mid;</a>
+<a name="ln645">    beam.item         = &amp;item;</a>
+<a name="ln646">    beam.source       = agent-&gt;pos();</a>
+<a name="ln647">    beam.flavour      = BEAM_MISSILE;</a>
+<a name="ln648">    beam.pierce       = is_penetrating_attack(*agent, launcher, item);</a>
+<a name="ln649">    beam.aux_source.clear();</a>
+<a name="ln650"> </a>
+<a name="ln651">    beam.name = item.name(DESC_PLAIN, false, false, false);</a>
+<a name="ln652">    ammo_name = item.name(DESC_PLAIN);</a>
+<a name="ln653"> </a>
+<a name="ln654">    const unrandart_entry* entry = launcher &amp;&amp; is_unrandom_artefact(*launcher)</a>
+<a name="ln655">        ? get_unrand_entry(launcher-&gt;unrand_idx) : nullptr;</a>
+<a name="ln656"> </a>
+<a name="ln657">    if (entry &amp;&amp; entry-&gt;launch)</a>
+<a name="ln658">    {</a>
+<a name="ln659">        setup_missile_type sm =</a>
+<a name="ln660">            entry-&gt;launch(launcher, &amp;beam, &amp;ammo_name,</a>
+<a name="ln661">                                     &amp;returning);</a>
+<a name="ln662"> </a>
+<a name="ln663">        switch (sm)</a>
+<a name="ln664">        {</a>
+<a name="ln665">        case SM_CONTINUE:</a>
+<a name="ln666">            break;</a>
+<a name="ln667">        case SM_FINISHED:</a>
+<a name="ln668">            return false;</a>
+<a name="ln669">        case SM_CANCEL:</a>
+<a name="ln670">            return true;</a>
+<a name="ln671">        }</a>
+<a name="ln672">    }</a>
+<a name="ln673"> </a>
+<a name="ln674">    returning = item.base_type == OBJ_MISSILES</a>
+<a name="ln675">                &amp;&amp; item.sub_type == MI_BOOMERANG;</a>
+<a name="ln676"> </a>
+<a name="ln677">    if (item.base_type == OBJ_MISSILES</a>
+<a name="ln678">        &amp;&amp; get_ammo_brand(item) == SPMSL_EXPLODING)</a>
+<a name="ln679">    {</a>
+<a name="ln680">        bolt *expl = new bolt(beam);</a>
+<a name="ln681"> </a>
+<a name="ln682">        expl-&gt;is_explosion = true;</a>
+<a name="ln683">        expl-&gt;damage       = dice_def(2, 5);</a>
+<a name="ln684">        expl-&gt;ex_size      = 1;</a>
+<a name="ln685"> </a>
+<a name="ln686">        if (beam.flavour == BEAM_MISSILE)</a>
+<a name="ln687">        {</a>
+<a name="ln688">            expl-&gt;flavour = BEAM_FRAG;</a>
+<a name="ln689">            expl-&gt;name   += &quot; fragments&quot;;</a>
+<a name="ln690"> </a>
+<a name="ln691">            const string short_name =</a>
+<a name="ln692">                item.name(DESC_BASENAME, true, false, false, false,</a>
+<a name="ln693">                          ISFLAG_IDENT_MASK | ISFLAG_COSMETIC_MASK);</a>
+<a name="ln694"> </a>
+<a name="ln695">            expl-&gt;name = replace_all(expl-&gt;name, item.name(DESC_PLAIN),</a>
+<a name="ln696">                                     short_name);</a>
+<a name="ln697">        }</a>
+<a name="ln698">        expl-&gt;name = &quot;explosion of &quot; + expl-&gt;name;</a>
+<a name="ln699"> </a>
+<a name="ln700">        beam.special_explosion = expl;</a>
+<a name="ln701">    }</a>
+<a name="ln702"> </a>
+<a name="ln703">    if (!is_artefact(item))</a>
+<a name="ln704">        ammo_name = article_a(ammo_name, true);</a>
+<a name="ln705">    else</a>
+<a name="ln706">        ammo_name = &quot;the &quot; + ammo_name;</a>
+<a name="ln707"> </a>
+<a name="ln708">    return false;</a>
+<a name="ln709">}</a>
+<a name="ln710"> </a>
+<a name="ln711">static void _throw_noise(actor* act, const item_def &amp;ammo)</a>
+<a name="ln712">{</a>
+<a name="ln713">    ASSERT(act); // XXX: change to actor &amp;act</a>
+<a name="ln714">    const item_def* launcher = act-&gt;weapon();</a>
+<a name="ln715"> </a>
+<a name="ln716">    if (launcher == nullptr || launcher-&gt;base_type != OBJ_WEAPONS)</a>
+<a name="ln717">        return;</a>
+<a name="ln718"> </a>
+<a name="ln719">    if (is_launched(act, launcher, ammo) != launch_retval::LAUNCHED)</a>
+<a name="ln720">        return;</a>
+<a name="ln721"> </a>
+<a name="ln722">    int         level = 0;</a>
+<a name="ln723">    const char* msg   = nullptr;</a>
+<a name="ln724"> </a>
+<a name="ln725">    switch (launcher-&gt;sub_type)</a>
+<a name="ln726">    {</a>
+<a name="ln727">    case WPN_HUNTING_SLING:</a>
+<a name="ln728">        level = 1;</a>
+<a name="ln729">        msg   = &quot;You hear a whirring sound.&quot;;</a>
+<a name="ln730">        break;</a>
+<a name="ln731">    case WPN_FUSTIBALUS:</a>
+<a name="ln732">        level = 3;</a>
+<a name="ln733">        msg   = &quot;You hear a loud whirring sound.&quot;;</a>
+<a name="ln734">        break;</a>
+<a name="ln735">    case WPN_SHORTBOW:</a>
+<a name="ln736">        level = 5;</a>
+<a name="ln737">        msg   = &quot;You hear a twanging sound.&quot;;</a>
+<a name="ln738">        break;</a>
+<a name="ln739">    case WPN_LONGBOW:</a>
+<a name="ln740">        level = 6;</a>
+<a name="ln741">        msg   = &quot;You hear a loud twanging sound.&quot;;</a>
+<a name="ln742">        break;</a>
+<a name="ln743">    case WPN_HAND_CROSSBOW:</a>
+<a name="ln744">        level = 2;</a>
+<a name="ln745">        msg   = &quot;You hear a quiet thunk.&quot;;</a>
+<a name="ln746">        break;</a>
+<a name="ln747">    case WPN_ARBALEST:</a>
+<a name="ln748">        level = 7;</a>
+<a name="ln749">        msg   = &quot;You hear a thunk.&quot;;</a>
+<a name="ln750">        break;</a>
+<a name="ln751">    case WPN_TRIPLE_CROSSBOW:</a>
+<a name="ln752">        level = 9;</a>
+<a name="ln753">        msg   = &quot;You hear a triplet of thunks.&quot;;</a>
+<a name="ln754">        break;</a>
+<a name="ln755"> </a>
+<a name="ln756">    default:</a>
+<a name="ln757">        die(&quot;Invalid launcher '%s'&quot;,</a>
+<a name="ln758">                 launcher-&gt;name(DESC_PLAIN).c_str());</a>
+<a name="ln759">        return;</a>
+<a name="ln760">    }</a>
+<a name="ln761">    if (act-&gt;is_player() || you.can_see(*act))</a>
+<a name="ln762">        msg = nullptr;</a>
+<a name="ln763"> </a>
+<a name="ln764">    noisy(level, act-&gt;pos(), msg, act-&gt;mid);</a>
+<a name="ln765">}</a>
+<a name="ln766"> </a>
+<a name="ln767">// throw_it - currently handles player throwing only. Monster</a>
+<a name="ln768">// throwing is handled in mon-act:_mons_throw()</a>
+<a name="ln769">// Note: If teleport is true, assume that pbolt is already set up,</a>
+<a name="ln770">// and teleport the projectile onto the square.</a>
+<a name="ln771">//</a>
+<a name="ln772">// Return value is only relevant if dummy_target is non-nullptr, and returns</a>
+<a name="ln773">// true if dummy_target is hit.</a>
+<a name="ln774">bool throw_it(bolt &amp;pbolt, int throw_2, dist *target)</a>
+<a name="ln775">{</a>
+<a name="ln776">    dist thr;</a>
+<a name="ln777">    bool returning   = false;    // Item can return to pack.</a>
+<a name="ln778">    bool did_return  = false;    // Returning item actually does return to pack.</a>
+<a name="ln779">    const bool teleport = is_pproj_active();</a>
+<a name="ln780"> </a>
+<a name="ln781">    if (you.confused())</a>
+<a name="ln782">    {</a>
+<a name="ln783">        thr.target = you.pos();</a>
+<a name="ln784">        thr.target.x += random2(13) - 6;</a>
+<a name="ln785">        thr.target.y += random2(13) - 6;</a>
+<a name="ln786">        thr.isValid = true;</a>
+<a name="ln787">    }</a>
+<a name="ln788">    else if (target)</a>
+<a name="ln789">        thr = *target;</a>
+<a name="ln790">    else if (pbolt.target.zero())</a>
+<a name="ln791">    {</a>
+<a name="ln792">        direction_chooser_args args;</a>
+<a name="ln793">        args.mode = TARG_HOSTILE;</a>
+<a name="ln794">        direction(thr, args);</a>
+<a name="ln795"> </a>
+<a name="ln796">        if (!thr.isValid)</a>
+<a name="ln797">        {</a>
+<a name="ln798">            if (thr.isCancel)</a>
+<a name="ln799">                canned_msg(MSG_OK);</a>
+<a name="ln800"> </a>
+<a name="ln801">            return false;</a>
+<a name="ln802">        }</a>
+<a name="ln803">    }</a>
+<a name="ln804">    pbolt.set_target(thr);</a>
+<a name="ln805"> </a>
+<a name="ln806">    item_def&amp; thrown = you.inv[throw_2];</a>
+<a name="ln807">    ASSERT(thrown.defined());</a>
+<a name="ln808"> </a>
+<a name="ln809">    // Figure out if we're thrown or launched.</a>
+<a name="ln810">    const launch_retval projected = is_launched(&amp;you, you.weapon(), thrown);</a>
+<a name="ln811"> </a>
+<a name="ln812">    // Making a copy of the item: changed only for venom launchers.</a>
+<a name="ln813">    item_def item = thrown;</a>
+<a name="ln814">    item.quantity = 1;</a>
+<a name="ln815">    item.slot     = index_to_letter(item.link);</a>
+<a name="ln816"> </a>
+<a name="ln817">    string ammo_name;</a>
+<a name="ln818"> </a>
+<a name="ln819">    if (_setup_missile_beam(&amp;you, pbolt, item, ammo_name, returning))</a>
+<a name="ln820">    {</a>
+<a name="ln821">        you.turn_is_over = false;</a>
+<a name="ln822">        return false;</a>
+<a name="ln823">    }</a>
+<a name="ln824"> </a>
+<a name="ln825">    // Get the ammo/weapon type. Convenience.</a>
+<a name="ln826">    const object_class_type wepClass = thrown.base_type;</a>
+<a name="ln827">    const int               wepType  = thrown.sub_type;</a>
+<a name="ln828"> </a>
+<a name="ln829">    // Don't trace at all when confused.</a>
+<a name="ln830">    // Give the player a chance to be warned about helpless targets when using</a>
+<a name="ln831">    // Portaled Projectile, but obviously don't trace a path.</a>
+<a name="ln832">    bool cancelled = false;</a>
+<a name="ln833">    if (!you.confused())</a>
+<a name="ln834">    {</a>
+<a name="ln835">        // Kludgy. Ideally this would handled by the same code.</a>
+<a name="ln836">        // Perhaps some notion of a zero length bolt, with the source and</a>
+<a name="ln837">        // target both set to the target?</a>
+<a name="ln838">        if (teleport)</a>
+<a name="ln839">        {</a>
+<a name="ln840">            // This block is roughly equivalent to bolt::affect_cell for</a>
+<a name="ln841">            // normal projectiles.</a>
+<a name="ln842">            monster *m = monster_at(thr.target);</a>
+<a name="ln843">            if (m)</a>
+<a name="ln844">                cancelled = stop_attack_prompt(m, false, thr.target);</a>
+<a name="ln845"> </a>
+<a name="ln846">            if (!cancelled &amp;&amp; (pbolt.is_explosion || pbolt.special_explosion))</a>
+<a name="ln847">            {</a>
+<a name="ln848">                for (adjacent_iterator ai(thr.target); ai; ++ai)</a>
+<a name="ln849">                {</a>
+<a name="ln850">                    if (cancelled)</a>
+<a name="ln851">                        break;</a>
+<a name="ln852">                    monster *am = monster_at(*ai);</a>
+<a name="ln853">                    if (am)</a>
+<a name="ln854">                        cancelled = stop_attack_prompt(am, false, *ai);</a>
+<a name="ln855">                    else if (*ai == you.pos())</a>
+<a name="ln856">                    {</a>
+<a name="ln857">                        cancelled = !yesno(&quot;That is likely to hit you. Continue anyway?&quot;,</a>
+<a name="ln858">                                           false, 'n');</a>
+<a name="ln859">                    }</a>
+<a name="ln860">                }</a>
+<a name="ln861">            }</a>
+<a name="ln862">        }</a>
+<a name="ln863">        else</a>
+<a name="ln864">        {</a>
+<a name="ln865">            // Set values absurdly high to make sure the tracer will</a>
+<a name="ln866">            // complain if we're attempting to fire through allies.</a>
+<a name="ln867">            pbolt.damage = dice_def(1, 100);</a>
+<a name="ln868"> </a>
+<a name="ln869">            // Init tracer variables.</a>
+<a name="ln870">            pbolt.foe_info.reset();</a>
+<a name="ln871">            pbolt.friend_info.reset();</a>
+<a name="ln872">            pbolt.foe_ratio = 100;</a>
+<a name="ln873">            pbolt.is_tracer = true;</a>
+<a name="ln874"> </a>
+<a name="ln875">            pbolt.fire();</a>
+<a name="ln876"> </a>
+<a name="ln877">            cancelled = pbolt.beam_cancelled;</a>
+<a name="ln878"> </a>
+<a name="ln879">            pbolt.hit    = 0;</a>
+<a name="ln880">            pbolt.damage = dice_def();</a>
+<a name="ln881">        }</a>
+<a name="ln882">    }</a>
+<a name="ln883"> </a>
+<a name="ln884">    // Should only happen if the player answered 'n' to one of those</a>
+<a name="ln885">    // &quot;Fire through friendly?&quot; prompts.</a>
+<a name="ln886">    if (cancelled)</a>
+<a name="ln887">    {</a>
+<a name="ln888">        you.turn_is_over = false;</a>
+<a name="ln889">        return false;</a>
+<a name="ln890">    }</a>
+<a name="ln891"> </a>
+<a name="ln892">    pbolt.is_tracer = false;</a>
+<a name="ln893"> </a>
+<a name="ln894">    bool unwielded = false;</a>
+<a name="ln895">    if (throw_2 == you.equip[EQ_WEAPON] &amp;&amp; thrown.quantity == 1)</a>
+<a name="ln896">    {</a>
+<a name="ln897">        if (!wield_weapon(true, SLOT_BARE_HANDS, true, false, true, false))</a>
+<a name="ln898">            return false;</a>
+<a name="ln899"> </a>
+<a name="ln900">        if (!thrown.quantity)</a>
+<a name="ln901">            return false; // destroyed when unequipped (fragile)</a>
+<a name="ln902"> </a>
+<a name="ln903">        unwielded = true;</a>
+<a name="ln904">    }</a>
+<a name="ln905"> </a>
+<a name="ln906">    // Now start real firing!</a>
+<a name="ln907">    origin_set_unknown(item);</a>
+<a name="ln908"> </a>
+<a name="ln909">    // bloodpots &amp; chunks need special handling.</a>
+<a name="ln910">    if (thrown.quantity &gt; 1 &amp;&amp; is_perishable_stack(item))</a>
+<a name="ln911">    {</a>
+<a name="ln912">        // Initialise thrown item with oldest item in stack.</a>
+<a name="ln913">        const int rot_timer = remove_oldest_perishable_item(thrown)</a>
+<a name="ln914">                              - you.elapsed_time;</a>
+<a name="ln915">        item.props.clear();</a>
+<a name="ln916">        init_perishable_stack(item, rot_timer);</a>
+<a name="ln917">    }</a>
+<a name="ln918"> </a>
+<a name="ln919">    // Even though direction is allowed, we're throwing so we</a>
+<a name="ln920">    // want to use tx, ty to make the missile fly to map edge.</a>
+<a name="ln921">    if (!teleport)</a>
+<a name="ln922">        pbolt.set_target(thr);</a>
+<a name="ln923"> </a>
+<a name="ln924">    const int bow_brand = (projected == launch_retval::LAUNCHED)</a>
+<a name="ln925">                          ? get_weapon_brand(*you.weapon())</a>
+<a name="ln926">                          : SPWPN_NORMAL;</a>
+<a name="ln927">    const int ammo_brand = get_ammo_brand(item);</a>
+<a name="ln928"> </a>
+<a name="ln929">    switch (projected)</a>
+<a name="ln930">    {</a>
+<a name="ln931">    case launch_retval::LAUNCHED:</a>
+<a name="ln932">    {</a>
+<a name="ln933">        const item_def *launcher = you.weapon();</a>
+<a name="ln934">        ASSERT(launcher);</a>
+<a name="ln935">        practise_launching(*launcher);</a>
+<a name="ln936">        if (is_unrandom_artefact(*launcher)</a>
+<a name="ln937">            &amp;&amp; get_unrand_entry(launcher-&gt;unrand_idx)-&gt;type_name)</a>
+<a name="ln938">        {</a>
+<a name="ln939">            count_action(CACT_FIRE, launcher-&gt;unrand_idx);</a>
+<a name="ln940">        }</a>
+<a name="ln941">        else</a>
+<a name="ln942">            count_action(CACT_FIRE, launcher-&gt;sub_type);</a>
+<a name="ln943">        break;</a>
+<a name="ln944">    }</a>
+<a name="ln945">    case launch_retval::THROWN:</a>
+<a name="ln946">        practise_throwing((missile_type)wepType);</a>
+<a name="ln947">        count_action(CACT_THROW, wepType, OBJ_MISSILES);</a>
+<a name="ln948">        break;</a>
+<a name="ln949">    case launch_retval::FUMBLED:</a>
+<a name="ln950">        break;</a>
+<a name="ln951">    case launch_retval::BUGGY:</a>
+<a name="ln952">        dprf(&quot;Unknown launch type for weapon.&quot;); // should never happen :)</a>
+<a name="ln953">        break;</a>
+<a name="ln954">    }</a>
+<a name="ln955"> </a>
+<a name="ln956">    // check for returning ammo</a>
+<a name="ln957">    if (teleport)</a>
+<a name="ln958">        returning = false;</a>
+<a name="ln959"> </a>
+<a name="ln960">    you.time_taken = you.attack_delay(&amp;item).roll();</a>
+<a name="ln961"> </a>
+<a name="ln962">    // Create message.</a>
+<a name="ln963">    mprf(&quot;You %s%s %s.&quot;,</a>
+<a name="ln964">          teleport ? &quot;magically &quot; : &quot;&quot;,</a>
+<a name="ln965">          (projected == launch_retval::FUMBLED ? &quot;toss away&quot; :</a>
+<a name="ln966">           projected == launch_retval::LAUNCHED ? &quot;shoot&quot; : &quot;throw&quot;),</a>
+<a name="ln967">          ammo_name.c_str());</a>
+<a name="ln968"> </a>
+<a name="ln969">    // Ensure we're firing a 'missile'-type beam.</a>
+<a name="ln970">    pbolt.pierce    = false;</a>
+<a name="ln971">    pbolt.is_tracer = false;</a>
+<a name="ln972"> </a>
+<a name="ln973">    pbolt.loudness = item.base_type == OBJ_MISSILES</a>
+<a name="ln974">                   ? ammo_type_damage(item.sub_type) / 3</a>
+<a name="ln975">                   : 0; // Maybe not accurate, but reflects the damage.</a>
+<a name="ln976"> </a>
+<a name="ln977">    // Mark this item as thrown if it's a missile, so that we'll pick it up</a>
+<a name="ln978">    // when we walk over it.</a>
+<a name="ln979">    if (wepClass == OBJ_MISSILES || wepClass == OBJ_WEAPONS)</a>
+<a name="ln980">        item.flags |= ISFLAG_THROWN;</a>
+<a name="ln981"> </a>
+<a name="ln982">    pbolt.hit = teleport ? random2(you.attribute[ATTR_PORTAL_PROJECTILE] / 4)</a>
+<a name="ln983">                         : 0;</a>
+<a name="ln984"> </a>
+<a name="ln985">    bool hit = false;</a>
+<a name="ln986">    if (teleport)</a>
+<a name="ln987">    {</a>
+<a name="ln988">        // Violating encapsulation somewhat...oh well.</a>
+<a name="ln989">        pbolt.use_target_as_pos = true;</a>
+<a name="ln990">        pbolt.affect_cell();</a>
+<a name="ln991">        pbolt.affect_endpoint();</a>
+<a name="ln992">        if (!did_return)</a>
+<a name="ln993">            pbolt.drop_object();</a>
+<a name="ln994">        // Costs 1 MP per shot.</a>
+<a name="ln995">        dec_mp(1);</a>
+<a name="ln996">    }</a>
+<a name="ln997">    else</a>
+<a name="ln998">    {</a>
+<a name="ln999">        if (crawl_state.game_is_hints())</a>
+<a name="ln1000">            Hints.hints_throw_counter++;</a>
+<a name="ln1001"> </a>
+<a name="ln1002">        // Dropping item copy, since the launched item might be different.</a>
+<a name="ln1003">        pbolt.drop_item = !returning;</a>
+<a name="ln1004">        pbolt.fire();</a>
+<a name="ln1005"> </a>
+<a name="ln1006">        hit = !pbolt.hit_verb.empty();</a>
+<a name="ln1007"> </a>
+<a name="ln1008">        // The item can be destroyed before returning.</a>
+<a name="ln1009">        if (returning &amp;&amp; thrown_object_destroyed(&amp;item))</a>
+<a name="ln1010">            returning = false;</a>
+<a name="ln1011">    }</a>
+<a name="ln1012"> </a>
+<a name="ln1013">    if (bow_brand == SPWPN_CHAOS || ammo_brand == SPMSL_CHAOS)</a>
+<a name="ln1014">        did_god_conduct(DID_CHAOS, 2 + random2(3), bow_brand == SPWPN_CHAOS);</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    if (bow_brand == SPWPN_SPEED)</a>
+<a name="ln1017">        did_god_conduct(DID_HASTY, 1, true);</a>
+<a name="ln1018"> </a>
+<a name="ln1019">    if (ammo_brand == SPMSL_FRENZY)</a>
+<a name="ln1020">        did_god_conduct(DID_HASTY, 6 + random2(3), true);</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    if (returning)</a>
+<a name="ln1023">    {</a>
+<a name="ln1024">        // Fire beam in reverse.</a>
+<a name="ln1025">        pbolt.setup_retrace();</a>
+<a name="ln1026">        viewwindow();</a>
+<a name="ln1027">        pbolt.fire();</a>
+<a name="ln1028">    }</a>
+<a name="ln1029">    else</a>
+<a name="ln1030">    {</a>
+<a name="ln1031">        dec_inv_item_quantity(throw_2, 1);</a>
+<a name="ln1032">        if (unwielded)</a>
+<a name="ln1033">            canned_msg(MSG_EMPTY_HANDED_NOW);</a>
+<a name="ln1034">    }</a>
+<a name="ln1035"> </a>
+<a name="ln1036">    _throw_noise(&amp;you, thrown);</a>
+<a name="ln1037"> </a>
+<a name="ln1038">    // ...any monster nearby can see that something has been thrown, even</a>
+<a name="ln1039">    // if it didn't make any noise.</a>
+<a name="ln1040">    alert_nearby_monsters();</a>
+<a name="ln1041"> </a>
+<a name="ln1042">    you.turn_is_over = true;</a>
+<a name="ln1043"> </a>
+<a name="ln1044">    if (pbolt.special_explosion != nullptr)</a>
+<a name="ln1045">        delete pbolt.special_explosion;</a>
+<a name="ln1046"> </a>
+<a name="ln1047">    if (!teleport</a>
+<a name="ln1048">        &amp;&amp; projected != launch_retval::FUMBLED</a>
+<a name="ln1049">        &amp;&amp; will_have_passive(passive_t::shadow_attacks)</a>
+<a name="ln1050">        &amp;&amp; thrown.base_type == OBJ_MISSILES</a>
+<a name="ln1051">        &amp;&amp; thrown.sub_type != MI_DART)</a>
+<a name="ln1052">    {</a>
+<a name="ln1053">        dithmenos_shadow_throw(thr, item);</a>
+<a name="ln1054">    }</a>
+<a name="ln1055"> </a>
+<a name="ln1056">    return hit;</a>
+<a name="ln1057">}</a>
+<a name="ln1058"> </a>
+<a name="ln1059">void setup_monster_throw_beam(monster* mons, bolt &amp;beam)</a>
+<a name="ln1060">{</a>
+<a name="ln1061">    beam.range = you.current_vision;</a>
+<a name="ln1062">    beam.source_id = mons-&gt;mid;</a>
+<a name="ln1063"> </a>
+<a name="ln1064">    beam.glyph   = dchar_glyph(DCHAR_FIRED_MISSILE);</a>
+<a name="ln1065">    beam.flavour = BEAM_MISSILE;</a>
+<a name="ln1066">    beam.thrower = KILL_MON_MISSILE;</a>
+<a name="ln1067">    beam.aux_source.clear();</a>
+<a name="ln1068">    beam.pierce  = false;</a>
+<a name="ln1069">}</a>
+<a name="ln1070"> </a>
+<a name="ln1071">// msl is the item index of the thrown missile (or weapon).</a>
+<a name="ln1072">bool mons_throw(monster* mons, bolt &amp;beam, int msl, bool teleport)</a>
+<a name="ln1073">{</a>
+<a name="ln1074">    string ammo_name;</a>
+<a name="ln1075"> </a>
+<a name="ln1076">    bool returning = false;</a>
+<a name="ln1077"> </a>
+<a name="ln1078">    // Some initial convenience &amp; initializations.</a>
+<a name="ln1079">    ASSERT(mitm[msl].base_type == OBJ_MISSILES);</a>
+<a name="ln1080"> </a>
+<a name="ln1081">    const int weapon    = mons-&gt;inv[MSLOT_WEAPON];</a>
+<a name="ln1082"> </a>
+<a name="ln1083">    mon_inv_type slot = get_mon_equip_slot(mons, mitm[msl]);</a>
+<a name="ln1084">    ASSERT(slot != NUM_MONSTER_SLOTS);</a>
+<a name="ln1085"> </a>
+<a name="ln1086">    // Energy is already deducted for the spell cast, if using portal projectile</a>
+<a name="ln1087">    // FIXME: should it use this delay and not the spell delay?</a>
+<a name="ln1088">    if (!teleport)</a>
+<a name="ln1089">    {</a>
+<a name="ln1090">        const int energy = mons-&gt;action_energy(EUT_MISSILE);</a>
+<a name="ln1091">        const int delay = mons-&gt;attack_delay(&amp;mitm[msl]).roll();</a>
+<a name="ln1092">        ASSERT(energy &gt; 0);</a>
+<a name="ln1093">        ASSERT(delay &gt; 0);</a>
+<a name="ln1094">        mons-&gt;speed_increment -= div_rand_round(energy * delay, 10);</a>
+<a name="ln1095">    }</a>
+<a name="ln1096"> </a>
+<a name="ln1097">    // Dropping item copy, since the launched item might be different.</a>
+<a name="ln1098">    item_def item = mitm[msl];</a>
+<a name="ln1099">    item.quantity = 1;</a>
+<a name="ln1100"> </a>
+<a name="ln1101">    if (_setup_missile_beam(mons, beam, item, ammo_name, returning))</a>
+<a name="ln1102">        return false;</a>
+<a name="ln1103"> </a>
+<a name="ln1104">    beam.aimed_at_spot |= returning;</a>
+<a name="ln1105"> </a>
+<a name="ln1106">    const launch_retval projected =</a>
+<a name="ln1107">        is_launched(mons, mons-&gt;mslot_item(MSLOT_WEAPON),</a>
+<a name="ln1108">                    mitm[msl]);</a>
+<a name="ln1109"> </a>
+<a name="ln1110">    if (projected == launch_retval::THROWN)</a>
+<a name="ln1111">        returning = returning &amp;&amp; !teleport;</a>
+<a name="ln1112"> </a>
+<a name="ln1113">    // Identify before throwing, so we don't get different</a>
+<a name="ln1114">    // messages for first and subsequent missiles.</a>
+<a name="ln1115">    if (mons-&gt;observable())</a>
+<a name="ln1116">    {</a>
+<a name="ln1117">        if (projected == launch_retval::LAUNCHED</a>
+<a name="ln1118">               &amp;&amp; item_type_known(mitm[weapon])</a>
+<a name="ln1119">            || projected == launch_retval::THROWN</a>
+<a name="ln1120">               &amp;&amp; mitm[msl].base_type == OBJ_MISSILES)</a>
+<a name="ln1121">        {</a>
+<a name="ln1122">            set_ident_flags(mitm[msl], ISFLAG_KNOW_TYPE);</a>
+<a name="ln1123">            set_ident_flags(item, ISFLAG_KNOW_TYPE);</a>
+<a name="ln1124">        }</a>
+<a name="ln1125">    }</a>
+<a name="ln1126"> </a>
+<a name="ln1127">    // Now, if a monster is, for some reason, throwing something really</a>
+<a name="ln1128">    // stupid, it will have baseHit of 0 and damage of 0. Ah well.</a>
+<a name="ln1129">    string msg = mons-&gt;name(DESC_THE);</a>
+<a name="ln1130">    if (teleport)</a>
+<a name="ln1131">        msg += &quot; magically&quot;;</a>
+<a name="ln1132">    msg += ((projected == launch_retval::LAUNCHED) ? &quot; shoots &quot; : &quot; throws &quot;);</a>
+<a name="ln1133"> </a>
+<a name="ln1134">    if (!beam.name.empty() &amp;&amp; projected == launch_retval::LAUNCHED)</a>
+<a name="ln1135">        msg += article_a(beam.name);</a>
+<a name="ln1136">    else</a>
+<a name="ln1137">    {</a>
+<a name="ln1138">        // build shoot message</a>
+<a name="ln1139">        msg += item.name(DESC_A, false, false, false);</a>
+<a name="ln1140"> </a>
+<a name="ln1141">        // build beam name</a>
+<a name="ln1142">        beam.name = item.name(DESC_PLAIN, false, false, false);</a>
+<a name="ln1143">    }</a>
+<a name="ln1144">    msg += &quot;.&quot;;</a>
+<a name="ln1145"> </a>
+<a name="ln1146">    if (mons-&gt;observable())</a>
+<a name="ln1147">    {</a>
+<a name="ln1148">        mons-&gt;flags |= MF_SEEN_RANGED;</a>
+<a name="ln1149">        mpr(msg);</a>
+<a name="ln1150">    }</a>
+<a name="ln1151"> </a>
+<a name="ln1152">    _throw_noise(mons, item);</a>
+<a name="ln1153"> </a>
+<a name="ln1154">    beam.drop_item = !returning;</a>
+<a name="ln1155"> </a>
+<a name="ln1156">    // Redraw the screen before firing, in case the monster just</a>
+<a name="ln1157">    // came into view and the screen hasn't been updated yet.</a>
+<a name="ln1158">    viewwindow();</a>
+<a name="ln1159">    if (teleport)</a>
+<a name="ln1160">    {</a>
+<a name="ln1161">        beam.use_target_as_pos = true;</a>
+<a name="ln1162">        beam.affect_cell();</a>
+<a name="ln1163">        beam.affect_endpoint();</a>
+<a name="ln1164">        if (!returning)</a>
+<a name="ln1165">            beam.drop_object();</a>
+<a name="ln1166">    }</a>
+<a name="ln1167">    else</a>
+<a name="ln1168">    {</a>
+<a name="ln1169">        beam.fire();</a>
+<a name="ln1170"> </a>
+<a name="ln1171">        // The item can be destroyed before returning.</a>
+<a name="ln1172">        if (returning &amp;&amp; thrown_object_destroyed(&amp;item))</a>
+<a name="ln1173">            returning = false;</a>
+<a name="ln1174">    }</a>
+<a name="ln1175"> </a>
+<a name="ln1176">    if (returning)</a>
+<a name="ln1177">    {</a>
+<a name="ln1178">        // Fire beam in reverse.</a>
+<a name="ln1179">        beam.setup_retrace();</a>
+<a name="ln1180">        viewwindow();</a>
+<a name="ln1181">        beam.fire();</a>
+<a name="ln1182"> </a>
+<a name="ln1183">        // Only print a message if you can see the target or the thrower.</a>
+<a name="ln1184">        // Otherwise we get &quot;The weapon returns whence it came from!&quot; regardless.</a>
+<a name="ln1185">        if (you.see_cell(beam.target) || you.can_see(*mons))</a>
+<a name="ln1186">        {</a>
+<a name="ln1187">            msg::stream &lt;&lt; &quot;The weapon returns &quot;</a>
+<a name="ln1188">                        &lt;&lt; (you.can_see(*mons)?</a>
+<a name="ln1189">                              (&quot;to &quot; + mons-&gt;name(DESC_THE))</a>
+<a name="ln1190">                            : &quot;from whence it came&quot;)</a>
+<a name="ln1191">                        &lt;&lt; &quot;!&quot; &lt;&lt; endl;</a>
+<a name="ln1192">        }</a>
+<a name="ln1193"> </a>
+<a name="ln1194">        // Player saw the item return.</a>
+<a name="ln1195">        if (!is_artefact(item))</a>
+<a name="ln1196">            set_ident_flags(mitm[msl], ISFLAG_KNOW_TYPE);</a>
+<a name="ln1197">    }</a>
+<a name="ln1198">    else if (dec_mitm_item_quantity(msl, 1))</a>
+<a name="ln1199">        mons-&gt;inv[slot] = NON_ITEM;</a>
+<a name="ln1200"> </a>
+<a name="ln1201">    if (beam.special_explosion != nullptr)</a>
+<a name="ln1202">        delete beam.special_explosion;</a>
+<a name="ln1203"> </a>
+<a name="ln1204">    return true;</a>
+<a name="ln1205">}</a>
+<a name="ln1206"> </a>
+<a name="ln1207">bool thrown_object_destroyed(item_def *item)</a>
+<a name="ln1208">{</a>
+<a name="ln1209">    ASSERT(item != nullptr);</a>
+<a name="ln1210"> </a>
+<a name="ln1211">    if (item-&gt;base_type != OBJ_MISSILES)</a>
+<a name="ln1212">        return false;</a>
+<a name="ln1213"> </a>
+<a name="ln1214">    if (ammo_always_destroyed(*item))</a>
+<a name="ln1215">        return true;</a>
+<a name="ln1216"> </a>
+<a name="ln1217">    if (ammo_never_destroyed(*item))</a>
+<a name="ln1218">        return false;</a>
+<a name="ln1219"> </a>
+<a name="ln1220">    const int base_chance = ammo_type_destroy_chance(item-&gt;sub_type);</a>
+<a name="ln1221">    const int brand = get_ammo_brand(*item);</a>
+<a name="ln1222"> </a>
+<a name="ln1223">    // Inflate by 2 to avoid rounding errors.</a>
+<a name="ln1224">    const int mult = 2;</a>
+<a name="ln1225">    int chance = base_chance * mult;</a>
+<a name="ln1226"> </a>
+<a name="ln1227">    if (brand == SPMSL_CURARE)</a>
+<a name="ln1228">        chance /= 2;</a>
+<a name="ln1229"> </a>
+<a name="ln1230">    dprf(&quot;mulch chance: %d in %d&quot;, mult, chance);</a>
+<a name="ln1231"> </a>
+<a name="ln1232">    return x_chance_in_y(mult, chance);</a>
+<a name="ln1233">}</a>
+
+</code></pre>
+<div class="balloon" rel="900"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!thrown.quantity' is always false.</p></div>
+<div class="balloon" rel="992"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression '!did_return' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

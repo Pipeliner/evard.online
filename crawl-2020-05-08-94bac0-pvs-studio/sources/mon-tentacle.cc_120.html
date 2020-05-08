@@ -1,0 +1,1332 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-tentacle.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Monster tentacle-related code.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;functional&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;act-iter.h&quot;</a>
+<a name="ln13">#include &quot;coordit.h&quot;</a>
+<a name="ln14">#include &quot;delay.h&quot;</a>
+<a name="ln15">#include &quot;env.h&quot;</a>
+<a name="ln16">#include &quot;fprop.h&quot;</a>
+<a name="ln17">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln18">#include &quot;losglobal.h&quot;</a>
+<a name="ln19">#include &quot;mgen-data.h&quot;</a>
+<a name="ln20">#include &quot;mon-death.h&quot;</a>
+<a name="ln21">#include &quot;mon-place.h&quot;</a>
+<a name="ln22">#include &quot;nearby-danger.h&quot;</a>
+<a name="ln23">#include &quot;terrain.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">const int MAX_KRAKEN_TENTACLE_DIST = 12;</a>
+<a name="ln26">const int MAX_ACTIVE_KRAKEN_TENTACLES = 4;</a>
+<a name="ln27">const int MAX_ACTIVE_STARSPAWN_TENTACLES = 2;</a>
+<a name="ln28"> </a>
+<a name="ln29">static monster_type _head_child_segment[][3] =</a>
+<a name="ln30">{</a>
+<a name="ln31">    { MONS_KRAKEN, MONS_KRAKEN_TENTACLE,</a>
+<a name="ln32">        MONS_KRAKEN_TENTACLE_SEGMENT },</a>
+<a name="ln33">    { MONS_TENTACLED_STARSPAWN, MONS_STARSPAWN_TENTACLE,</a>
+<a name="ln34">        MONS_STARSPAWN_TENTACLE_SEGMENT },</a>
+<a name="ln35">};</a>
+<a name="ln36"> </a>
+<a name="ln37">static monster_type _solo_tentacle_to_segment[][2] =</a>
+<a name="ln38">{</a>
+<a name="ln39">    { MONS_ELDRITCH_TENTACLE, MONS_ELDRITCH_TENTACLE_SEGMENT },</a>
+<a name="ln40">    { MONS_SNAPLASHER_VINE,   MONS_SNAPLASHER_VINE_SEGMENT },</a>
+<a name="ln41">};</a>
+<a name="ln42"> </a>
+<a name="ln43">static mgen_data _segment_data(const monster&amp; head, coord_def pos,</a>
+<a name="ln44">                               monster_type type)</a>
+<a name="ln45">{</a>
+<a name="ln46">    mgen_data mg(type, SAME_ATTITUDE((&amp;head)), pos, head.foe, MG_FORCE_PLACE);</a>
+<a name="ln47">    if (mons_is_zombified(head))</a>
+<a name="ln48">        mg.base_type = head.type;</a>
+<a name="ln49">    mg.set_summoned(&amp;head, 0, 0, head.god)</a>
+<a name="ln50">      .set_col(head.colour);</a>
+<a name="ln51">    return mg;</a>
+<a name="ln52">}</a>
+<a name="ln53"> </a>
+<a name="ln54">bool mons_is_tentacle_head(monster_type mc)</a>
+<a name="ln55">{</a>
+<a name="ln56">    for (const monster_type (&amp;m)[3] : _head_child_segment)</a>
+<a name="ln57">        if (mc == m[0])</a>
+<a name="ln58">            return true;</a>
+<a name="ln59"> </a>
+<a name="ln60">    return false;</a>
+<a name="ln61">}</a>
+<a name="ln62"> </a>
+<a name="ln63">bool mons_is_child_tentacle(monster_type mc)</a>
+<a name="ln64">{</a>
+<a name="ln65">    for (const monster_type (&amp;m)[3] : _head_child_segment)</a>
+<a name="ln66">        if (mc == m[1])</a>
+<a name="ln67">            return true;</a>
+<a name="ln68"> </a>
+<a name="ln69">    return false;</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">bool mons_is_child_tentacle_segment(monster_type mc)</a>
+<a name="ln73">{</a>
+<a name="ln74">    for (const monster_type (&amp;m)[3] : _head_child_segment)</a>
+<a name="ln75">        if (mc == m[2])</a>
+<a name="ln76">            return true;</a>
+<a name="ln77"> </a>
+<a name="ln78">    return false;</a>
+<a name="ln79">}</a>
+<a name="ln80"> </a>
+<a name="ln81">bool mons_is_solo_tentacle(monster_type mc)</a>
+<a name="ln82">{</a>
+<a name="ln83">    for (const monster_type (&amp;m)[2] : _solo_tentacle_to_segment)</a>
+<a name="ln84">        if (mc == m[0])</a>
+<a name="ln85">            return true;</a>
+<a name="ln86"> </a>
+<a name="ln87">    return false;</a>
+<a name="ln88">}</a>
+<a name="ln89"> </a>
+<a name="ln90">bool mons_is_tentacle(monster_type mc)</a>
+<a name="ln91">{</a>
+<a name="ln92">    return mons_is_child_tentacle(mc) || mons_is_solo_tentacle(mc);</a>
+<a name="ln93">}</a>
+<a name="ln94"> </a>
+<a name="ln95">bool mons_is_tentacle_segment(monster_type mc)</a>
+<a name="ln96">{</a>
+<a name="ln97">    for (const monster_type (&amp;m)[2] : _solo_tentacle_to_segment)</a>
+<a name="ln98">        if (mc == m[1])</a>
+<a name="ln99">            return true;</a>
+<a name="ln100"> </a>
+<a name="ln101">    return mons_is_child_tentacle_segment(mc);</a>
+<a name="ln102">}</a>
+<a name="ln103"> </a>
+<a name="ln104">bool mons_is_tentacle_or_tentacle_segment(monster_type mc)</a>
+<a name="ln105">{</a>
+<a name="ln106">    return mons_is_tentacle(mc) || mons_is_tentacle_segment(mc);</a>
+<a name="ln107">}</a>
+<a name="ln108"> </a>
+<a name="ln109">monster_type mons_tentacle_parent_type(const monster* mons)</a>
+<a name="ln110">{</a>
+<a name="ln111">    const monster_type mc = mons_base_type(*mons);</a>
+<a name="ln112"> </a>
+<a name="ln113">    for (const monster_type (&amp;m)[3] : _head_child_segment)</a>
+<a name="ln114">        if (mc == m[1])</a>
+<a name="ln115">            return m[0];</a>
+<a name="ln116"> </a>
+<a name="ln117">    for (const monster_type (&amp;m)[3] : _head_child_segment)</a>
+<a name="ln118">        if (mc == m[2])</a>
+<a name="ln119">            return m[1];</a>
+<a name="ln120"> </a>
+<a name="ln121">    for (const monster_type (&amp;m)[2] : _solo_tentacle_to_segment)</a>
+<a name="ln122">        if (mc == m[1])</a>
+<a name="ln123">            return m[0];</a>
+<a name="ln124"> </a>
+<a name="ln125">    return MONS_PROGRAM_BUG;</a>
+<a name="ln126">}</a>
+<a name="ln127"> </a>
+<a name="ln128">monster_type mons_tentacle_child_type(const monster* mons)</a>
+<a name="ln129">{</a>
+<a name="ln130">    const monster_type mc = mons_base_type(*mons);</a>
+<a name="ln131"> </a>
+<a name="ln132">    for (const monster_type (&amp;m)[3] : _head_child_segment)</a>
+<a name="ln133">        if (mc == m[0])</a>
+<a name="ln134">            return m[1];</a>
+<a name="ln135"> </a>
+<a name="ln136">    for (const monster_type (&amp;m)[3] : _head_child_segment)</a>
+<a name="ln137">        if (mc == m[1])</a>
+<a name="ln138">            return m[2];</a>
+<a name="ln139"> </a>
+<a name="ln140">    for (const monster_type (&amp;m)[2] : _solo_tentacle_to_segment)</a>
+<a name="ln141">        if (mc == m[0])</a>
+<a name="ln142">            return m[1];</a>
+<a name="ln143"> </a>
+<a name="ln144">    return MONS_PROGRAM_BUG;</a>
+<a name="ln145">}</a>
+<a name="ln146"> </a>
+<a name="ln147">bool monster::is_child_tentacle() const</a>
+<a name="ln148">{</a>
+<a name="ln149">    return mons_is_child_tentacle(mons_base_type(*this));</a>
+<a name="ln150">}</a>
+<a name="ln151"> </a>
+<a name="ln152">bool monster::is_child_tentacle_segment() const</a>
+<a name="ln153">{</a>
+<a name="ln154">    return mons_is_child_tentacle_segment(mons_base_type(*this));</a>
+<a name="ln155">}</a>
+<a name="ln156"> </a>
+<a name="ln157">bool monster::is_child_monster() const</a>
+<a name="ln158">{</a>
+<a name="ln159">    return is_child_tentacle() || is_child_tentacle_segment();</a>
+<a name="ln160">}</a>
+<a name="ln161"> </a>
+<a name="ln162">bool monster::is_child_tentacle_of(const monster* mons) const</a>
+<a name="ln163">{</a>
+<a name="ln164">    return mons_base_type(*mons) == mons_tentacle_parent_type(this)</a>
+<a name="ln165">           &amp;&amp; tentacle_connect == mons-&gt;mid;</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">bool monster::is_parent_monster_of(const monster* mons) const</a>
+<a name="ln169">{</a>
+<a name="ln170">    return mons_base_type(*this) == mons_tentacle_parent_type(mons)</a>
+<a name="ln171">           &amp;&amp; mons-&gt;tentacle_connect == mid;</a>
+<a name="ln172">}</a>
+<a name="ln173"> </a>
+<a name="ln174">//Returns whether a given monster is a tentacle segment immediately attached</a>
+<a name="ln175">//to the parent monster</a>
+<a name="ln176">bool mons_tentacle_adjacent(const monster* parent, const monster* child)</a>
+<a name="ln177">{</a>
+<a name="ln178">    return mons_is_tentacle_head(mons_base_type(*parent))</a>
+<a name="ln179">           &amp;&amp; mons_is_tentacle_segment(child-&gt;type)</a>
+<a name="ln180">           &amp;&amp; child-&gt;props.exists(&quot;inwards&quot;)</a>
+<a name="ln181">           &amp;&amp; child-&gt;props[&quot;inwards&quot;].get_int() == (int) parent-&gt;mid;</a>
+<a name="ln182">}</a>
+<a name="ln183"> </a>
+<a name="ln184">const monster&amp; get_tentacle_head(const monster&amp; mon)</a>
+<a name="ln185">{</a>
+<a name="ln186">    const monster* m = &amp;mon;</a>
+<a name="ln187">    // For tentacle segments, find the associated tentacle.</a>
+<a name="ln188">    if (m-&gt;is_child_tentacle_segment())</a>
+<a name="ln189">    {</a>
+<a name="ln190">        monster* tentacle = monster_by_mid(m-&gt;tentacle_connect);</a>
+<a name="ln191">        if (!tentacle)</a>
+<a name="ln192">            return *m;</a>
+<a name="ln193"> </a>
+<a name="ln194">        m = tentacle;</a>
+<a name="ln195">    }</a>
+<a name="ln196"> </a>
+<a name="ln197">    // For tentacles, find the associated head.</a>
+<a name="ln198">    if (m-&gt;is_child_tentacle())</a>
+<a name="ln199">    {</a>
+<a name="ln200">        monster* head = monster_by_mid(m-&gt;tentacle_connect);</a>
+<a name="ln201">        if (!head)</a>
+<a name="ln202">            return *m;</a>
+<a name="ln203"> </a>
+<a name="ln204">        m = head;</a>
+<a name="ln205">    }</a>
+<a name="ln206"> </a>
+<a name="ln207">    return *m;</a>
+<a name="ln208">}</a>
+<a name="ln209"> </a>
+<a name="ln210">static void _establish_connection(monster* tentacle,</a>
+<a name="ln211">                                  monster* head,</a>
+<a name="ln212">                                  set&lt;position_node&gt;::iterator path,</a>
+<a name="ln213">                                  monster_type connector_type)</a>
+<a name="ln214">{</a>
+<a name="ln215">    const position_node * last = &amp;(*path);</a>
+<a name="ln216">    const position_node * current = last-&gt;last;</a>
+<a name="ln217"> </a>
+<a name="ln218">    // Tentacle is adjacent to the end position, not much to do.</a>
+<a name="ln219">    if (!current)</a>
+<a name="ln220">    {</a>
+<a name="ln221">        // This is a little awkward now. Oh well. -cao</a>
+<a name="ln222">        if (tentacle != head)</a>
+<a name="ln223">            tentacle-&gt;props[&quot;inwards&quot;].get_int() = head-&gt;mid;</a>
+<a name="ln224">        else</a>
+<a name="ln225">            tentacle-&gt;props[&quot;inwards&quot;].get_int() = MID_NOBODY;</a>
+<a name="ln226"> </a>
+<a name="ln227">        return;</a>
+<a name="ln228">    }</a>
+<a name="ln229"> </a>
+<a name="ln230">    // No base monster case (demonic tentacles)</a>
+<a name="ln231">    if (!monster_at(last-&gt;pos))</a>
+<a name="ln232">    {</a>
+<a name="ln233">        mgen_data mg = _segment_data(*head, last-&gt;pos, connector_type);</a>
+<a name="ln234">        mg.props[MGEN_TENTACLE_CONNECT] = int(tentacle-&gt;mid);</a>
+<a name="ln235">        if (monster *connect = create_monster(mg))</a>
+<a name="ln236">        {</a>
+<a name="ln237">            connect-&gt;props[&quot;inwards&quot;].get_int() = MID_NOBODY;</a>
+<a name="ln238">            connect-&gt;props[&quot;outwards&quot;].get_int() = MID_NOBODY;</a>
+<a name="ln239"> </a>
+<a name="ln240">            if (head-&gt;holiness() &amp; MH_UNDEAD)</a>
+<a name="ln241">                connect-&gt;flags |= MF_FAKE_UNDEAD;</a>
+<a name="ln242"> </a>
+<a name="ln243">            connect-&gt;max_hit_points = tentacle-&gt;max_hit_points;</a>
+<a name="ln244">            connect-&gt;hit_points = tentacle-&gt;hit_points;</a>
+<a name="ln245">        }</a>
+<a name="ln246">        else</a>
+<a name="ln247">        {</a>
+<a name="ln248">            // Big failure mode.</a>
+<a name="ln249">            return;</a>
+<a name="ln250">        }</a>
+<a name="ln251">    }</a>
+<a name="ln252"> </a>
+<a name="ln253">    while (current)</a>
+<a name="ln254">    {</a>
+<a name="ln255">        // Last monster we visited or placed</a>
+<a name="ln256">        monster* last_mon = monster_at(last-&gt;pos);</a>
+<a name="ln257">        if (!last_mon)</a>
+<a name="ln258">        {</a>
+<a name="ln259">            // Should be something there, what to do if there isn't?</a>
+<a name="ln260">            mpr(&quot;Error! failed to place monster in tentacle connect change&quot;);</a>
+<a name="ln261">            break;</a>
+<a name="ln262">        }</a>
+<a name="ln263"> </a>
+<a name="ln264">        // Monster at the current square, should be the end of the line if there</a>
+<a name="ln265">        monster* current_mons = monster_at(current-&gt;pos);</a>
+<a name="ln266">        if (current_mons)</a>
+<a name="ln267">        {</a>
+<a name="ln268">            // Todo verify current monster type</a>
+<a name="ln269">            current_mons-&gt;props[&quot;inwards&quot;].get_int() = last_mon-&gt;mid;</a>
+<a name="ln270">            last_mon-&gt;props[&quot;outwards&quot;].get_int() = current_mons-&gt;mid;</a>
+<a name="ln271">            break;</a>
+<a name="ln272">        }</a>
+<a name="ln273"> </a>
+<a name="ln274">         // place a connector</a>
+<a name="ln275">        mgen_data mg = _segment_data(*head, current-&gt;pos, connector_type);</a>
+<a name="ln276">        mg.props[MGEN_TENTACLE_CONNECT] = int(tentacle-&gt;mid);</a>
+<a name="ln277">        if (monster *connect = create_monster(mg))</a>
+<a name="ln278">        {</a>
+<a name="ln279">            connect-&gt;max_hit_points = tentacle-&gt;max_hit_points;</a>
+<a name="ln280">            connect-&gt;hit_points = tentacle-&gt;hit_points;</a>
+<a name="ln281"> </a>
+<a name="ln282">            connect-&gt;props[&quot;inwards&quot;].get_int() = last_mon-&gt;mid;</a>
+<a name="ln283">            connect-&gt;props[&quot;outwards&quot;].get_int() = MID_NOBODY;</a>
+<a name="ln284"> </a>
+<a name="ln285">            if (last_mon-&gt;type == connector_type)</a>
+<a name="ln286">                last_mon-&gt;props[&quot;outwards&quot;].get_int() = connect-&gt;mid;</a>
+<a name="ln287"> </a>
+<a name="ln288">            if (head-&gt;holiness() &amp; MH_UNDEAD)</a>
+<a name="ln289">                connect-&gt;flags |= MF_FAKE_UNDEAD;</a>
+<a name="ln290"> </a>
+<a name="ln291">            if (monster_can_submerge(connect, env.grid(connect-&gt;pos())))</a>
+<a name="ln292">                connect-&gt;add_ench(ENCH_SUBMERGED);</a>
+<a name="ln293">        }</a>
+<a name="ln294">        else</a>
+<a name="ln295">        {</a>
+<a name="ln296">            // connector placement failed, what to do?</a>
+<a name="ln297">            mprf(&quot;connector placement failed at %d %d&quot;, current-&gt;pos.x, current-&gt;pos.y);</a>
+<a name="ln298">        }</a>
+<a name="ln299"> </a>
+<a name="ln300">        last = current;</a>
+<a name="ln301">        current = current-&gt;last;</a>
+<a name="ln302">    }</a>
+<a name="ln303">}</a>
+<a name="ln304"> </a>
+<a name="ln305">struct tentacle_attack_constraints</a>
+<a name="ln306">{</a>
+<a name="ln307">    vector&lt;coord_def&gt; * target_positions;</a>
+<a name="ln308"> </a>
+<a name="ln309">    map&lt;coord_def, set&lt;int&gt; &gt; * connection_constraints;</a>
+<a name="ln310">    monster *base_monster;</a>
+<a name="ln311">    int max_string_distance;</a>
+<a name="ln312">    int connect_idx[8];</a>
+<a name="ln313"> </a>
+<a name="ln314">    tentacle_attack_constraints()</a>
+<a name="ln315">    {</a>
+<a name="ln316">        for (int i=0; i&lt;8; i++)</a>
+<a name="ln317">            connect_idx[i] = i;</a>
+<a name="ln318">    }</a>
+<a name="ln319"> </a>
+<a name="ln320">    int min_dist(const coord_def &amp; pos)</a>
+<a name="ln321">    {</a>
+<a name="ln322">        int min = INT_MAX;</a>
+<a name="ln323">        for (coord_def tpos : *target_positions)</a>
+<a name="ln324">            min = std::min(min, grid_distance(pos, tpos));</a>
+<a name="ln325">        return min;</a>
+<a name="ln326">    }</a>
+<a name="ln327"> </a>
+<a name="ln328">    void operator()(const position_node &amp; node,</a>
+<a name="ln329">                    vector&lt;position_node&gt; &amp; expansion)</a>
+<a name="ln330">    {</a>
+<a name="ln331">        shuffle_array(connect_idx);</a>
+<a name="ln332"> </a>
+<a name="ln333">//        mprf(&quot;expanding %d %d, string dist %d&quot;, node.pos.x, node.pos.y, node.string_distance);</a>
+<a name="ln334">        for (int idx : connect_idx)</a>
+<a name="ln335">        {</a>
+<a name="ln336">            position_node temp;</a>
+<a name="ln337"> </a>
+<a name="ln338">            temp.pos = node.pos + Compass[idx];</a>
+<a name="ln339">            temp.string_distance = node.string_distance;</a>
+<a name="ln340">            temp.departure = node.departure;</a>
+<a name="ln341">            temp.connect_level = node.connect_level;</a>
+<a name="ln342">            temp.path_distance = node.path_distance;</a>
+<a name="ln343">            temp.estimate = 0;</a>
+<a name="ln344"> </a>
+<a name="ln345">            if (!in_bounds(temp.pos) || is_sanctuary(temp.pos))</a>
+<a name="ln346">                continue;</a>
+<a name="ln347"> </a>
+<a name="ln348">            if (!base_monster-&gt;is_habitable(temp.pos))</a>
+<a name="ln349">                temp.path_distance = DISCONNECT_DIST;</a>
+<a name="ln350">            else</a>
+<a name="ln351">            {</a>
+<a name="ln352">                actor * act_at = actor_at(temp.pos);</a>
+<a name="ln353">                monster* mons_at = monster_at(temp.pos);</a>
+<a name="ln354"> </a>
+<a name="ln355">                if (!act_at)</a>
+<a name="ln356">                    temp.path_distance += 1;</a>
+<a name="ln357">                // Can still search through a firewood monster, just at a higher</a>
+<a name="ln358">                // path cost.</a>
+<a name="ln359">                else if (mons_at &amp;&amp; mons_is_firewood(*mons_at)</a>
+<a name="ln360">                    &amp;&amp; !mons_aligned(base_monster, mons_at))</a>
+<a name="ln361">                {</a>
+<a name="ln362">                    temp.path_distance += 10;</a>
+<a name="ln363">                }</a>
+<a name="ln364">                // An actor we can't path through is there</a>
+<a name="ln365">                else</a>
+<a name="ln366">                    temp.path_distance = DISCONNECT_DIST;</a>
+<a name="ln367"> </a>
+<a name="ln368">            }</a>
+<a name="ln369"> </a>
+<a name="ln370">            int connect_level = temp.connect_level;</a>
+<a name="ln371">            int base_connect_level = connect_level;</a>
+<a name="ln372"> </a>
+<a name="ln373">            if (auto constraint = map_find(*connection_constraints, temp.pos))</a>
+<a name="ln374">            {</a>
+<a name="ln375">                int max_val = constraint-&gt;empty()</a>
+<a name="ln376">                            ? INT_MAX : *constraint-&gt;rbegin();</a>
+<a name="ln377"> </a>
+<a name="ln378">                if (max_val &lt; connect_level)</a>
+<a name="ln379">                    temp.departure = true;</a>
+<a name="ln380"> </a>
+<a name="ln381">                // If we can still feasibly retract (haven't left connect range)</a>
+<a name="ln382">                if (!temp.departure)</a>
+<a name="ln383">                {</a>
+<a name="ln384">                    if (constraint-&gt;count(connect_level))</a>
+<a name="ln385">                    {</a>
+<a name="ln386">                        while (constraint-&gt;count(connect_level + 1))</a>
+<a name="ln387">                            connect_level++;</a>
+<a name="ln388">                    }</a>
+<a name="ln389"> </a>
+<a name="ln390">                    int delta = connect_level - base_connect_level;</a>
+<a name="ln391">                    temp.connect_level = connect_level;</a>
+<a name="ln392">                    if (delta)</a>
+<a name="ln393">                        temp.string_distance -= delta;</a>
+<a name="ln394">                }</a>
+<a name="ln395"> </a>
+<a name="ln396">                if (connect_level &lt; max_val)</a>
+<a name="ln397">                   temp.path_distance = DISCONNECT_DIST;</a>
+<a name="ln398">            }</a>
+<a name="ln399">            else</a>
+<a name="ln400">            {</a>
+<a name="ln401">                // We stopped retracting</a>
+<a name="ln402">                temp.departure = true;</a>
+<a name="ln403">            }</a>
+<a name="ln404"> </a>
+<a name="ln405">            if (temp.departure)</a>
+<a name="ln406">                temp.string_distance++;</a>
+<a name="ln407"> </a>
+<a name="ln408">//            if (temp.string_distance &gt; MAX_KRAKEN_TENTACLE_DIST)</a>
+<a name="ln409">            if (temp.string_distance &gt; max_string_distance)</a>
+<a name="ln410">                temp.path_distance = DISCONNECT_DIST;</a>
+<a name="ln411"> </a>
+<a name="ln412">            if (temp.path_distance != DISCONNECT_DIST)</a>
+<a name="ln413">                temp.estimate = min_dist(temp.pos);</a>
+<a name="ln414"> </a>
+<a name="ln415">            expansion.push_back(temp);</a>
+<a name="ln416">        }</a>
+<a name="ln417">    }</a>
+<a name="ln418">};</a>
+<a name="ln419"> </a>
+<a name="ln420">struct tentacle_connect_constraints</a>
+<a name="ln421">{</a>
+<a name="ln422">    map&lt;coord_def, set&lt;int&gt; &gt; * connection_constraints;</a>
+<a name="ln423"> </a>
+<a name="ln424">    monster* base_monster;</a>
+<a name="ln425"> </a>
+<a name="ln426">    tentacle_connect_constraints()</a>
+<a name="ln427">    {</a>
+<a name="ln428">        for (int i=0; i&lt;8; i++)</a>
+<a name="ln429">            connect_idx[i] = i;</a>
+<a name="ln430">    }</a>
+<a name="ln431"> </a>
+<a name="ln432">    int connect_idx[8];</a>
+<a name="ln433">    void operator()(const position_node &amp; node,</a>
+<a name="ln434">                    vector&lt;position_node&gt; &amp; expansion)</a>
+<a name="ln435">    {</a>
+<a name="ln436">        shuffle_array(connect_idx);</a>
+<a name="ln437"> </a>
+<a name="ln438">        for (int idx : connect_idx)</a>
+<a name="ln439">        {</a>
+<a name="ln440">            position_node temp;</a>
+<a name="ln441"> </a>
+<a name="ln442">            temp.pos = node.pos + Compass[idx];</a>
+<a name="ln443"> </a>
+<a name="ln444">            if (!in_bounds(temp.pos))</a>
+<a name="ln445">                continue;</a>
+<a name="ln446"> </a>
+<a name="ln447">            auto constraint = map_find(*connection_constraints, temp.pos);</a>
+<a name="ln448"> </a>
+<a name="ln449">            if (!constraint || !constraint-&gt;count(node.connect_level))</a>
+<a name="ln450">                continue;</a>
+<a name="ln451"> </a>
+<a name="ln452">            if (!base_monster-&gt;is_habitable(temp.pos) || actor_at(temp.pos))</a>
+<a name="ln453">                temp.path_distance = DISCONNECT_DIST;</a>
+<a name="ln454">            else</a>
+<a name="ln455">                temp.path_distance = 1 + node.path_distance;</a>
+<a name="ln456"> </a>
+<a name="ln457">            //temp.estimate = grid_distance(temp.pos, kraken-&gt;pos());</a>
+<a name="ln458">            // Don't bother with an estimate, the search is highly constrained</a>
+<a name="ln459">            // so it's not really going to help</a>
+<a name="ln460">            temp.estimate = 0;</a>
+<a name="ln461">            int test_level = node.connect_level;</a>
+<a name="ln462"> </a>
+<a name="ln463">            while (constraint-&gt;count(test_level + 1))</a>
+<a name="ln464">                test_level++;</a>
+<a name="ln465"> </a>
+<a name="ln466">            int max = constraint-&gt;empty() ? INT_MAX : *constraint-&gt;rbegin();</a>
+<a name="ln467"> </a>
+<a name="ln468">            if (test_level &lt; max)</a>
+<a name="ln469">                continue;</a>
+<a name="ln470"> </a>
+<a name="ln471">            temp.connect_level = test_level;</a>
+<a name="ln472"> </a>
+<a name="ln473">            expansion.push_back(temp);</a>
+<a name="ln474">        }</a>
+<a name="ln475">    }</a>
+<a name="ln476">};</a>
+<a name="ln477"> </a>
+<a name="ln478">struct target_position</a>
+<a name="ln479">{</a>
+<a name="ln480">    coord_def target;</a>
+<a name="ln481">    bool operator() (const coord_def &amp; pos)</a>
+<a name="ln482">    {</a>
+<a name="ln483">        return pos == target;</a>
+<a name="ln484">    }</a>
+<a name="ln485">};</a>
+<a name="ln486"> </a>
+<a name="ln487">/*struct target_monster</a>
+<a name="ln488">{</a>
+<a name="ln489">    int target_mindex;</a>
+<a name="ln490"> </a>
+<a name="ln491">    bool operator() (const coord_def &amp; pos)</a>
+<a name="ln492">    {</a>
+<a name="ln493">        monster* temp = monster_at(pos);</a>
+<a name="ln494">        if (!temp || temp-&gt;mindex() != target_mindex)</a>
+<a name="ln495">            return false;</a>
+<a name="ln496">        return true;</a>
+<a name="ln497"> </a>
+<a name="ln498">    }</a>
+<a name="ln499">};*/</a>
+<a name="ln500"> </a>
+<a name="ln501">struct multi_target</a>
+<a name="ln502">{</a>
+<a name="ln503">    vector&lt;coord_def&gt; * targets;</a>
+<a name="ln504"> </a>
+<a name="ln505">    bool operator() (const coord_def &amp; pos)</a>
+<a name="ln506">    {</a>
+<a name="ln507">        return find(begin(*targets), end(*targets), pos) != end(*targets);</a>
+<a name="ln508">    }</a>
+<a name="ln509">};</a>
+<a name="ln510"> </a>
+<a name="ln511">// returns pathfinding success/failure</a>
+<a name="ln512">static bool _tentacle_pathfind(monster* tentacle,</a>
+<a name="ln513">                       tentacle_attack_constraints &amp; attack_constraints,</a>
+<a name="ln514">                       coord_def &amp; new_position,</a>
+<a name="ln515">                       vector&lt;coord_def&gt; &amp; target_positions,</a>
+<a name="ln516">                       int total_length)</a>
+<a name="ln517">{</a>
+<a name="ln518">    multi_target foe_check { &amp;target_positions };</a>
+<a name="ln519"> </a>
+<a name="ln520">    vector&lt;set&lt;position_node&gt;::iterator &gt; tentacle_path;</a>
+<a name="ln521"> </a>
+<a name="ln522">    set&lt;position_node&gt; visited;</a>
+<a name="ln523">    visited.clear();</a>
+<a name="ln524"> </a>
+<a name="ln525">    position_node temp;</a>
+<a name="ln526">    temp.pos = tentacle-&gt;pos();</a>
+<a name="ln527"> </a>
+<a name="ln528">    auto constraint = map_find(*attack_constraints.connection_constraints,</a>
+<a name="ln529">                               temp.pos);</a>
+<a name="ln530">    ASSERT(constraint);</a>
+<a name="ln531">    temp.connect_level = 0;</a>
+<a name="ln532">    while (constraint-&gt;count(temp.connect_level + 1))</a>
+<a name="ln533">        temp.connect_level++;</a>
+<a name="ln534"> </a>
+<a name="ln535">    temp.departure = false;</a>
+<a name="ln536">    temp.string_distance = total_length;</a>
+<a name="ln537"> </a>
+<a name="ln538">    search_astar(temp,</a>
+<a name="ln539">                 foe_check, attack_constraints,</a>
+<a name="ln540">                 visited, tentacle_path);</a>
+<a name="ln541"> </a>
+<a name="ln542">    bool path_found = false;</a>
+<a name="ln543">    // Did we find a path?</a>
+<a name="ln544">    if (!tentacle_path.empty())</a>
+<a name="ln545">    {</a>
+<a name="ln546">        // The end position is the enemy or target square, we need</a>
+<a name="ln547">        // to rewind the found path to find the next move</a>
+<a name="ln548"> </a>
+<a name="ln549">        const position_node * current = &amp;(*tentacle_path[0]);</a>
+<a name="ln550">        const position_node * last;</a>
+<a name="ln551"> </a>
+<a name="ln552">        // The last position in the chain is the base position,</a>
+<a name="ln553">        // so we want to stop at the one before the last.</a>
+<a name="ln554">        while (current &amp;&amp; current-&gt;last)</a>
+<a name="ln555">        {</a>
+<a name="ln556">            last = current;</a>
+<a name="ln557">            current = current-&gt;last;</a>
+<a name="ln558">            new_position = last-&gt;pos;</a>
+<a name="ln559">            path_found = true;</a>
+<a name="ln560">        }</a>
+<a name="ln561">    }</a>
+<a name="ln562"> </a>
+<a name="ln563">    return path_found;</a>
+<a name="ln564">}</a>
+<a name="ln565"> </a>
+<a name="ln566">static bool _try_tentacle_connect(const coord_def &amp; new_pos,</a>
+<a name="ln567">                                  const coord_def &amp; base_position,</a>
+<a name="ln568">                                  monster* tentacle,</a>
+<a name="ln569">                                  monster* head,</a>
+<a name="ln570">                                  tentacle_connect_constraints &amp; connect_costs,</a>
+<a name="ln571">                                  monster_type connect_type)</a>
+<a name="ln572">{</a>
+<a name="ln573">    // Nothing to do here.</a>
+<a name="ln574">    // Except fix the tentacle end's pointer, idiot.</a>
+<a name="ln575">    if (base_position == new_pos)</a>
+<a name="ln576">    {</a>
+<a name="ln577">        if (tentacle == head)</a>
+<a name="ln578">            tentacle-&gt;props[&quot;inwards&quot;].get_int() = MID_NOBODY;</a>
+<a name="ln579">        else</a>
+<a name="ln580">            tentacle-&gt;props[&quot;inwards&quot;].get_int() = head-&gt;mid;</a>
+<a name="ln581">        return true;</a>
+<a name="ln582">    }</a>
+<a name="ln583"> </a>
+<a name="ln584">    int start_level = 0;</a>
+<a name="ln585">    // This condition should never miss</a>
+<a name="ln586">    if (auto constraint = map_find(*connect_costs.connection_constraints,</a>
+<a name="ln587">                          new_pos))</a>
+<a name="ln588">    {</a>
+<a name="ln589">        while (constraint-&gt;count(start_level + 1))</a>
+<a name="ln590">            start_level++;</a>
+<a name="ln591">    }</a>
+<a name="ln592"> </a>
+<a name="ln593">    // Find the tentacle -&gt; head path</a>
+<a name="ln594">    target_position current_target;</a>
+<a name="ln595">    current_target.target = base_position;</a>
+<a name="ln596">/*  target_monster current_target;</a>
+<a name="ln597">    current_target.target_mindex = headnum;</a>
+<a name="ln598">*/</a>
+<a name="ln599"> </a>
+<a name="ln600">    set&lt;position_node&gt; visited;</a>
+<a name="ln601">    vector&lt;set&lt;position_node&gt;::iterator&gt; candidates;</a>
+<a name="ln602"> </a>
+<a name="ln603">    position_node temp;</a>
+<a name="ln604">    temp.pos = new_pos;</a>
+<a name="ln605">    temp.connect_level = start_level;</a>
+<a name="ln606"> </a>
+<a name="ln607">    search_astar(temp,</a>
+<a name="ln608">                 current_target, connect_costs,</a>
+<a name="ln609">                 visited, candidates);</a>
+<a name="ln610"> </a>
+<a name="ln611">    if (candidates.empty())</a>
+<a name="ln612">        return false;</a>
+<a name="ln613"> </a>
+<a name="ln614">    _establish_connection(tentacle, head, candidates[0], connect_type);</a>
+<a name="ln615"> </a>
+<a name="ln616">    return true;</a>
+<a name="ln617">}</a>
+<a name="ln618"> </a>
+<a name="ln619">static void _collect_tentacles(monster* mons,</a>
+<a name="ln620">                               vector&lt;monster_iterator&gt; &amp; tentacles)</a>
+<a name="ln621">{</a>
+<a name="ln622">    // TODO: reorder tentacles based on distance to head or something.</a>
+<a name="ln623">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln624">        if (mons-&gt;is_parent_monster_of(*mi))</a>
+<a name="ln625">            tentacles.push_back(mi);</a>
+<a name="ln626">}</a>
+<a name="ln627"> </a>
+<a name="ln628">static void _purge_connectors(monster* tentacle)</a>
+<a name="ln629">{</a>
+<a name="ln630">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln631">    {</a>
+<a name="ln632">        if (mi-&gt;is_child_tentacle_of(tentacle))</a>
+<a name="ln633">        {</a>
+<a name="ln634">            int hp = mi-&gt;hit_points;</a>
+<a name="ln635">            if (hp &gt; 0 &amp;&amp; hp &lt; tentacle-&gt;hit_points)</a>
+<a name="ln636">                tentacle-&gt;hit_points = hp;</a>
+<a name="ln637"> </a>
+<a name="ln638">            monster_die(**mi, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln639">        }</a>
+<a name="ln640">    }</a>
+<a name="ln641">    ASSERT(tentacle-&gt;alive());</a>
+<a name="ln642">}</a>
+<a name="ln643"> </a>
+<a name="ln644">static void _collect_foe_positions(monster *mons,</a>
+<a name="ln645">                                   vector&lt;coord_def&gt; &amp;foe_positions,</a>
+<a name="ln646">                                   function&lt;bool(const actor *)&gt; sight_check)</a>
+<a name="ln647">{</a>
+<a name="ln648">    coord_def foe_pos(-1, -1);</a>
+<a name="ln649">    actor * foe = mons-&gt;get_foe();</a>
+<a name="ln650">    if (foe &amp;&amp; sight_check(foe))</a>
+<a name="ln651">    {</a>
+<a name="ln652">        foe_positions.push_back(mons-&gt;get_foe()-&gt;pos());</a>
+<a name="ln653">        foe_pos = foe_positions.back();</a>
+<a name="ln654">    }</a>
+<a name="ln655"> </a>
+<a name="ln656">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln657">    {</a>
+<a name="ln658">        const monster * const test = *mi;</a>
+<a name="ln659">        if (!mons_is_firewood(*test)</a>
+<a name="ln660">            &amp;&amp; !mons_aligned(test, mons)</a>
+<a name="ln661">            &amp;&amp; test-&gt;pos() != foe_pos</a>
+<a name="ln662">            &amp;&amp; sight_check(test))</a>
+<a name="ln663">        {</a>
+<a name="ln664">            foe_positions.push_back(test-&gt;pos());</a>
+<a name="ln665">        }</a>
+<a name="ln666">    }</a>
+<a name="ln667">}</a>
+<a name="ln668"> </a>
+<a name="ln669">// Return value is a retract position for the tentacle or -1, -1 if no</a>
+<a name="ln670">// retract position exists.</a>
+<a name="ln671">//</a>
+<a name="ln672">// move_kraken_tentacle should check retract pos, it could potentially</a>
+<a name="ln673">// give the kraken head's position as a retract pos.</a>
+<a name="ln674">static int _collect_connection_data(monster* start_monster,</a>
+<a name="ln675">               map&lt;coord_def, set&lt;int&gt; &gt; &amp; connection_data,</a>
+<a name="ln676">               coord_def &amp; retract_pos)</a>
+<a name="ln677">{</a>
+<a name="ln678">    int current_count = 0;</a>
+<a name="ln679">    monster* current_mon = start_monster;</a>
+<a name="ln680">    retract_pos.x = -1;</a>
+<a name="ln681">    retract_pos.y = -1;</a>
+<a name="ln682">    bool retract_found = false;</a>
+<a name="ln683"> </a>
+<a name="ln684">    while (current_mon)</a>
+<a name="ln685">    {</a>
+<a name="ln686">        for (adjacent_iterator adj_it(current_mon-&gt;pos(), false);</a>
+<a name="ln687">             adj_it; ++adj_it)</a>
+<a name="ln688">        {</a>
+<a name="ln689">            connection_data[*adj_it].insert(current_count);</a>
+<a name="ln690">        }</a>
+<a name="ln691"> </a>
+<a name="ln692">        bool basis = current_mon-&gt;props.exists(&quot;inwards&quot;);</a>
+<a name="ln693">        monster* next = basis ? monster_by_mid(current_mon-&gt;props[&quot;inwards&quot;].get_int()) : nullptr;</a>
+<a name="ln694"> </a>
+<a name="ln695">        if (next &amp;&amp; next-&gt;is_child_tentacle_of(start_monster))</a>
+<a name="ln696">        {</a>
+<a name="ln697">            current_mon = next;</a>
+<a name="ln698">            if (current_mon-&gt;tentacle_connect != start_monster-&gt;mid)</a>
+<a name="ln699">                mpr(&quot;link information corruption!!! tentacle in chain doesn't match mindex&quot;);</a>
+<a name="ln700">            if (!retract_found)</a>
+<a name="ln701">            {</a>
+<a name="ln702">                retract_pos = current_mon-&gt;pos();</a>
+<a name="ln703">                retract_found = true;</a>
+<a name="ln704">            }</a>
+<a name="ln705">        }</a>
+<a name="ln706">        else</a>
+<a name="ln707">        {</a>
+<a name="ln708">            current_mon = nullptr;</a>
+<a name="ln709">//            mprf(&quot;null at count %d&quot;, current_count);</a>
+<a name="ln710">        }</a>
+<a name="ln711">        current_count++;</a>
+<a name="ln712">    }</a>
+<a name="ln713"> </a>
+<a name="ln714">//    mprf(&quot;returned count %d&quot;, current_count);</a>
+<a name="ln715">    return current_count;</a>
+<a name="ln716">}</a>
+<a name="ln717"> </a>
+<a name="ln718">void move_solo_tentacle(monster* tentacle)</a>
+<a name="ln719">{</a>
+<a name="ln720">    if (!tentacle || !mons_is_solo_tentacle(mons_base_type(*tentacle)))</a>
+<a name="ln721">        return;</a>
+<a name="ln722"> </a>
+<a name="ln723">    vector&lt;coord_def&gt; foe_positions;</a>
+<a name="ln724"> </a>
+<a name="ln725">    bool attack_foe = false;</a>
+<a name="ln726">    bool severed = tentacle-&gt;has_ench(ENCH_SEVERED);</a>
+<a name="ln727"> </a>
+<a name="ln728">    coord_def base_position;</a>
+<a name="ln729">    if (!tentacle-&gt;props.exists(&quot;base_position&quot;))</a>
+<a name="ln730">        tentacle-&gt;props[&quot;base_position&quot;].get_coord() = tentacle-&gt;pos();</a>
+<a name="ln731"> </a>
+<a name="ln732">    base_position = tentacle-&gt;props[&quot;base_position&quot;].get_coord();</a>
+<a name="ln733"> </a>
+<a name="ln734">    if (!severed)</a>
+<a name="ln735">    {</a>
+<a name="ln736">        _collect_foe_positions(tentacle, foe_positions,</a>
+<a name="ln737">                [tentacle, base_position](const actor *test) -&gt; bool</a>
+<a name="ln738">                {</a>
+<a name="ln739">                    return test-&gt;visible_to(tentacle)</a>
+<a name="ln740">                        &amp;&amp; cell_see_cell(base_position, test-&gt;pos(),</a>
+<a name="ln741">                                         LOS_SOLID_SEE);</a>
+<a name="ln742">                });</a>
+<a name="ln743">        attack_foe = !foe_positions.empty();</a>
+<a name="ln744">    }</a>
+<a name="ln745"> </a>
+<a name="ln746">    coord_def retract_pos;</a>
+<a name="ln747">    map&lt;coord_def, set&lt;int&gt; &gt; connection_data;</a>
+<a name="ln748"> </a>
+<a name="ln749">    int visited_count = _collect_connection_data(tentacle,</a>
+<a name="ln750">                                                 connection_data,</a>
+<a name="ln751">                                                 retract_pos);</a>
+<a name="ln752"> </a>
+<a name="ln753">    bool retract_found = retract_pos.x != -1 &amp;&amp; retract_pos.y != -1;</a>
+<a name="ln754"> </a>
+<a name="ln755">    _purge_connectors(tentacle);</a>
+<a name="ln756"> </a>
+<a name="ln757">    if (severed)</a>
+<a name="ln758">    {</a>
+<a name="ln759">        for (fair_adjacent_iterator ai(base_position); ai; ++ai)</a>
+<a name="ln760">        {</a>
+<a name="ln761">            if (!actor_at(*ai) &amp;&amp; tentacle-&gt;is_habitable(*ai))</a>
+<a name="ln762">            {</a>
+<a name="ln763">                tentacle-&gt;props[&quot;base_position&quot;].get_coord() = *ai;</a>
+<a name="ln764">                base_position = *ai;</a>
+<a name="ln765">                break;</a>
+<a name="ln766">            }</a>
+<a name="ln767">        }</a>
+<a name="ln768">    }</a>
+<a name="ln769"> </a>
+<a name="ln770">    coord_def new_pos = tentacle-&gt;pos();</a>
+<a name="ln771">    coord_def old_pos = tentacle-&gt;pos();</a>
+<a name="ln772"> </a>
+<a name="ln773">    int demonic_max_dist = (tentacle-&gt;type == MONS_ELDRITCH_TENTACLE ? 5 : 8);</a>
+<a name="ln774">    tentacle_attack_constraints attack_constraints;</a>
+<a name="ln775">    attack_constraints.base_monster = tentacle;</a>
+<a name="ln776">    attack_constraints.max_string_distance = demonic_max_dist;</a>
+<a name="ln777">    attack_constraints.connection_constraints = &amp;connection_data;</a>
+<a name="ln778">    attack_constraints.target_positions = &amp;foe_positions;</a>
+<a name="ln779"> </a>
+<a name="ln780">    bool path_found = false;</a>
+<a name="ln781">    if (attack_foe)</a>
+<a name="ln782">    {</a>
+<a name="ln783">        path_found = _tentacle_pathfind(tentacle, attack_constraints,</a>
+<a name="ln784">                                        new_pos, foe_positions, visited_count);</a>
+<a name="ln785">    }</a>
+<a name="ln786"> </a>
+<a name="ln787">    //If this tentacle is constricting a creature, attempt to pull it back</a>
+<a name="ln788">    //towards the head.</a>
+<a name="ln789">    bool pull_constrictee = false;</a>
+<a name="ln790">    bool shift_constrictee = false;</a>
+<a name="ln791">    coord_def shift_pos;</a>
+<a name="ln792">    actor* constrictee = nullptr;</a>
+<a name="ln793">    if (tentacle-&gt;is_constricting())</a>
+<a name="ln794">    {</a>
+<a name="ln795">        constrictee = actor_by_mid(tentacle-&gt;constricting-&gt;begin()-&gt;first);</a>
+<a name="ln796"> </a>
+<a name="ln797">        // Don't drag things that cannot move</a>
+<a name="ln798">        if (!constrictee-&gt;is_stationary())</a>
+<a name="ln799">        {</a>
+<a name="ln800">            if (retract_found)</a>
+<a name="ln801">            {</a>
+<a name="ln802">                if (constrictee-&gt;is_habitable(old_pos))</a>
+<a name="ln803">                {</a>
+<a name="ln804">                    pull_constrictee = true;</a>
+<a name="ln805">                    shift_pos = old_pos;</a>
+<a name="ln806">                }</a>
+<a name="ln807">            }</a>
+<a name="ln808">            else if (tentacle-&gt;type == MONS_SNAPLASHER_VINE)</a>
+<a name="ln809">            {</a>
+<a name="ln810">                // Don't shift our victim if they're already next to a tree</a>
+<a name="ln811">                // (To avoid shaking players back and forth constantly)</a>
+<a name="ln812">                bool near_tree = false;</a>
+<a name="ln813">                for (adjacent_iterator ai(constrictee-&gt;pos()); ai; ++ai)</a>
+<a name="ln814">                {</a>
+<a name="ln815">                    if (feat_is_tree(grd(*ai)))</a>
+<a name="ln816">                    {</a>
+<a name="ln817">                        near_tree = true;</a>
+<a name="ln818">                        break;</a>
+<a name="ln819">                    }</a>
+<a name="ln820">                }</a>
+<a name="ln821"> </a>
+<a name="ln822">                if (!near_tree)</a>
+<a name="ln823">                {</a>
+<a name="ln824">                    for (adjacent_iterator ai(tentacle-&gt;pos()); ai; ++ai)</a>
+<a name="ln825">                    {</a>
+<a name="ln826">                        if (adjacent(*ai, constrictee-&gt;pos())</a>
+<a name="ln827">                            &amp;&amp; constrictee-&gt;is_habitable(*ai)</a>
+<a name="ln828">                            &amp;&amp; !actor_at(*ai))</a>
+<a name="ln829">                        {</a>
+<a name="ln830">                            for (adjacent_iterator ai2(*ai); ai2; ++ai2)</a>
+<a name="ln831">                            {</a>
+<a name="ln832">                                if (feat_is_tree(grd(*ai2)))</a>
+<a name="ln833">                                {</a>
+<a name="ln834">                                    pull_constrictee = true;</a>
+<a name="ln835">                                    shift_constrictee = true;</a>
+<a name="ln836">                                    shift_pos = *ai;</a>
+<a name="ln837">                                    break;</a>
+<a name="ln838">                                }</a>
+<a name="ln839">                            }</a>
+<a name="ln840">                        }</a>
+<a name="ln841">                    }</a>
+<a name="ln842">                }</a>
+<a name="ln843">            }</a>
+<a name="ln844">        }</a>
+<a name="ln845">    }</a>
+<a name="ln846"> </a>
+<a name="ln847">    if (!attack_foe || !path_found)</a>
+<a name="ln848">    {</a>
+<a name="ln849">        // todo: set a random position?</a>
+<a name="ln850"> </a>
+<a name="ln851">        dprf(&quot;pathing failed, target %d %d&quot;, new_pos.x, new_pos.y);</a>
+<a name="ln852">        for (fair_adjacent_iterator ai(old_pos); ai; ++ai)</a>
+<a name="ln853">        {</a>
+<a name="ln854">            if (!in_bounds(*ai) || is_sanctuary(*ai) || actor_at(*ai))</a>
+<a name="ln855">                continue;</a>
+<a name="ln856"> </a>
+<a name="ln857">            int escalated = 0;</a>
+<a name="ln858">            auto constraint = map_find(connection_data, *ai);</a>
+<a name="ln859">            ASSERT(constraint);</a>
+<a name="ln860"> </a>
+<a name="ln861">            while (constraint-&gt;count(escalated + 1))</a>
+<a name="ln862">                escalated++;</a>
+<a name="ln863"> </a>
+<a name="ln864">            if (!severed</a>
+<a name="ln865">                &amp;&amp; tentacle-&gt;is_habitable(*ai)</a>
+<a name="ln866">                &amp;&amp; escalated == *constraint-&gt;rbegin()</a>
+<a name="ln867">                &amp;&amp; (visited_count &lt; demonic_max_dist</a>
+<a name="ln868">                    || constraint-&gt;size() &gt; 1))</a>
+<a name="ln869">            {</a>
+<a name="ln870">                new_pos = *ai;</a>
+<a name="ln871">                break;</a>
+<a name="ln872">            }</a>
+<a name="ln873">            else if (tentacle-&gt;is_habitable(*ai)</a>
+<a name="ln874">                     &amp;&amp; visited_count &gt; 1</a>
+<a name="ln875">                     &amp;&amp; escalated == *constraint-&gt;rbegin()</a>
+<a name="ln876">                     &amp;&amp; constraint-&gt;size() &gt; 1)</a>
+<a name="ln877">            {</a>
+<a name="ln878">                new_pos = *ai;</a>
+<a name="ln879">                break;</a>
+<a name="ln880">            }</a>
+<a name="ln881">        }</a>
+<a name="ln882">    }</a>
+<a name="ln883">    else if (pull_constrictee &amp;&amp; !shift_constrictee)</a>
+<a name="ln884">        new_pos = retract_pos;</a>
+<a name="ln885"> </a>
+<a name="ln886">    if (new_pos != old_pos)</a>
+<a name="ln887">    {</a>
+<a name="ln888">        // Did we path into a target?</a>
+<a name="ln889">        if (actor* blocking_actor = actor_at(new_pos))</a>
+<a name="ln890">        {</a>
+<a name="ln891">            tentacle-&gt;target = new_pos;</a>
+<a name="ln892">            tentacle-&gt;foe = blocking_actor-&gt;mindex();</a>
+<a name="ln893">            new_pos = old_pos;</a>
+<a name="ln894">        }</a>
+<a name="ln895">    }</a>
+<a name="ln896"> </a>
+<a name="ln897">    // Why do I have to do this move? I don't get it.</a>
+<a name="ln898">    // specifically, if tentacle isn't registered at its new position on mgrd</a>
+<a name="ln899">    // the search fails (sometimes), Don't know why. -cao</a>
+<a name="ln900">    tentacle-&gt;move_to_pos(new_pos);</a>
+<a name="ln901"> </a>
+<a name="ln902">    if (pull_constrictee)</a>
+<a name="ln903">    {</a>
+<a name="ln904">        if (you.can_see(*tentacle))</a>
+<a name="ln905">        {</a>
+<a name="ln906">            mprf(&quot;The vine drags %s backwards!&quot;,</a>
+<a name="ln907">                    constrictee-&gt;name(DESC_THE).c_str());</a>
+<a name="ln908">        }</a>
+<a name="ln909"> </a>
+<a name="ln910">        if (constrictee-&gt;as_player())</a>
+<a name="ln911">            move_player_to_grid(shift_pos, false);</a>
+<a name="ln912">        else</a>
+<a name="ln913">            constrictee-&gt;move_to_pos(shift_pos);</a>
+<a name="ln914"> </a>
+<a name="ln915">        // Interrupt stair travel and passwall.</a>
+<a name="ln916">        if (constrictee-&gt;is_player())</a>
+<a name="ln917">            stop_delay(true);</a>
+<a name="ln918">    }</a>
+<a name="ln919">    tentacle-&gt;clear_invalid_constrictions();</a>
+<a name="ln920"> </a>
+<a name="ln921">    tentacle_connect_constraints connect_costs;</a>
+<a name="ln922">    connect_costs.connection_constraints = &amp;connection_data;</a>
+<a name="ln923">    connect_costs.base_monster = tentacle;</a>
+<a name="ln924"> </a>
+<a name="ln925">    bool connected = _try_tentacle_connect(new_pos, base_position,</a>
+<a name="ln926">                                           tentacle, tentacle,</a>
+<a name="ln927">                                           connect_costs,</a>
+<a name="ln928">                                           mons_tentacle_child_type(tentacle));</a>
+<a name="ln929"> </a>
+<a name="ln930">    if (!connected)</a>
+<a name="ln931">    {</a>
+<a name="ln932">        // This should really never fail for demonic tentacles (they don't</a>
+<a name="ln933">        // have the whole shifting base problem). -cao</a>
+<a name="ln934">        mprf(&quot;tentacle connect failed! What the heck!  severed status %d&quot;,</a>
+<a name="ln935">             tentacle-&gt;has_ench(ENCH_SEVERED));</a>
+<a name="ln936">        mprf(&quot;pathed to %d %d from %d %d mid %d count %d&quot;, new_pos.x, new_pos.y,</a>
+<a name="ln937">             old_pos.x, old_pos.y, tentacle-&gt;mid, visited_count);</a>
+<a name="ln938"> </a>
+<a name="ln939">        // Is it ok to purge the tentacle here?</a>
+<a name="ln940">        monster_die(*tentacle, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln941">        return;</a>
+<a name="ln942">    }</a>
+<a name="ln943"> </a>
+<a name="ln944">//  mprf(&quot;mindex %d vsisted %d&quot;, tentacle_idx, visited_count);</a>
+<a name="ln945">    tentacle-&gt;check_redraw(old_pos);</a>
+<a name="ln946">    tentacle-&gt;apply_location_effects(old_pos);</a>
+<a name="ln947">}</a>
+<a name="ln948"> </a>
+<a name="ln949">void move_child_tentacles(monster* mons)</a>
+<a name="ln950">{</a>
+<a name="ln951">    ASSERT(mons);</a>
+<a name="ln952"> </a>
+<a name="ln953">    if (!mons_is_tentacle_head(mons_base_type(*mons))</a>
+<a name="ln954">        || mons-&gt;asleep())</a>
+<a name="ln955">    {</a>
+<a name="ln956">        return;</a>
+<a name="ln957">    }</a>
+<a name="ln958"> </a>
+<a name="ln959">    bool no_foe = false;</a>
+<a name="ln960"> </a>
+<a name="ln961">    vector&lt;coord_def&gt; foe_positions;</a>
+<a name="ln962">    _collect_foe_positions(mons, foe_positions,</a>
+<a name="ln963">                           [mons](const actor *test) -&gt; bool</a>
+<a name="ln964">                           {</a>
+<a name="ln965">                               return mons-&gt;can_see(*test);</a>
+<a name="ln966">                           });</a>
+<a name="ln967"> </a>
+<a name="ln968">    //if (!kraken-&gt;near_foe())</a>
+<a name="ln969">    if (foe_positions.empty()</a>
+<a name="ln970">        || mons-&gt;behaviour == BEH_FLEE</a>
+<a name="ln971">        || mons-&gt;behaviour == BEH_WANDER)</a>
+<a name="ln972">    {</a>
+<a name="ln973">        no_foe = true;</a>
+<a name="ln974">    }</a>
+<a name="ln975">    vector&lt;monster_iterator&gt; tentacles;</a>
+<a name="ln976">    _collect_tentacles(mons, tentacles);</a>
+<a name="ln977"> </a>
+<a name="ln978">    // Move each tentacle in turn</a>
+<a name="ln979">    for (monster_iterator &amp;tent_it : tentacles)</a>
+<a name="ln980">    {</a>
+<a name="ln981">        // XXX: Why not just use *tent_it ?</a>
+<a name="ln982">        monster* tentacle = monster_at(tent_it-&gt;pos());</a>
+<a name="ln983"> </a>
+<a name="ln984">        if (!tentacle)</a>
+<a name="ln985">        {</a>
+<a name="ln986">            dprf(&quot;Missing tentacle in path.&quot;);</a>
+<a name="ln987">            continue;</a>
+<a name="ln988">        }</a>
+<a name="ln989"> </a>
+<a name="ln990">        tentacle_connect_constraints connect_costs;</a>
+<a name="ln991">        map&lt;coord_def, set&lt;int&gt; &gt; connection_data;</a>
+<a name="ln992"> </a>
+<a name="ln993">        monster* current_mon = tentacle;</a>
+<a name="ln994">        int current_count = 0;</a>
+<a name="ln995">        bool retract_found = false;</a>
+<a name="ln996">        coord_def retract_pos(-1, -1);</a>
+<a name="ln997"> </a>
+<a name="ln998">        while (current_mon)</a>
+<a name="ln999">        {</a>
+<a name="ln1000">            for (adjacent_iterator adj_it(current_mon-&gt;pos(), false);</a>
+<a name="ln1001">                 adj_it; ++adj_it)</a>
+<a name="ln1002">            {</a>
+<a name="ln1003">                connection_data[*adj_it].insert(current_count);</a>
+<a name="ln1004">            }</a>
+<a name="ln1005"> </a>
+<a name="ln1006">            bool basis = current_mon-&gt;props.exists(&quot;inwards&quot;);</a>
+<a name="ln1007">            monster* inward = basis ? monster_by_mid(current_mon-&gt;props[&quot;inwards&quot;].get_int()) : nullptr;</a>
+<a name="ln1008"> </a>
+<a name="ln1009">            if (inward</a>
+<a name="ln1010">                &amp;&amp; (inward-&gt;is_child_tentacle_of(tentacle)</a>
+<a name="ln1011">                    || inward-&gt;is_parent_monster_of(tentacle)))</a>
+<a name="ln1012">            {</a>
+<a name="ln1013">                current_mon = inward;</a>
+<a name="ln1014">                if (!retract_found</a>
+<a name="ln1015">                    &amp;&amp; current_mon-&gt;is_child_tentacle_of(tentacle))</a>
+<a name="ln1016">                {</a>
+<a name="ln1017">                    retract_pos = current_mon-&gt;pos();</a>
+<a name="ln1018">                    retract_found = true;</a>
+<a name="ln1019">                }</a>
+<a name="ln1020">            }</a>
+<a name="ln1021">            else</a>
+<a name="ln1022">                current_mon = nullptr;</a>
+<a name="ln1023">            current_count++;</a>
+<a name="ln1024">        }</a>
+<a name="ln1025"> </a>
+<a name="ln1026">        _purge_connectors(tentacle);</a>
+<a name="ln1027"> </a>
+<a name="ln1028">        if (no_foe</a>
+<a name="ln1029">            &amp;&amp; grid_distance(tentacle-&gt;pos(), mons-&gt;pos()) == 1)</a>
+<a name="ln1030">        {</a>
+<a name="ln1031">            // Drop the tentacle if no enemies are in sight and it is</a>
+<a name="ln1032">            // adjacent to the main body. This is to prevent players from</a>
+<a name="ln1033">            // just sniping tentacles while outside the kraken's fov.</a>
+<a name="ln1034">            monster_die(*tentacle, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln1035">            continue;</a>
+<a name="ln1036">        }</a>
+<a name="ln1037"> </a>
+<a name="ln1038">        coord_def new_pos = tentacle-&gt;pos();</a>
+<a name="ln1039">        coord_def old_pos = tentacle-&gt;pos();</a>
+<a name="ln1040">        bool path_found = false;</a>
+<a name="ln1041"> </a>
+<a name="ln1042">        tentacle_attack_constraints attack_constraints;</a>
+<a name="ln1043">        attack_constraints.base_monster = tentacle;</a>
+<a name="ln1044">        attack_constraints.max_string_distance = MAX_KRAKEN_TENTACLE_DIST;</a>
+<a name="ln1045">        attack_constraints.connection_constraints = &amp;connection_data;</a>
+<a name="ln1046">        attack_constraints.target_positions = &amp;foe_positions;</a>
+<a name="ln1047"> </a>
+<a name="ln1048">        //If this tentacle is constricting a creature, attempt to pull it back</a>
+<a name="ln1049">        //towards the head.</a>
+<a name="ln1050">        bool pull_constrictee = false;</a>
+<a name="ln1051">        actor* constrictee = nullptr;</a>
+<a name="ln1052">        if (tentacle-&gt;is_constricting() &amp;&amp; retract_found)</a>
+<a name="ln1053">        {</a>
+<a name="ln1054">            constrictee = actor_by_mid(tentacle-&gt;constricting-&gt;begin()-&gt;first);</a>
+<a name="ln1055">            if (feat_has_solid_floor(grd(old_pos))</a>
+<a name="ln1056">                &amp;&amp; constrictee-&gt;is_habitable(old_pos))</a>
+<a name="ln1057">            {</a>
+<a name="ln1058">                pull_constrictee = true;</a>
+<a name="ln1059">            }</a>
+<a name="ln1060">        }</a>
+<a name="ln1061"> </a>
+<a name="ln1062">        if (!no_foe &amp;&amp; !pull_constrictee)</a>
+<a name="ln1063">        {</a>
+<a name="ln1064">            path_found = _tentacle_pathfind(</a>
+<a name="ln1065">                    tentacle,</a>
+<a name="ln1066">                    attack_constraints,</a>
+<a name="ln1067">                    new_pos,</a>
+<a name="ln1068">                    foe_positions,</a>
+<a name="ln1069">                    current_count);</a>
+<a name="ln1070">        }</a>
+<a name="ln1071"> </a>
+<a name="ln1072">        if (no_foe || !path_found || pull_constrictee)</a>
+<a name="ln1073">        {</a>
+<a name="ln1074">            if (retract_found)</a>
+<a name="ln1075">                new_pos = retract_pos;</a>
+<a name="ln1076">            else</a>
+<a name="ln1077">            {</a>
+<a name="ln1078">                // What happened here? Usually retract found should be true</a>
+<a name="ln1079">                // or we should get pruned (due to being adjacent to the</a>
+<a name="ln1080">                // head), in any case just stay here.</a>
+<a name="ln1081">            }</a>
+<a name="ln1082">        }</a>
+<a name="ln1083"> </a>
+<a name="ln1084">        // Did we path into a target?</a>
+<a name="ln1085">        if (actor* blocking_actor = actor_at(new_pos))</a>
+<a name="ln1086">        {</a>
+<a name="ln1087">            tentacle-&gt;target = new_pos;</a>
+<a name="ln1088">            tentacle-&gt;foe = blocking_actor-&gt;mindex();</a>
+<a name="ln1089">            new_pos = old_pos;</a>
+<a name="ln1090">        }</a>
+<a name="ln1091"> </a>
+<a name="ln1092">        // Why do I have to do this move? I don't get it.</a>
+<a name="ln1093">        // specifically, if tentacle isn't registered at its new position on</a>
+<a name="ln1094">        // mgrd the search fails (sometimes), Don't know why. -cao</a>
+<a name="ln1095">        tentacle-&gt;move_to_pos(new_pos);</a>
+<a name="ln1096"> </a>
+<a name="ln1097">        if (pull_constrictee)</a>
+<a name="ln1098">        {</a>
+<a name="ln1099">            if (you.can_see(*tentacle))</a>
+<a name="ln1100">            {</a>
+<a name="ln1101">                mprf(&quot;The tentacle pulls %s backwards!&quot;,</a>
+<a name="ln1102">                     constrictee-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1103">            }</a>
+<a name="ln1104"> </a>
+<a name="ln1105">            if (constrictee-&gt;as_player())</a>
+<a name="ln1106">                move_player_to_grid(old_pos, false);</a>
+<a name="ln1107">            else</a>
+<a name="ln1108">                constrictee-&gt;move_to_pos(old_pos);</a>
+<a name="ln1109"> </a>
+<a name="ln1110">            // Interrupt stair travel and passwall.</a>
+<a name="ln1111">            if (constrictee-&gt;is_player())</a>
+<a name="ln1112">                stop_delay(true);</a>
+<a name="ln1113">        }</a>
+<a name="ln1114">        tentacle-&gt;clear_invalid_constrictions();</a>
+<a name="ln1115"> </a>
+<a name="ln1116">        connect_costs.connection_constraints = &amp;connection_data;</a>
+<a name="ln1117">        connect_costs.base_monster = tentacle;</a>
+<a name="ln1118">        bool connected = _try_tentacle_connect(new_pos, mons-&gt;pos(),</a>
+<a name="ln1119">                                tentacle, mons,</a>
+<a name="ln1120">                                connect_costs,</a>
+<a name="ln1121">                                mons_tentacle_child_type(tentacle));</a>
+<a name="ln1122"> </a>
+<a name="ln1123">        // Can't connect, usually the head moved and invalidated our position</a>
+<a name="ln1124">        // in some way. Should look into this more at some point -cao</a>
+<a name="ln1125">        if (!connected)</a>
+<a name="ln1126">        {</a>
+<a name="ln1127">            mgrd(tentacle-&gt;pos()) = tentacle-&gt;mindex();</a>
+<a name="ln1128">            monster_die(*tentacle, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln1129"> </a>
+<a name="ln1130">            continue;</a>
+<a name="ln1131">        }</a>
+<a name="ln1132"> </a>
+<a name="ln1133">        tentacle-&gt;check_redraw(old_pos);</a>
+<a name="ln1134">        tentacle-&gt;apply_location_effects(old_pos);</a>
+<a name="ln1135">    }</a>
+<a name="ln1136">}</a>
+<a name="ln1137"> </a>
+<a name="ln1138">static monster* _mons_get_parent_monster(monster* mons)</a>
+<a name="ln1139">{</a>
+<a name="ln1140">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1141">    {</a>
+<a name="ln1142">        if (mi-&gt;is_parent_monster_of(mons))</a>
+<a name="ln1143">            return *mi;</a>
+<a name="ln1144">    }</a>
+<a name="ln1145"> </a>
+<a name="ln1146">    return nullptr;</a>
+<a name="ln1147">}</a>
+<a name="ln1148"> </a>
+<a name="ln1149">// When given either a tentacle end or segment, kills the end and all segments</a>
+<a name="ln1150">// of that tentacle.</a>
+<a name="ln1151">bool destroy_tentacle(monster* mons)</a>
+<a name="ln1152">{</a>
+<a name="ln1153">    bool any = false;</a>
+<a name="ln1154"> </a>
+<a name="ln1155">    monster* head = mons_is_tentacle_segment(mons-&gt;type)</a>
+<a name="ln1156">            ? _mons_get_parent_monster(mons) : mons;</a>
+<a name="ln1157"> </a>
+<a name="ln1158">    //If we tried to find the head, but failed (probably because it is already</a>
+<a name="ln1159">    //dead), cancel trying to kill this tentacle</a>
+<a name="ln1160">    if (head == nullptr)</a>
+<a name="ln1161">        return false;</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    // Some issue with using monster_die leading to DEAD_MONSTER</a>
+<a name="ln1164">    // or w/e. Using hurt seems to cause more problems though.</a>
+<a name="ln1165">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1166">    {</a>
+<a name="ln1167">        if (mi-&gt;is_child_tentacle_of(head))</a>
+<a name="ln1168">        {</a>
+<a name="ln1169">            any = true;</a>
+<a name="ln1170">            //mi-&gt;hurt(*mi, INSTANT_DEATH);</a>
+<a name="ln1171">            monster_die(**mi, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln1172">        }</a>
+<a name="ln1173">    }</a>
+<a name="ln1174"> </a>
+<a name="ln1175">    if (mons != head)</a>
+<a name="ln1176">    {</a>
+<a name="ln1177">        any = true;</a>
+<a name="ln1178">        monster_die(*head, KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln1179">    }</a>
+<a name="ln1180"> </a>
+<a name="ln1181">    return any;</a>
+<a name="ln1182">}</a>
+<a name="ln1183"> </a>
+<a name="ln1184">bool destroy_tentacles(monster* head)</a>
+<a name="ln1185">{</a>
+<a name="ln1186">    bool any = false;</a>
+<a name="ln1187">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1188">    {</a>
+<a name="ln1189">        if (mi-&gt;is_child_tentacle_of(head))</a>
+<a name="ln1190">        {</a>
+<a name="ln1191">            any |= destroy_tentacle(*mi);</a>
+<a name="ln1192">            if (!mi-&gt;is_child_tentacle_segment())</a>
+<a name="ln1193">            {</a>
+<a name="ln1194">                monster_die(*mi-&gt;as_monster(), KILL_MISC, NON_MONSTER, true);</a>
+<a name="ln1195">                any = true;</a>
+<a name="ln1196">            }</a>
+<a name="ln1197">        }</a>
+<a name="ln1198">    }</a>
+<a name="ln1199">    return any;</a>
+<a name="ln1200">}</a>
+<a name="ln1201"> </a>
+<a name="ln1202">static int _max_tentacles(const monster* mon)</a>
+<a name="ln1203">{</a>
+<a name="ln1204">    if (mons_base_type(*mon) == MONS_KRAKEN)</a>
+<a name="ln1205">        return MAX_ACTIVE_KRAKEN_TENTACLES;</a>
+<a name="ln1206">    else if (mon-&gt;type == MONS_TENTACLED_STARSPAWN)</a>
+<a name="ln1207">        return MAX_ACTIVE_STARSPAWN_TENTACLES;</a>
+<a name="ln1208">    else</a>
+<a name="ln1209">        return 0;</a>
+<a name="ln1210">}</a>
+<a name="ln1211"> </a>
+<a name="ln1212">int mons_available_tentacles(monster* head)</a>
+<a name="ln1213">{</a>
+<a name="ln1214">    int tentacle_count = 0;</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1217">    {</a>
+<a name="ln1218">        if (mi-&gt;is_child_tentacle_of(head))</a>
+<a name="ln1219">            tentacle_count++;</a>
+<a name="ln1220">    }</a>
+<a name="ln1221"> </a>
+<a name="ln1222">    return _max_tentacles(head) - tentacle_count;</a>
+<a name="ln1223">}</a>
+<a name="ln1224"> </a>
+<a name="ln1225">void mons_create_tentacles(monster* head)</a>
+<a name="ln1226">{</a>
+<a name="ln1227">    int possible_count = mons_available_tentacles(head);</a>
+<a name="ln1228"> </a>
+<a name="ln1229">    if (possible_count &lt;= 0)</a>
+<a name="ln1230">        return;</a>
+<a name="ln1231"> </a>
+<a name="ln1232">    monster_type tent_type = mons_tentacle_child_type(head);</a>
+<a name="ln1233"> </a>
+<a name="ln1234">    vector&lt;coord_def&gt; adj_squares;</a>
+<a name="ln1235"> </a>
+<a name="ln1236">    // Collect open adjacent squares. Candidate squares must be</a>
+<a name="ln1237">    // unoccupied.</a>
+<a name="ln1238">    for (adjacent_iterator adj_it(head-&gt;pos()); adj_it; ++adj_it)</a>
+<a name="ln1239">    {</a>
+<a name="ln1240">        if (monster_habitable_grid(tent_type, grd(*adj_it))</a>
+<a name="ln1241">            &amp;&amp; !actor_at(*adj_it))</a>
+<a name="ln1242">        {</a>
+<a name="ln1243">            adj_squares.push_back(*adj_it);</a>
+<a name="ln1244">        }</a>
+<a name="ln1245">    }</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    if (unsigned(possible_count) &gt; adj_squares.size())</a>
+<a name="ln1248">        possible_count = adj_squares.size();</a>
+<a name="ln1249">    else if (adj_squares.size() &gt; unsigned(possible_count))</a>
+<a name="ln1250">        shuffle_array(adj_squares);</a>
+<a name="ln1251"> </a>
+<a name="ln1252">    int visible_count = 0;</a>
+<a name="ln1253"> </a>
+<a name="ln1254">    for (int i = 0 ; i &lt; possible_count; ++i)</a>
+<a name="ln1255">    {</a>
+<a name="ln1256">        mgen_data mg = _segment_data(*head, adj_squares[i], tent_type);</a>
+<a name="ln1257">        mg.props[MGEN_TENTACLE_CONNECT] = int(head-&gt;mid);</a>
+<a name="ln1258">        if (monster *tentacle = create_monster(mg))</a>
+<a name="ln1259">        {</a>
+<a name="ln1260">            if (you.can_see(*tentacle))</a>
+<a name="ln1261">                visible_count++;</a>
+<a name="ln1262"> </a>
+<a name="ln1263">            tentacle-&gt;props[&quot;inwards&quot;].get_int() = head-&gt;mid;</a>
+<a name="ln1264"> </a>
+<a name="ln1265">            if (head-&gt;holiness() &amp; MH_UNDEAD)</a>
+<a name="ln1266">                tentacle-&gt;flags |= MF_FAKE_UNDEAD;</a>
+<a name="ln1267">        }</a>
+<a name="ln1268">    }</a>
+<a name="ln1269"> </a>
+<a name="ln1270">    if (mons_base_type(*head) == MONS_KRAKEN)</a>
+<a name="ln1271">    {</a>
+<a name="ln1272">        if (visible_count == 1)</a>
+<a name="ln1273">            mpr(&quot;A tentacle rises from the water!&quot;);</a>
+<a name="ln1274">        else if (visible_count &gt; 1)</a>
+<a name="ln1275">            mpr(&quot;Tentacles burst out of the water!&quot;);</a>
+<a name="ln1276">    }</a>
+<a name="ln1277">    else if (head-&gt;type == MONS_TENTACLED_STARSPAWN)</a>
+<a name="ln1278">    {</a>
+<a name="ln1279">        if (visible_count == 1)</a>
+<a name="ln1280">            mpr(&quot;A tentacle flies out from the starspawn's body!&quot;);</a>
+<a name="ln1281">        else if (visible_count &gt; 1)</a>
+<a name="ln1282">            mpr(&quot;Tentacles burst from the starspawn's body!&quot;);</a>
+<a name="ln1283">    }</a>
+<a name="ln1284">    return;</a>
+<a name="ln1285">}</a>
+
+</code></pre>
+<div class="balloon" rel="314"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: target_positions, connection_constraints, base_monster, max_string_distance.</p></div>
+<div class="balloon" rel="426"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: connection_constraints, base_monster.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

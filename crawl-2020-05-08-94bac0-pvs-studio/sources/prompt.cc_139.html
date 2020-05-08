@@ -1,0 +1,411 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>prompt.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Prompts.</a>
+<a name="ln4"> **/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7">#include &lt;cmath&gt; // isnan</a>
+<a name="ln8"> </a>
+<a name="ln9">#include &quot;prompt.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &quot;clua.h&quot;</a>
+<a name="ln12">#include &quot;delay.h&quot;</a>
+<a name="ln13">#include &quot;libutil.h&quot;</a>
+<a name="ln14">#include &quot;menu.h&quot;</a>
+<a name="ln15">#include &quot;message.h&quot;</a>
+<a name="ln16">#include &quot;options.h&quot;</a>
+<a name="ln17">#include &quot;state.h&quot;</a>
+<a name="ln18">#include &quot;stringutil.h&quot;</a>
+<a name="ln19">#ifdef USE_TILE</a>
+<a name="ln20">#include &quot;rltiles/tiledef-gui.h&quot;</a>
+<a name="ln21">#endif</a>
+<a name="ln22">#include &quot;viewchar.h&quot;</a>
+<a name="ln23">#include &quot;ui.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">// Like yesno, but requires a full typed answer.</a>
+<a name="ln26">// Unlike yesno, prompt should have no trailing space.</a>
+<a name="ln27">// Returns true if the user typed &quot;yes&quot;, false if something else or cancel.</a>
+<a name="ln28">bool yes_or_no(const char* fmt, ...)</a>
+<a name="ln29">{</a>
+<a name="ln30">    char buf[200];</a>
+<a name="ln31">    va_list args;</a>
+<a name="ln32">    va_start(args, fmt);</a>
+<a name="ln33">    vsnprintf(buf, sizeof buf, fmt, args);</a>
+<a name="ln34">    va_end(args);</a>
+<a name="ln35">    buf[sizeof(buf)-1] = 0;</a>
+<a name="ln36"> </a>
+<a name="ln37">    mprf(MSGCH_PROMPT, &quot;%s (Confirm with \&quot;yes\&quot;.) &quot;, buf);</a>
+<a name="ln38"> </a>
+<a name="ln39">    if (cancellable_get_line(buf, sizeof buf))</a>
+<a name="ln40">        return false;</a>
+<a name="ln41">    if (strcasecmp(buf, &quot;yes&quot;) != 0)</a>
+<a name="ln42">        return false;</a>
+<a name="ln43"> </a>
+<a name="ln44">    return true;</a>
+<a name="ln45">}</a>
+<a name="ln46"> </a>
+<a name="ln47">// jmf: general helper (should be used all over in code)</a>
+<a name="ln48">//      -- idea borrowed from Nethack</a>
+<a name="ln49">bool yesno(const char *str, bool allow_lowercase, int default_answer, bool clear_after,</a>
+<a name="ln50">           bool interrupt_delays, bool noprompt,</a>
+<a name="ln51">           const explicit_keymap *map)</a>
+<a name="ln52">{</a>
+<a name="ln53">    if (interrupt_delays &amp;&amp; !crawl_state.is_repeating_cmd())</a>
+<a name="ln54">        interrupt_activity(activity_interrupt::force);</a>
+<a name="ln55"> </a>
+<a name="ln56">    // Allow players to answer prompts via clua.</a>
+<a name="ln57">    maybe_bool res = clua.callmaybefn(&quot;c_answer_prompt&quot;, &quot;s&quot;, str);</a>
+<a name="ln58">    if (res == MB_TRUE)</a>
+<a name="ln59">        return true;</a>
+<a name="ln60">    if (res == MB_FALSE)</a>
+<a name="ln61">        return false;</a>
+<a name="ln62"> </a>
+<a name="ln63">    string prompt = make_stringf(&quot;%s &quot;, str ? str : &quot;Buggy prompt?&quot;);</a>
+<a name="ln64"> </a>
+<a name="ln65">#ifdef TOUCH_UI</a>
+<a name="ln66">    bool use_popup = true;</a>
+<a name="ln67">#else</a>
+<a name="ln68">    bool use_popup = !crawl_state.need_save || ui::has_layout();</a>
+<a name="ln69">    use_popup = use_popup &amp;&amp; str;</a>
+<a name="ln70">#endif</a>
+<a name="ln71"> </a>
+<a name="ln72">    Menu pop(MF_SINGLESELECT | MF_ANYPRINTABLE, &quot;&quot;, KMC_CONFIRM);</a>
+<a name="ln73">    MenuEntry *status = nullptr;</a>
+<a name="ln74"> </a>
+<a name="ln75">    if (use_popup)</a>
+<a name="ln76">    {</a>
+<a name="ln77">        status = new MenuEntry(&quot;&quot;, MEL_SUBTITLE);</a>
+<a name="ln78">        MenuEntry * const y_me = new MenuEntry(&quot;Yes&quot;, MEL_ITEM, 1, 'Y');</a>
+<a name="ln79">        MenuEntry * const n_me = new MenuEntry(&quot;No&quot;, MEL_ITEM, 1, 'N');</a>
+<a name="ln80">#ifdef USE_TILE</a>
+<a name="ln81">        y_me-&gt;add_tile(tile_def(TILEG_PROMPT_YES, TEX_GUI));</a>
+<a name="ln82">        n_me-&gt;add_tile(tile_def(TILEG_PROMPT_NO, TEX_GUI));</a>
+<a name="ln83">#endif</a>
+<a name="ln84"> </a>
+<a name="ln85">        pop.set_title(new MenuEntry(prompt, MEL_TITLE));</a>
+<a name="ln86">        pop.add_entry(status);</a>
+<a name="ln87">        pop.add_entry(y_me);</a>
+<a name="ln88">        pop.add_entry(n_me);</a>
+<a name="ln89">    }</a>
+<a name="ln90">    mouse_control mc(MOUSE_MODE_YESNO);</a>
+<a name="ln91">    while (true)</a>
+<a name="ln92">    {</a>
+<a name="ln93">        int tmp = ESCAPE;</a>
+<a name="ln94">        if (!crawl_state.seen_hups)</a>
+<a name="ln95">        {</a>
+<a name="ln96">            if (use_popup)</a>
+<a name="ln97">            {</a>
+<a name="ln98">                pop.show();</a>
+<a name="ln99">                tmp = pop.getkey();</a>
+<a name="ln100">            }</a>
+<a name="ln101">            else</a>
+<a name="ln102">            {</a>
+<a name="ln103">                if (!noprompt)</a>
+<a name="ln104">                    mprf(MSGCH_PROMPT, &quot;%s&quot;, prompt.c_str());</a>
+<a name="ln105"> </a>
+<a name="ln106">                tmp = ui::getch(KMC_CONFIRM);</a>
+<a name="ln107">            }</a>
+<a name="ln108">        }</a>
+<a name="ln109"> </a>
+<a name="ln110">        // If no safe answer exists, we still need to abort when a HUP happens.</a>
+<a name="ln111">        // The caller must handle this case, preferably by issuing an uncancel</a>
+<a name="ln112">        // event that can restart when the game restarts -- and ignore the</a>
+<a name="ln113">        // the return value here.</a>
+<a name="ln114">        if (crawl_state.seen_hups &amp;&amp; !default_answer)</a>
+<a name="ln115">            return false;</a>
+<a name="ln116"> </a>
+<a name="ln117">        if (map &amp;&amp; map-&gt;find(tmp) != map-&gt;end())</a>
+<a name="ln118">            tmp = map-&gt;find(tmp)-&gt;second;</a>
+<a name="ln119"> </a>
+<a name="ln120">        if (default_answer</a>
+<a name="ln121">            &amp;&amp; (tmp == ' ' || key_is_escape(tmp)</a>
+<a name="ln122">                || tmp == '\r' || tmp == '\n' || crawl_state.seen_hups))</a>
+<a name="ln123">        {</a>
+<a name="ln124">            tmp = default_answer;</a>
+<a name="ln125">        }</a>
+<a name="ln126"> </a>
+<a name="ln127">        if (Options.easy_confirm == easy_confirm_type::all</a>
+<a name="ln128">            || tmp == default_answer</a>
+<a name="ln129">            || Options.easy_confirm == easy_confirm_type::safe</a>
+<a name="ln130">               &amp;&amp; allow_lowercase)</a>
+<a name="ln131">        {</a>
+<a name="ln132">            tmp = toupper_safe(tmp);</a>
+<a name="ln133">        }</a>
+<a name="ln134"> </a>
+<a name="ln135">        if (clear_after)</a>
+<a name="ln136">            clear_messages();</a>
+<a name="ln137"> </a>
+<a name="ln138">        if (tmp == 'N')</a>
+<a name="ln139">            return false;</a>
+<a name="ln140">        else if (tmp == 'Y')</a>
+<a name="ln141">            return true;</a>
+<a name="ln142">        else if (!noprompt)</a>
+<a name="ln143">        {</a>
+<a name="ln144">            bool upper = !allow_lowercase</a>
+<a name="ln145">                         &amp;&amp; (tmp == 'n' || tmp == 'y'</a>
+<a name="ln146">                             || crawl_state.game_is_hints_tutorial());</a>
+<a name="ln147">            const string pr = make_stringf(&quot;%s[Y]es or [N]o only, please.&quot;,</a>
+<a name="ln148">                                           upper ? &quot;Uppercase &quot; : &quot;&quot;);</a>
+<a name="ln149">            if (use_popup &amp;&amp; status) // redundant, but will quiet a warning</a>
+<a name="ln150">                status-&gt;text = pr;</a>
+<a name="ln151">            else</a>
+<a name="ln152">                mpr(pr);</a>
+<a name="ln153">        }</a>
+<a name="ln154">    }</a>
+<a name="ln155">}</a>
+<a name="ln156"> </a>
+<a name="ln157">static string _list_alternative_yes(char yes1, char yes2, bool lowered = false,</a>
+<a name="ln158">                                    bool brackets = false)</a>
+<a name="ln159">{</a>
+<a name="ln160">    string help = &quot;&quot;;</a>
+<a name="ln161">    bool print_yes = false;</a>
+<a name="ln162">    if (yes1 != 'Y')</a>
+<a name="ln163">    {</a>
+<a name="ln164">        if (lowered)</a>
+<a name="ln165">            help += toalower(yes1);</a>
+<a name="ln166">        else</a>
+<a name="ln167">            help += yes1;</a>
+<a name="ln168">        print_yes = true;</a>
+<a name="ln169">    }</a>
+<a name="ln170"> </a>
+<a name="ln171">    if (yes2 != 'Y' &amp;&amp; yes2 != yes1)</a>
+<a name="ln172">    {</a>
+<a name="ln173">        if (print_yes)</a>
+<a name="ln174">            help += &quot;/&quot;;</a>
+<a name="ln175"> </a>
+<a name="ln176">        if (lowered)</a>
+<a name="ln177">            help += toalower(yes2);</a>
+<a name="ln178">        else</a>
+<a name="ln179">            help += yes2;</a>
+<a name="ln180">        print_yes = true;</a>
+<a name="ln181">    }</a>
+<a name="ln182"> </a>
+<a name="ln183">    if (print_yes)</a>
+<a name="ln184">    {</a>
+<a name="ln185">        if (brackets)</a>
+<a name="ln186">            help = &quot; (&quot; + help + &quot;)&quot;;</a>
+<a name="ln187">        else</a>
+<a name="ln188">            help = &quot;/&quot; + help;</a>
+<a name="ln189">    }</a>
+<a name="ln190"> </a>
+<a name="ln191">    return help;</a>
+<a name="ln192">}</a>
+<a name="ln193"> </a>
+<a name="ln194">static string _list_allowed_keys(char yes1, char yes2, bool lowered = false,</a>
+<a name="ln195">                                 bool allow_all = false)</a>
+<a name="ln196">{</a>
+<a name="ln197">    string result = &quot; [&quot;;</a>
+<a name="ln198">    result += (lowered ? &quot;(y)es&quot; : &quot;(Y)es&quot;);</a>
+<a name="ln199">    result += _list_alternative_yes(yes1, yes2, lowered);</a>
+<a name="ln200">    if (allow_all)</a>
+<a name="ln201">        result += (lowered? &quot;/(a)ll&quot; : &quot;/(A)ll&quot;);</a>
+<a name="ln202">    result += (lowered ? &quot;/(n)o/(q)uit&quot; : &quot;/(N)o/(Q)uit&quot;);</a>
+<a name="ln203">    result += &quot;]&quot;;</a>
+<a name="ln204"> </a>
+<a name="ln205">    return result;</a>
+<a name="ln206">}</a>
+<a name="ln207"> </a>
+<a name="ln208">// Like yesno(), but returns 0 for no, 1 for yes, and -1 for quit.</a>
+<a name="ln209">// alt_yes and alt_yes2 allow up to two synonyms for 'Y'.</a>
+<a name="ln210">// FIXME: This function is shaping up to be a monster. Help!</a>
+<a name="ln211">int yesnoquit(const char* str, bool allow_lowercase, int default_answer, bool allow_all,</a>
+<a name="ln212">              bool clear_after, char alt_yes, char alt_yes2)</a>
+<a name="ln213">{</a>
+<a name="ln214">    if (!crawl_state.is_repeating_cmd())</a>
+<a name="ln215">        interrupt_activity(activity_interrupt::force);</a>
+<a name="ln216"> </a>
+<a name="ln217">    mouse_control mc(MOUSE_MODE_YESNO);</a>
+<a name="ln218"> </a>
+<a name="ln219">    string prompt =</a>
+<a name="ln220">    make_stringf(&quot;%s%s &quot;, str ? str : &quot;Buggy prompt?&quot;,</a>
+<a name="ln221">                 _list_allowed_keys(alt_yes, alt_yes2,</a>
+<a name="ln222">                                    allow_lowercase, allow_all).c_str());</a>
+<a name="ln223">    while (true)</a>
+<a name="ln224">    {</a>
+<a name="ln225">        mprf(MSGCH_PROMPT, &quot;%s&quot;, prompt.c_str());</a>
+<a name="ln226"> </a>
+<a name="ln227">        int tmp = ui::getch(KMC_CONFIRM);</a>
+<a name="ln228"> </a>
+<a name="ln229">        if (key_is_escape(tmp) || tmp == 'q' || tmp == 'Q'</a>
+<a name="ln230">            || crawl_state.seen_hups)</a>
+<a name="ln231">        {</a>
+<a name="ln232">            return -1;</a>
+<a name="ln233">        }</a>
+<a name="ln234"> </a>
+<a name="ln235">        if ((tmp == ' ' || tmp == '\r' || tmp == '\n') &amp;&amp; default_answer)</a>
+<a name="ln236">            tmp = default_answer;</a>
+<a name="ln237"> </a>
+<a name="ln238">        if (Options.easy_confirm == easy_confirm_type::all</a>
+<a name="ln239">            || tmp == default_answer</a>
+<a name="ln240">            || allow_lowercase</a>
+<a name="ln241">               &amp;&amp; Options.easy_confirm == easy_confirm_type::safe)</a>
+<a name="ln242">        {</a>
+<a name="ln243">            tmp = toupper_safe(tmp);</a>
+<a name="ln244">        }</a>
+<a name="ln245"> </a>
+<a name="ln246">        if (clear_after)</a>
+<a name="ln247">            clear_messages();</a>
+<a name="ln248"> </a>
+<a name="ln249">        if (tmp == 'N')</a>
+<a name="ln250">            return 0;</a>
+<a name="ln251">        else if (tmp == 'Y' || tmp == alt_yes || tmp == alt_yes2)</a>
+<a name="ln252">            return 1;</a>
+<a name="ln253">        else if (allow_all)</a>
+<a name="ln254">        {</a>
+<a name="ln255">            if (tmp == 'A')</a>
+<a name="ln256">                return 2;</a>
+<a name="ln257">            else</a>
+<a name="ln258">            {</a>
+<a name="ln259">                bool upper = !allow_lowercase</a>
+<a name="ln260">                             &amp;&amp; (tmp == 'n' || tmp == 'y' || tmp == 'a'</a>
+<a name="ln261">                                 || crawl_state.game_is_hints_tutorial());</a>
+<a name="ln262">                mprf(&quot;Choose %s[Y]es%s, [N]o, [Q]uit, or [A]ll!&quot;,</a>
+<a name="ln263">                     upper ? &quot;uppercase &quot; : &quot;&quot;,</a>
+<a name="ln264">                     _list_alternative_yes(alt_yes, alt_yes2, false, true).c_str());</a>
+<a name="ln265">            }</a>
+<a name="ln266">        }</a>
+<a name="ln267">        else</a>
+<a name="ln268">        {</a>
+<a name="ln269">            bool upper = !allow_lowercase</a>
+<a name="ln270">                         &amp;&amp; (tmp == 'n' || tmp == 'y'</a>
+<a name="ln271">                             || crawl_state.game_is_hints_tutorial());</a>
+<a name="ln272">            mprf(&quot;%s[Y]es%s, [N]o or [Q]uit only, please.&quot;,</a>
+<a name="ln273">                 upper ? &quot;Uppercase &quot; : &quot;&quot;,</a>
+<a name="ln274">                 _list_alternative_yes(alt_yes, alt_yes2, false, true).c_str());</a>
+<a name="ln275">        }</a>
+<a name="ln276">    }</a>
+<a name="ln277">}</a>
+<a name="ln278"> </a>
+<a name="ln279">/**</a>
+<a name="ln280"> * Prompt the user for a quantity of things.</a>
+<a name="ln281"> *</a>
+<a name="ln282"> * @param prompt the message to be used before the prompt.</a>
+<a name="ln283"> * @return -1 if &lt;enter&gt; or ';' are pressed (meaning all);</a>
+<a name="ln284"> *         0 if the user escaped;</a>
+<a name="ln285"> *         the number chosen otherwise.</a>
+<a name="ln286"> */</a>
+<a name="ln287">int prompt_for_quantity(const char *prompt)</a>
+<a name="ln288">{</a>
+<a name="ln289">    msgwin_prompt(prompt);</a>
+<a name="ln290"> </a>
+<a name="ln291">    int ch = getch_ck();</a>
+<a name="ln292">    if (ch == CK_ENTER || ch == ';')</a>
+<a name="ln293">        return -1;</a>
+<a name="ln294">    else if (ch == CK_ESCAPE || ch == CK_REDRAW)</a>
+<a name="ln295">        return 0;</a>
+<a name="ln296"> </a>
+<a name="ln297">    const string prefill = string(1, ch);</a>
+<a name="ln298">    return prompt_for_int(&quot;&quot;, false, prefill);</a>
+<a name="ln299">}</a>
+<a name="ln300"> </a>
+<a name="ln301">/**</a>
+<a name="ln302"> * Returns an integer, with a failure state.</a>
+<a name="ln303"> *</a>
+<a name="ln304"> * @param prompt the message to be used before the prompt.</a>
+<a name="ln305"> * @param nonneg if true, the failure sentinel is -1;</a>
+<a name="ln306"> *               if false, the sentinel is 0.</a>
+<a name="ln307"> &amp; @param prefill a prefill to use for the message box, if any.</a>
+<a name="ln308"> * @return the chosen number, or the chosen sentinel value.</a>
+<a name="ln309"> */</a>
+<a name="ln310">int prompt_for_int(const char *prompt, bool nonneg, const string &amp;prefill)</a>
+<a name="ln311">{</a>
+<a name="ln312">    char specs[80];</a>
+<a name="ln313"> </a>
+<a name="ln314">    int getline_ret = msgwin_get_line(prompt, specs, sizeof(specs), nullptr,</a>
+<a name="ln315">                                            prefill);</a>
+<a name="ln316"> </a>
+<a name="ln317">    if (specs[0] == '\0' || getline_ret == CK_ESCAPE)</a>
+<a name="ln318">        return nonneg ? -1 : 0;</a>
+<a name="ln319"> </a>
+<a name="ln320">    char *end;</a>
+<a name="ln321">    int   ret = strtol(specs, &amp;end, 10);</a>
+<a name="ln322"> </a>
+<a name="ln323">    if (ret &lt; 0 &amp;&amp; nonneg || ret == 0 &amp;&amp; end == specs)</a>
+<a name="ln324">        ret = (nonneg ? -1 : 0);</a>
+<a name="ln325"> </a>
+<a name="ln326">    return ret;</a>
+<a name="ln327">}</a>
+<a name="ln328"> </a>
+<a name="ln329">double prompt_for_float(const char* prompt)</a>
+<a name="ln330">{</a>
+<a name="ln331">    char specs[80];</a>
+<a name="ln332"> </a>
+<a name="ln333">    int getline_ret = msgwin_get_line(prompt, specs, sizeof(specs));</a>
+<a name="ln334"> </a>
+<a name="ln335">    if (specs[0] == '\0' || getline_ret == CK_ESCAPE)</a>
+<a name="ln336">        return -1;</a>
+<a name="ln337"> </a>
+<a name="ln338">    char *end;</a>
+<a name="ln339">    double ret = strtod(specs, &amp;end);</a>
+<a name="ln340"> </a>
+<a name="ln341">    if (ret == 0 &amp;&amp; end == specs || std::isnan(ret))</a>
+<a name="ln342">        ret = -1;</a>
+<a name="ln343"> </a>
+<a name="ln344">    return ret;</a>
+<a name="ln345">}</a>
+<a name="ln346"> </a>
+<a name="ln347"> </a>
+<a name="ln348">char index_to_letter(int the_index)</a>
+<a name="ln349">{</a>
+<a name="ln350">    ASSERT_RANGE(the_index, 0, ENDOFPACK);</a>
+<a name="ln351">    return the_index + ((the_index &lt; 26) ? 'a' : ('A' - 26));</a>
+<a name="ln352">}</a>
+<a name="ln353"> </a>
+<a name="ln354">int letter_to_index(int the_letter)</a>
+<a name="ln355">{</a>
+<a name="ln356">    if (the_letter &gt;= 'a' &amp;&amp; the_letter &lt;= 'z')</a>
+<a name="ln357">        return the_letter - 'a'; // returns range [0-25] {dlb}</a>
+<a name="ln358">    else if (the_letter &gt;= 'A' &amp;&amp; the_letter &lt;= 'Z')</a>
+<a name="ln359">        return the_letter - 'A' + 26; // returns range [26-51] {dlb}</a>
+<a name="ln360"> </a>
+<a name="ln361">    die(&quot;slot not a letter: %s (%d)&quot;, the_letter ?</a>
+<a name="ln362">        stringize_glyph(the_letter).c_str() : &quot;null&quot;, the_letter);</a>
+<a name="ln363">}</a>
+
+</code></pre>
+<div class="balloon" rel="129"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="240"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v002/" target="_blank">V002</a> Some diagnostic messages may contain incorrect line number in this file.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

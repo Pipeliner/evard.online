@@ -1,0 +1,257 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>scroller.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Formatted scroller</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;scroller.h&quot;</a>
+<a name="ln9">#include &quot;stringutil.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">using namespace ui;</a>
+<a name="ln12"> </a>
+<a name="ln13">static vector&lt;formatted_scroller*&gt; open_scrollers;</a>
+<a name="ln14">static bool from_webtiles;</a>
+<a name="ln15"> </a>
+<a name="ln16">static int _line_height()</a>
+<a name="ln17">{</a>
+<a name="ln18">#ifdef USE_TILE_LOCAL</a>
+<a name="ln19">    return tiles.get_crt_font()-&gt;char_height();</a>
+<a name="ln20">#else</a>
+<a name="ln21">    return 1;</a>
+<a name="ln22">#endif</a>
+<a name="ln23">}</a>
+<a name="ln24"> </a>
+<a name="ln25">void formatted_scroller::add_formatted_string(const formatted_string&amp; fs, bool new_line)</a>
+<a name="ln26">{</a>
+<a name="ln27">    contents += fs;</a>
+<a name="ln28">    if (new_line)</a>
+<a name="ln29">        contents.cprintf(&quot;\n&quot;);</a>
+<a name="ln30">    m_contents_dirty = true;</a>
+<a name="ln31">}</a>
+<a name="ln32"> </a>
+<a name="ln33">void formatted_scroller::add_text(const string&amp; s, bool new_line)</a>
+<a name="ln34">{</a>
+<a name="ln35">    add_formatted_string(formatted_string::parse_string(s), new_line);</a>
+<a name="ln36">}</a>
+<a name="ln37"> </a>
+<a name="ln38">void formatted_scroller::add_raw_text(const string&amp; s, bool new_line)</a>
+<a name="ln39">{</a>
+<a name="ln40">    contents.cprintf(&quot;%s%s&quot;, s.c_str(), new_line ? &quot;\n&quot; : &quot;&quot;);</a>
+<a name="ln41">    m_contents_dirty = true;</a>
+<a name="ln42">}</a>
+<a name="ln43"> </a>
+<a name="ln44">class UIHookedScroller : public Scroller</a>
+<a name="ln45">{</a>
+<a name="ln46">public:</a>
+<a name="ln47">    UIHookedScroller(formatted_scroller &amp;_fs) : Scroller(), fs(_fs) {};</a>
+<a name="ln48">    virtual void set_scroll(int y) override {</a>
+<a name="ln49">        if (y == m_scroll)</a>
+<a name="ln50">            return;</a>
+<a name="ln51">#ifdef USE_TILE_WEB</a>
+<a name="ln52">        tiles.json_open_object();</a>
+<a name="ln53">        tiles.json_write_bool(&quot;from_webtiles&quot;, from_webtiles);</a>
+<a name="ln54">        tiles.json_write_int(&quot;scroll&quot;, y / _line_height());</a>
+<a name="ln55">        tiles.ui_state_change(&quot;formatted-scroller&quot;, 1);</a>
+<a name="ln56">#endif</a>
+<a name="ln57">        Scroller::set_scroll(y);</a>
+<a name="ln58">    };</a>
+<a name="ln59">protected:</a>
+<a name="ln60">    formatted_scroller &amp;fs;</a>
+<a name="ln61">};</a>
+<a name="ln62"> </a>
+<a name="ln63">void formatted_scroller::scroll_to_end()</a>
+<a name="ln64">{</a>
+<a name="ln65">    // this needs to match the value in ui-layout.js scroller_scroll_to_line</a>
+<a name="ln66">    // (TODO: why?)</a>
+<a name="ln67">    m_scroll = numeric_limits&lt;int32_t&gt;::max();</a>
+<a name="ln68">    m_scroll_dirty = true;</a>
+<a name="ln69">}</a>
+<a name="ln70"> </a>
+<a name="ln71">int formatted_scroller::show()</a>
+<a name="ln72">{</a>
+<a name="ln73">    auto vbox = make_shared&lt;Box&gt;(Widget::VERT);</a>
+<a name="ln74">    vbox-&gt;set_cross_alignment(Widget::Align::STRETCH);</a>
+<a name="ln75"> </a>
+<a name="ln76">    if (!m_title.empty())</a>
+<a name="ln77">    {</a>
+<a name="ln78">        shared_ptr&lt;Text&gt; title = make_shared&lt;Text&gt;();</a>
+<a name="ln79">        title-&gt;set_text(m_title);</a>
+<a name="ln80">        title-&gt;set_margin_for_crt(0, 0, 1, 0);</a>
+<a name="ln81">        title-&gt;set_margin_for_sdl(0, 0, 20, 0);</a>
+<a name="ln82">        auto title_hbox = make_shared&lt;Box&gt;(Widget::HORZ);</a>
+<a name="ln83">#ifdef USE_TILE_LOCAL</a>
+<a name="ln84">        title_hbox-&gt;set_main_alignment(Widget::Align::CENTER);</a>
+<a name="ln85">#endif</a>
+<a name="ln86">        title_hbox-&gt;add_child(move(title));</a>
+<a name="ln87">        vbox-&gt;add_child(move(title_hbox));</a>
+<a name="ln88">    }</a>
+<a name="ln89"> </a>
+<a name="ln90">#ifdef USE_TILE_LOCAL</a>
+<a name="ln91">    if (!(m_flags &amp; FS_PREWRAPPED_TEXT))</a>
+<a name="ln92">        vbox-&gt;max_size().width = tiles.get_crt_font()-&gt;char_width()*80;</a>
+<a name="ln93">#endif</a>
+<a name="ln94"> </a>
+<a name="ln95">    m_scroller = make_shared&lt;UIHookedScroller&gt;(*this);</a>
+<a name="ln96">#ifndef USE_TILE_LOCAL // ensure CRT scroller uses full height</a>
+<a name="ln97">    m_scroller-&gt;expand_v = true;</a>
+<a name="ln98">#endif</a>
+<a name="ln99">    auto text = make_shared&lt;Text&gt;();</a>
+<a name="ln100">    formatted_string c = formatted_string::parse_string(contents.to_colour_string());</a>
+<a name="ln101">    text-&gt;set_text(c);</a>
+<a name="ln102">    text-&gt;set_highlight_pattern(highlight, true);</a>
+<a name="ln103">    text-&gt;set_wrap_text(!(m_flags &amp; FS_PREWRAPPED_TEXT));</a>
+<a name="ln104">    m_scroller-&gt;set_child(text);</a>
+<a name="ln105">    vbox-&gt;add_child(m_scroller);</a>
+<a name="ln106"> </a>
+<a name="ln107">    if (!m_more.empty())</a>
+<a name="ln108">    {</a>
+<a name="ln109">        shared_ptr&lt;Text&gt; more = make_shared&lt;Text&gt;();</a>
+<a name="ln110">        more = make_shared&lt;Text&gt;();</a>
+<a name="ln111">        more-&gt;set_text(m_more);</a>
+<a name="ln112">        more-&gt;set_margin_for_crt(1, 0, 0, 0);</a>
+<a name="ln113">        more-&gt;set_margin_for_sdl(20, 0, 0, 0);</a>
+<a name="ln114">        vbox-&gt;add_child(move(more));</a>
+<a name="ln115">    }</a>
+<a name="ln116"> </a>
+<a name="ln117">    auto popup = make_shared&lt;ui::Popup&gt;(vbox);</a>
+<a name="ln118"> </a>
+<a name="ln119">    m_contents_dirty = false;</a>
+<a name="ln120">    bool done = false;</a>
+<a name="ln121">    popup-&gt;on_keydown_event([&amp;done, &amp;text, this](const KeyEvent&amp; ev) {</a>
+<a name="ln122">        m_lastch = ev.key();</a>
+<a name="ln123">        done = !process_key(m_lastch);</a>
+<a name="ln124">        if (m_contents_dirty)</a>
+<a name="ln125">        {</a>
+<a name="ln126">            m_contents_dirty = false;</a>
+<a name="ln127">            text-&gt;set_text(contents);</a>
+<a name="ln128">#ifdef USE_TILE_WEB</a>
+<a name="ln129">            tiles.json_open_object();</a>
+<a name="ln130">            tiles.json_write_string(&quot;text&quot;, contents.to_colour_string());</a>
+<a name="ln131">            tiles.json_write_string(&quot;highlight&quot;, highlight);</a>
+<a name="ln132">            tiles.ui_state_change(&quot;formatted-scroller&quot;, 0);</a>
+<a name="ln133">#endif</a>
+<a name="ln134">        }</a>
+<a name="ln135">        if (m_scroll_dirty)</a>
+<a name="ln136">        {</a>
+<a name="ln137">            m_scroll_dirty = false;</a>
+<a name="ln138">            m_scroller-&gt;set_scroll(m_scroll);</a>
+<a name="ln139">        }</a>
+<a name="ln140">        if (done)</a>
+<a name="ln141">            return true;</a>
+<a name="ln142">        if (m_scroller-&gt;on_event(ev))</a>
+<a name="ln143">            return true;</a>
+<a name="ln144">        if (m_flags &amp; FS_EASY_EXIT)</a>
+<a name="ln145">            return done = true;</a>
+<a name="ln146">        return true;</a>
+<a name="ln147">    });</a>
+<a name="ln148"> </a>
+<a name="ln149">#ifdef USE_TILE_WEB</a>
+<a name="ln150">    tiles.json_open_object();</a>
+<a name="ln151">    tiles.json_write_string(&quot;tag&quot;, m_tag);</a>
+<a name="ln152">    tiles.json_write_string(&quot;text&quot;, contents.to_colour_string());</a>
+<a name="ln153">    tiles.json_write_string(&quot;highlight&quot;, highlight);</a>
+<a name="ln154">    tiles.json_write_string(&quot;more&quot;, m_more.to_colour_string());</a>
+<a name="ln155">    tiles.json_write_bool(&quot;start_at_end&quot;, m_flags &amp; FS_START_AT_END);</a>
+<a name="ln156">    tiles.push_ui_layout(&quot;formatted-scroller&quot;, 2);</a>
+<a name="ln157">    popup-&gt;on_layout_pop([](){ tiles.pop_ui_layout(); });</a>
+<a name="ln158">#endif</a>
+<a name="ln159"> </a>
+<a name="ln160">    if (m_flags &amp; FS_START_AT_END)</a>
+<a name="ln161">        scroll_to_end();</a>
+<a name="ln162"> </a>
+<a name="ln163">    open_scrollers.push_back(this);</a>
+<a name="ln164">    if (m_scroll_dirty)</a>
+<a name="ln165">    {</a>
+<a name="ln166">        m_scroll_dirty = false;</a>
+<a name="ln167">        m_scroller-&gt;set_scroll(m_scroll);</a>
+<a name="ln168">    }</a>
+<a name="ln169"> </a>
+<a name="ln170">    ui::run_layout(move(popup), done);</a>
+<a name="ln171">    open_scrollers.pop_back();</a>
+<a name="ln172"> </a>
+<a name="ln173">    return m_lastch;</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">bool formatted_scroller::process_key(int ch)</a>
+<a name="ln177">{</a>
+<a name="ln178">    switch (ch)</a>
+<a name="ln179">    {</a>
+<a name="ln180">        case CK_MOUSE_CMD:</a>
+<a name="ln181">        CASE_ESCAPE</a>
+<a name="ln182">            return false;</a>
+<a name="ln183">        default:</a>
+<a name="ln184">            return true;</a>
+<a name="ln185">    }</a>
+<a name="ln186">}</a>
+<a name="ln187"> </a>
+<a name="ln188">void formatted_scroller::set_scroll(int y)</a>
+<a name="ln189">{</a>
+<a name="ln190">    if (from_webtiles)</a>
+<a name="ln191">        m_scroller-&gt;set_scroll(y);</a>
+<a name="ln192">    else</a>
+<a name="ln193">    {</a>
+<a name="ln194">        m_scroll = y;</a>
+<a name="ln195">        m_scroll_dirty = true;</a>
+<a name="ln196">    }</a>
+<a name="ln197">}</a>
+<a name="ln198"> </a>
+<a name="ln199">void recv_formatted_scroller_scroll(int line)</a>
+<a name="ln200">{</a>
+<a name="ln201">    if (open_scrollers.size() == 0)</a>
+<a name="ln202">        return;</a>
+<a name="ln203">    formatted_scroller *scroller = open_scrollers.back();</a>
+<a name="ln204">    from_webtiles = true;</a>
+<a name="ln205">    scroller-&gt;set_scroll(line*_line_height());</a>
+<a name="ln206">    from_webtiles = false;</a>
+<a name="ln207">    // XXX: since the scroll event from webtiles is not delivered by the event</a>
+<a name="ln208">    // pumping loop in ui::pump_events, the UI system won't automatically draw</a>
+<a name="ln209">    // any changes for console spectators, so we need to force a redraw here.</a>
+<a name="ln210">    ui::force_render();</a>
+<a name="ln211">}</a>
+
+</code></pre>
+<div class="balloon" rel="110"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v519/" target="_blank">V519</a> The 'more' variable is assigned values twice successively. Perhaps this is a mistake. Check lines: 109, 110.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

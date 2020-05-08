@@ -1,0 +1,1839 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>store.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Saveable hash-table and vector capable of storing</a>
+<a name="ln4"> *             multiple types of data.</a>
+<a name="ln5">**/</a>
+<a name="ln6"> </a>
+<a name="ln7">#include &quot;AppHdr.h&quot;</a>
+<a name="ln8"> </a>
+<a name="ln9">#include &quot;store.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &lt;algorithm&gt;</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;dlua.h&quot;</a>
+<a name="ln14">#include &quot;monster.h&quot;</a>
+<a name="ln15">#include &quot;stringutil.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17">// These tend to be called from tight loops, and C++ method calls don't</a>
+<a name="ln18">// get optimized away except for LTO -fwhole-program builds, so merely</a>
+<a name="ln19">// disabling the function's body is not enough; let's not call them at all.</a>
+<a name="ln20">#ifdef DEBUG</a>
+<a name="ln21"># define ASSERT_VALIDITY(x) x assert_validity()</a>
+<a name="ln22">#else</a>
+<a name="ln23"># define ASSERT_VALIDITY(x)</a>
+<a name="ln24">#endif</a>
+<a name="ln25"> </a>
+<a name="ln26">CrawlStoreValue::CrawlStoreValue()</a>
+<a name="ln27">    : type(SV_NONE), flags(SFLAG_UNSET)</a>
+<a name="ln28">{</a>
+<a name="ln29">    val.ptr = nullptr;</a>
+<a name="ln30">}</a>
+<a name="ln31"> </a>
+<a name="ln32">CrawlStoreValue::CrawlStoreValue(const CrawlStoreValue &amp;other)</a>
+<a name="ln33">    : type(SV_NONE), flags(SFLAG_UNSET)</a>
+<a name="ln34">{</a>
+<a name="ln35">    ASSERT_RANGE(other.type, SV_NONE, NUM_STORE_VAL_TYPES);</a>
+<a name="ln36"> </a>
+<a name="ln37">    // very shallow copy for unset values</a>
+<a name="ln38">    if (other.flags &amp; SFLAG_UNSET)</a>
+<a name="ln39">    {</a>
+<a name="ln40">        type = other.type;</a>
+<a name="ln41">        flags = other.flags;</a>
+<a name="ln42">        val = other.val;</a>
+<a name="ln43">        return;</a>
+<a name="ln44">    }</a>
+<a name="ln45">    *this = other;</a>
+<a name="ln46">}</a>
+<a name="ln47"> </a>
+<a name="ln48">CrawlStoreValue::CrawlStoreValue(const store_flags _flags,</a>
+<a name="ln49">                                 const store_val_type _type)</a>
+<a name="ln50">    : type(_type), flags(_flags)</a>
+<a name="ln51">{</a>
+<a name="ln52">    ASSERT_RANGE(type, SV_NONE, NUM_STORE_VAL_TYPES);</a>
+<a name="ln53">    ASSERT(!(flags &amp; SFLAG_UNSET));</a>
+<a name="ln54"> </a>
+<a name="ln55">    flags   |= SFLAG_UNSET;</a>
+<a name="ln56">    val.ptr  = nullptr;</a>
+<a name="ln57">}</a>
+<a name="ln58"> </a>
+<a name="ln59">// Conversion constructors</a>
+<a name="ln60">CrawlStoreValue::CrawlStoreValue(const bool _val)</a>
+<a name="ln61">    : type(SV_BOOL), flags(SFLAG_UNSET)</a>
+<a name="ln62">{</a>
+<a name="ln63">    get_bool() = _val;</a>
+<a name="ln64">}</a>
+<a name="ln65"> </a>
+<a name="ln66">CrawlStoreValue::CrawlStoreValue(const char &amp;_val)</a>
+<a name="ln67">    : type(SV_BYTE), flags(SFLAG_UNSET)</a>
+<a name="ln68">{</a>
+<a name="ln69">    get_byte() = _val;</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">CrawlStoreValue::CrawlStoreValue(const short &amp;_val)</a>
+<a name="ln73">    : type(SV_SHORT), flags(SFLAG_UNSET)</a>
+<a name="ln74">{</a>
+<a name="ln75">    get_short() = _val;</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">CrawlStoreValue::CrawlStoreValue(const int &amp;_val)</a>
+<a name="ln79">    : type(SV_INT), flags(SFLAG_UNSET)</a>
+<a name="ln80">{</a>
+<a name="ln81">    get_int() = _val;</a>
+<a name="ln82">}</a>
+<a name="ln83"> </a>
+<a name="ln84">CrawlStoreValue::CrawlStoreValue(const int64_t &amp;_val)</a>
+<a name="ln85">    : type(SV_INT), flags(SFLAG_UNSET)</a>
+<a name="ln86">{</a>
+<a name="ln87">    get_int64() = _val;</a>
+<a name="ln88">}</a>
+<a name="ln89"> </a>
+<a name="ln90">CrawlStoreValue::CrawlStoreValue(const float &amp;_val)</a>
+<a name="ln91">    : type(SV_FLOAT), flags(SFLAG_UNSET)</a>
+<a name="ln92">{</a>
+<a name="ln93">    get_float() = _val;</a>
+<a name="ln94">}</a>
+<a name="ln95"> </a>
+<a name="ln96">CrawlStoreValue::CrawlStoreValue(const string &amp;_val)</a>
+<a name="ln97">    : type(SV_STR), flags(SFLAG_UNSET)</a>
+<a name="ln98">{</a>
+<a name="ln99">    val.ptr = nullptr;</a>
+<a name="ln100">    get_string() = _val;</a>
+<a name="ln101">}</a>
+<a name="ln102"> </a>
+<a name="ln103">CrawlStoreValue::CrawlStoreValue(const char* _val)</a>
+<a name="ln104">    : type(SV_STR), flags(SFLAG_UNSET)</a>
+<a name="ln105">{</a>
+<a name="ln106">    val.ptr = nullptr;</a>
+<a name="ln107">    get_string() = _val;</a>
+<a name="ln108">}</a>
+<a name="ln109"> </a>
+<a name="ln110">CrawlStoreValue::CrawlStoreValue(const coord_def &amp;_val)</a>
+<a name="ln111">    : type(SV_COORD), flags(SFLAG_UNSET)</a>
+<a name="ln112">{</a>
+<a name="ln113">    val.ptr = nullptr;</a>
+<a name="ln114">    get_coord() = _val;</a>
+<a name="ln115">}</a>
+<a name="ln116"> </a>
+<a name="ln117">CrawlStoreValue::CrawlStoreValue(const item_def &amp;_val)</a>
+<a name="ln118">    : type(SV_ITEM), flags(SFLAG_UNSET)</a>
+<a name="ln119">{</a>
+<a name="ln120">    val.ptr = nullptr;</a>
+<a name="ln121">    get_item() = _val;</a>
+<a name="ln122">}</a>
+<a name="ln123"> </a>
+<a name="ln124">CrawlStoreValue::CrawlStoreValue(const CrawlHashTable &amp;_val)</a>
+<a name="ln125">    : type(SV_HASH), flags(SFLAG_UNSET)</a>
+<a name="ln126">{</a>
+<a name="ln127">    val.ptr = nullptr;</a>
+<a name="ln128">    get_table() = _val;</a>
+<a name="ln129">}</a>
+<a name="ln130"> </a>
+<a name="ln131">CrawlStoreValue::CrawlStoreValue(const CrawlVector &amp;_val)</a>
+<a name="ln132">    : type(SV_VEC), flags(SFLAG_UNSET)</a>
+<a name="ln133">{</a>
+<a name="ln134">    val.ptr = nullptr;</a>
+<a name="ln135">    get_vector() = _val;</a>
+<a name="ln136">}</a>
+<a name="ln137"> </a>
+<a name="ln138">CrawlStoreValue::CrawlStoreValue(const level_id &amp;_val)</a>
+<a name="ln139">    : type(SV_LEV_ID), flags(SFLAG_UNSET)</a>
+<a name="ln140">{</a>
+<a name="ln141">    val.ptr = nullptr;</a>
+<a name="ln142">    get_level_id() = _val;</a>
+<a name="ln143">}</a>
+<a name="ln144"> </a>
+<a name="ln145">CrawlStoreValue::CrawlStoreValue(const level_pos &amp;_val)</a>
+<a name="ln146">    : type(SV_LEV_POS), flags(SFLAG_UNSET)</a>
+<a name="ln147">{</a>
+<a name="ln148">    val.ptr = nullptr;</a>
+<a name="ln149">    get_level_pos() = _val;</a>
+<a name="ln150">}</a>
+<a name="ln151"> </a>
+<a name="ln152">CrawlStoreValue::CrawlStoreValue(const monster&amp; _val)</a>
+<a name="ln153">    : type(SV_MONST), flags(SFLAG_UNSET)</a>
+<a name="ln154">{</a>
+<a name="ln155">    val.ptr = nullptr;</a>
+<a name="ln156">    get_monster() = _val;</a>
+<a name="ln157">}</a>
+<a name="ln158"> </a>
+<a name="ln159">CrawlStoreValue::CrawlStoreValue(const dlua_chunk &amp;_val)</a>
+<a name="ln160">    : type(SV_LUA), flags(SFLAG_UNSET)</a>
+<a name="ln161">{</a>
+<a name="ln162">    val.ptr = nullptr;</a>
+<a name="ln163">    get_lua() = _val;</a>
+<a name="ln164">}</a>
+<a name="ln165"> </a>
+<a name="ln166">CrawlStoreValue::~CrawlStoreValue()</a>
+<a name="ln167">{</a>
+<a name="ln168">    unset(true);</a>
+<a name="ln169">}</a>
+<a name="ln170"> </a>
+<a name="ln171">void CrawlStoreValue::unset(bool force)</a>
+<a name="ln172">{</a>
+<a name="ln173">    if (flags &amp; SFLAG_UNSET)</a>
+<a name="ln174">        return;</a>
+<a name="ln175"> </a>
+<a name="ln176">    if (force)</a>
+<a name="ln177">        flags &amp;= ~SFLAG_NO_ERASE;</a>
+<a name="ln178"> </a>
+<a name="ln179">    ASSERT(!(flags &amp; SFLAG_NO_ERASE));</a>
+<a name="ln180"> </a>
+<a name="ln181">    switch (type)</a>
+<a name="ln182">    {</a>
+<a name="ln183">    case SV_BOOL:</a>
+<a name="ln184">        val.boolean = false;</a>
+<a name="ln185">        break;</a>
+<a name="ln186"> </a>
+<a name="ln187">    case SV_BYTE:</a>
+<a name="ln188">        val.byte = 0;</a>
+<a name="ln189">        break;</a>
+<a name="ln190"> </a>
+<a name="ln191">    case SV_SHORT:</a>
+<a name="ln192">        val._short = 0;</a>
+<a name="ln193">        break;</a>
+<a name="ln194"> </a>
+<a name="ln195">    case SV_INT:</a>
+<a name="ln196">        val._int = 0;</a>
+<a name="ln197">        break;</a>
+<a name="ln198"> </a>
+<a name="ln199">    case SV_INT64:</a>
+<a name="ln200">        val._int64 = 0;</a>
+<a name="ln201">        break;</a>
+<a name="ln202"> </a>
+<a name="ln203">    case SV_FLOAT:</a>
+<a name="ln204">        val._float = 0.0;</a>
+<a name="ln205">        break;</a>
+<a name="ln206"> </a>
+<a name="ln207">    case SV_STR:</a>
+<a name="ln208">    {</a>
+<a name="ln209">        string* str = static_cast&lt;string*&gt;(val.ptr);</a>
+<a name="ln210">        delete str;</a>
+<a name="ln211">        val.ptr = nullptr;</a>
+<a name="ln212">        break;</a>
+<a name="ln213">    }</a>
+<a name="ln214"> </a>
+<a name="ln215">    case SV_COORD:</a>
+<a name="ln216">    {</a>
+<a name="ln217">        coord_def* coord = static_cast&lt;coord_def*&gt;(val.ptr);</a>
+<a name="ln218">        delete coord;</a>
+<a name="ln219">        val.ptr = nullptr;</a>
+<a name="ln220">        break;</a>
+<a name="ln221">    }</a>
+<a name="ln222"> </a>
+<a name="ln223">    case SV_ITEM:</a>
+<a name="ln224">    {</a>
+<a name="ln225">        item_def* item = static_cast&lt;item_def*&gt;(val.ptr);</a>
+<a name="ln226">        delete item;</a>
+<a name="ln227">        val.ptr = nullptr;</a>
+<a name="ln228">        break;</a>
+<a name="ln229">    }</a>
+<a name="ln230"> </a>
+<a name="ln231">    case SV_HASH:</a>
+<a name="ln232">    {</a>
+<a name="ln233">        CrawlHashTable* hash = static_cast&lt;CrawlHashTable*&gt;(val.ptr);</a>
+<a name="ln234">        delete hash;</a>
+<a name="ln235">        val.ptr = nullptr;</a>
+<a name="ln236">        break;</a>
+<a name="ln237">    }</a>
+<a name="ln238"> </a>
+<a name="ln239">    case SV_VEC:</a>
+<a name="ln240">    {</a>
+<a name="ln241">        CrawlVector* vec = static_cast&lt;CrawlVector*&gt;(val.ptr);</a>
+<a name="ln242">        delete vec;</a>
+<a name="ln243">        val.ptr = nullptr;</a>
+<a name="ln244">        break;</a>
+<a name="ln245">    }</a>
+<a name="ln246"> </a>
+<a name="ln247">    case SV_LEV_ID:</a>
+<a name="ln248">    {</a>
+<a name="ln249">        level_id* id = static_cast&lt;level_id*&gt;(val.ptr);</a>
+<a name="ln250">        delete id;</a>
+<a name="ln251">        val.ptr = nullptr;</a>
+<a name="ln252">        break;</a>
+<a name="ln253">    }</a>
+<a name="ln254"> </a>
+<a name="ln255">    case SV_LEV_POS:</a>
+<a name="ln256">    {</a>
+<a name="ln257">        level_pos* pos = static_cast&lt;level_pos*&gt;(val.ptr);</a>
+<a name="ln258">        delete pos;</a>
+<a name="ln259">        val.ptr = nullptr;</a>
+<a name="ln260">        break;</a>
+<a name="ln261">    }</a>
+<a name="ln262"> </a>
+<a name="ln263">    case SV_MONST:</a>
+<a name="ln264">    {</a>
+<a name="ln265">        monster* mon = static_cast&lt;monster* &gt;(val.ptr);</a>
+<a name="ln266">        delete mon;</a>
+<a name="ln267">        val.ptr = nullptr;</a>
+<a name="ln268">        break;</a>
+<a name="ln269">    }</a>
+<a name="ln270"> </a>
+<a name="ln271">    case SV_LUA:</a>
+<a name="ln272">    {</a>
+<a name="ln273">        dlua_chunk* chunk = static_cast&lt;dlua_chunk*&gt;(val.ptr);</a>
+<a name="ln274">        delete chunk;</a>
+<a name="ln275">        val.ptr = nullptr;</a>
+<a name="ln276">        break;</a>
+<a name="ln277">    }</a>
+<a name="ln278"> </a>
+<a name="ln279">    case SV_NONE:</a>
+<a name="ln280">        die(&quot;CrawlStoreValue::unset: unsetting nothing&quot;);</a>
+<a name="ln281">        break;</a>
+<a name="ln282"> </a>
+<a name="ln283">    default:</a>
+<a name="ln284">        die(&quot;CrawlStoreValue::unset: unsetting invalid type&quot;);</a>
+<a name="ln285">        break;</a>
+<a name="ln286">    }</a>
+<a name="ln287"> </a>
+<a name="ln288">    flags |= SFLAG_UNSET;</a>
+<a name="ln289">}</a>
+<a name="ln290"> </a>
+<a name="ln291">#define DELETE_PTR(ptr_type) (delete static_cast&lt;ptr_type*&gt;(val.ptr))</a>
+<a name="ln292"> </a>
+<a name="ln293">#define COPY_PTR(ptr_type) val.ptr = (void*) new ptr_type( \</a>
+<a name="ln294">        *(static_cast&lt;ptr_type*&gt;(other.val.ptr)) \</a>
+<a name="ln295">        )</a>
+<a name="ln296"> </a>
+<a name="ln297">CrawlStoreValue &amp;CrawlStoreValue::operator = (const CrawlStoreValue &amp;other)</a>
+<a name="ln298">{</a>
+<a name="ln299">    ASSERT_RANGE(other.type, SV_NONE, NUM_STORE_VAL_TYPES);</a>
+<a name="ln300">    ASSERT(other.type != SV_NONE || type == SV_NONE);</a>
+<a name="ln301"> </a>
+<a name="ln302">    // NOTE: We don't bother checking SFLAG_CONST_VAL, since the</a>
+<a name="ln303">    // assignment operator is used when swapping two elements.</a>
+<a name="ln304">    if (!(flags &amp; SFLAG_UNSET))</a>
+<a name="ln305">    {</a>
+<a name="ln306">        if (flags &amp; SFLAG_CONST_TYPE)</a>
+<a name="ln307">            ASSERT(type == SV_NONE || type == other.type);</a>
+<a name="ln308">    }</a>
+<a name="ln309"> </a>
+<a name="ln310">    // clean up any memory allocated for old pointer-typed values</a>
+<a name="ln311">    switch (type)</a>
+<a name="ln312">    {</a>
+<a name="ln313">    case SV_STR:</a>
+<a name="ln314">        DELETE_PTR(string);</a>
+<a name="ln315">        break;</a>
+<a name="ln316"> </a>
+<a name="ln317">    case SV_COORD:</a>
+<a name="ln318">        DELETE_PTR(coord_def);</a>
+<a name="ln319">        break;</a>
+<a name="ln320"> </a>
+<a name="ln321">    case SV_ITEM:</a>
+<a name="ln322">        DELETE_PTR(item_def);</a>
+<a name="ln323">        break;</a>
+<a name="ln324"> </a>
+<a name="ln325">    case SV_HASH:</a>
+<a name="ln326">        DELETE_PTR(CrawlHashTable);</a>
+<a name="ln327">        break;</a>
+<a name="ln328"> </a>
+<a name="ln329">    case SV_VEC:</a>
+<a name="ln330">        DELETE_PTR(CrawlVector);</a>
+<a name="ln331">        break;</a>
+<a name="ln332"> </a>
+<a name="ln333">    case SV_LEV_ID:</a>
+<a name="ln334">        DELETE_PTR(level_id);</a>
+<a name="ln335">        break;</a>
+<a name="ln336"> </a>
+<a name="ln337">     case SV_LEV_POS:</a>
+<a name="ln338">        DELETE_PTR(level_pos);</a>
+<a name="ln339">        break;</a>
+<a name="ln340"> </a>
+<a name="ln341">    default:</a>
+<a name="ln342">        break; // nothing to delete for non-pointers</a>
+<a name="ln343">    }</a>
+<a name="ln344"> </a>
+<a name="ln345">    switch (other.type)</a>
+<a name="ln346">    {</a>
+<a name="ln347">    case SV_NONE:</a>
+<a name="ln348">    case SV_BOOL:</a>
+<a name="ln349">    case SV_BYTE:</a>
+<a name="ln350">    case SV_SHORT:</a>
+<a name="ln351">    case SV_INT:</a>
+<a name="ln352">    case SV_INT64:</a>
+<a name="ln353">    case SV_FLOAT:</a>
+<a name="ln354">        val = other.val;</a>
+<a name="ln355">        break;</a>
+<a name="ln356"> </a>
+<a name="ln357">    case SV_STR:</a>
+<a name="ln358">        COPY_PTR(string);</a>
+<a name="ln359">        break;</a>
+<a name="ln360"> </a>
+<a name="ln361">    case SV_COORD:</a>
+<a name="ln362">        COPY_PTR(coord_def);</a>
+<a name="ln363">        break;</a>
+<a name="ln364"> </a>
+<a name="ln365">    case SV_ITEM:</a>
+<a name="ln366">        COPY_PTR(item_def);</a>
+<a name="ln367">        break;</a>
+<a name="ln368"> </a>
+<a name="ln369">    case SV_HASH:</a>
+<a name="ln370">        COPY_PTR(CrawlHashTable);</a>
+<a name="ln371">        break;</a>
+<a name="ln372"> </a>
+<a name="ln373">    case SV_VEC:</a>
+<a name="ln374">        COPY_PTR(CrawlVector);</a>
+<a name="ln375">        break;</a>
+<a name="ln376"> </a>
+<a name="ln377">    case SV_LEV_ID:</a>
+<a name="ln378">        COPY_PTR(level_id);</a>
+<a name="ln379">        break;</a>
+<a name="ln380"> </a>
+<a name="ln381">    case SV_LEV_POS:</a>
+<a name="ln382">        COPY_PTR(level_pos);</a>
+<a name="ln383">        break;</a>
+<a name="ln384"> </a>
+<a name="ln385">    case SV_MONST:</a>
+<a name="ln386">        COPY_PTR(monster);</a>
+<a name="ln387">        break;</a>
+<a name="ln388"> </a>
+<a name="ln389">    case SV_LUA:</a>
+<a name="ln390">        COPY_PTR(dlua_chunk);</a>
+<a name="ln391">        break;</a>
+<a name="ln392"> </a>
+<a name="ln393">     default:</a>
+<a name="ln394">        die(&quot;CrawlStoreValue has invalid type&quot;);</a>
+<a name="ln395">        break;</a>
+<a name="ln396">    }</a>
+<a name="ln397"> </a>
+<a name="ln398">    type  = other.type;</a>
+<a name="ln399">    flags = other.flags;</a>
+<a name="ln400"> </a>
+<a name="ln401">    return *this;</a>
+<a name="ln402">}</a>
+<a name="ln403"> </a>
+<a name="ln404">///////////////////////////////////</a>
+<a name="ln405">// Meta-data accessors and changers</a>
+<a name="ln406">store_flags CrawlStoreValue::get_flags() const</a>
+<a name="ln407">{</a>
+<a name="ln408">    return flags;</a>
+<a name="ln409">}</a>
+<a name="ln410"> </a>
+<a name="ln411">store_flags CrawlStoreValue::set_flags(store_flags _flags)</a>
+<a name="ln412">{</a>
+<a name="ln413">    flags |= _flags;</a>
+<a name="ln414">    return flags;</a>
+<a name="ln415">}</a>
+<a name="ln416"> </a>
+<a name="ln417">store_flags CrawlStoreValue::unset_flags(store_flags _flags)</a>
+<a name="ln418">{</a>
+<a name="ln419">    flags &amp;= ~_flags;</a>
+<a name="ln420">    return flags;</a>
+<a name="ln421">}</a>
+<a name="ln422"> </a>
+<a name="ln423">store_val_type CrawlStoreValue::get_type() const</a>
+<a name="ln424">{</a>
+<a name="ln425">    return type;</a>
+<a name="ln426">}</a>
+<a name="ln427"> </a>
+<a name="ln428">//////////////////////////////</a>
+<a name="ln429">// Read/write from/to savefile</a>
+<a name="ln430">void CrawlStoreValue::write(writer &amp;th) const</a>
+<a name="ln431">{</a>
+<a name="ln432">    auto _type = type;</a>
+<a name="ln433">    ASSERT(_type != SV_NONE || (flags &amp; SFLAG_UNSET));</a>
+<a name="ln434">    ASSERT(!(flags &amp; SFLAG_UNSET) || _type == SV_NONE);</a>
+<a name="ln435">    // if the string is too long to save using the regular way, write it with</a>
+<a name="ln436">    // a 4 byte length. SV_STR_LONG is for saving/loading only.</a>
+<a name="ln437">    if (_type == SV_STR &amp;&amp; static_cast&lt;string*&gt;(val.ptr)-&gt;length() &gt; SHRT_MAX)</a>
+<a name="ln438">        _type = SV_STR_LONG;</a>
+<a name="ln439"> </a>
+<a name="ln440">    marshallByte(th,  (char) _type);</a>
+<a name="ln441">    marshallByte(th, (char) flags);</a>
+<a name="ln442"> </a>
+<a name="ln443">    switch (_type)</a>
+<a name="ln444">    {</a>
+<a name="ln445">    case SV_BOOL:</a>
+<a name="ln446">        marshallBoolean(th, val.boolean);</a>
+<a name="ln447">        break;</a>
+<a name="ln448"> </a>
+<a name="ln449">    case SV_BYTE:</a>
+<a name="ln450">        marshallByte(th, val.byte);</a>
+<a name="ln451">        break;</a>
+<a name="ln452"> </a>
+<a name="ln453">    case SV_SHORT:</a>
+<a name="ln454">        marshallShort(th, val._short);</a>
+<a name="ln455">        break;</a>
+<a name="ln456"> </a>
+<a name="ln457">    case SV_INT:</a>
+<a name="ln458">        marshallInt(th, val._int);</a>
+<a name="ln459">        break;</a>
+<a name="ln460"> </a>
+<a name="ln461">    case SV_INT64:</a>
+<a name="ln462">        marshallSigned(th, val._int64);</a>
+<a name="ln463">        break;</a>
+<a name="ln464"> </a>
+<a name="ln465">    case SV_FLOAT:</a>
+<a name="ln466">        marshallFloat(th, val._float);</a>
+<a name="ln467">        break;</a>
+<a name="ln468"> </a>
+<a name="ln469">    case SV_STR:</a>
+<a name="ln470">    {</a>
+<a name="ln471">        string* str = static_cast&lt;string*&gt;(val.ptr);</a>
+<a name="ln472">        marshallString(th, *str);</a>
+<a name="ln473">        break;</a>
+<a name="ln474">    }</a>
+<a name="ln475"> </a>
+<a name="ln476">    case SV_STR_LONG:</a>
+<a name="ln477">    {</a>
+<a name="ln478">        string* str = static_cast&lt;string*&gt;(val.ptr);</a>
+<a name="ln479">        marshallString4(th, *str);</a>
+<a name="ln480">        break;</a>
+<a name="ln481">    }</a>
+<a name="ln482"> </a>
+<a name="ln483">    case SV_COORD:</a>
+<a name="ln484">    {</a>
+<a name="ln485">        coord_def* coord = static_cast&lt;coord_def*&gt;(val.ptr);</a>
+<a name="ln486">        marshallCoord(th, *coord);</a>
+<a name="ln487">        break;</a>
+<a name="ln488">    }</a>
+<a name="ln489"> </a>
+<a name="ln490">    case SV_ITEM:</a>
+<a name="ln491">    {</a>
+<a name="ln492">        item_def* item = static_cast&lt;item_def*&gt;(val.ptr);</a>
+<a name="ln493">        marshallItem(th, *item);</a>
+<a name="ln494">        break;</a>
+<a name="ln495">    }</a>
+<a name="ln496"> </a>
+<a name="ln497">    case SV_HASH:</a>
+<a name="ln498">    {</a>
+<a name="ln499">        CrawlHashTable* hash = static_cast&lt;CrawlHashTable*&gt;(val.ptr);</a>
+<a name="ln500">        hash-&gt;write(th);</a>
+<a name="ln501">        break;</a>
+<a name="ln502">    }</a>
+<a name="ln503"> </a>
+<a name="ln504">    case SV_VEC:</a>
+<a name="ln505">    {</a>
+<a name="ln506">        CrawlVector* vec = static_cast&lt;CrawlVector*&gt;(val.ptr);</a>
+<a name="ln507">        vec-&gt;write(th);</a>
+<a name="ln508">        break;</a>
+<a name="ln509">    }</a>
+<a name="ln510"> </a>
+<a name="ln511">    case SV_LEV_ID:</a>
+<a name="ln512">    {</a>
+<a name="ln513">        level_id* id = static_cast&lt;level_id*&gt;(val.ptr);</a>
+<a name="ln514">        id-&gt;save(th);</a>
+<a name="ln515">        break;</a>
+<a name="ln516">    }</a>
+<a name="ln517"> </a>
+<a name="ln518">    case SV_LEV_POS:</a>
+<a name="ln519">    {</a>
+<a name="ln520">        level_pos* pos = static_cast&lt;level_pos*&gt;(val.ptr);</a>
+<a name="ln521">        pos-&gt;save(th);</a>
+<a name="ln522">        break;</a>
+<a name="ln523">    }</a>
+<a name="ln524"> </a>
+<a name="ln525">    case SV_MONST:</a>
+<a name="ln526">    {</a>
+<a name="ln527">        monster* mon = static_cast&lt;monster* &gt;(val.ptr);</a>
+<a name="ln528">        marshallMonster(th, *mon);</a>
+<a name="ln529">        break;</a>
+<a name="ln530">    }</a>
+<a name="ln531"> </a>
+<a name="ln532">    case SV_LUA:</a>
+<a name="ln533">    {</a>
+<a name="ln534">        dlua_chunk* chunk = static_cast&lt;dlua_chunk*&gt;(val.ptr);</a>
+<a name="ln535">        chunk-&gt;write(th);</a>
+<a name="ln536">        break;</a>
+<a name="ln537">    }</a>
+<a name="ln538"> </a>
+<a name="ln539">    case SV_NONE:</a>
+<a name="ln540">        break;</a>
+<a name="ln541"> </a>
+<a name="ln542">    case NUM_STORE_VAL_TYPES:</a>
+<a name="ln543">        die(&quot;unknown stored value type&quot;);</a>
+<a name="ln544">    }</a>
+<a name="ln545">}</a>
+<a name="ln546"> </a>
+<a name="ln547">void CrawlStoreValue::read(reader &amp;th)</a>
+<a name="ln548">{</a>
+<a name="ln549">    ASSERT(type == SV_NONE);</a>
+<a name="ln550"> </a>
+<a name="ln551">    type = static_cast&lt;store_val_type&gt;(unmarshallByte(th));</a>
+<a name="ln552">    flags = (store_flags) unmarshallByte(th);</a>
+<a name="ln553"> </a>
+<a name="ln554">    ASSERT(type != SV_NONE || (flags &amp; SFLAG_UNSET));</a>
+<a name="ln555">    ASSERT(!(flags &amp; SFLAG_UNSET) || type == SV_NONE);</a>
+<a name="ln556"> </a>
+<a name="ln557">    switch (type)</a>
+<a name="ln558">    {</a>
+<a name="ln559">    case SV_BOOL:</a>
+<a name="ln560">        val.boolean = unmarshallBoolean(th);</a>
+<a name="ln561">        break;</a>
+<a name="ln562"> </a>
+<a name="ln563">    case SV_BYTE:</a>
+<a name="ln564">        val.byte = unmarshallByte(th);</a>
+<a name="ln565">        break;</a>
+<a name="ln566"> </a>
+<a name="ln567">    case SV_SHORT:</a>
+<a name="ln568">        val._short = unmarshallShort(th);</a>
+<a name="ln569">        break;</a>
+<a name="ln570"> </a>
+<a name="ln571">    case SV_INT:</a>
+<a name="ln572">        val._int = unmarshallInt(th);</a>
+<a name="ln573">        break;</a>
+<a name="ln574"> </a>
+<a name="ln575">    case SV_INT64:</a>
+<a name="ln576">        val._int64 = unmarshallSigned(th);</a>
+<a name="ln577">        break;</a>
+<a name="ln578"> </a>
+<a name="ln579">    case SV_FLOAT:</a>
+<a name="ln580">        val._float = unmarshallFloat(th);</a>
+<a name="ln581">        break;</a>
+<a name="ln582"> </a>
+<a name="ln583">    case SV_STR:</a>
+<a name="ln584">    {</a>
+<a name="ln585">        string str = unmarshallString(th);</a>
+<a name="ln586">        val.ptr = (void*) new string(str);</a>
+<a name="ln587">        break;</a>
+<a name="ln588">    }</a>
+<a name="ln589"> </a>
+<a name="ln590">    case SV_STR_LONG:</a>
+<a name="ln591">    {</a>
+<a name="ln592">        val.ptr = (void*) new string();</a>
+<a name="ln593">        unmarshallString4(th, *static_cast&lt;string *&gt;(val.ptr));</a>
+<a name="ln594">        // SV_STR_LONG is used only for saving</a>
+<a name="ln595">        type = SV_STR;</a>
+<a name="ln596">        break;</a>
+<a name="ln597">    }</a>
+<a name="ln598"> </a>
+<a name="ln599">    case SV_COORD:</a>
+<a name="ln600">    {</a>
+<a name="ln601">        const coord_def coord = unmarshallCoord(th);</a>
+<a name="ln602">        val.ptr = (void*) new coord_def(coord);</a>
+<a name="ln603"> </a>
+<a name="ln604">        break;</a>
+<a name="ln605">    }</a>
+<a name="ln606"> </a>
+<a name="ln607">    case SV_ITEM:</a>
+<a name="ln608">    {</a>
+<a name="ln609">        item_def item;</a>
+<a name="ln610">        unmarshallItem(th, item);</a>
+<a name="ln611">        val.ptr = (void*) new item_def(item);</a>
+<a name="ln612"> </a>
+<a name="ln613">        break;</a>
+<a name="ln614">    }</a>
+<a name="ln615"> </a>
+<a name="ln616">    case SV_HASH:</a>
+<a name="ln617">    {</a>
+<a name="ln618">        CrawlHashTable* hash = new CrawlHashTable();</a>
+<a name="ln619">        hash-&gt;read(th);</a>
+<a name="ln620">        val.ptr = (void*) hash;</a>
+<a name="ln621"> </a>
+<a name="ln622">        break;</a>
+<a name="ln623">    }</a>
+<a name="ln624"> </a>
+<a name="ln625">    case SV_VEC:</a>
+<a name="ln626">    {</a>
+<a name="ln627">        CrawlVector* vec = new CrawlVector();</a>
+<a name="ln628">        vec-&gt;read(th);</a>
+<a name="ln629">        val.ptr = (void*) vec;</a>
+<a name="ln630"> </a>
+<a name="ln631">        break;</a>
+<a name="ln632">    }</a>
+<a name="ln633"> </a>
+<a name="ln634">    case SV_LEV_ID:</a>
+<a name="ln635">    {</a>
+<a name="ln636">        level_id* id = new level_id();</a>
+<a name="ln637">        id-&gt;load(th);</a>
+<a name="ln638">        val.ptr = (void*) id;</a>
+<a name="ln639"> </a>
+<a name="ln640">        break;</a>
+<a name="ln641">    }</a>
+<a name="ln642"> </a>
+<a name="ln643">    case SV_LEV_POS:</a>
+<a name="ln644">    {</a>
+<a name="ln645">        level_pos* pos = new level_pos();</a>
+<a name="ln646">        pos-&gt;load(th);</a>
+<a name="ln647">        val.ptr = (void*) pos;</a>
+<a name="ln648"> </a>
+<a name="ln649">        break;</a>
+<a name="ln650">    }</a>
+<a name="ln651"> </a>
+<a name="ln652">    case SV_MONST:</a>
+<a name="ln653">    {</a>
+<a name="ln654">        monster mon;</a>
+<a name="ln655">        unmarshallMonster(th, mon);</a>
+<a name="ln656">        val.ptr = (void*) new monster(mon);</a>
+<a name="ln657"> </a>
+<a name="ln658">        break;</a>
+<a name="ln659">    }</a>
+<a name="ln660"> </a>
+<a name="ln661">    case SV_LUA:</a>
+<a name="ln662">    {</a>
+<a name="ln663">        dlua_chunk chunk;</a>
+<a name="ln664">        chunk.read(th);</a>
+<a name="ln665">        val.ptr = (void*) new dlua_chunk(chunk);</a>
+<a name="ln666"> </a>
+<a name="ln667">        break;</a>
+<a name="ln668">    }</a>
+<a name="ln669"> </a>
+<a name="ln670">    case SV_NONE:</a>
+<a name="ln671">        break;</a>
+<a name="ln672"> </a>
+<a name="ln673">    case NUM_STORE_VAL_TYPES:</a>
+<a name="ln674">    default:</a>
+<a name="ln675">        die(&quot;unknown stored value type&quot;);</a>
+<a name="ln676">    }</a>
+<a name="ln677">}</a>
+<a name="ln678"> </a>
+<a name="ln679">CrawlHashTable &amp;CrawlStoreValue::new_table()</a>
+<a name="ln680">{</a>
+<a name="ln681">    return get_table();</a>
+<a name="ln682">}</a>
+<a name="ln683"> </a>
+<a name="ln684">////////////////////////////////////////////////////////////////</a>
+<a name="ln685">// Setup a new vector with the given flags and/or type; assert if</a>
+<a name="ln686">// a vector already exists.</a>
+<a name="ln687">CrawlVector &amp;CrawlStoreValue::new_vector(store_flags _flags)</a>
+<a name="ln688">{</a>
+<a name="ln689">    UNUSED(_flags); // XXX: is ignoring the parameter _flags intentional?</a>
+<a name="ln690">    return new_vector(SV_NONE, flags);</a>
+<a name="ln691">}</a>
+<a name="ln692"> </a>
+<a name="ln693">CrawlVector &amp;CrawlStoreValue::new_vector(store_val_type _type,</a>
+<a name="ln694">                                         store_flags _flags)</a>
+<a name="ln695">{</a>
+<a name="ln696">#ifdef DEBUG</a>
+<a name="ln697">    CrawlVector* old_vec = static_cast&lt;CrawlVector*&gt;(val.ptr);</a>
+<a name="ln698"> </a>
+<a name="ln699">    ASSERT(flags &amp; SFLAG_UNSET);</a>
+<a name="ln700">    ASSERT(type == SV_NONE</a>
+<a name="ln701">           || (type == SV_VEC</a>
+<a name="ln702">               &amp;&amp; old_vec-&gt;empty()</a>
+<a name="ln703">               &amp;&amp; old_vec-&gt;get_type() == SV_NONE</a>
+<a name="ln704">               &amp;&amp; old_vec-&gt;get_default_flags() == 0</a>
+<a name="ln705">               &amp;&amp; old_vec-&gt;get_max_size() == VEC_MAX_SIZE));</a>
+<a name="ln706">#endif</a>
+<a name="ln707"> </a>
+<a name="ln708">    CrawlVector &amp;vec = get_vector();</a>
+<a name="ln709"> </a>
+<a name="ln710">    vec.default_flags = _flags;</a>
+<a name="ln711">    vec.type          = _type;</a>
+<a name="ln712"> </a>
+<a name="ln713">    type   =  SV_VEC;</a>
+<a name="ln714">    flags &amp;= ~SFLAG_UNSET;</a>
+<a name="ln715"> </a>
+<a name="ln716">    return vec;</a>
+<a name="ln717">}</a>
+<a name="ln718"> </a>
+<a name="ln719">///////////////////////////////////////////</a>
+<a name="ln720">// Dynamic type-checking accessor functions</a>
+<a name="ln721">#define GET_VAL(x, _type, field, value)                            \</a>
+<a name="ln722">    ASSERT((flags &amp; SFLAG_UNSET) || !(flags &amp; SFLAG_CONST_VAL)); \</a>
+<a name="ln723">    if (type != (x)) \</a>
+<a name="ln724">    { \</a>
+<a name="ln725">        if (type == SV_NONE) \</a>
+<a name="ln726">        { \</a>
+<a name="ln727">            type  = (x); \</a>
+<a name="ln728">            field = (value); \</a>
+<a name="ln729">        } \</a>
+<a name="ln730">        else \</a>
+<a name="ln731">        { \</a>
+<a name="ln732">            ASSERT(!(flags &amp; SFLAG_CONST_TYPE)); \</a>
+<a name="ln733">            switch (type) \</a>
+<a name="ln734">            { \</a>
+<a name="ln735">            case SV_BOOL: \</a>
+<a name="ln736">                field = (_type) val.boolean; \</a>
+<a name="ln737">                break; \</a>
+<a name="ln738">            case SV_BYTE: \</a>
+<a name="ln739">                field = (_type) val.byte; \</a>
+<a name="ln740">                break; \</a>
+<a name="ln741">            case SV_SHORT: \</a>
+<a name="ln742">                field = (_type) val._short; \</a>
+<a name="ln743">                break; \</a>
+<a name="ln744">            case SV_INT: \</a>
+<a name="ln745">                field = (_type) val._int; \</a>
+<a name="ln746">                break; \</a>
+<a name="ln747">            case SV_INT64: \</a>
+<a name="ln748">                field = (_type) val._int64; \</a>
+<a name="ln749">                break; \</a>
+<a name="ln750">            case SV_FLOAT: \</a>
+<a name="ln751">                field = (_type) val._float; \</a>
+<a name="ln752">                break; \</a>
+<a name="ln753">            default: \</a>
+<a name="ln754">                die(&quot;unknown stored value type&quot;); \</a>
+<a name="ln755">            } \</a>
+<a name="ln756">            type = (x); \</a>
+<a name="ln757">        } \</a>
+<a name="ln758">    } \</a>
+<a name="ln759">    flags &amp;= ~SFLAG_UNSET; \</a>
+<a name="ln760">    return field;</a>
+<a name="ln761"> </a>
+<a name="ln762">#define GET_VAL_PTR(x, _type, value) \</a>
+<a name="ln763">    ASSERT((flags &amp; SFLAG_UNSET) || !(flags &amp; SFLAG_CONST_VAL)); \</a>
+<a name="ln764">    if (type != (x) || (flags &amp; SFLAG_UNSET)) \</a>
+<a name="ln765">    { \</a>
+<a name="ln766">        if (type == SV_NONE) \</a>
+<a name="ln767">        { \</a>
+<a name="ln768">            type    = (x); \</a>
+<a name="ln769">            val.ptr = (value); \</a>
+<a name="ln770">        } \</a>
+<a name="ln771">        else \</a>
+<a name="ln772">        { \</a>
+<a name="ln773">            unset(); \</a>
+<a name="ln774">            val.ptr = (value); \</a>
+<a name="ln775">            type    = (x); \</a>
+<a name="ln776">        } \</a>
+<a name="ln777">    } \</a>
+<a name="ln778">    else \</a>
+<a name="ln779">        delete (value); \</a>
+<a name="ln780">    flags &amp;= ~SFLAG_UNSET; \</a>
+<a name="ln781">    return *((_type) val.ptr);</a>
+<a name="ln782"> </a>
+<a name="ln783">bool &amp;CrawlStoreValue::get_bool()</a>
+<a name="ln784">{</a>
+<a name="ln785">    GET_VAL(SV_BOOL, bool, val.boolean, false);</a>
+<a name="ln786">}</a>
+<a name="ln787"> </a>
+<a name="ln788">char &amp;CrawlStoreValue::get_byte()</a>
+<a name="ln789">{</a>
+<a name="ln790">    GET_VAL(SV_BYTE, char, val.byte, 0);</a>
+<a name="ln791">}</a>
+<a name="ln792"> </a>
+<a name="ln793">short &amp;CrawlStoreValue::get_short()</a>
+<a name="ln794">{</a>
+<a name="ln795">    GET_VAL(SV_SHORT, short, val._short, 0);</a>
+<a name="ln796">}</a>
+<a name="ln797"> </a>
+<a name="ln798">int &amp;CrawlStoreValue::get_int()</a>
+<a name="ln799">{</a>
+<a name="ln800">    GET_VAL(SV_INT, int, val._int, 0);</a>
+<a name="ln801">}</a>
+<a name="ln802"> </a>
+<a name="ln803">int64_t &amp;CrawlStoreValue::get_int64()</a>
+<a name="ln804">{</a>
+<a name="ln805">    GET_VAL(SV_INT64, int64_t, val._int64, 0);</a>
+<a name="ln806">}</a>
+<a name="ln807"> </a>
+<a name="ln808">float &amp;CrawlStoreValue::get_float()</a>
+<a name="ln809">{</a>
+<a name="ln810">    GET_VAL(SV_FLOAT, float, val._float, 0.0);</a>
+<a name="ln811">}</a>
+<a name="ln812"> </a>
+<a name="ln813">string &amp;CrawlStoreValue::get_string()</a>
+<a name="ln814">{</a>
+<a name="ln815">    GET_VAL_PTR(SV_STR, string*, new string(&quot;&quot;));</a>
+<a name="ln816">}</a>
+<a name="ln817"> </a>
+<a name="ln818">coord_def &amp;CrawlStoreValue::get_coord()</a>
+<a name="ln819">{</a>
+<a name="ln820">    GET_VAL_PTR(SV_COORD, coord_def*, new coord_def());</a>
+<a name="ln821">}</a>
+<a name="ln822"> </a>
+<a name="ln823">item_def &amp;CrawlStoreValue::get_item()</a>
+<a name="ln824">{</a>
+<a name="ln825">    GET_VAL_PTR(SV_ITEM, item_def*, new item_def());</a>
+<a name="ln826">}</a>
+<a name="ln827"> </a>
+<a name="ln828">CrawlHashTable &amp;CrawlStoreValue::get_table()</a>
+<a name="ln829">{</a>
+<a name="ln830">    GET_VAL_PTR(SV_HASH, CrawlHashTable*, new CrawlHashTable());</a>
+<a name="ln831">}</a>
+<a name="ln832"> </a>
+<a name="ln833">CrawlVector &amp;CrawlStoreValue::get_vector()</a>
+<a name="ln834">{</a>
+<a name="ln835">    GET_VAL_PTR(SV_VEC, CrawlVector*, new CrawlVector());</a>
+<a name="ln836">}</a>
+<a name="ln837"> </a>
+<a name="ln838">level_id &amp;CrawlStoreValue::get_level_id()</a>
+<a name="ln839">{</a>
+<a name="ln840">    GET_VAL_PTR(SV_LEV_ID, level_id*, new level_id());</a>
+<a name="ln841">}</a>
+<a name="ln842"> </a>
+<a name="ln843">level_pos &amp;CrawlStoreValue::get_level_pos()</a>
+<a name="ln844">{</a>
+<a name="ln845">    GET_VAL_PTR(SV_LEV_POS, level_pos*, new level_pos());</a>
+<a name="ln846">}</a>
+<a name="ln847"> </a>
+<a name="ln848">monster &amp;CrawlStoreValue::get_monster()</a>
+<a name="ln849">{</a>
+<a name="ln850">    GET_VAL_PTR(SV_MONST, monster* , new monster());</a>
+<a name="ln851">}</a>
+<a name="ln852"> </a>
+<a name="ln853">dlua_chunk &amp;CrawlStoreValue::get_lua()</a>
+<a name="ln854">{</a>
+<a name="ln855">    GET_VAL_PTR(SV_LUA, dlua_chunk*, new dlua_chunk());</a>
+<a name="ln856">}</a>
+<a name="ln857"> </a>
+<a name="ln858">///////////////////////////</a>
+<a name="ln859">// Const accessor functions</a>
+<a name="ln860">#define GET_CONST_SETUP(x) \</a>
+<a name="ln861">    ASSERT(!(flags &amp; SFLAG_UNSET)); \</a>
+<a name="ln862">    ASSERT(type == (x));</a>
+<a name="ln863"> </a>
+<a name="ln864">bool CrawlStoreValue::get_bool() const</a>
+<a name="ln865">{</a>
+<a name="ln866">    GET_CONST_SETUP(SV_BOOL);</a>
+<a name="ln867">    return val.boolean;</a>
+<a name="ln868">}</a>
+<a name="ln869"> </a>
+<a name="ln870">char CrawlStoreValue::get_byte() const</a>
+<a name="ln871">{</a>
+<a name="ln872">    GET_CONST_SETUP(SV_BYTE);</a>
+<a name="ln873">    return val.byte;</a>
+<a name="ln874">}</a>
+<a name="ln875"> </a>
+<a name="ln876">short CrawlStoreValue::get_short() const</a>
+<a name="ln877">{</a>
+<a name="ln878">    GET_CONST_SETUP(SV_SHORT);</a>
+<a name="ln879">    return val._short;</a>
+<a name="ln880">}</a>
+<a name="ln881"> </a>
+<a name="ln882">int CrawlStoreValue::get_int() const</a>
+<a name="ln883">{</a>
+<a name="ln884">    GET_CONST_SETUP(SV_INT);</a>
+<a name="ln885">    return val._int;</a>
+<a name="ln886">}</a>
+<a name="ln887"> </a>
+<a name="ln888">int64_t CrawlStoreValue::get_int64() const</a>
+<a name="ln889">{</a>
+<a name="ln890">    GET_CONST_SETUP(SV_INT64);</a>
+<a name="ln891">    return val._int64;</a>
+<a name="ln892">}</a>
+<a name="ln893"> </a>
+<a name="ln894">float CrawlStoreValue::get_float() const</a>
+<a name="ln895">{</a>
+<a name="ln896">    GET_CONST_SETUP(SV_FLOAT);</a>
+<a name="ln897">    return val._float;</a>
+<a name="ln898">}</a>
+<a name="ln899"> </a>
+<a name="ln900">string CrawlStoreValue::get_string() const</a>
+<a name="ln901">{</a>
+<a name="ln902">    GET_CONST_SETUP(SV_STR);</a>
+<a name="ln903">    return *((string*)val.ptr);</a>
+<a name="ln904">}</a>
+<a name="ln905"> </a>
+<a name="ln906">coord_def CrawlStoreValue::get_coord() const</a>
+<a name="ln907">{</a>
+<a name="ln908">    GET_CONST_SETUP(SV_COORD);</a>
+<a name="ln909">    return *((coord_def*)val.ptr);</a>
+<a name="ln910">}</a>
+<a name="ln911"> </a>
+<a name="ln912">const item_def&amp; CrawlStoreValue::get_item() const</a>
+<a name="ln913">{</a>
+<a name="ln914">    GET_CONST_SETUP(SV_ITEM);</a>
+<a name="ln915">    return *((item_def*)val.ptr);</a>
+<a name="ln916">}</a>
+<a name="ln917"> </a>
+<a name="ln918">const CrawlHashTable&amp; CrawlStoreValue::get_table() const</a>
+<a name="ln919">{</a>
+<a name="ln920">    GET_CONST_SETUP(SV_HASH);</a>
+<a name="ln921">    return *((CrawlHashTable*)val.ptr);</a>
+<a name="ln922">}</a>
+<a name="ln923"> </a>
+<a name="ln924">const CrawlVector&amp; CrawlStoreValue::get_vector() const</a>
+<a name="ln925">{</a>
+<a name="ln926">    GET_CONST_SETUP(SV_VEC);</a>
+<a name="ln927">    return *((CrawlVector*)val.ptr);</a>
+<a name="ln928">}</a>
+<a name="ln929"> </a>
+<a name="ln930">const monster&amp; CrawlStoreValue::get_monster() const</a>
+<a name="ln931">{</a>
+<a name="ln932">    GET_CONST_SETUP(SV_MONST);</a>
+<a name="ln933">    return *((monster*)val.ptr);</a>
+<a name="ln934">}</a>
+<a name="ln935"> </a>
+<a name="ln936">level_id CrawlStoreValue::get_level_id() const</a>
+<a name="ln937">{</a>
+<a name="ln938">    GET_CONST_SETUP(SV_LEV_ID);</a>
+<a name="ln939">    return *((level_id*)val.ptr);</a>
+<a name="ln940">}</a>
+<a name="ln941"> </a>
+<a name="ln942">level_pos CrawlStoreValue::get_level_pos() const</a>
+<a name="ln943">{</a>
+<a name="ln944">    GET_CONST_SETUP(SV_LEV_POS);</a>
+<a name="ln945">    return *((level_pos*)val.ptr);</a>
+<a name="ln946">}</a>
+<a name="ln947"> </a>
+<a name="ln948">/////////////////////</a>
+<a name="ln949">// Typecast operators</a>
+<a name="ln950">CrawlStoreValue::operator bool&amp;()                  { return get_bool();       }</a>
+<a name="ln951">CrawlStoreValue::operator char&amp;()                  { return get_byte();       }</a>
+<a name="ln952">CrawlStoreValue::operator short&amp;()                 { return get_short();      }</a>
+<a name="ln953">CrawlStoreValue::operator float&amp;()                 { return get_float();      }</a>
+<a name="ln954">CrawlStoreValue::operator int&amp;()                   { return get_int();        }</a>
+<a name="ln955">CrawlStoreValue::operator int64_t&amp;()               { return get_int64();      }</a>
+<a name="ln956">CrawlStoreValue::operator string&amp;()                { return get_string();     }</a>
+<a name="ln957">CrawlStoreValue::operator coord_def&amp;()             { return get_coord();      }</a>
+<a name="ln958">CrawlStoreValue::operator CrawlHashTable&amp;()        { return get_table();      }</a>
+<a name="ln959">CrawlStoreValue::operator CrawlVector&amp;()           { return get_vector();     }</a>
+<a name="ln960">CrawlStoreValue::operator item_def&amp;()              { return get_item();       }</a>
+<a name="ln961">CrawlStoreValue::operator level_id&amp;()              { return get_level_id();   }</a>
+<a name="ln962">CrawlStoreValue::operator level_pos&amp;()             { return get_level_pos();  }</a>
+<a name="ln963">CrawlStoreValue::operator monster&amp; ()              { return get_monster();    }</a>
+<a name="ln964">CrawlStoreValue::operator dlua_chunk&amp;()            { return get_lua(); }</a>
+<a name="ln965"> </a>
+<a name="ln966">///////////////////////////</a>
+<a name="ln967">// Const typecast operators</a>
+<a name="ln968">CrawlStoreValue::operator bool() const</a>
+<a name="ln969">{</a>
+<a name="ln970">    return get_bool();</a>
+<a name="ln971">}</a>
+<a name="ln972"> </a>
+<a name="ln973">#define CONST_INT_CAST() \</a>
+<a name="ln974">    switch (type) \</a>
+<a name="ln975">    { \</a>
+<a name="ln976">    case SV_BYTE: \</a>
+<a name="ln977">        return get_byte(); \</a>
+<a name="ln978">    case SV_SHORT: \</a>
+<a name="ln979">        return get_short(); \</a>
+<a name="ln980">    case SV_INT: \</a>
+<a name="ln981">        return get_int(); \</a>
+<a name="ln982">    default: \</a>
+<a name="ln983">        die(&quot;unknown stored value type&quot;); \</a>
+<a name="ln984">    }</a>
+<a name="ln985"> </a>
+<a name="ln986">CrawlStoreValue::operator char() const</a>
+<a name="ln987">{</a>
+<a name="ln988">    CONST_INT_CAST();</a>
+<a name="ln989">}</a>
+<a name="ln990"> </a>
+<a name="ln991">CrawlStoreValue::operator short() const</a>
+<a name="ln992">{</a>
+<a name="ln993">    CONST_INT_CAST();</a>
+<a name="ln994">}</a>
+<a name="ln995"> </a>
+<a name="ln996">CrawlStoreValue::operator int() const</a>
+<a name="ln997">{</a>
+<a name="ln998">    CONST_INT_CAST();</a>
+<a name="ln999">}</a>
+<a name="ln1000"> </a>
+<a name="ln1001">CrawlStoreValue::operator int64_t() const</a>
+<a name="ln1002">{</a>
+<a name="ln1003">    // Allow upgrading but not downgrading.</a>
+<a name="ln1004">    switch (type)</a>
+<a name="ln1005">    {</a>
+<a name="ln1006">    case SV_BYTE:</a>
+<a name="ln1007">        return get_byte();</a>
+<a name="ln1008">    case SV_SHORT:</a>
+<a name="ln1009">        return get_short();</a>
+<a name="ln1010">    case SV_INT:</a>
+<a name="ln1011">        return get_int();</a>
+<a name="ln1012">    case SV_INT64:</a>
+<a name="ln1013">        return get_int64();</a>
+<a name="ln1014">    default:</a>
+<a name="ln1015">        die(&quot;unknown stored value type&quot;);</a>
+<a name="ln1016">    }</a>
+<a name="ln1017">}</a>
+<a name="ln1018"> </a>
+<a name="ln1019">CrawlStoreValue::operator float() const</a>
+<a name="ln1020">{</a>
+<a name="ln1021">    return get_float();</a>
+<a name="ln1022">}</a>
+<a name="ln1023"> </a>
+<a name="ln1024">CrawlStoreValue::operator string() const</a>
+<a name="ln1025">{</a>
+<a name="ln1026">    return get_string();</a>
+<a name="ln1027">}</a>
+<a name="ln1028"> </a>
+<a name="ln1029">CrawlStoreValue::operator coord_def() const</a>
+<a name="ln1030">{</a>
+<a name="ln1031">    return get_coord();</a>
+<a name="ln1032">}</a>
+<a name="ln1033"> </a>
+<a name="ln1034">CrawlStoreValue::operator level_id() const</a>
+<a name="ln1035">{</a>
+<a name="ln1036">    return get_level_id();</a>
+<a name="ln1037">}</a>
+<a name="ln1038"> </a>
+<a name="ln1039">CrawlStoreValue::operator level_pos() const</a>
+<a name="ln1040">{</a>
+<a name="ln1041">    return get_level_pos();</a>
+<a name="ln1042">}</a>
+<a name="ln1043"> </a>
+<a name="ln1044">///////////////////////</a>
+<a name="ln1045">// Assignment operators</a>
+<a name="ln1046">CrawlStoreValue &amp;CrawlStoreValue::operator = (const bool &amp;_val)</a>
+<a name="ln1047">{</a>
+<a name="ln1048">    get_bool() = _val;</a>
+<a name="ln1049">    return *this;</a>
+<a name="ln1050">}</a>
+<a name="ln1051"> </a>
+<a name="ln1052">CrawlStoreValue &amp;CrawlStoreValue::operator = (const char &amp;_val)</a>
+<a name="ln1053">{</a>
+<a name="ln1054">    get_byte() = _val;</a>
+<a name="ln1055">    return *this;</a>
+<a name="ln1056">}</a>
+<a name="ln1057"> </a>
+<a name="ln1058">CrawlStoreValue &amp;CrawlStoreValue::operator = (const short &amp;_val)</a>
+<a name="ln1059">{</a>
+<a name="ln1060">    get_short() = _val;</a>
+<a name="ln1061">    return *this;</a>
+<a name="ln1062">}</a>
+<a name="ln1063"> </a>
+<a name="ln1064">CrawlStoreValue &amp;CrawlStoreValue::operator = (const int &amp;_val)</a>
+<a name="ln1065">{</a>
+<a name="ln1066">    get_int() = _val;</a>
+<a name="ln1067">    return *this;</a>
+<a name="ln1068">}</a>
+<a name="ln1069"> </a>
+<a name="ln1070">CrawlStoreValue &amp;CrawlStoreValue::operator = (const int64_t &amp;_val)</a>
+<a name="ln1071">{</a>
+<a name="ln1072">    get_int64() = _val;</a>
+<a name="ln1073">    return *this;</a>
+<a name="ln1074">}</a>
+<a name="ln1075"> </a>
+<a name="ln1076">CrawlStoreValue &amp;CrawlStoreValue::operator = (const float &amp;_val)</a>
+<a name="ln1077">{</a>
+<a name="ln1078">    get_float() = _val;</a>
+<a name="ln1079">    return *this;</a>
+<a name="ln1080">}</a>
+<a name="ln1081"> </a>
+<a name="ln1082">CrawlStoreValue &amp;CrawlStoreValue::operator = (const string &amp;_val)</a>
+<a name="ln1083">{</a>
+<a name="ln1084">    get_string() = _val;</a>
+<a name="ln1085">    return *this;</a>
+<a name="ln1086">}</a>
+<a name="ln1087"> </a>
+<a name="ln1088">CrawlStoreValue &amp;CrawlStoreValue::operator = (const char* _val)</a>
+<a name="ln1089">{</a>
+<a name="ln1090">    get_string() = _val;</a>
+<a name="ln1091">    return *this;</a>
+<a name="ln1092">}</a>
+<a name="ln1093"> </a>
+<a name="ln1094">CrawlStoreValue &amp;CrawlStoreValue::operator = (const coord_def &amp;_val)</a>
+<a name="ln1095">{</a>
+<a name="ln1096">    get_coord() = _val;</a>
+<a name="ln1097">    return *this;</a>
+<a name="ln1098">}</a>
+<a name="ln1099"> </a>
+<a name="ln1100">CrawlStoreValue &amp;CrawlStoreValue::operator = (const CrawlHashTable &amp;_val)</a>
+<a name="ln1101">{</a>
+<a name="ln1102">    get_table() = _val;</a>
+<a name="ln1103">    return *this;</a>
+<a name="ln1104">}</a>
+<a name="ln1105"> </a>
+<a name="ln1106">CrawlStoreValue &amp;CrawlStoreValue::operator = (const CrawlVector &amp;_val)</a>
+<a name="ln1107">{</a>
+<a name="ln1108">    get_vector() = _val;</a>
+<a name="ln1109">    return *this;</a>
+<a name="ln1110">}</a>
+<a name="ln1111"> </a>
+<a name="ln1112">CrawlStoreValue &amp;CrawlStoreValue::operator = (const item_def &amp;_val)</a>
+<a name="ln1113">{</a>
+<a name="ln1114">    get_item() = _val;</a>
+<a name="ln1115">    return *this;</a>
+<a name="ln1116">}</a>
+<a name="ln1117"> </a>
+<a name="ln1118">CrawlStoreValue &amp;CrawlStoreValue::operator = (const level_id &amp;_val)</a>
+<a name="ln1119">{</a>
+<a name="ln1120">    get_level_id() = _val;</a>
+<a name="ln1121">    return *this;</a>
+<a name="ln1122">}</a>
+<a name="ln1123"> </a>
+<a name="ln1124">CrawlStoreValue &amp;CrawlStoreValue::operator = (const level_pos &amp;_val)</a>
+<a name="ln1125">{</a>
+<a name="ln1126">    get_level_pos() = _val;</a>
+<a name="ln1127">    return *this;</a>
+<a name="ln1128">}</a>
+<a name="ln1129"> </a>
+<a name="ln1130">CrawlStoreValue &amp;CrawlStoreValue::operator = (const monster&amp; _val)</a>
+<a name="ln1131">{</a>
+<a name="ln1132">    get_monster() = _val;</a>
+<a name="ln1133">    return *this;</a>
+<a name="ln1134">}</a>
+<a name="ln1135"> </a>
+<a name="ln1136">CrawlStoreValue &amp;CrawlStoreValue::operator = (const dlua_chunk &amp;_val)</a>
+<a name="ln1137">{</a>
+<a name="ln1138">    get_lua() = _val;</a>
+<a name="ln1139">    return *this;</a>
+<a name="ln1140">}</a>
+<a name="ln1141"> </a>
+<a name="ln1142">///////////////////////////////////////////////////</a>
+<a name="ln1143">// Non-assignment operators which affect the lvalue</a>
+<a name="ln1144">#define INT_OPERATOR_UNARY(op) \</a>
+<a name="ln1145">    switch (type) \</a>
+<a name="ln1146">    { \</a>
+<a name="ln1147">    case SV_BYTE: \</a>
+<a name="ln1148">    { \</a>
+<a name="ln1149">        char &amp;temp = get_byte(); \</a>
+<a name="ln1150">        temp op; \</a>
+<a name="ln1151">        return temp; \</a>
+<a name="ln1152">    } \</a>
+<a name="ln1153"> \</a>
+<a name="ln1154">    case SV_SHORT: \</a>
+<a name="ln1155">    { \</a>
+<a name="ln1156">        short &amp;temp = get_short(); \</a>
+<a name="ln1157">        temp op; \</a>
+<a name="ln1158">        return temp; \</a>
+<a name="ln1159">    } \</a>
+<a name="ln1160">    case SV_INT: \</a>
+<a name="ln1161">    { \</a>
+<a name="ln1162">        int &amp;temp = get_int(); \</a>
+<a name="ln1163">        temp op; \</a>
+<a name="ln1164">        return temp; \</a>
+<a name="ln1165">    } \</a>
+<a name="ln1166">    case SV_INT64: \</a>
+<a name="ln1167">    { \</a>
+<a name="ln1168">        int64_t &amp;temp = get_int64(); \</a>
+<a name="ln1169">        temp op; \</a>
+<a name="ln1170">        return temp; \</a>
+<a name="ln1171">    } \</a>
+<a name="ln1172"> \</a>
+<a name="ln1173">    default: \</a>
+<a name="ln1174">        die(&quot;unknown stored value type&quot;); \</a>
+<a name="ln1175">        return 0; \</a>
+<a name="ln1176">    }</a>
+<a name="ln1177"> </a>
+<a name="ln1178">// Prefix</a>
+<a name="ln1179">int CrawlStoreValue::operator ++ ()</a>
+<a name="ln1180">{</a>
+<a name="ln1181">    INT_OPERATOR_UNARY(++);</a>
+<a name="ln1182">}</a>
+<a name="ln1183"> </a>
+<a name="ln1184">int CrawlStoreValue::operator -- ()</a>
+<a name="ln1185">{</a>
+<a name="ln1186">    INT_OPERATOR_UNARY(--);</a>
+<a name="ln1187">}</a>
+<a name="ln1188"> </a>
+<a name="ln1189">// Postfix</a>
+<a name="ln1190">int CrawlStoreValue::operator ++ (int)</a>
+<a name="ln1191">{</a>
+<a name="ln1192">    INT_OPERATOR_UNARY(++);</a>
+<a name="ln1193">}</a>
+<a name="ln1194"> </a>
+<a name="ln1195">int CrawlStoreValue::operator -- (int)</a>
+<a name="ln1196">{</a>
+<a name="ln1197">    INT_OPERATOR_UNARY(--);</a>
+<a name="ln1198">}</a>
+<a name="ln1199"> </a>
+<a name="ln1200">string &amp;CrawlStoreValue::operator += (const string &amp;_val)</a>
+<a name="ln1201">{</a>
+<a name="ln1202">    return get_string() += _val;</a>
+<a name="ln1203">}</a>
+<a name="ln1204"> </a>
+<a name="ln1205">//////////////////////////////</a>
+<a name="ln1206">// Read/write from/to savefile</a>
+<a name="ln1207">void CrawlHashTable::write(writer &amp;th) const</a>
+<a name="ln1208">{</a>
+<a name="ln1209">    ASSERT_VALIDITY();</a>
+<a name="ln1210">    if (empty())</a>
+<a name="ln1211">    {</a>
+<a name="ln1212">        marshallUnsigned(th, 0);</a>
+<a name="ln1213">        return;</a>
+<a name="ln1214">    }</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    marshallUnsigned(th, size());</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    for (const auto &amp;entry : *this)</a>
+<a name="ln1219">    {</a>
+<a name="ln1220">        marshallString(th, entry.first);</a>
+<a name="ln1221">        entry.second.write(th);</a>
+<a name="ln1222">    }</a>
+<a name="ln1223"> </a>
+<a name="ln1224">    ASSERT_VALIDITY();</a>
+<a name="ln1225">}</a>
+<a name="ln1226"> </a>
+<a name="ln1227">void CrawlHashTable::read(reader &amp;th)</a>
+<a name="ln1228">{</a>
+<a name="ln1229">    ASSERT_VALIDITY();</a>
+<a name="ln1230"> </a>
+<a name="ln1231">    ASSERT(empty());</a>
+<a name="ln1232"> </a>
+<a name="ln1233">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1234">    unsigned int _size;</a>
+<a name="ln1235">    if (th.getMinorVersion() &lt; TAG_MINOR_16_BIT_TABLE)</a>
+<a name="ln1236">        _size = unmarshallByte(th);</a>
+<a name="ln1237">    else</a>
+<a name="ln1238">        _size = unmarshallUnsigned(th);</a>
+<a name="ln1239">#else</a>
+<a name="ln1240">    unsigned int _size = unmarshallUnsigned(th);</a>
+<a name="ln1241">#endif</a>
+<a name="ln1242"> </a>
+<a name="ln1243">    for (unsigned int i = 0; i &lt; _size; i++)</a>
+<a name="ln1244">    {</a>
+<a name="ln1245">        string           key = unmarshallString(th);</a>
+<a name="ln1246">        CrawlStoreValue &amp;val = (*this)[key];</a>
+<a name="ln1247"> </a>
+<a name="ln1248">        val.read(th);</a>
+<a name="ln1249">    }</a>
+<a name="ln1250"> </a>
+<a name="ln1251">    ASSERT_VALIDITY();</a>
+<a name="ln1252">}</a>
+<a name="ln1253"> </a>
+<a name="ln1254">#ifdef DEBUG_PROPS</a>
+<a name="ln1255">static map&lt;string, int&gt; accesses;</a>
+<a name="ln1256"># define ACCESS(x) ++accesses[x]</a>
+<a name="ln1257">#else</a>
+<a name="ln1258"># define ACCESS(x)</a>
+<a name="ln1259">#endif</a>
+<a name="ln1260"> </a>
+<a name="ln1261">//////////////////</a>
+<a name="ln1262">// Misc functions</a>
+<a name="ln1263"> </a>
+<a name="ln1264">bool CrawlHashTable::exists(const string &amp;key) const</a>
+<a name="ln1265">{</a>
+<a name="ln1266">    ACCESS(key);</a>
+<a name="ln1267">    ASSERT_VALIDITY();</a>
+<a name="ln1268">    return find(key) != end();</a>
+<a name="ln1269">}</a>
+<a name="ln1270"> </a>
+<a name="ln1271">void CrawlHashTable::assert_validity() const</a>
+<a name="ln1272">{</a>
+<a name="ln1273">#ifdef DEBUG</a>
+<a name="ln1274">    size_t actual_size = 0;</a>
+<a name="ln1275"> </a>
+<a name="ln1276">    for (const auto &amp;entry : *this)</a>
+<a name="ln1277">    {</a>
+<a name="ln1278">        actual_size++;</a>
+<a name="ln1279"> </a>
+<a name="ln1280">        const string          &amp;key = entry.first;</a>
+<a name="ln1281">        const CrawlStoreValue &amp;val = entry.second;</a>
+<a name="ln1282"> </a>
+<a name="ln1283">        ASSERT(!key.empty());</a>
+<a name="ln1284">        string trimmed = trimmed_string(key);</a>
+<a name="ln1285">        ASSERT(key == trimmed);</a>
+<a name="ln1286"> </a>
+<a name="ln1287">        ASSERT(val.type != SV_NONE);</a>
+<a name="ln1288">        ASSERT(val.type != SV_STR_LONG);</a>
+<a name="ln1289">        ASSERT(!(val.flags &amp; SFLAG_UNSET));</a>
+<a name="ln1290"> </a>
+<a name="ln1291">        switch (val.type)</a>
+<a name="ln1292">        {</a>
+<a name="ln1293">        case SV_STR:</a>
+<a name="ln1294">        case SV_COORD:</a>
+<a name="ln1295">        case SV_ITEM:</a>
+<a name="ln1296">        case SV_LEV_ID:</a>
+<a name="ln1297">        case SV_LEV_POS:</a>
+<a name="ln1298">            ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1299">            break;</a>
+<a name="ln1300"> </a>
+<a name="ln1301">        case SV_HASH:</a>
+<a name="ln1302">        {</a>
+<a name="ln1303">            ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1304"> </a>
+<a name="ln1305">            CrawlHashTable* nested;</a>
+<a name="ln1306">            nested = static_cast&lt;CrawlHashTable*&gt;(val.val.ptr);</a>
+<a name="ln1307"> </a>
+<a name="ln1308">            nested-&gt;assert_validity();</a>
+<a name="ln1309">            break;</a>
+<a name="ln1310">        }</a>
+<a name="ln1311"> </a>
+<a name="ln1312">        case SV_VEC:</a>
+<a name="ln1313">        {</a>
+<a name="ln1314">            ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1315"> </a>
+<a name="ln1316">            CrawlVector* nested;</a>
+<a name="ln1317">            nested = static_cast&lt;CrawlVector*&gt;(val.val.ptr);</a>
+<a name="ln1318"> </a>
+<a name="ln1319">            nested-&gt;assert_validity();</a>
+<a name="ln1320">            break;</a>
+<a name="ln1321">        }</a>
+<a name="ln1322"> </a>
+<a name="ln1323">        default:</a>
+<a name="ln1324">            break;</a>
+<a name="ln1325">        }</a>
+<a name="ln1326">    }</a>
+<a name="ln1327"> </a>
+<a name="ln1328">    ASSERT(size() == actual_size);</a>
+<a name="ln1329">#endif</a>
+<a name="ln1330">}</a>
+<a name="ln1331"> </a>
+<a name="ln1332">////////////////////////////////</a>
+<a name="ln1333">// Accessors to contained values</a>
+<a name="ln1334"> </a>
+<a name="ln1335">CrawlStoreValue&amp; CrawlHashTable::get_value(const string &amp;key)</a>
+<a name="ln1336">{</a>
+<a name="ln1337">    ASSERT_VALIDITY();</a>
+<a name="ln1338">    ACCESS(key);</a>
+<a name="ln1339">    // Inserts CrawlStoreValue() if the key was not found.</a>
+<a name="ln1340">    return map::operator[](key);</a>
+<a name="ln1341">}</a>
+<a name="ln1342"> </a>
+<a name="ln1343">const CrawlStoreValue&amp; CrawlHashTable::get_value(const string &amp;key) const</a>
+<a name="ln1344">{</a>
+<a name="ln1345">    ASSERT_VALIDITY();</a>
+<a name="ln1346">    ACCESS(key);</a>
+<a name="ln1347">    auto iter = find(key);</a>
+<a name="ln1348">    ASSERTM(iter != end(), &quot;trying to read non-existent property \&quot;%s\&quot;&quot;, key.c_str());</a>
+<a name="ln1349"> </a>
+<a name="ln1350">    const CrawlStoreValue&amp; store = iter-&gt;second;</a>
+<a name="ln1351">    ASSERT(store.type != SV_NONE);</a>
+<a name="ln1352">    ASSERT(!(store.flags &amp; SFLAG_UNSET));</a>
+<a name="ln1353"> </a>
+<a name="ln1354">    return store;</a>
+<a name="ln1355">}</a>
+<a name="ln1356"> </a>
+<a name="ln1357">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1358">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1359"> </a>
+<a name="ln1360">CrawlVector::CrawlVector()</a>
+<a name="ln1361">    : type(SV_NONE), default_flags(0), max_size(VEC_MAX_SIZE)</a>
+<a name="ln1362">{</a>
+<a name="ln1363">}</a>
+<a name="ln1364"> </a>
+<a name="ln1365">CrawlVector::CrawlVector(store_flags flags, vec_size _max_size)</a>
+<a name="ln1366">    : type(SV_NONE), default_flags(flags), max_size(_max_size)</a>
+<a name="ln1367">{</a>
+<a name="ln1368">    ASSERT(!(default_flags &amp; SFLAG_UNSET));</a>
+<a name="ln1369">    ASSERT(max_size &gt; 0);</a>
+<a name="ln1370">}</a>
+<a name="ln1371"> </a>
+<a name="ln1372">CrawlVector::CrawlVector(store_val_type _type, store_flags flags,</a>
+<a name="ln1373">                         vec_size _max_size)</a>
+<a name="ln1374">    : type(_type), default_flags(flags), max_size(_max_size)</a>
+<a name="ln1375">{</a>
+<a name="ln1376">    ASSERT_RANGE(type, SV_NONE, NUM_STORE_VAL_TYPES);</a>
+<a name="ln1377">    ASSERT(!(default_flags &amp; SFLAG_UNSET));</a>
+<a name="ln1378">    ASSERT(max_size &gt; 0);</a>
+<a name="ln1379">}</a>
+<a name="ln1380"> </a>
+<a name="ln1381">CrawlVector::~CrawlVector()</a>
+<a name="ln1382">{</a>
+<a name="ln1383">    ASSERT_VALIDITY();</a>
+<a name="ln1384">}</a>
+<a name="ln1385"> </a>
+<a name="ln1386">//////////////////////////////</a>
+<a name="ln1387">// Read/write from/to savefile</a>
+<a name="ln1388">void CrawlVector::write(writer &amp;th) const</a>
+<a name="ln1389">{</a>
+<a name="ln1390">    ASSERT_VALIDITY();</a>
+<a name="ln1391">    if (empty())</a>
+<a name="ln1392">    {</a>
+<a name="ln1393">        marshallByte(th, 0);</a>
+<a name="ln1394">        return;</a>
+<a name="ln1395">    }</a>
+<a name="ln1396"> </a>
+<a name="ln1397">    marshallUnsigned(th, size());</a>
+<a name="ln1398">    marshallUnsigned(th, max_size);</a>
+<a name="ln1399">    marshallByte(th, static_cast&lt;char&gt;(type));</a>
+<a name="ln1400">    marshallByte(th, (char) default_flags);</a>
+<a name="ln1401"> </a>
+<a name="ln1402">    for (vec_size i = 0; i &lt; size(); i++)</a>
+<a name="ln1403">    {</a>
+<a name="ln1404">        CrawlStoreValue val = vec[i];</a>
+<a name="ln1405">        val.write(th);</a>
+<a name="ln1406">    }</a>
+<a name="ln1407"> </a>
+<a name="ln1408">    ASSERT_VALIDITY();</a>
+<a name="ln1409">}</a>
+<a name="ln1410"> </a>
+<a name="ln1411">void CrawlVector::read(reader &amp;th)</a>
+<a name="ln1412">{</a>
+<a name="ln1413">    ASSERT_VALIDITY();</a>
+<a name="ln1414"> </a>
+<a name="ln1415">    ASSERT(empty());</a>
+<a name="ln1416">    ASSERT(type == SV_NONE);</a>
+<a name="ln1417">    ASSERT(default_flags == 0);</a>
+<a name="ln1418">    ASSERT(max_size == VEC_MAX_SIZE);</a>
+<a name="ln1419"> </a>
+<a name="ln1420">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1421">    vec_size _size;</a>
+<a name="ln1422">    if (th.getMinorVersion() &lt; TAG_MINOR_16_BIT_TABLE)</a>
+<a name="ln1423">        _size = (vec_size) unmarshallByte(th);</a>
+<a name="ln1424">    else if (th.getMinorVersion() &lt; TAG_MINOR_REALLY_16_BIT_VEC)</a>
+<a name="ln1425">    {</a>
+<a name="ln1426">        // Fix bad sign extensions.</a>
+<a name="ln1427">        _size = (vec_size) (unsigned char) unmarshallUnsigned(th);</a>
+<a name="ln1428">    }</a>
+<a name="ln1429">    else</a>
+<a name="ln1430">        _size = (vec_size) unmarshallUnsigned(th);</a>
+<a name="ln1431">#else</a>
+<a name="ln1432">    vec_size _size = (vec_size) unmarshallUnsigned(th);</a>
+<a name="ln1433">#endif</a>
+<a name="ln1434"> </a>
+<a name="ln1435">    if (_size == 0)</a>
+<a name="ln1436">        return;</a>
+<a name="ln1437"> </a>
+<a name="ln1438">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1439">    if (th.getMinorVersion() &lt; TAG_MINOR_16_BIT_TABLE)</a>
+<a name="ln1440">        max_size = static_cast&lt;vec_size&gt;(unmarshallByte(th));</a>
+<a name="ln1441">    else if (th.getMinorVersion() &lt; TAG_MINOR_REALLY_16_BIT_VEC)</a>
+<a name="ln1442">    {</a>
+<a name="ln1443">        // Fix bad sign extensions.</a>
+<a name="ln1444">        max_size = (vec_size) (unsigned char) unmarshallUnsigned(th);</a>
+<a name="ln1445">    }</a>
+<a name="ln1446">    else</a>
+<a name="ln1447">#endif</a>
+<a name="ln1448">    max_size      = static_cast&lt;vec_size&gt;(unmarshallUnsigned(th));</a>
+<a name="ln1449">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1450">    if (th.getMinorVersion() &lt; TAG_MINOR_FIX_8_BIT_VEC_MAX</a>
+<a name="ln1451">        &amp;&amp; max_size == 0xFF)</a>
+<a name="ln1452">    {</a>
+<a name="ln1453">        max_size = VEC_MAX_SIZE;</a>
+<a name="ln1454">    }</a>
+<a name="ln1455">#endif</a>
+<a name="ln1456">    type          = static_cast&lt;store_val_type&gt;(unmarshallByte(th));</a>
+<a name="ln1457">    default_flags = static_cast&lt;store_flags&gt;(unmarshallByte(th));</a>
+<a name="ln1458"> </a>
+<a name="ln1459">    ASSERT(_size &lt;= max_size);</a>
+<a name="ln1460"> </a>
+<a name="ln1461">    vec.resize(_size);</a>
+<a name="ln1462"> </a>
+<a name="ln1463">    for (vec_size i = 0; i &lt; _size; i++)</a>
+<a name="ln1464">        vec[i].read(th);</a>
+<a name="ln1465"> </a>
+<a name="ln1466">    ASSERT_VALIDITY();</a>
+<a name="ln1467">}</a>
+<a name="ln1468"> </a>
+<a name="ln1469"> </a>
+<a name="ln1470">//////////////////</a>
+<a name="ln1471">// Misc functions</a>
+<a name="ln1472"> </a>
+<a name="ln1473">store_flags CrawlVector::get_default_flags() const</a>
+<a name="ln1474">{</a>
+<a name="ln1475">    ASSERT_VALIDITY();</a>
+<a name="ln1476">    return default_flags;</a>
+<a name="ln1477">}</a>
+<a name="ln1478"> </a>
+<a name="ln1479">store_flags CrawlVector::set_default_flags(store_flags flags)</a>
+<a name="ln1480">{</a>
+<a name="ln1481">    ASSERT_VALIDITY();</a>
+<a name="ln1482">    ASSERT(!(flags &amp; SFLAG_UNSET));</a>
+<a name="ln1483">    default_flags |= flags;</a>
+<a name="ln1484"> </a>
+<a name="ln1485">    return default_flags;</a>
+<a name="ln1486">}</a>
+<a name="ln1487"> </a>
+<a name="ln1488">store_flags CrawlVector::unset_default_flags(store_flags flags)</a>
+<a name="ln1489">{</a>
+<a name="ln1490">    ASSERT_VALIDITY();</a>
+<a name="ln1491">    ASSERT(!(flags &amp; SFLAG_UNSET));</a>
+<a name="ln1492">    default_flags &amp;= ~flags;</a>
+<a name="ln1493"> </a>
+<a name="ln1494">    return default_flags;</a>
+<a name="ln1495">}</a>
+<a name="ln1496"> </a>
+<a name="ln1497">store_val_type CrawlVector::get_type() const</a>
+<a name="ln1498">{</a>
+<a name="ln1499">    ASSERT_VALIDITY();</a>
+<a name="ln1500">    return type;</a>
+<a name="ln1501">}</a>
+<a name="ln1502"> </a>
+<a name="ln1503">void CrawlVector::assert_validity() const</a>
+<a name="ln1504">{</a>
+<a name="ln1505">#ifdef DEBUG</a>
+<a name="ln1506">    ASSERT(!(default_flags &amp; SFLAG_UNSET));</a>
+<a name="ln1507">    ASSERT(max_size &gt; 0);</a>
+<a name="ln1508">    ASSERT(max_size &gt;= size());</a>
+<a name="ln1509"> </a>
+<a name="ln1510">    for (vec_size i = 0, _size = size(); i &lt; _size; i++)</a>
+<a name="ln1511">    {</a>
+<a name="ln1512">        const CrawlStoreValue &amp;val = vec[i];</a>
+<a name="ln1513"> </a>
+<a name="ln1514">        if (type != SV_NONE)</a>
+<a name="ln1515">            ASSERT(val.type == SV_NONE || val.type == type);</a>
+<a name="ln1516"> </a>
+<a name="ln1517">        // A vector might be resize()'d and filled up with unset</a>
+<a name="ln1518">        // values, which are then set one by one, so we can't</a>
+<a name="ln1519">        // assert over that here.</a>
+<a name="ln1520">        if (val.type == SV_NONE || (val.flags &amp; SFLAG_UNSET))</a>
+<a name="ln1521">            continue;</a>
+<a name="ln1522"> </a>
+<a name="ln1523">        switch (val.type)</a>
+<a name="ln1524">        {</a>
+<a name="ln1525">        case SV_STR:</a>
+<a name="ln1526">        case SV_COORD:</a>
+<a name="ln1527">        case SV_ITEM:</a>
+<a name="ln1528">        case SV_LEV_ID:</a>
+<a name="ln1529">        case SV_LEV_POS:</a>
+<a name="ln1530">            ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1531">            break;</a>
+<a name="ln1532"> </a>
+<a name="ln1533">        case SV_HASH:</a>
+<a name="ln1534">        {</a>
+<a name="ln1535">            ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1536"> </a>
+<a name="ln1537">            CrawlHashTable* nested;</a>
+<a name="ln1538">            nested = static_cast&lt;CrawlHashTable*&gt;(val.val.ptr);</a>
+<a name="ln1539"> </a>
+<a name="ln1540">            nested-&gt;assert_validity();</a>
+<a name="ln1541">            break;</a>
+<a name="ln1542">        }</a>
+<a name="ln1543"> </a>
+<a name="ln1544">        case SV_VEC:</a>
+<a name="ln1545">        {</a>
+<a name="ln1546">            ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1547"> </a>
+<a name="ln1548">            CrawlVector* nested;</a>
+<a name="ln1549">            nested = static_cast&lt;CrawlVector*&gt;(val.val.ptr);</a>
+<a name="ln1550"> </a>
+<a name="ln1551">            nested-&gt;assert_validity();</a>
+<a name="ln1552">            break;</a>
+<a name="ln1553">        }</a>
+<a name="ln1554"> </a>
+<a name="ln1555">        default:</a>
+<a name="ln1556">            break;</a>
+<a name="ln1557">        }</a>
+<a name="ln1558">    }</a>
+<a name="ln1559">#endif</a>
+<a name="ln1560">}</a>
+<a name="ln1561"> </a>
+<a name="ln1562">void CrawlVector::set_max_size(vec_size _size)</a>
+<a name="ln1563">{</a>
+<a name="ln1564">    ASSERT(_size &gt; 0);</a>
+<a name="ln1565">    ASSERT(max_size == VEC_MAX_SIZE || max_size &lt; _size);</a>
+<a name="ln1566">    max_size = _size;</a>
+<a name="ln1567"> </a>
+<a name="ln1568">    vec.reserve(max_size);</a>
+<a name="ln1569">}</a>
+<a name="ln1570"> </a>
+<a name="ln1571">vec_size CrawlVector::get_max_size() const</a>
+<a name="ln1572">{</a>
+<a name="ln1573">    return max_size;</a>
+<a name="ln1574">}</a>
+<a name="ln1575"> </a>
+<a name="ln1576">////////////////////////////////</a>
+<a name="ln1577">// Accessors to contained values</a>
+<a name="ln1578"> </a>
+<a name="ln1579">CrawlStoreValue&amp; CrawlVector::get_value(const vec_size &amp;index)</a>
+<a name="ln1580">{</a>
+<a name="ln1581">    ASSERT_VALIDITY();</a>
+<a name="ln1582"> </a>
+<a name="ln1583">    ASSERT(index &lt;= max_size);</a>
+<a name="ln1584">    ASSERT(index &lt;= vec.size());</a>
+<a name="ln1585"> </a>
+<a name="ln1586">    return vec[index];</a>
+<a name="ln1587">}</a>
+<a name="ln1588"> </a>
+<a name="ln1589">const CrawlStoreValue&amp; CrawlVector::get_value(const vec_size &amp;index) const</a>
+<a name="ln1590">{</a>
+<a name="ln1591">    ASSERT_VALIDITY();</a>
+<a name="ln1592"> </a>
+<a name="ln1593">    ASSERT(index &lt;= max_size);</a>
+<a name="ln1594">    ASSERT(index &lt;= vec.size());</a>
+<a name="ln1595"> </a>
+<a name="ln1596">    return vec[index];</a>
+<a name="ln1597">}</a>
+<a name="ln1598"> </a>
+<a name="ln1599">///////////////////////////</a>
+<a name="ln1600">// std::vector style interface</a>
+<a name="ln1601">vec_size CrawlVector::size() const</a>
+<a name="ln1602">{</a>
+<a name="ln1603">    return vec.size();</a>
+<a name="ln1604">}</a>
+<a name="ln1605"> </a>
+<a name="ln1606">bool CrawlVector::empty() const</a>
+<a name="ln1607">{</a>
+<a name="ln1608">    return vec.empty();</a>
+<a name="ln1609">}</a>
+<a name="ln1610"> </a>
+<a name="ln1611">CrawlStoreValue&amp; CrawlVector::pop_back()</a>
+<a name="ln1612">{</a>
+<a name="ln1613">    ASSERT_VALIDITY();</a>
+<a name="ln1614">    ASSERT(!vec.empty());</a>
+<a name="ln1615"> </a>
+<a name="ln1616">    CrawlStoreValue&amp; val = vec[vec.size() - 1];</a>
+<a name="ln1617">    vec.pop_back();</a>
+<a name="ln1618">    return val;</a>
+<a name="ln1619">}</a>
+<a name="ln1620"> </a>
+<a name="ln1621">void CrawlVector::push_back(CrawlStoreValue val)</a>
+<a name="ln1622">{</a>
+<a name="ln1623">#ifdef DEBUG</a>
+<a name="ln1624">    if (type != SV_NONE)</a>
+<a name="ln1625">        ASSERT(type == val.type);</a>
+<a name="ln1626"> </a>
+<a name="ln1627">    switch (val.type)</a>
+<a name="ln1628">    {</a>
+<a name="ln1629">    case SV_STR:</a>
+<a name="ln1630">    case SV_COORD:</a>
+<a name="ln1631">    case SV_ITEM:</a>
+<a name="ln1632">    case SV_LEV_ID:</a>
+<a name="ln1633">    case SV_LEV_POS:</a>
+<a name="ln1634">        ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1635">        break;</a>
+<a name="ln1636"> </a>
+<a name="ln1637">    case SV_HASH:</a>
+<a name="ln1638">    {</a>
+<a name="ln1639">        ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1640"> </a>
+<a name="ln1641">        CrawlHashTable* nested;</a>
+<a name="ln1642">        nested = static_cast&lt;CrawlHashTable*&gt;(val.val.ptr);</a>
+<a name="ln1643"> </a>
+<a name="ln1644">        nested-&gt;assert_validity();</a>
+<a name="ln1645">        break;</a>
+<a name="ln1646">    }</a>
+<a name="ln1647"> </a>
+<a name="ln1648">    case SV_VEC:</a>
+<a name="ln1649">    {</a>
+<a name="ln1650">        ASSERT(val.val.ptr != nullptr);</a>
+<a name="ln1651"> </a>
+<a name="ln1652">        CrawlVector* nested;</a>
+<a name="ln1653">        nested = static_cast&lt;CrawlVector*&gt;(val.val.ptr);</a>
+<a name="ln1654"> </a>
+<a name="ln1655">        nested-&gt;assert_validity();</a>
+<a name="ln1656">        break;</a>
+<a name="ln1657">    }</a>
+<a name="ln1658"> </a>
+<a name="ln1659">    default:</a>
+<a name="ln1660">        break;</a>
+<a name="ln1661">    }</a>
+<a name="ln1662">#endif</a>
+<a name="ln1663"> </a>
+<a name="ln1664">    ASSERT_VALIDITY();</a>
+<a name="ln1665">    ASSERT(vec.size() &lt; max_size);</a>
+<a name="ln1666">    ASSERT(type == SV_NONE</a>
+<a name="ln1667">           || (val.type == SV_NONE &amp;&amp; (val.flags &amp; SFLAG_UNSET))</a>
+<a name="ln1668">           || val.type == type);</a>
+<a name="ln1669">    val.flags |= default_flags;</a>
+<a name="ln1670">    if (type != SV_NONE)</a>
+<a name="ln1671">    {</a>
+<a name="ln1672">        val.type   = type;</a>
+<a name="ln1673">        val.flags |= SFLAG_CONST_TYPE;</a>
+<a name="ln1674">    }</a>
+<a name="ln1675">    vec.push_back(val);</a>
+<a name="ln1676">    ASSERT_VALIDITY();</a>
+<a name="ln1677">}</a>
+<a name="ln1678"> </a>
+<a name="ln1679">void CrawlVector::insert(const vec_size index, CrawlStoreValue val)</a>
+<a name="ln1680">{</a>
+<a name="ln1681">    ASSERT_VALIDITY();</a>
+<a name="ln1682">    ASSERT(vec.size() &lt; max_size);</a>
+<a name="ln1683">    ASSERT(type == SV_NONE</a>
+<a name="ln1684">           || (val.type == SV_NONE &amp;&amp; (val.flags &amp; SFLAG_UNSET))</a>
+<a name="ln1685">           || val.type == type);</a>
+<a name="ln1686">    val.flags |= default_flags;</a>
+<a name="ln1687">    if (type != SV_NONE)</a>
+<a name="ln1688">    {</a>
+<a name="ln1689">        val.type   = type;</a>
+<a name="ln1690">        val.flags |= SFLAG_CONST_TYPE;</a>
+<a name="ln1691">    }</a>
+<a name="ln1692">    vec.insert(vec.begin() + index, val);</a>
+<a name="ln1693">}</a>
+<a name="ln1694"> </a>
+<a name="ln1695">void CrawlVector::resize(const vec_size _size)</a>
+<a name="ln1696">{</a>
+<a name="ln1697">    ASSERT_VALIDITY();</a>
+<a name="ln1698">    ASSERT(max_size == VEC_MAX_SIZE);</a>
+<a name="ln1699">    ASSERT(_size &lt; max_size);</a>
+<a name="ln1700"> </a>
+<a name="ln1701">    vec_size old_size = size();</a>
+<a name="ln1702">    vec.resize(_size);</a>
+<a name="ln1703"> </a>
+<a name="ln1704">    for (vec_size i = old_size; i &lt; _size; i++)</a>
+<a name="ln1705">    {</a>
+<a name="ln1706">        vec[i].flags = SFLAG_UNSET | default_flags;</a>
+<a name="ln1707">        vec[i].type  = SV_NONE;</a>
+<a name="ln1708">    }</a>
+<a name="ln1709">}</a>
+<a name="ln1710"> </a>
+<a name="ln1711">void CrawlVector::erase(const vec_size index)</a>
+<a name="ln1712">{</a>
+<a name="ln1713">    ASSERT_VALIDITY();</a>
+<a name="ln1714">    ASSERT(index &lt;= max_size);</a>
+<a name="ln1715">    ASSERT(index &lt;= vec.size());</a>
+<a name="ln1716"> </a>
+<a name="ln1717">    vec.erase(vec.begin() + index);</a>
+<a name="ln1718">}</a>
+<a name="ln1719"> </a>
+<a name="ln1720">void CrawlVector::clear()</a>
+<a name="ln1721">{</a>
+<a name="ln1722">    ASSERT_VALIDITY();</a>
+<a name="ln1723">    ASSERT(!(default_flags &amp; SFLAG_NO_ERASE));</a>
+<a name="ln1724"> </a>
+<a name="ln1725">    for (vec_size i = 0, _size = size(); i &lt; _size; i++)</a>
+<a name="ln1726">        ASSERT(!(vec[i].flags &amp; SFLAG_NO_ERASE));</a>
+<a name="ln1727"> </a>
+<a name="ln1728">    vec.clear();</a>
+<a name="ln1729">    default_flags = 0;</a>
+<a name="ln1730">    type          = SV_NONE;</a>
+<a name="ln1731">}</a>
+<a name="ln1732"> </a>
+<a name="ln1733">CrawlVector::iterator CrawlVector::begin()</a>
+<a name="ln1734">{</a>
+<a name="ln1735">    ASSERT_VALIDITY();</a>
+<a name="ln1736">    return vec.begin();</a>
+<a name="ln1737">}</a>
+<a name="ln1738"> </a>
+<a name="ln1739">CrawlVector::iterator CrawlVector::end()</a>
+<a name="ln1740">{</a>
+<a name="ln1741">    ASSERT_VALIDITY();</a>
+<a name="ln1742">    return vec.end();</a>
+<a name="ln1743">}</a>
+<a name="ln1744"> </a>
+<a name="ln1745">CrawlVector::const_iterator CrawlVector::begin() const</a>
+<a name="ln1746">{</a>
+<a name="ln1747">    ASSERT_VALIDITY();</a>
+<a name="ln1748">    return vec.begin();</a>
+<a name="ln1749">}</a>
+<a name="ln1750"> </a>
+<a name="ln1751">CrawlVector::const_iterator CrawlVector::end() const</a>
+<a name="ln1752">{</a>
+<a name="ln1753">    ASSERT_VALIDITY();</a>
+<a name="ln1754">    return vec.end();</a>
+<a name="ln1755">}</a>
+<a name="ln1756"> </a>
+<a name="ln1757">#ifdef DEBUG_PROPS</a>
+<a name="ln1758">static bool _cmp(string a, string b)</a>
+<a name="ln1759">{</a>
+<a name="ln1760">    return accesses[a] &gt; accesses[b];</a>
+<a name="ln1761">}</a>
+<a name="ln1762"> </a>
+<a name="ln1763">void dump_prop_accesses()</a>
+<a name="ln1764">{</a>
+<a name="ln1765">    FILE *f = fopen(&quot;prop_accesses&quot;, &quot;w&quot;);</a>
+<a name="ln1766">    ASSERT(f);</a>
+<a name="ln1767"> </a>
+<a name="ln1768">    vector&lt;string&gt; props;</a>
+<a name="ln1769"> </a>
+<a name="ln1770">    for (auto &amp;entry : accesses)</a>
+<a name="ln1771">        props.push_back(entry.first);</a>
+<a name="ln1772"> </a>
+<a name="ln1773">    sort(props.begin(), props.end(), _cmp);</a>
+<a name="ln1774">    for (const auto &amp;prop : props)</a>
+<a name="ln1775">        fprintf(f, &quot;%10d %s\n&quot;, accesses[prop], prop.c_str());</a>
+<a name="ln1776">    fclose(f);</a>
+<a name="ln1777">}</a>
+<a name="ln1778">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="358"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="362"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="366"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="370"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="374"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="378"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="382"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="386"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="390"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="298"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v794/" target="_blank">V794</a> The assignment operator should be protected from the case of 'this == &other'.</p></div>
+<div class="balloon" rel="586"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="592"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="602"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="611"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="656"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+<div class="balloon" rel="665"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v572/" target="_blank">V572</a> It is odd that the object which was created using 'new' operator is immediately cast to another type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

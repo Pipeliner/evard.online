@@ -1,0 +1,1590 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-behv.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Monster behaviour functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-behv.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;ability.h&quot;</a>
+<a name="ln11">#include &quot;act-iter.h&quot;</a>
+<a name="ln12">#include &quot;areas.h&quot;</a>
+<a name="ln13">#include &quot;attitude-change.h&quot;</a>
+<a name="ln14">#include &quot;coordit.h&quot;</a>
+<a name="ln15">#include &quot;database.h&quot;</a>
+<a name="ln16">#include &quot;dgn-overview.h&quot;</a>
+<a name="ln17">#include &quot;dungeon.h&quot;</a>
+<a name="ln18">#include &quot;fineff.h&quot;</a>
+<a name="ln19">#include &quot;god-passive.h&quot;</a>
+<a name="ln20">#include &quot;hints.h&quot;</a>
+<a name="ln21">#include &quot;item-prop.h&quot;</a>
+<a name="ln22">#include &quot;losglobal.h&quot;</a>
+<a name="ln23">#include &quot;macro.h&quot;</a>
+<a name="ln24">#include &quot;message.h&quot;</a>
+<a name="ln25">#include &quot;mon-act.h&quot;</a>
+<a name="ln26">#include &quot;mon-death.h&quot;</a>
+<a name="ln27">#include &quot;mon-movetarget.h&quot;</a>
+<a name="ln28">#include &quot;mon-speak.h&quot;</a>
+<a name="ln29">#include &quot;ouch.h&quot;</a>
+<a name="ln30">#include &quot;religion.h&quot;</a>
+<a name="ln31">#include &quot;shout.h&quot;</a>
+<a name="ln32">#include &quot;spl-summoning.h&quot;</a>
+<a name="ln33">#include &quot;state.h&quot;</a>
+<a name="ln34">#include &quot;stringutil.h&quot;</a>
+<a name="ln35">#include &quot;terrain.h&quot;</a>
+<a name="ln36">#include &quot;traps.h&quot;</a>
+<a name="ln37"> </a>
+<a name="ln38">static void _guess_invis_foe_pos(monster* mon)</a>
+<a name="ln39">{</a>
+<a name="ln40">    const actor* foe          = mon-&gt;get_foe();</a>
+<a name="ln41">    const int    guess_radius = 2;</a>
+<a name="ln42"> </a>
+<a name="ln43">    vector&lt;coord_def&gt; possibilities;</a>
+<a name="ln44"> </a>
+<a name="ln45">    // NOTE: This depends on ignoring clouds, so that cells hidden by</a>
+<a name="ln46">    // opaque clouds are included as a possibility for the foe's location.</a>
+<a name="ln47">    for (radius_iterator ri(mon-&gt;pos(), guess_radius, C_SQUARE, LOS_SOLID); ri; ++ri)</a>
+<a name="ln48">    {</a>
+<a name="ln49">        if (foe-&gt;is_habitable(*ri))</a>
+<a name="ln50">            possibilities.push_back(*ri);</a>
+<a name="ln51">    }</a>
+<a name="ln52"> </a>
+<a name="ln53">    if (!possibilities.empty())</a>
+<a name="ln54">        mon-&gt;target = possibilities[random2(possibilities.size())];</a>
+<a name="ln55">    else</a>
+<a name="ln56">        mon-&gt;target = dgn_random_point_from(mon-&gt;pos(), guess_radius);</a>
+<a name="ln57">}</a>
+<a name="ln58"> </a>
+<a name="ln59">static void _mon_check_foe_invalid(monster* mon)</a>
+<a name="ln60">{</a>
+<a name="ln61">    // Assume a spectral weapon has a valid target</a>
+<a name="ln62">    // Ideally this is not outside special cased like this</a>
+<a name="ln63">    if (mons_is_avatar(mon-&gt;type))</a>
+<a name="ln64">        return;</a>
+<a name="ln65"> </a>
+<a name="ln66">    if (mon-&gt;foe != MHITNOT &amp;&amp; mon-&gt;foe != MHITYOU)</a>
+<a name="ln67">    {</a>
+<a name="ln68">        if (actor *foe = mon-&gt;get_foe())</a>
+<a name="ln69">        {</a>
+<a name="ln70">            const monster* foe_mons = foe-&gt;as_monster();</a>
+<a name="ln71">            if (foe_mons-&gt;alive() &amp;&amp; summon_can_attack(mon, foe)</a>
+<a name="ln72">                &amp;&amp; (mon-&gt;has_ench(ENCH_INSANE)</a>
+<a name="ln73">                    || mon-&gt;friendly() != foe_mons-&gt;friendly()</a>
+<a name="ln74">                    || mon-&gt;neutral() != foe_mons-&gt;neutral()))</a>
+<a name="ln75">            {</a>
+<a name="ln76">                return;</a>
+<a name="ln77">            }</a>
+<a name="ln78">        }</a>
+<a name="ln79"> </a>
+<a name="ln80">        mon-&gt;foe = MHITNOT;</a>
+<a name="ln81">    }</a>
+<a name="ln82">}</a>
+<a name="ln83"> </a>
+<a name="ln84">static bool _mon_tries_regain_los(monster* mon)</a>
+<a name="ln85">{</a>
+<a name="ln86">    // Only intelligent monsters with ranged attack will try to regain LOS.</a>
+<a name="ln87">    if (mons_intel(*mon) &lt; I_HUMAN || !mons_has_ranged_attack(*mon))</a>
+<a name="ln88">        return false;</a>
+<a name="ln89"> </a>
+<a name="ln90">    // Any special case should go here.</a>
+<a name="ln91">    if (mons_class_flag(mon-&gt;type, M_FIGHTER)</a>
+<a name="ln92">        &amp;&amp; !(mon-&gt;type == MONS_CENTAUR_WARRIOR)</a>
+<a name="ln93">        &amp;&amp; !(mon-&gt;type == MONS_YAKTAUR_CAPTAIN))</a>
+<a name="ln94">    {</a>
+<a name="ln95">        return false;</a>
+<a name="ln96">    }</a>
+<a name="ln97"> </a>
+<a name="ln98">    // Randomize it to make it less predictable, and reduce flip-flopping.</a>
+<a name="ln99">    return !one_chance_in(3);</a>
+<a name="ln100">}</a>
+<a name="ln101"> </a>
+<a name="ln102">// Monster tries to get into a firing position. Among the cells which have</a>
+<a name="ln103">// a line of fire to the target, we choose the closest one to regain LOS as</a>
+<a name="ln104">// fast as possible. If several cells are eligible, we choose the one closest</a>
+<a name="ln105">// to ideal_range (too far = easier to escape, too close = easier to ambush).</a>
+<a name="ln106">static void _set_firing_pos(monster* mon, coord_def target)</a>
+<a name="ln107">{</a>
+<a name="ln108">    const int ideal_range = LOS_DEFAULT_RANGE / 2;</a>
+<a name="ln109">    const int current_distance = mon-&gt;pos().distance_from(target);</a>
+<a name="ln110"> </a>
+<a name="ln111">    // We don't consider getting farther away unless already very close.</a>
+<a name="ln112">    const int max_range = max(ideal_range, current_distance);</a>
+<a name="ln113"> </a>
+<a name="ln114">    int best_distance = INT_MAX;</a>
+<a name="ln115">    int best_distance_to_ideal_range = INT_MAX;</a>
+<a name="ln116">    coord_def best_pos(0, 0);</a>
+<a name="ln117"> </a>
+<a name="ln118">    for (distance_iterator di(mon-&gt;pos(), true, true, LOS_RADIUS);</a>
+<a name="ln119">         di; ++di)</a>
+<a name="ln120">    {</a>
+<a name="ln121">        const coord_def p(*di);</a>
+<a name="ln122">        const int range = p.distance_from(target);</a>
+<a name="ln123"> </a>
+<a name="ln124">        if (!mon-&gt;see_cell(*di))</a>
+<a name="ln125">            continue;</a>
+<a name="ln126"> </a>
+<a name="ln127">        if (!in_bounds(p) || range &gt; max_range</a>
+<a name="ln128">            || !cell_see_cell(p, target, LOS_NO_TRANS)</a>
+<a name="ln129">            || !mon_can_move_to_pos(mon, p - mon-&gt;pos()))</a>
+<a name="ln130">        {</a>
+<a name="ln131">            continue;</a>
+<a name="ln132">        }</a>
+<a name="ln133"> </a>
+<a name="ln134">        const int distance = p.distance_from(mon-&gt;pos());</a>
+<a name="ln135"> </a>
+<a name="ln136">        if (distance &lt; best_distance</a>
+<a name="ln137">            || distance == best_distance</a>
+<a name="ln138">               &amp;&amp; abs(range - ideal_range) &lt; best_distance_to_ideal_range)</a>
+<a name="ln139">        {</a>
+<a name="ln140">            best_pos = p;</a>
+<a name="ln141">            best_distance = distance;</a>
+<a name="ln142">            best_distance_to_ideal_range = abs(range - ideal_range);</a>
+<a name="ln143">        }</a>
+<a name="ln144">    }</a>
+<a name="ln145"> </a>
+<a name="ln146">    mon-&gt;firing_pos = best_pos;</a>
+<a name="ln147">}</a>
+<a name="ln148"> </a>
+<a name="ln149">static void _decide_monster_firing_position(monster* mon, actor* owner)</a>
+<a name="ln150">{</a>
+<a name="ln151">    // Monster can see foe: continue 'tracking'</a>
+<a name="ln152">    // by updating target x,y.</a>
+<a name="ln153">    if (mon-&gt;foe == MHITYOU)</a>
+<a name="ln154">    {</a>
+<a name="ln155">        const bool ignore_special_firing_AI = mon-&gt;friendly()</a>
+<a name="ln156">                                              || mon-&gt;berserk_or_insane();</a>
+<a name="ln157"> </a>
+<a name="ln158">        // The foe is the player.</a>
+<a name="ln159">        if (mons_class_flag(mon-&gt;type, M_MAINTAIN_RANGE)</a>
+<a name="ln160">            &amp;&amp; !ignore_special_firing_AI)</a>
+<a name="ln161">            {</a>
+<a name="ln162">                // Get to firing range even if we are close.</a>
+<a name="ln163">                _set_firing_pos(mon, you.pos());</a>
+<a name="ln164">            }</a>
+<a name="ln165">        else if (mon-&gt;type == MONS_MERFOLK_AVATAR &amp;&amp; !ignore_special_firing_AI)</a>
+<a name="ln166">            find_merfolk_avatar_water_target(mon);</a>
+<a name="ln167">        else if (!mon-&gt;firing_pos.zero()</a>
+<a name="ln168">                 &amp;&amp; mon-&gt;see_cell_no_trans(mon-&gt;target))</a>
+<a name="ln169">        {</a>
+<a name="ln170">            // If monster is currently getting into firing position and</a>
+<a name="ln171">            // sees the player and can attack him, clear firing_pos.</a>
+<a name="ln172">            mon-&gt;firing_pos.reset();</a>
+<a name="ln173">        }</a>
+<a name="ln174"> </a>
+<a name="ln175">        if (!(mon-&gt;firing_pos.zero() &amp;&amp; try_pathfind(mon)))</a>
+<a name="ln176">        {</a>
+<a name="ln177">            // Whew. If we arrived here, path finding didn't yield anything</a>
+<a name="ln178">            // (or wasn't even attempted) and we need to set our target</a>
+<a name="ln179">            // the traditional way.</a>
+<a name="ln180"> </a>
+<a name="ln181">            mon-&gt;target = you.pos();</a>
+<a name="ln182">        }</a>
+<a name="ln183">    }</a>
+<a name="ln184">    else</a>
+<a name="ln185">    {</a>
+<a name="ln186">        // We have a foe but it's not the player.</a>
+<a name="ln187">        monster* target = &amp;menv[mon-&gt;foe];</a>
+<a name="ln188">        mon-&gt;target = target-&gt;pos();</a>
+<a name="ln189"> </a>
+<a name="ln190">        if (mons_class_flag(mon-&gt;type, M_MAINTAIN_RANGE)</a>
+<a name="ln191">            &amp;&amp; !mon-&gt;berserk_or_insane()</a>
+<a name="ln192">            &amp;&amp; !(mons_is_avatar(mon-&gt;type)</a>
+<a name="ln193">                 &amp;&amp; owner &amp;&amp; mon-&gt;foe == owner-&gt;mindex()))</a>
+<a name="ln194">        {</a>
+<a name="ln195">            _set_firing_pos(mon, mon-&gt;target);</a>
+<a name="ln196">        }</a>
+<a name="ln197">        // Hold position if we've reached our ideal range</a>
+<a name="ln198">        else if (mon-&gt;type == MONS_SPELLFORGED_SERVITOR</a>
+<a name="ln199">                 &amp;&amp; (mon-&gt;pos() - target-&gt;pos()).rdist()</a>
+<a name="ln200">                 &lt;= mon-&gt;props[&quot;ideal_range&quot;].get_int()</a>
+<a name="ln201">                 &amp;&amp; !one_chance_in(8))</a>
+<a name="ln202">        {</a>
+<a name="ln203">            mon-&gt;firing_pos = mon-&gt;pos();</a>
+<a name="ln204">        }</a>
+<a name="ln205">    }</a>
+<a name="ln206">}</a>
+<a name="ln207"> </a>
+<a name="ln208">/**</a>
+<a name="ln209"> * Should the player be treated as if they were normally visible to a given</a>
+<a name="ln210"> * monster, even though they're currently invisible?</a>
+<a name="ln211"> *</a>
+<a name="ln212"> * Random per-call; depends on proximity, monster intelligence, and Ash wrath.</a>
+<a name="ln213"> *</a>
+<a name="ln214"> * @param mon     The monster in question.</a>
+<a name="ln215"> * @param         Whether the monster correctly guessed the player's presence.</a>
+<a name="ln216"> */</a>
+<a name="ln217">static bool _monster_guesses_invis_player(const monster &amp;mon)</a>
+<a name="ln218">{</a>
+<a name="ln219">    // Sometimes, if a player is right next to a monster, they will 'see'.</a>
+<a name="ln220">    if (grid_distance(you.pos(), mon.pos()) == 1 &amp;&amp; one_chance_in(3))</a>
+<a name="ln221">        return true;</a>
+<a name="ln222"> </a>
+<a name="ln223">    // [dshaligram] Smart monsters have a chance of clueing in to</a>
+<a name="ln224">    // invisible players in various ways.</a>
+<a name="ln225">    if (mons_intel(mon) == I_HUMAN &amp;&amp; one_chance_in(12))</a>
+<a name="ln226">        return true;</a>
+<a name="ln227"> </a>
+<a name="ln228">    // Ash penance makes monsters very likely to target you through invis.</a>
+<a name="ln229">    if (player_under_penance(GOD_ASHENZARI) &amp;&amp; coinflip())</a>
+<a name="ln230">        return true;</a>
+<a name="ln231"> </a>
+<a name="ln232">    return false;</a>
+<a name="ln233">}</a>
+<a name="ln234"> </a>
+<a name="ln235">/**</a>
+<a name="ln236"> * Evaluates the monster's AI state, and sets its target based on its foe.</a>
+<a name="ln237"> */</a>
+<a name="ln238">void handle_behaviour(monster* mon)</a>
+<a name="ln239">{</a>
+<a name="ln240">    // Test spawners should always be BEH_SEEK against a foe, since</a>
+<a name="ln241">    // their only purpose is to spew out monsters for testing</a>
+<a name="ln242">    // purposes.</a>
+<a name="ln243">    if (mon-&gt;type == MONS_TEST_SPAWNER)</a>
+<a name="ln244">    {</a>
+<a name="ln245">        for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln246">        {</a>
+<a name="ln247">            if (mon-&gt;attitude != mi-&gt;attitude)</a>
+<a name="ln248">            {</a>
+<a name="ln249">                mon-&gt;foe       = mi-&gt;mindex();</a>
+<a name="ln250">                mon-&gt;target    = mi-&gt;pos();</a>
+<a name="ln251">                mon-&gt;behaviour = BEH_SEEK;</a>
+<a name="ln252">                return;</a>
+<a name="ln253">            }</a>
+<a name="ln254">        }</a>
+<a name="ln255">    }</a>
+<a name="ln256"> </a>
+<a name="ln257">    bool changed = true;</a>
+<a name="ln258">    bool isFriendly = mon-&gt;friendly();</a>
+<a name="ln259">    bool isNeutral  = mon-&gt;neutral();</a>
+<a name="ln260">    bool wontAttack = mon-&gt;wont_attack() &amp;&amp; !mon-&gt;has_ench(ENCH_INSANE);</a>
+<a name="ln261"> </a>
+<a name="ln262">    // Whether the player position is in LOS of the monster.</a>
+<a name="ln263">    bool proxPlayer = !crawl_state.game_is_arena() &amp;&amp; mon-&gt;see_cell(you.pos());</a>
+<a name="ln264"> </a>
+<a name="ln265">    // If set, pretend the player isn't there, but only for hostile monsters.</a>
+<a name="ln266">    if (proxPlayer &amp;&amp; crawl_state.disables[DIS_MON_SIGHT] &amp;&amp; !mon-&gt;wont_attack())</a>
+<a name="ln267">        proxPlayer = false;</a>
+<a name="ln268"> </a>
+<a name="ln269">    bool proxFoe;</a>
+<a name="ln270">    bool isHealthy  = (mon-&gt;hit_points &gt; mon-&gt;max_hit_points / 2);</a>
+<a name="ln271">    bool isSmart    = (mons_intel(*mon) &gt;= I_HUMAN);</a>
+<a name="ln272">    bool isScared   = mon-&gt;has_ench(ENCH_FEAR);</a>
+<a name="ln273">    bool isPacified = mon-&gt;pacified();</a>
+<a name="ln274">    bool patrolling = mon-&gt;is_patrolling();</a>
+<a name="ln275">    static vector&lt;level_exit&gt; e;</a>
+<a name="ln276">    static int                e_index = -1;</a>
+<a name="ln277"> </a>
+<a name="ln278">    //mprf(&quot;AI debug: mon %d behv=%d foe=%d pos=%d %d target=%d %d&quot;,</a>
+<a name="ln279">    //     mon-&gt;mindex(), mon-&gt;behaviour, mon-&gt;foe, mon-&gt;pos().x,</a>
+<a name="ln280">    //     mon-&gt;pos().y, mon-&gt;target.x, mon-&gt;target.y);</a>
+<a name="ln281"> </a>
+<a name="ln282">    // Check for permanent confusion, early out.</a>
+<a name="ln283">    if (mons_class_flag(mon-&gt;type, M_CONFUSED))</a>
+<a name="ln284">    {</a>
+<a name="ln285">        set_random_target(mon);</a>
+<a name="ln286">        return;</a>
+<a name="ln287">    }</a>
+<a name="ln288"> </a>
+<a name="ln289">    if (mons_is_fleeing_sanctuary(*mon)</a>
+<a name="ln290">        &amp;&amp; mons_is_fleeing(*mon)</a>
+<a name="ln291">        &amp;&amp; is_sanctuary(you.pos()))</a>
+<a name="ln292">    {</a>
+<a name="ln293">        return;</a>
+<a name="ln294">    }</a>
+<a name="ln295"> </a>
+<a name="ln296">    // Make sure monsters are not targeting the player in arena mode.</a>
+<a name="ln297">    ASSERT(!crawl_state.game_is_arena() || mon-&gt;foe != MHITYOU);</a>
+<a name="ln298"> </a>
+<a name="ln299">    // Validate current target exists.</a>
+<a name="ln300">    _mon_check_foe_invalid(mon);</a>
+<a name="ln301"> </a>
+<a name="ln302">    actor *owner = (mon-&gt;summoner ? actor_by_mid(mon-&gt;summoner) : nullptr);</a>
+<a name="ln303">    if (mon-&gt;type == MONS_SPECTRAL_WEAPON)</a>
+<a name="ln304">    {</a>
+<a name="ln305">        // Do nothing if we're still being placed</a>
+<a name="ln306">        if (!mon-&gt;summoner)</a>
+<a name="ln307">            return;</a>
+<a name="ln308"> </a>
+<a name="ln309">        owner = actor_by_mid(mon-&gt;summoner);</a>
+<a name="ln310"> </a>
+<a name="ln311">        if (!owner || !owner-&gt;alive())</a>
+<a name="ln312">        {</a>
+<a name="ln313">            end_spectral_weapon(mon, false);</a>
+<a name="ln314">            return;</a>
+<a name="ln315">        }</a>
+<a name="ln316"> </a>
+<a name="ln317">        // Only go after the target if it's still near the owner, and</a>
+<a name="ln318">        // so are we. The weapon is restricted to a leash range of 2,</a>
+<a name="ln319">        // and things reachable within that leash range [qoala]</a>
+<a name="ln320">        const int leash = 2;</a>
+<a name="ln321"> </a>
+<a name="ln322">        if (grid_distance(owner-&gt;pos(), mon-&gt;pos()) &gt; leash</a>
+<a name="ln323">            || mon-&gt;foe == MHITNOT)</a>
+<a name="ln324">        {</a>
+<a name="ln325">            mon-&gt;foe = owner-&gt;mindex();</a>
+<a name="ln326">            mon-&gt;target = owner-&gt;pos();</a>
+<a name="ln327">        }</a>
+<a name="ln328">        else if (mon-&gt;props.exists(SW_TARGET_MID))</a>
+<a name="ln329">        {</a>
+<a name="ln330">            actor *atarget = actor_by_mid(mon-&gt;props[SW_TARGET_MID].get_int());</a>
+<a name="ln331"> </a>
+<a name="ln332">            if (atarget &amp;&amp; atarget-&gt;alive()</a>
+<a name="ln333">                &amp;&amp; (grid_distance(owner-&gt;pos(), atarget-&gt;pos())</a>
+<a name="ln334">                    &lt;= ((mon-&gt;reach_range() == REACH_TWO) ? leash + 2 : leash + 1)))</a>
+<a name="ln335">            {</a>
+<a name="ln336">                mon-&gt;target = atarget-&gt;pos();</a>
+<a name="ln337">                mon-&gt;foe = atarget-&gt;mindex();</a>
+<a name="ln338">            }</a>
+<a name="ln339">            else</a>
+<a name="ln340">                reset_spectral_weapon(mon);</a>
+<a name="ln341">        }</a>
+<a name="ln342">    }</a>
+<a name="ln343"> </a>
+<a name="ln344">    // Change proxPlayer depending on invisibility and standing</a>
+<a name="ln345">    // in shallow water.</a>
+<a name="ln346">    if (proxPlayer &amp;&amp; !you.visible_to(mon))</a>
+<a name="ln347">        proxPlayer = _monster_guesses_invis_player(*mon);</a>
+<a name="ln348"> </a>
+<a name="ln349">    // Set friendly target, if they don't already have one.</a>
+<a name="ln350">    // Berserking allies ignore your commands!</a>
+<a name="ln351">    if (isFriendly</a>
+<a name="ln352">        &amp;&amp; (mon-&gt;foe == MHITNOT || mon-&gt;foe == MHITYOU)</a>
+<a name="ln353">        &amp;&amp; !mon-&gt;berserk_or_insane()</a>
+<a name="ln354">        &amp;&amp; mon-&gt;behaviour != BEH_WITHDRAW</a>
+<a name="ln355">        &amp;&amp; mon-&gt;type != MONS_BALLISTOMYCETE_SPORE</a>
+<a name="ln356">        &amp;&amp; mon-&gt;type != MONS_BALL_LIGHTNING</a>
+<a name="ln357">        &amp;&amp; mon-&gt;type != MONS_FOXFIRE</a>
+<a name="ln358">        &amp;&amp; !mons_is_avatar(mon-&gt;type))</a>
+<a name="ln359">    {</a>
+<a name="ln360">        if (you.pet_target != MHITNOT)</a>
+<a name="ln361">            mon-&gt;foe = you.pet_target;</a>
+<a name="ln362">        else if (mons_class_is_stationary(mon-&gt;type))</a>
+<a name="ln363">            set_nearest_monster_foe(mon);</a>
+<a name="ln364">    }</a>
+<a name="ln365"> </a>
+<a name="ln366">    // Instead, berserkers attack nearest monsters.</a>
+<a name="ln367">    if (mon-&gt;behaviour != BEH_SLEEP</a>
+<a name="ln368">        &amp;&amp; (mon-&gt;has_ench(ENCH_INSANE)</a>
+<a name="ln369">            || ((mon-&gt;berserk()</a>
+<a name="ln370">                 || mon-&gt;type == MONS_BALLISTOMYCETE_SPORE</a>
+<a name="ln371">                 || mon-&gt;type == MONS_BALL_LIGHTNING</a>
+<a name="ln372">                 || mon-&gt;type == MONS_FOXFIRE)</a>
+<a name="ln373">                &amp;&amp; (mon-&gt;foe == MHITNOT</a>
+<a name="ln374">                    || isFriendly &amp;&amp; mon-&gt;foe == MHITYOU))))</a>
+<a name="ln375">    {</a>
+<a name="ln376">        // Intelligent monsters prefer to attack the player,</a>
+<a name="ln377">        // even when berserking.</a>
+<a name="ln378">        if (!isFriendly</a>
+<a name="ln379">            &amp;&amp; !mon-&gt;has_ench(ENCH_INSANE)</a>
+<a name="ln380">            &amp;&amp; proxPlayer</a>
+<a name="ln381">            &amp;&amp; mons_intel(*mon) &gt;= I_HUMAN)</a>
+<a name="ln382">        {</a>
+<a name="ln383">            mon-&gt;foe = MHITYOU;</a>
+<a name="ln384">        }</a>
+<a name="ln385">        else</a>
+<a name="ln386">            set_nearest_monster_foe(mon);</a>
+<a name="ln387">    }</a>
+<a name="ln388"> </a>
+<a name="ln389">    // Pacified monsters leaving the level prefer not to attack.</a>
+<a name="ln390">    // Others choose the nearest foe.</a>
+<a name="ln391">    // XXX: This is currently expensive, so we don't want to do it</a>
+<a name="ln392">    //      every turn for every monster.</a>
+<a name="ln393">    if (!isPacified &amp;&amp; mon-&gt;foe == MHITNOT</a>
+<a name="ln394">        &amp;&amp; mon-&gt;behaviour != BEH_SLEEP</a>
+<a name="ln395">        &amp;&amp; (proxPlayer || one_chance_in(3)))</a>
+<a name="ln396">    {</a>
+<a name="ln397">        set_nearest_monster_foe(mon);</a>
+<a name="ln398">    }</a>
+<a name="ln399"> </a>
+<a name="ln400">    // Friendly summons will come back to the player if they go out of sight.</a>
+<a name="ln401">    if (!summon_can_attack(mon))</a>
+<a name="ln402">        mon-&gt;target = you.pos();</a>
+<a name="ln403"> </a>
+<a name="ln404">    // Monsters do not attack themselves. {dlb}</a>
+<a name="ln405">    if (mon-&gt;foe == mon-&gt;mindex())</a>
+<a name="ln406">        mon-&gt;foe = MHITNOT;</a>
+<a name="ln407"> </a>
+<a name="ln408">    // Friendly and good neutral monsters do not attack other friendly</a>
+<a name="ln409">    // and good neutral monsters.</a>
+<a name="ln410">    if (!mons_is_avatar(mon-&gt;type) &amp;&amp; mon-&gt;foe != MHITNOT &amp;&amp; mon-&gt;foe != MHITYOU</a>
+<a name="ln411">        &amp;&amp; wontAttack &amp;&amp; menv[mon-&gt;foe].wont_attack())</a>
+<a name="ln412">    {</a>
+<a name="ln413">        mon-&gt;foe = MHITNOT;</a>
+<a name="ln414">    }</a>
+<a name="ln415"> </a>
+<a name="ln416">    // Neutral monsters prefer not to attack players, or other neutrals.</a>
+<a name="ln417">    if (isNeutral</a>
+<a name="ln418">        &amp;&amp; !mon-&gt;has_ench(ENCH_INSANE)</a>
+<a name="ln419">        &amp;&amp; mon-&gt;foe != MHITNOT</a>
+<a name="ln420">        &amp;&amp; (mon-&gt;foe == MHITYOU || menv[mon-&gt;foe].neutral()))</a>
+<a name="ln421">    {</a>
+<a name="ln422">        mon-&gt;foe = MHITNOT;</a>
+<a name="ln423">    }</a>
+<a name="ln424"> </a>
+<a name="ln425">    // Unfriendly monsters fighting other monsters will usually</a>
+<a name="ln426">    // target the player, if they're healthy.</a>
+<a name="ln427">    if (!isFriendly &amp;&amp; !isNeutral</a>
+<a name="ln428">        &amp;&amp; !mons_is_avatar(mon-&gt;type)</a>
+<a name="ln429">        &amp;&amp; mon-&gt;foe != MHITYOU &amp;&amp; mon-&gt;foe != MHITNOT</a>
+<a name="ln430">        &amp;&amp; proxPlayer &amp;&amp; !mon-&gt;berserk_or_insane()</a>
+<a name="ln431">        &amp;&amp; isHealthy</a>
+<a name="ln432">        &amp;&amp; !one_chance_in(3))</a>
+<a name="ln433">    {</a>
+<a name="ln434">        mon-&gt;foe = MHITYOU;</a>
+<a name="ln435">    }</a>
+<a name="ln436"> </a>
+<a name="ln437">    // Validate current target again.</a>
+<a name="ln438">    _mon_check_foe_invalid(mon);</a>
+<a name="ln439"> </a>
+<a name="ln440">    if (mon-&gt;has_ench(ENCH_HAUNTING))</a>
+<a name="ln441">    {</a>
+<a name="ln442">        actor* targ = mon-&gt;get_ench(ENCH_HAUNTING).agent();</a>
+<a name="ln443">        if (targ &amp;&amp; targ-&gt;alive())</a>
+<a name="ln444">        {</a>
+<a name="ln445">            mon-&gt;foe = targ-&gt;mindex();</a>
+<a name="ln446">            mon-&gt;target = targ-&gt;pos();</a>
+<a name="ln447">        }</a>
+<a name="ln448">    }</a>
+<a name="ln449"> </a>
+<a name="ln450">    while (changed)</a>
+<a name="ln451">    {</a>
+<a name="ln452">        const actor* afoe = mon-&gt;get_foe();</a>
+<a name="ln453">        proxFoe = afoe &amp;&amp; mon-&gt;can_see(*afoe);</a>
+<a name="ln454"> </a>
+<a name="ln455">        if (mon-&gt;foe == MHITYOU)</a>
+<a name="ln456">        {</a>
+<a name="ln457">            // monster::get_foe returns nullptr for friendly monsters with</a>
+<a name="ln458">            // foe == MHITYOU, so make afoe point to the player here.</a>
+<a name="ln459">            // -cao</a>
+<a name="ln460">            afoe = &amp;you;</a>
+<a name="ln461">            proxFoe = proxPlayer;   // Take invis into account.</a>
+<a name="ln462">        }</a>
+<a name="ln463"> </a>
+<a name="ln464">        coord_def foepos = coord_def(0,0);</a>
+<a name="ln465">        if (afoe)</a>
+<a name="ln466">            foepos = afoe-&gt;pos();</a>
+<a name="ln467"> </a>
+<a name="ln468">        if (mon-&gt;pos() == mon-&gt;firing_pos)</a>
+<a name="ln469">            mon-&gt;firing_pos.reset();</a>
+<a name="ln470"> </a>
+<a name="ln471">        // Track changes to state; attitude never changes here.</a>
+<a name="ln472">        beh_type new_beh       = mon-&gt;behaviour;</a>
+<a name="ln473">        unsigned short new_foe = mon-&gt;foe;</a>
+<a name="ln474"> </a>
+<a name="ln475">        // Take care of monster state changes.</a>
+<a name="ln476">        switch (mon-&gt;behaviour)</a>
+<a name="ln477">        {</a>
+<a name="ln478">        case BEH_SLEEP:</a>
+<a name="ln479">            // default sleep state</a>
+<a name="ln480">            mon-&gt;target = mon-&gt;pos();</a>
+<a name="ln481">            new_foe = MHITNOT;</a>
+<a name="ln482">            break;</a>
+<a name="ln483"> </a>
+<a name="ln484">        case BEH_SEEK:</a>
+<a name="ln485">            // No foe?  Then wander or seek the player.</a>
+<a name="ln486">            if (mon-&gt;foe == MHITNOT)</a>
+<a name="ln487">            {</a>
+<a name="ln488">                if (crawl_state.game_is_arena()</a>
+<a name="ln489">                    || !proxPlayer &amp;&amp; !isFriendly</a>
+<a name="ln490">                    || isNeutral &amp;&amp; !mon-&gt;has_ench(ENCH_INSANE)</a>
+<a name="ln491">                    || patrolling</a>
+<a name="ln492">                    || mon-&gt;type == MONS_BALLISTOMYCETE_SPORE</a>
+<a name="ln493">                    || mon-&gt;type == MONS_BALL_LIGHTNING</a>
+<a name="ln494">                    || mon-&gt;type == MONS_FOXFIRE)</a>
+<a name="ln495">                {</a>
+<a name="ln496">                    new_beh = BEH_WANDER;</a>
+<a name="ln497">                }</a>
+<a name="ln498">                else</a>
+<a name="ln499">                {</a>
+<a name="ln500">                    new_foe = MHITYOU;</a>
+<a name="ln501">                    mon-&gt;target = you.pos();</a>
+<a name="ln502">                }</a>
+<a name="ln503">                break;</a>
+<a name="ln504">            }</a>
+<a name="ln505"> </a>
+<a name="ln506">            // just because a move takes us closer to the target doesn't mean</a>
+<a name="ln507">            // that the move will stay in los of the target, and if it leaves</a>
+<a name="ln508">            // los of the target, it's possible for just naively moving toward</a>
+<a name="ln509">            // the target will not let us reach it (due to walls or whatever)</a>
+<a name="ln510">            if (!mon-&gt;see_cell(mon-&gt;target))</a>
+<a name="ln511">                try_pathfind(mon);</a>
+<a name="ln512"> </a>
+<a name="ln513">            // Foe gone out of LOS?</a>
+<a name="ln514">            if (!proxFoe</a>
+<a name="ln515">                &amp;&amp; !(mon-&gt;friendly()</a>
+<a name="ln516">                     &amp;&amp; mon-&gt;foe == MHITYOU</a>
+<a name="ln517">                     &amp;&amp; mon-&gt;is_travelling()</a>
+<a name="ln518">                     &amp;&amp; mon-&gt;travel_target == MTRAV_FOE))</a>
+<a name="ln519">            {</a>
+<a name="ln520">                // If their foe is marked, the monster always knows exactly</a>
+<a name="ln521">                // where they are.</a>
+<a name="ln522">                if (afoe &amp;&amp; (mons_foe_is_marked(*mon)</a>
+<a name="ln523">                                            || mon-&gt;has_ench(ENCH_HAUNTING)))</a>
+<a name="ln524">                {</a>
+<a name="ln525">                    mon-&gt;target = afoe-&gt;pos();</a>
+<a name="ln526">                    try_pathfind(mon);</a>
+<a name="ln527">                    break;</a>
+<a name="ln528">                }</a>
+<a name="ln529"> </a>
+<a name="ln530">                // Maybe the foe is just invisible.</a>
+<a name="ln531">                if (mon-&gt;target.origin() &amp;&amp; afoe &amp;&amp; mon-&gt;near_foe())</a>
+<a name="ln532">                {</a>
+<a name="ln533">                    _guess_invis_foe_pos(mon);</a>
+<a name="ln534">                    if (mon-&gt;target.origin())</a>
+<a name="ln535">                    {</a>
+<a name="ln536">                        // Having a seeking mon with a foe who's target is</a>
+<a name="ln537">                        // (0, 0) can lead to asserts, so lets try to</a>
+<a name="ln538">                        // avoid that.</a>
+<a name="ln539">                        set_nearest_monster_foe(mon);</a>
+<a name="ln540">                        if (mon-&gt;foe == MHITNOT)</a>
+<a name="ln541">                        {</a>
+<a name="ln542">                            new_beh = BEH_WANDER;</a>
+<a name="ln543">                            break;</a>
+<a name="ln544">                        }</a>
+<a name="ln545">                        mon-&gt;target = mon-&gt;get_foe()-&gt;pos();</a>
+<a name="ln546">                    }</a>
+<a name="ln547">                }</a>
+<a name="ln548"> </a>
+<a name="ln549">                if (mon-&gt;travel_target == MTRAV_MERFOLK_AVATAR)</a>
+<a name="ln550">                    mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln551"> </a>
+<a name="ln552">                // Spectral weapons simply seek back to their owner if</a>
+<a name="ln553">                // they can't see their seek target.</a>
+<a name="ln554">                if (mons_is_avatar(mon-&gt;type))</a>
+<a name="ln555">                {</a>
+<a name="ln556">                    // XXX: should owner ever not be set here?</a>
+<a name="ln557">                    new_foe = owner ? owner-&gt;mindex() : MHITNOT;</a>
+<a name="ln558">                    mon-&gt;target = owner ? owner-&gt;pos() : mon-&gt;pos();</a>
+<a name="ln559">                    break;</a>
+<a name="ln560">                }</a>
+<a name="ln561">                else if (isFriendly &amp;&amp; mon-&gt;foe != MHITYOU)</a>
+<a name="ln562">                {</a>
+<a name="ln563">                    if (patrolling || crawl_state.game_is_arena())</a>
+<a name="ln564">                    {</a>
+<a name="ln565">                        new_foe = MHITNOT;</a>
+<a name="ln566">                        new_beh = BEH_WANDER;</a>
+<a name="ln567">                    }</a>
+<a name="ln568">                    // If the player can see the target location, do not reset</a>
+<a name="ln569">                    // our target, even if this monster cannot (we'll assume</a>
+<a name="ln570">                    // the player passes along this information to allies)</a>
+<a name="ln571">                    // EXCEPTION: invisible enemies for allies without sinv</a>
+<a name="ln572">                    // (otherwise your allies get stuck doing nothing)</a>
+<a name="ln573">                    else if (!foepos.origin() &amp;&amp; you.see_cell(foepos)</a>
+<a name="ln574">                             &amp;&amp; afoe-&gt;visible_to(mon))</a>
+<a name="ln575">                    {</a>
+<a name="ln576">                        try_pathfind(mon);</a>
+<a name="ln577">                    }</a>
+<a name="ln578">                    else</a>
+<a name="ln579">                    {</a>
+<a name="ln580">                        new_foe = MHITYOU;</a>
+<a name="ln581">                        mon-&gt;target = foepos;</a>
+<a name="ln582">                    }</a>
+<a name="ln583">                    break;</a>
+<a name="ln584">                }</a>
+<a name="ln585"> </a>
+<a name="ln586">                ASSERT(mon-&gt;foe != MHITNOT);</a>
+<a name="ln587">                if (mon-&gt;foe_memory &gt; 0)</a>
+<a name="ln588">                {</a>
+<a name="ln589">                    // If we've arrived at our target x,y</a>
+<a name="ln590">                    // do a stealth check. If the foe</a>
+<a name="ln591">                    // fails, monster will then start</a>
+<a name="ln592">                    // tracking foe's CURRENT position,</a>
+<a name="ln593">                    // but only for a few moves (smell and</a>
+<a name="ln594">                    // intuition only go so far).</a>
+<a name="ln595"> </a>
+<a name="ln596">                  if (mon-&gt;pos() == mon-&gt;target)</a>
+<a name="ln597">                    {</a>
+<a name="ln598">                        if (mon-&gt;foe == MHITYOU)</a>
+<a name="ln599">                        {</a>
+<a name="ln600">                            if (x_chance_in_y(50, you.stealth())</a>
+<a name="ln601">                                || you.penance[GOD_ASHENZARI] &amp;&amp; coinflip())</a>
+<a name="ln602">                            {</a>
+<a name="ln603">                                mon-&gt;target = you.pos();</a>
+<a name="ln604">                            }</a>
+<a name="ln605">                            else</a>
+<a name="ln606">                                mon-&gt;foe_memory = 0;</a>
+<a name="ln607">                        }</a>
+<a name="ln608">                        else</a>
+<a name="ln609">                        {</a>
+<a name="ln610">                            if (coinflip())     // XXX: cheesy!</a>
+<a name="ln611">                                mon-&gt;target = menv[mon-&gt;foe].pos();</a>
+<a name="ln612">                            else</a>
+<a name="ln613">                                mon-&gt;foe_memory = 0;</a>
+<a name="ln614">                        }</a>
+<a name="ln615">                    }</a>
+<a name="ln616">                }</a>
+<a name="ln617"> </a>
+<a name="ln618">                if (mon-&gt;foe_memory &lt;= 0</a>
+<a name="ln619">                    &amp;&amp; !(mon-&gt;friendly() &amp;&amp; mon-&gt;foe == MHITYOU))</a>
+<a name="ln620">                {</a>
+<a name="ln621">                    new_beh = BEH_WANDER;</a>
+<a name="ln622">                }</a>
+<a name="ln623">                // If the player walk out of the LOS of a monster with a ranged</a>
+<a name="ln624">                // attack, we assume it sees in which direction the player went</a>
+<a name="ln625">                // and it tries to find a line of fire instead of following the</a>
+<a name="ln626">                // player.</a>
+<a name="ln627">                else if (grid_distance(mon-&gt;target, you.pos()) == 1</a>
+<a name="ln628">                         &amp;&amp; _mon_tries_regain_los(mon))</a>
+<a name="ln629">                {</a>
+<a name="ln630">                    _set_firing_pos(mon, you.pos());</a>
+<a name="ln631">                }</a>
+<a name="ln632">                else //</a>
+<a name="ln633">                    mon-&gt;firing_pos.reset();</a>
+<a name="ln634"> </a>
+<a name="ln635">                if (!isFriendly)</a>
+<a name="ln636">                    break;</a>
+<a name="ln637">                else if (mons_is_avatar(mon-&gt;type)</a>
+<a name="ln638">                         &amp;&amp; owner</a>
+<a name="ln639">                         &amp;&amp; !owner-&gt;is_player())</a>
+<a name="ln640">                {</a>
+<a name="ln641">                    mon-&gt;foe = owner-&gt;mindex();</a>
+<a name="ln642">                    break;</a>
+<a name="ln643">                }</a>
+<a name="ln644">            }</a>
+<a name="ln645"> </a>
+<a name="ln646">            ASSERT(proxFoe || isFriendly);</a>
+<a name="ln647">            ASSERT(mon-&gt;foe != MHITNOT);</a>
+<a name="ln648"> </a>
+<a name="ln649">            // Monster can see foe: set memory in case it loses sight.</a>
+<a name="ln650">            // Hack: smarter monsters will tend to pursue the player longer.</a>
+<a name="ln651">            switch (mons_intel(*mon))</a>
+<a name="ln652">            {</a>
+<a name="ln653">            case I_HUMAN:</a>
+<a name="ln654">                mon-&gt;foe_memory = random_range(450, 1000);</a>
+<a name="ln655">                break;</a>
+<a name="ln656">            case I_ANIMAL:</a>
+<a name="ln657">                mon-&gt;foe_memory = random_range(250, 550);</a>
+<a name="ln658">                break;</a>
+<a name="ln659">            case I_BRAINLESS:</a>
+<a name="ln660">                mon-&gt;foe_memory = random_range(100, 300);</a>
+<a name="ln661">                break;</a>
+<a name="ln662">            }</a>
+<a name="ln663"> </a>
+<a name="ln664">            _decide_monster_firing_position(mon, owner);</a>
+<a name="ln665"> </a>
+<a name="ln666">            break;</a>
+<a name="ln667"> </a>
+<a name="ln668">        case BEH_WANDER:</a>
+<a name="ln669">            if (isPacified)</a>
+<a name="ln670">            {</a>
+<a name="ln671">                // If a pacified monster isn't travelling toward</a>
+<a name="ln672">                // someplace from which it can leave the level, make it</a>
+<a name="ln673">                // start doing so. If there's no such place, either</a>
+<a name="ln674">                // search the level for such a place again, or travel</a>
+<a name="ln675">                // randomly.</a>
+<a name="ln676">                if (mon-&gt;travel_target != MTRAV_PATROL)</a>
+<a name="ln677">                {</a>
+<a name="ln678">                    new_foe = MHITNOT;</a>
+<a name="ln679">                    mon-&gt;travel_path.clear();</a>
+<a name="ln680"> </a>
+<a name="ln681">                    e_index = mons_find_nearest_level_exit(mon, e);</a>
+<a name="ln682"> </a>
+<a name="ln683">                    if (e_index == -1 || one_chance_in(20))</a>
+<a name="ln684">                        e_index = mons_find_nearest_level_exit(mon, e, true);</a>
+<a name="ln685"> </a>
+<a name="ln686">                    if (e_index != -1)</a>
+<a name="ln687">                    {</a>
+<a name="ln688">                        mon-&gt;travel_target = MTRAV_PATROL;</a>
+<a name="ln689">                        patrolling = true;</a>
+<a name="ln690">                        mon-&gt;patrol_point = e[e_index].target;</a>
+<a name="ln691">                        mon-&gt;target = e[e_index].target;</a>
+<a name="ln692">                    }</a>
+<a name="ln693">                    else</a>
+<a name="ln694">                    {</a>
+<a name="ln695">                        mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln696">                        patrolling = false;</a>
+<a name="ln697">                        mon-&gt;patrol_point.reset();</a>
+<a name="ln698">                        set_random_target(mon);</a>
+<a name="ln699">                    }</a>
+<a name="ln700">                }</a>
+<a name="ln701"> </a>
+<a name="ln702">                if (pacified_leave_level(mon, e, e_index))</a>
+<a name="ln703">                    return;</a>
+<a name="ln704">            }</a>
+<a name="ln705"> </a>
+<a name="ln706">            if (mon-&gt;strict_neutral() &amp;&amp; mons_is_slime(*mon)</a>
+<a name="ln707">                &amp;&amp; have_passive(passive_t::neutral_slimes))</a>
+<a name="ln708">            {</a>
+<a name="ln709">                set_random_slime_target(mon);</a>
+<a name="ln710">            }</a>
+<a name="ln711"> </a>
+<a name="ln712">            // Is our foe in LOS?</a>
+<a name="ln713">            // Batty monsters don't automatically reseek so that</a>
+<a name="ln714">            // they'll flitter away, we'll reset them just before</a>
+<a name="ln715">            // they get movement in handle_monsters() instead. -- bwr</a>
+<a name="ln716">            if (proxFoe &amp;&amp; !mons_is_batty(*mon) || mons_foe_is_marked(*mon))</a>
+<a name="ln717">            {</a>
+<a name="ln718">                new_beh = BEH_SEEK;</a>
+<a name="ln719">                break;</a>
+<a name="ln720">            }</a>
+<a name="ln721"> </a>
+<a name="ln722">            // Creatures not currently pursuing another foe are</a>
+<a name="ln723">            // alerted by a sentinel's mark</a>
+<a name="ln724">            if (mon-&gt;foe == MHITNOT &amp;&amp; you.duration[DUR_SENTINEL_MARK]</a>
+<a name="ln725">                &amp;&amp; (!isFriendly &amp;&amp; !mons_is_avatar(mon-&gt;type) &amp;&amp; !isNeutral</a>
+<a name="ln726">                    &amp;&amp; !isPacified</a>
+<a name="ln727">                    || mon-&gt;has_ench(ENCH_INSANE)))</a>
+<a name="ln728">            {</a>
+<a name="ln729">                new_foe = MHITYOU;</a>
+<a name="ln730">                new_beh = BEH_SEEK;</a>
+<a name="ln731">                break;</a>
+<a name="ln732">            }</a>
+<a name="ln733"> </a>
+<a name="ln734">            check_wander_target(mon, isPacified);</a>
+<a name="ln735"> </a>
+<a name="ln736">            // During their wanderings, monsters will eventually relax</a>
+<a name="ln737">            // their guard (stupid ones will do so faster, smart</a>
+<a name="ln738">            // monsters have longer memories). Pacified monsters will</a>
+<a name="ln739">            // also eventually switch the place from which they want to</a>
+<a name="ln740">            // leave the level, in case their current choice is blocked.</a>
+<a name="ln741">            if (!proxFoe &amp;&amp; !mons_is_avatar(mon-&gt;type) &amp;&amp; mon-&gt;foe != MHITNOT</a>
+<a name="ln742">                   &amp;&amp; one_chance_in(isSmart ? 60 : 20)</a>
+<a name="ln743">                   &amp;&amp; !mons_foe_is_marked(*mon)</a>
+<a name="ln744">                || isPacified &amp;&amp; one_chance_in(isSmart ? 40 : 120))</a>
+<a name="ln745">            {</a>
+<a name="ln746">                new_foe = MHITNOT;</a>
+<a name="ln747">                if (mon-&gt;is_travelling() &amp;&amp; mon-&gt;travel_target != MTRAV_PATROL</a>
+<a name="ln748">                    || isPacified)</a>
+<a name="ln749">                {</a>
+<a name="ln750">#ifdef DEBUG_PATHFIND</a>
+<a name="ln751">                    mpr(&quot;It's been too long! Stop travelling.&quot;);</a>
+<a name="ln752">#endif</a>
+<a name="ln753">                    mon-&gt;travel_path.clear();</a>
+<a name="ln754">                    mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln755"> </a>
+<a name="ln756">                    if (isPacified &amp;&amp; e_index != -1)</a>
+<a name="ln757">                        e[e_index].unreachable = true;</a>
+<a name="ln758">                }</a>
+<a name="ln759">            }</a>
+<a name="ln760">            break;</a>
+<a name="ln761"> </a>
+<a name="ln762">        case BEH_RETREAT:</a>
+<a name="ln763">            // If the target can be reached, there is a chance the monster will</a>
+<a name="ln764">            // try to attack. The chance is low to prevent the player from</a>
+<a name="ln765">            // dancing in and out of the water.</a>
+<a name="ln766">            try_pathfind(mon);</a>
+<a name="ln767">            if (one_chance_in(10) &amp;&amp; !target_is_unreachable(mon)</a>
+<a name="ln768">                || mons_can_attack(*mon))</a>
+<a name="ln769">            {</a>
+<a name="ln770">                new_beh = BEH_SEEK;</a>
+<a name="ln771">            }</a>
+<a name="ln772">            else if (!proxPlayer &amp;&amp; one_chance_in(5))</a>
+<a name="ln773">                new_beh = BEH_WANDER;</a>
+<a name="ln774">            else if (proxPlayer)</a>
+<a name="ln775">                mon-&gt;target = foepos;</a>
+<a name="ln776">            break;</a>
+<a name="ln777"> </a>
+<a name="ln778">        case BEH_FLEE:</a>
+<a name="ln779">            // Check for healed.</a>
+<a name="ln780">            if (isHealthy &amp;&amp; !isScared)</a>
+<a name="ln781">                new_beh = BEH_SEEK;</a>
+<a name="ln782"> </a>
+<a name="ln783">            // Smart monsters flee until they can flee no more...</a>
+<a name="ln784">            // possible to get a 'CORNERED' event, at which point</a>
+<a name="ln785">            // we can jump back to WANDER if the foe isn't present.</a>
+<a name="ln786"> </a>
+<a name="ln787">            if (isFriendly)</a>
+<a name="ln788">            {</a>
+<a name="ln789">                // Special-cased below so that it will flee *towards* you.</a>
+<a name="ln790">                if (mon-&gt;foe == MHITYOU)</a>
+<a name="ln791">                    mon-&gt;target = you.pos();</a>
+<a name="ln792">            }</a>
+<a name="ln793">            else if (proxFoe)</a>
+<a name="ln794">            {</a>
+<a name="ln795">                // Special-cased below so that it will flee *from* the</a>
+<a name="ln796">                // correct position.</a>
+<a name="ln797">                mon-&gt;target = foepos;</a>
+<a name="ln798">            }</a>
+<a name="ln799">            break;</a>
+<a name="ln800"> </a>
+<a name="ln801">        case BEH_CORNERED:</a>
+<a name="ln802"> </a>
+<a name="ln803">            // If we were able to move since becoming cornered, resume fleeing</a>
+<a name="ln804">            if (mon-&gt;pos() != mon-&gt;props[&quot;last_pos&quot;].get_coord())</a>
+<a name="ln805">            {</a>
+<a name="ln806">                new_beh = BEH_FLEE;</a>
+<a name="ln807">                mon-&gt;props.erase(&quot;last_pos&quot;);</a>
+<a name="ln808">            }</a>
+<a name="ln809"> </a>
+<a name="ln810">            // Foe gone out of LOS?</a>
+<a name="ln811">            if (!proxFoe)</a>
+<a name="ln812">            {</a>
+<a name="ln813">                if ((isFriendly || proxPlayer)</a>
+<a name="ln814">                    &amp;&amp; (!isNeutral || mon-&gt;has_ench(ENCH_INSANE))</a>
+<a name="ln815">                    &amp;&amp; !patrolling</a>
+<a name="ln816">                    &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln817">                {</a>
+<a name="ln818">                    new_foe = MHITYOU;</a>
+<a name="ln819">                }</a>
+<a name="ln820">                else</a>
+<a name="ln821">                    new_beh = BEH_WANDER;</a>
+<a name="ln822">            }</a>
+<a name="ln823">            else</a>
+<a name="ln824">                mon-&gt;target = foepos;</a>
+<a name="ln825">            break;</a>
+<a name="ln826"> </a>
+<a name="ln827">        case BEH_WITHDRAW:</a>
+<a name="ln828">        {</a>
+<a name="ln829">            if (!isFriendly)</a>
+<a name="ln830">            {</a>
+<a name="ln831">                new_beh = BEH_WANDER;</a>
+<a name="ln832">                break;</a>
+<a name="ln833">            }</a>
+<a name="ln834"> </a>
+<a name="ln835">            bool stop_retreat = false;</a>
+<a name="ln836">            // We've approached our next destination, re-evaluate</a>
+<a name="ln837">            if (grid_distance(mon-&gt;target, mon-&gt;pos()) &lt;= 1)</a>
+<a name="ln838">            {</a>
+<a name="ln839">                // Continue on to the rally point</a>
+<a name="ln840">                if (mon-&gt;target != mon-&gt;patrol_point)</a>
+<a name="ln841">                    mon-&gt;target = mon-&gt;patrol_point;</a>
+<a name="ln842">                // Reached rally point, stop withdrawing</a>
+<a name="ln843">                else</a>
+<a name="ln844">                    stop_retreat = true;</a>
+<a name="ln845"> </a>
+<a name="ln846">            }</a>
+<a name="ln847">            else if (grid_distance(mon-&gt;pos(), you.pos()) &gt;</a>
+<a name="ln848">                     LOS_DEFAULT_RANGE + 2)</a>
+<a name="ln849">            {</a>
+<a name="ln850">                // We're too far from the player. Idle around and wait for</a>
+<a name="ln851">                // them to catch up.</a>
+<a name="ln852">                if (!mon-&gt;props.exists(&quot;idle_point&quot;))</a>
+<a name="ln853">                {</a>
+<a name="ln854">                    mon-&gt;props[&quot;idle_point&quot;] = mon-&gt;pos();</a>
+<a name="ln855">                    mon-&gt;props[&quot;idle_deadline&quot;] = you.elapsed_time + 200;</a>
+<a name="ln856">                }</a>
+<a name="ln857"> </a>
+<a name="ln858">                coord_def target_rnd;</a>
+<a name="ln859">                target_rnd.x = random_range(-2, 2);</a>
+<a name="ln860">                target_rnd.y = random_range(-2, 2);</a>
+<a name="ln861">                mon-&gt;target = clamp_in_bounds(</a>
+<a name="ln862">                                    mon-&gt;props[&quot;idle_point&quot;].get_coord()</a>
+<a name="ln863">                                    + target_rnd);</a>
+<a name="ln864"> </a>
+<a name="ln865">                if (you.elapsed_time &gt;= mon-&gt;props[&quot;idle_deadline&quot;].get_int())</a>
+<a name="ln866">                    stop_retreat = true;</a>
+<a name="ln867">            }</a>
+<a name="ln868">            else</a>
+<a name="ln869">            {</a>
+<a name="ln870">                // Be more lenient about player distance if a monster is</a>
+<a name="ln871">                // idling (to prevent it from repeatedly resetting idle</a>
+<a name="ln872">                // time if its own wanderings bring it closer to the player)</a>
+<a name="ln873">                if (mon-&gt;props.exists(&quot;idle_point&quot;)</a>
+<a name="ln874">                    &amp;&amp; grid_distance(mon-&gt;pos(), you.pos()) &lt; LOS_DEFAULT_RANGE)</a>
+<a name="ln875">                {</a>
+<a name="ln876">                    mon-&gt;props.erase(&quot;idle_point&quot;);</a>
+<a name="ln877">                    mon-&gt;props.erase(&quot;idle_deadline&quot;);</a>
+<a name="ln878">                    mon-&gt;target = mon-&gt;patrol_point;</a>
+<a name="ln879">                }</a>
+<a name="ln880"> </a>
+<a name="ln881">                if (mon-&gt;pos() == mon-&gt;props[&quot;last_pos&quot;].get_coord())</a>
+<a name="ln882">                {</a>
+<a name="ln883">                    if (!mon-&gt;props.exists(&quot;blocked_deadline&quot;))</a>
+<a name="ln884">                        mon-&gt;props[&quot;blocked_deadline&quot;] = you.elapsed_time + 30;</a>
+<a name="ln885"> </a>
+<a name="ln886">                    if (!mon-&gt;props.exists(&quot;idle_deadline&quot;))</a>
+<a name="ln887">                        mon-&gt;props[&quot;idle_deadline&quot;] = you.elapsed_time + 200;</a>
+<a name="ln888"> </a>
+<a name="ln889">                    if (you.elapsed_time &gt;= mon-&gt;props[&quot;blocked_deadline&quot;].get_int()</a>
+<a name="ln890">                        || you.elapsed_time &gt;= mon-&gt;props[&quot;idle_deadline&quot;].get_int())</a>
+<a name="ln891">                    {</a>
+<a name="ln892">                        stop_retreat = true;</a>
+<a name="ln893">                    }</a>
+<a name="ln894">                }</a>
+<a name="ln895">                else</a>
+<a name="ln896">                {</a>
+<a name="ln897">                    mon-&gt;props.erase(&quot;blocked_deadline&quot;);</a>
+<a name="ln898">                    mon-&gt;props.erase(&quot;idle_deadline&quot;);</a>
+<a name="ln899">                }</a>
+<a name="ln900">            }</a>
+<a name="ln901"> </a>
+<a name="ln902">            if (stop_retreat)</a>
+<a name="ln903">            {</a>
+<a name="ln904">                new_beh = BEH_SEEK;</a>
+<a name="ln905">                new_foe = MHITYOU;</a>
+<a name="ln906">                mon-&gt;props.erase(&quot;last_pos&quot;);</a>
+<a name="ln907">                mon-&gt;props.erase(&quot;idle_point&quot;);</a>
+<a name="ln908">                mon-&gt;props.erase(&quot;blocked_deadline&quot;);</a>
+<a name="ln909">                mon-&gt;props.erase(&quot;idle_deadline&quot;);</a>
+<a name="ln910">            }</a>
+<a name="ln911">            else</a>
+<a name="ln912">                mon-&gt;props[&quot;last_pos&quot;] = mon-&gt;pos();</a>
+<a name="ln913"> </a>
+<a name="ln914">            break;</a>
+<a name="ln915">        }</a>
+<a name="ln916"> </a>
+<a name="ln917">        default:</a>
+<a name="ln918">            return;     // uh oh</a>
+<a name="ln919">        }</a>
+<a name="ln920"> </a>
+<a name="ln921">        changed = (new_beh != mon-&gt;behaviour || new_foe != mon-&gt;foe);</a>
+<a name="ln922">        mon-&gt;behaviour = new_beh;</a>
+<a name="ln923"> </a>
+<a name="ln924">        if (mon-&gt;foe != new_foe)</a>
+<a name="ln925">            mon-&gt;foe_memory = 0;</a>
+<a name="ln926"> </a>
+<a name="ln927">        mon-&gt;foe = new_foe;</a>
+<a name="ln928">    }</a>
+<a name="ln929">}</a>
+<a name="ln930"> </a>
+<a name="ln931">static bool _mons_check_foe(monster* mon, const coord_def&amp; p,</a>
+<a name="ln932">                            bool friendly, bool neutral, bool ignore_sight)</a>
+<a name="ln933">{</a>
+<a name="ln934">    // We don't check for the player here because otherwise wandering</a>
+<a name="ln935">    // monsters will always attack you.</a>
+<a name="ln936"> </a>
+<a name="ln937">    // -- But why should they always attack monsters? -- 1KB</a>
+<a name="ln938"> </a>
+<a name="ln939">    monster* foe = monster_at(p);</a>
+<a name="ln940">    return foe &amp;&amp; foe != mon</a>
+<a name="ln941">           &amp;&amp; (ignore_sight || mon-&gt;can_see(*foe))</a>
+<a name="ln942">           &amp;&amp; (foe-&gt;friendly() != friendly</a>
+<a name="ln943">               || neutral &amp;&amp; !foe-&gt;neutral()</a>
+<a name="ln944">               || mon-&gt;has_ench(ENCH_INSANE))</a>
+<a name="ln945">           &amp;&amp; !mons_is_projectile(*foe)</a>
+<a name="ln946">           &amp;&amp; summon_can_attack(mon, p)</a>
+<a name="ln947">           &amp;&amp; (friendly || !is_sanctuary(p))</a>
+<a name="ln948">           &amp;&amp; !mons_is_firewood(*foe)</a>
+<a name="ln949">           || p == you.pos() &amp;&amp; mon-&gt;has_ench(ENCH_INSANE);</a>
+<a name="ln950">}</a>
+<a name="ln951"> </a>
+<a name="ln952">// Choose random nearest monster as a foe.</a>
+<a name="ln953">void set_nearest_monster_foe(monster* mon, bool near_player)</a>
+<a name="ln954">{</a>
+<a name="ln955">    // These don't look for foes.</a>
+<a name="ln956">    if (mon-&gt;good_neutral() || mon-&gt;strict_neutral()</a>
+<a name="ln957">        || mon-&gt;behaviour == BEH_WITHDRAW</a>
+<a name="ln958">        || mons_is_avatar(mon-&gt;type)</a>
+<a name="ln959">        || mon-&gt;has_ench(ENCH_HAUNTING))</a>
+<a name="ln960">    {</a>
+<a name="ln961">        return;</a>
+<a name="ln962">    }</a>
+<a name="ln963"> </a>
+<a name="ln964">    const bool friendly = mon-&gt;friendly();</a>
+<a name="ln965">    const bool neutral  = mon-&gt;neutral();</a>
+<a name="ln966"> </a>
+<a name="ln967">    coord_def center = mon-&gt;pos();</a>
+<a name="ln968">    bool second_pass = false;</a>
+<a name="ln969">    vector&lt;coord_def&gt; monster_pos;</a>
+<a name="ln970"> </a>
+<a name="ln971">    while (true)</a>
+<a name="ln972">    {</a>
+<a name="ln973">        for (auto di = distance_iterator(center, true, true,</a>
+<a name="ln974">                                         second_pass ? you.current_vision :</a>
+<a name="ln975">                                         LOS_DEFAULT_RANGE);</a>
+<a name="ln976">             di; ++di)</a>
+<a name="ln977">        {</a>
+<a name="ln978">            if (!cell_see_cell(center, *di, LOS_NO_TRANS)</a>
+<a name="ln979">                || (near_player &amp;&amp; !you.see_cell(*di)))</a>
+<a name="ln980">            {</a>
+<a name="ln981">                continue;</a>
+<a name="ln982">            }</a>
+<a name="ln983"> </a>
+<a name="ln984">            if (_mons_check_foe(mon, *di, friendly, neutral, second_pass))</a>
+<a name="ln985">            {</a>
+<a name="ln986">                if (*di == you.pos())</a>
+<a name="ln987">                    mon-&gt;foe = MHITYOU;</a>
+<a name="ln988">                else</a>
+<a name="ln989">                    mon-&gt;foe = env.mgrid(*di);</a>
+<a name="ln990">                return;</a>
+<a name="ln991">            }</a>
+<a name="ln992">        }</a>
+<a name="ln993"> </a>
+<a name="ln994">        // If we're selecting a new summon's autofoe and we were unable to</a>
+<a name="ln995">        // find a foe in los of the monster, try a second pass using the</a>
+<a name="ln996">        // player's los instead.</a>
+<a name="ln997">        if (near_player &amp;&amp; !second_pass)</a>
+<a name="ln998">        {</a>
+<a name="ln999">            center = you.pos();</a>
+<a name="ln1000">            second_pass = true;</a>
+<a name="ln1001">        }</a>
+<a name="ln1002">        else</a>
+<a name="ln1003">            break;</a>
+<a name="ln1004">    }</a>
+<a name="ln1005">}</a>
+<a name="ln1006"> </a>
+<a name="ln1007">/**</a>
+<a name="ln1008"> * Make a monster react to an event, possibly re-evaluating its attitude,</a>
+<a name="ln1009"> * foe, AI state, or target.</a>
+<a name="ln1010"> *</a>
+<a name="ln1011"> * @param mon the monster getting updated</a>
+<a name="ln1012"> * @param event what it's reacting to</a>
+<a name="ln1013"> * @param src who did it</a>
+<a name="ln1014"> * @param src_pos and where</a>
+<a name="ln1015"> * @param allow_shout whether the monster can shout in reaction.</a>
+<a name="ln1016"> */</a>
+<a name="ln1017">void behaviour_event(monster* mon, mon_event_type event, const actor *src,</a>
+<a name="ln1018">                     coord_def src_pos, bool allow_shout)</a>
+<a name="ln1019">{</a>
+<a name="ln1020">    if (!mon-&gt;alive())</a>
+<a name="ln1021">        return;</a>
+<a name="ln1022"> </a>
+<a name="ln1023">    ASSERT(!crawl_state.game_is_arena() || src != &amp;you);</a>
+<a name="ln1024">    ASSERT_IN_BOUNDS_OR_ORIGIN(src_pos);</a>
+<a name="ln1025">    if (mons_is_projectile(mon-&gt;type))</a>
+<a name="ln1026">        return; // projectiles have no AI</a>
+<a name="ln1027"> </a>
+<a name="ln1028">    const beh_type old_behaviour = mon-&gt;behaviour;</a>
+<a name="ln1029"> </a>
+<a name="ln1030">    bool isSmart          = (mons_intel(*mon) &gt;= I_HUMAN);</a>
+<a name="ln1031">    bool setTarget        = false;</a>
+<a name="ln1032">    bool breakCharm       = false;</a>
+<a name="ln1033">    bool was_unaware      = mon-&gt;asleep() || mon-&gt;foe == MHITNOT;</a>
+<a name="ln1034">    string msg;</a>
+<a name="ln1035">    int src_idx           = src ? src-&gt;mindex() : MHITNOT; // AXE ME</a>
+<a name="ln1036"> </a>
+<a name="ln1037">    // Monsters know to blame you for reflecting things at them.</a>
+<a name="ln1038">    if (src_idx == YOU_FAULTLESS)</a>
+<a name="ln1039">        src_idx = MHITYOU;</a>
+<a name="ln1040"> </a>
+<a name="ln1041">    if (is_sanctuary(mon-&gt;pos()) &amp;&amp; mons_is_fleeing_sanctuary(*mon))</a>
+<a name="ln1042">    {</a>
+<a name="ln1043">        mon-&gt;behaviour = BEH_FLEE;</a>
+<a name="ln1044">        mon-&gt;foe       = MHITYOU;</a>
+<a name="ln1045">        mon-&gt;target    = env.sanctuary_pos;</a>
+<a name="ln1046">        return;</a>
+<a name="ln1047">    }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">    switch (event)</a>
+<a name="ln1050">    {</a>
+<a name="ln1051">    case ME_DISTURB:</a>
+<a name="ln1052">#ifdef DEBUG_NOISE_PROPAGATION</a>
+<a name="ln1053">        dprf(&quot;Disturbing %s&quot;, mon-&gt;name(DESC_A, true).c_str());</a>
+<a name="ln1054">#endif</a>
+<a name="ln1055">        // Assumes disturbed by noise...</a>
+<a name="ln1056">        if (mon-&gt;asleep())</a>
+<a name="ln1057">            mon-&gt;behaviour = BEH_WANDER;</a>
+<a name="ln1058"> </a>
+<a name="ln1059">        // A bit of code to make Projected Noise actually do</a>
+<a name="ln1060">        // something again. Basically, dumb monsters and</a>
+<a name="ln1061">        // monsters who aren't otherwise occupied will at</a>
+<a name="ln1062">        // least consider the (apparent) source of the noise</a>
+<a name="ln1063">        // interesting for a moment. -- bwr</a>
+<a name="ln1064">        if (!isSmart || mon-&gt;foe == MHITNOT || mons_is_wandering(*mon))</a>
+<a name="ln1065">        {</a>
+<a name="ln1066">            if (mon-&gt;is_patrolling())</a>
+<a name="ln1067">                break;</a>
+<a name="ln1068"> </a>
+<a name="ln1069">            ASSERT(!src_pos.origin());</a>
+<a name="ln1070">            mon-&gt;target = src_pos;</a>
+<a name="ln1071">        }</a>
+<a name="ln1072">        break;</a>
+<a name="ln1073"> </a>
+<a name="ln1074">    case ME_WHACK:</a>
+<a name="ln1075">    case ME_ANNOY:</a>
+<a name="ln1076">        if (mon-&gt;has_ench(ENCH_GOLD_LUST))</a>
+<a name="ln1077">            mon-&gt;del_ench(ENCH_GOLD_LUST);</a>
+<a name="ln1078"> </a>
+<a name="ln1079">        // Will turn monster against &lt;src&gt;.</a>
+<a name="ln1080">        // Orders to withdraw take precedence over interruptions</a>
+<a name="ln1081">        if (mon-&gt;behaviour == BEH_WITHDRAW &amp;&amp; src != &amp;you)</a>
+<a name="ln1082">            break;</a>
+<a name="ln1083"> </a>
+<a name="ln1084">        // Monster types that you can't gain experience from cannot</a>
+<a name="ln1085">        // fight back, so don't bother having them do so. If you</a>
+<a name="ln1086">        // worship Fedhas, create a ring of friendly plants, and try</a>
+<a name="ln1087">        // to break out of the ring by killing a plant, you'll get</a>
+<a name="ln1088">        // a warning prompt and penance only once. Without the</a>
+<a name="ln1089">        // hostility check, the plant will remain friendly until it</a>
+<a name="ln1090">        // dies, and you'll get a warning prompt and penance once</a>
+<a name="ln1091">        // *per hit*. This may not be the best way to address the</a>
+<a name="ln1092">        // issue, though. -cao</a>
+<a name="ln1093">        if (!mons_is_threatening(*mon)</a>
+<a name="ln1094">            &amp;&amp; mon-&gt;attitude != ATT_FRIENDLY</a>
+<a name="ln1095">            &amp;&amp; mon-&gt;attitude != ATT_GOOD_NEUTRAL)</a>
+<a name="ln1096">        {</a>
+<a name="ln1097">            return;</a>
+<a name="ln1098">        }</a>
+<a name="ln1099"> </a>
+<a name="ln1100">        mon-&gt;foe = src_idx;</a>
+<a name="ln1101"> </a>
+<a name="ln1102">        // If the monster can't reach its target and can't attack it</a>
+<a name="ln1103">        // either, retreat.</a>
+<a name="ln1104">        try_pathfind(mon);</a>
+<a name="ln1105">        if (mons_intel(*mon) &gt; I_BRAINLESS &amp;&amp; !mons_can_attack(*mon)</a>
+<a name="ln1106">            &amp;&amp; target_is_unreachable(mon))</a>
+<a name="ln1107">        {</a>
+<a name="ln1108">            mon-&gt;behaviour = BEH_RETREAT;</a>
+<a name="ln1109">        }</a>
+<a name="ln1110">        else if (mon-&gt;has_ench(ENCH_FEAR))</a>
+<a name="ln1111">        {</a>
+<a name="ln1112">            // self-attacks probably shouldn't break fear.</a>
+<a name="ln1113">            if (src == mon)</a>
+<a name="ln1114">                break;</a>
+<a name="ln1115"> </a>
+<a name="ln1116">            if (you.can_see(*mon))</a>
+<a name="ln1117">            {</a>
+<a name="ln1118">                mprf(&quot;%s attack snaps %s out of %s fear.&quot;,</a>
+<a name="ln1119">                        src ? src-&gt;name(DESC_ITS).c_str() : &quot;the&quot;,</a>
+<a name="ln1120">                        mon-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1121">                        mon-&gt;pronoun(PRONOUN_POSSESSIVE).c_str());</a>
+<a name="ln1122">            }</a>
+<a name="ln1123">            mon-&gt;del_ench(ENCH_FEAR, true);</a>
+<a name="ln1124">        }</a>
+<a name="ln1125">        else if (!mons_is_fleeing(*mon))</a>
+<a name="ln1126">            mon-&gt;behaviour = BEH_SEEK;</a>
+<a name="ln1127"> </a>
+<a name="ln1128">        if (src == &amp;you &amp;&amp; mon-&gt;angered_by_attacks())</a>
+<a name="ln1129">        {</a>
+<a name="ln1130">            if (mon-&gt;attitude == ATT_FRIENDLY &amp;&amp; mon-&gt;is_summoned())</a>
+<a name="ln1131">            {</a>
+<a name="ln1132">                summon_dismissal_fineff::schedule(mon);</a>
+<a name="ln1133">                return;</a>
+<a name="ln1134">            }</a>
+<a name="ln1135">            else</a>
+<a name="ln1136">            {</a>
+<a name="ln1137">                mon-&gt;attitude = ATT_HOSTILE;</a>
+<a name="ln1138">                breakCharm    = true;</a>
+<a name="ln1139">            }</a>
+<a name="ln1140">        }</a>
+<a name="ln1141"> </a>
+<a name="ln1142">        // XXX: Somewhat hacky, this being here.</a>
+<a name="ln1143">        if (mons_is_elven_twin(mon))</a>
+<a name="ln1144">            elven_twins_unpacify(mon);</a>
+<a name="ln1145"> </a>
+<a name="ln1146">        // Now set target so that monster can whack back (once) at an</a>
+<a name="ln1147">        // invisible foe.</a>
+<a name="ln1148">        if (event == ME_WHACK)</a>
+<a name="ln1149">            setTarget = true;</a>
+<a name="ln1150"> </a>
+<a name="ln1151">        break;</a>
+<a name="ln1152"> </a>
+<a name="ln1153">    case ME_ALERT:</a>
+<a name="ln1154">#ifdef DEBUG_NOISE_PROPAGATION</a>
+<a name="ln1155">        dprf(&quot;Alerting %s&quot;, mon-&gt;name(DESC_A, true).c_str());</a>
+<a name="ln1156">#endif</a>
+<a name="ln1157">        // Allow monsters falling asleep while patrolling (can happen if</a>
+<a name="ln1158">        // they're left alone for a long time) to be woken by this event.</a>
+<a name="ln1159">        if (mon-&gt;friendly() &amp;&amp; mon-&gt;is_patrolling()</a>
+<a name="ln1160">            &amp;&amp; !mon-&gt;asleep())</a>
+<a name="ln1161">        {</a>
+<a name="ln1162">            break;</a>
+<a name="ln1163">        }</a>
+<a name="ln1164"> </a>
+<a name="ln1165">        // Orders to withdraw take precedence over interruptions</a>
+<a name="ln1166">        if (mon-&gt;behaviour == BEH_WITHDRAW)</a>
+<a name="ln1167">            break;</a>
+<a name="ln1168"> </a>
+<a name="ln1169">        // Avoid moving friendly explodey things out of BEH_WANDER.</a>
+<a name="ln1170">        if (mon-&gt;friendly()</a>
+<a name="ln1171">            &amp;&amp; (mon-&gt;type == MONS_BALLISTOMYCETE_SPORE</a>
+<a name="ln1172">                || mon-&gt;type == MONS_BALL_LIGHTNING</a>
+<a name="ln1173">                || mon-&gt;type == MONS_FOXFIRE))</a>
+<a name="ln1174">        {</a>
+<a name="ln1175">            break;</a>
+<a name="ln1176">        }</a>
+<a name="ln1177"> </a>
+<a name="ln1178">        // [ds] Neutral monsters don't react to your presence.</a>
+<a name="ln1179">        // XXX: Neutral monsters are a tangled mess of arbitrary logic.</a>
+<a name="ln1180">        // It's not even clear any more what behaviours are intended for</a>
+<a name="ln1181">        // neutral monsters and what are merely accidents of the code.</a>
+<a name="ln1182">        if (mon-&gt;neutral() &amp;&amp; !mon-&gt;has_ench(ENCH_INSANE))</a>
+<a name="ln1183">        {</a>
+<a name="ln1184">            if (mon-&gt;asleep())</a>
+<a name="ln1185">                mon-&gt;behaviour = BEH_WANDER;</a>
+<a name="ln1186">            break;</a>
+<a name="ln1187">        }</a>
+<a name="ln1188"> </a>
+<a name="ln1189">        // Will alert monster to &lt;src&gt; and turn them</a>
+<a name="ln1190">        // against them, unless they have a current foe.</a>
+<a name="ln1191">        // It won't turn friends hostile either.</a>
+<a name="ln1192">        if (!mons_is_retreating(*mon))</a>
+<a name="ln1193">            mon-&gt;behaviour = BEH_SEEK;</a>
+<a name="ln1194"> </a>
+<a name="ln1195">        if (mon-&gt;foe == MHITNOT)</a>
+<a name="ln1196">            mon-&gt;foe = src_idx;</a>
+<a name="ln1197"> </a>
+<a name="ln1198">        if (!src_pos.origin()</a>
+<a name="ln1199">            &amp;&amp; (mon-&gt;foe == MHITNOT || src &amp;&amp; mon-&gt;foe == src-&gt;mindex()</a>
+<a name="ln1200">                || mons_is_wandering(*mon)))</a>
+<a name="ln1201">        {</a>
+<a name="ln1202">            if (mon-&gt;is_patrolling())</a>
+<a name="ln1203">                break;</a>
+<a name="ln1204"> </a>
+<a name="ln1205">            mon-&gt;target = src_pos;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">            // XXX: Should this be done in _handle_behaviour()?</a>
+<a name="ln1208">            if (src == &amp;you &amp;&amp; src_pos == you.pos()</a>
+<a name="ln1209">                &amp;&amp; !you.see_cell(mon-&gt;pos()))</a>
+<a name="ln1210">            {</a>
+<a name="ln1211">                try_pathfind(mon);</a>
+<a name="ln1212">            }</a>
+<a name="ln1213">        }</a>
+<a name="ln1214">        break;</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    case ME_SCARE:</a>
+<a name="ln1217">        // Stationary monsters can't flee, and berserking monsters</a>
+<a name="ln1218">        // are too enraged.</a>
+<a name="ln1219">        if (mon-&gt;is_stationary() || mon-&gt;berserk_or_insane())</a>
+<a name="ln1220">        {</a>
+<a name="ln1221">            mon-&gt;del_ench(ENCH_FEAR, true, true);</a>
+<a name="ln1222">            break;</a>
+<a name="ln1223">        }</a>
+<a name="ln1224"> </a>
+<a name="ln1225">        // Neither do plants or nonliving beings.</a>
+<a name="ln1226">        if (mon-&gt;holiness() &amp; (MH_PLANT | MH_NONLIVING))</a>
+<a name="ln1227">        {</a>
+<a name="ln1228">            mon-&gt;del_ench(ENCH_FEAR, true, true);</a>
+<a name="ln1229">            break;</a>
+<a name="ln1230">        }</a>
+<a name="ln1231"> </a>
+<a name="ln1232">        msg = getSpeakString(mon-&gt;name(DESC_PLAIN) + &quot; flee&quot;);</a>
+<a name="ln1233"> </a>
+<a name="ln1234">        // Assume monsters know where to run from, even if player is</a>
+<a name="ln1235">        // invisible.</a>
+<a name="ln1236">        mon-&gt;behaviour = BEH_FLEE;</a>
+<a name="ln1237">        mon-&gt;foe       = src_idx;</a>
+<a name="ln1238">        mon-&gt;target    = src_pos;</a>
+<a name="ln1239">        if (src == &amp;you)</a>
+<a name="ln1240">                setTarget = true;</a>
+<a name="ln1241">        else if (mon-&gt;friendly() &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln1242">            mon-&gt;foe = MHITYOU;</a>
+<a name="ln1243"> </a>
+<a name="ln1244">        if (you.see_cell(mon-&gt;pos()))</a>
+<a name="ln1245">            learned_something_new(HINT_FLEEING_MONSTER);</a>
+<a name="ln1246"> </a>
+<a name="ln1247">        break;</a>
+<a name="ln1248"> </a>
+<a name="ln1249">    case ME_CORNERED:</a>
+<a name="ln1250">        // We only care about this event if we were actually running away</a>
+<a name="ln1251">        if (!mons_is_retreating(*mon))</a>
+<a name="ln1252">            break;</a>
+<a name="ln1253"> </a>
+<a name="ln1254">        // Pacified monsters shouldn't change their behaviour.</a>
+<a name="ln1255">        if (mon-&gt;pacified())</a>
+<a name="ln1256">            break;</a>
+<a name="ln1257"> </a>
+<a name="ln1258">        // If we were already cornered last turn, give up on trying to flee</a>
+<a name="ln1259">        // and turn to fight instead. Otherwise, pause a turn in hope that</a>
+<a name="ln1260">        // an escape route will open up.</a>
+<a name="ln1261">        if (mons_is_cornered(*mon))</a>
+<a name="ln1262">        {</a>
+<a name="ln1263">            if (mon-&gt;friendly() &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln1264">            {</a>
+<a name="ln1265">                mon-&gt;foe = MHITYOU;</a>
+<a name="ln1266">                msg = &quot;PLAIN:@The_monster@ returns to your side!&quot;;</a>
+<a name="ln1267">            }</a>
+<a name="ln1268">            else if (!mon-&gt;is_child_tentacle())</a>
+<a name="ln1269">            {</a>
+<a name="ln1270">                msg = getSpeakString(mon-&gt;name(DESC_PLAIN) + &quot; cornered&quot;);</a>
+<a name="ln1271">                if (msg.empty())</a>
+<a name="ln1272">                    msg = &quot;PLAIN:Cornered, @The_monster@ turns to fight!&quot;;</a>
+<a name="ln1273">            }</a>
+<a name="ln1274">            mon-&gt;del_ench(ENCH_FEAR, true);</a>
+<a name="ln1275">            mon-&gt;behaviour = BEH_SEEK;</a>
+<a name="ln1276">        }</a>
+<a name="ln1277">        else if (mons_is_fleeing(*mon))</a>
+<a name="ln1278">        {</a>
+<a name="ln1279">            // Save their current position so we know if they manage to move</a>
+<a name="ln1280">            // on the following turn (and thus resume BEH_FLEE)</a>
+<a name="ln1281">            mon-&gt;props[&quot;last_pos&quot;].get_coord() = mon-&gt;pos();</a>
+<a name="ln1282">            mon-&gt;behaviour = BEH_CORNERED;</a>
+<a name="ln1283">        }</a>
+<a name="ln1284">        else</a>
+<a name="ln1285">            mon-&gt;behaviour = BEH_SEEK;</a>
+<a name="ln1286">        break;</a>
+<a name="ln1287"> </a>
+<a name="ln1288">    case ME_EVAL:</a>
+<a name="ln1289">        break;</a>
+<a name="ln1290">    }</a>
+<a name="ln1291"> </a>
+<a name="ln1292">    if (setTarget &amp;&amp; src)</a>
+<a name="ln1293">    {</a>
+<a name="ln1294">        mon-&gt;target = src_pos;</a>
+<a name="ln1295">        if (src-&gt;is_player() &amp;&amp; mon-&gt;angered_by_attacks())</a>
+<a name="ln1296">        {</a>
+<a name="ln1297">            // Why only attacks by the player change attitude? -- 1KB</a>
+<a name="ln1298">            mon-&gt;attitude = ATT_HOSTILE;</a>
+<a name="ln1299">            // Non-hostile uniques might be removed from dungeon annotation</a>
+<a name="ln1300">            // so we add them back.</a>
+<a name="ln1301">            if (mon-&gt;props.exists(&quot;no_annotate&quot;))</a>
+<a name="ln1302">                mon-&gt;props[&quot;no_annotate&quot;] = false;</a>
+<a name="ln1303">            set_unique_annotation(mon);</a>
+<a name="ln1304">            mons_att_changed(mon);</a>
+<a name="ln1305">        }</a>
+<a name="ln1306">    }</a>
+<a name="ln1307"> </a>
+<a name="ln1308">    // Now, break charms if appropriate.</a>
+<a name="ln1309">    if (breakCharm)</a>
+<a name="ln1310">    {</a>
+<a name="ln1311">        mon-&gt;del_ench(ENCH_CHARM);</a>
+<a name="ln1312">        gozag_break_bribe(mon);</a>
+<a name="ln1313">        mons_att_changed(mon);</a>
+<a name="ln1314">    }</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    // Do any resultant foe or state changes.</a>
+<a name="ln1317">    handle_behaviour(mon);</a>
+<a name="ln1318"> </a>
+<a name="ln1319">    // That might have made the monster leave the level.</a>
+<a name="ln1320">    if (!mon-&gt;alive())</a>
+<a name="ln1321">        return;</a>
+<a name="ln1322"> </a>
+<a name="ln1323">    ASSERT_IN_BOUNDS_OR_ORIGIN(mon-&gt;target);</a>
+<a name="ln1324"> </a>
+<a name="ln1325">    // If it was unaware of you and you're its new foe, it might shout.</a>
+<a name="ln1326">#ifdef DEBUG_NOISE_PROPAGATION</a>
+<a name="ln1327">    dprf(&quot;%s could shout in behavioural event, allow_shout: %d, foe: %d&quot;, mon-&gt;name(DESC_A, true).c_str(), allow_shout, mon-&gt;foe);</a>
+<a name="ln1328">#endif</a>
+<a name="ln1329">    if (was_unaware &amp;&amp; allow_shout</a>
+<a name="ln1330">        &amp;&amp; mon-&gt;foe == MHITYOU &amp;&amp; !mon-&gt;wont_attack())</a>
+<a name="ln1331">    {</a>
+<a name="ln1332">        monster_consider_shouting(*mon);</a>
+<a name="ln1333">    }</a>
+<a name="ln1334"> </a>
+<a name="ln1335">    const bool isPacified = mon-&gt;pacified();</a>
+<a name="ln1336"> </a>
+<a name="ln1337">    if (isPacified</a>
+<a name="ln1338">        &amp;&amp; (event == ME_DISTURB || event == ME_ALERT || event == ME_EVAL))</a>
+<a name="ln1339">    {</a>
+<a name="ln1340">        // Pacified monsters leaving the level won't stop doing so just because</a>
+<a name="ln1341">        // they noticed something.</a>
+<a name="ln1342">        mon-&gt;behaviour = old_behaviour;</a>
+<a name="ln1343">    }</a>
+<a name="ln1344"> </a>
+<a name="ln1345">    // mons_speaks_msg already handles the LOS check.</a>
+<a name="ln1346">    if (!msg.empty() &amp;&amp; mon-&gt;visible_to(&amp;you))</a>
+<a name="ln1347">        mons_speaks_msg(mon, msg, MSGCH_TALK, silenced(mon-&gt;pos()));</a>
+<a name="ln1348"> </a>
+<a name="ln1349">    if (mons_allows_beogh_now(*mon))</a>
+<a name="ln1350">    {</a>
+<a name="ln1351">        const bool first = !you.attribute[ATTR_SEEN_BEOGH];</a>
+<a name="ln1352">        if (first || one_chance_in(10))</a>
+<a name="ln1353">        {</a>
+<a name="ln1354">            mons_speaks_msg(mon, getSpeakString(&quot;orc_priest_preaching&quot;),</a>
+<a name="ln1355">                            MSGCH_TALK);</a>
+<a name="ln1356">            if (first)</a>
+<a name="ln1357">            {</a>
+<a name="ln1358">                ASSERT_RANGE(get_talent(ABIL_CONVERT_TO_BEOGH, false).hotkey,</a>
+<a name="ln1359">                             'A', 'z' + 1);</a>
+<a name="ln1360">                mprf(&quot;(press &lt;w&gt;%c&lt;/w&gt; on the &lt;w&gt;%s&lt;/w&gt;bility menu to convert to Beogh)&quot;,</a>
+<a name="ln1361">                     get_talent(ABIL_CONVERT_TO_BEOGH, false).hotkey,</a>
+<a name="ln1362">                     command_to_string(CMD_USE_ABILITY).c_str());</a>
+<a name="ln1363">                you.attribute[ATTR_SEEN_BEOGH] = 1;</a>
+<a name="ln1364">            }</a>
+<a name="ln1365">        }</a>
+<a name="ln1366">    }</a>
+<a name="ln1367"> </a>
+<a name="ln1368">    ASSERT(!crawl_state.game_is_arena()</a>
+<a name="ln1369">           || mon-&gt;foe != MHITYOU &amp;&amp; mon-&gt;target != you.pos());</a>
+<a name="ln1370">}</a>
+<a name="ln1371"> </a>
+<a name="ln1372">void make_mons_stop_fleeing(monster* mon)</a>
+<a name="ln1373">{</a>
+<a name="ln1374">    if (mons_is_retreating(*mon))</a>
+<a name="ln1375">        behaviour_event(mon, ME_CORNERED);</a>
+<a name="ln1376">}</a>
+<a name="ln1377"> </a>
+<a name="ln1378">beh_type attitude_creation_behavior(mon_attitude_type att)</a>
+<a name="ln1379">{</a>
+<a name="ln1380">    switch (att)</a>
+<a name="ln1381">    {</a>
+<a name="ln1382">    case ATT_NEUTRAL:</a>
+<a name="ln1383">        return BEH_NEUTRAL;</a>
+<a name="ln1384">    case ATT_GOOD_NEUTRAL:</a>
+<a name="ln1385">        return BEH_GOOD_NEUTRAL;</a>
+<a name="ln1386">    case ATT_STRICT_NEUTRAL:</a>
+<a name="ln1387">        return BEH_STRICT_NEUTRAL;</a>
+<a name="ln1388">    case ATT_FRIENDLY:</a>
+<a name="ln1389">        return BEH_FRIENDLY;</a>
+<a name="ln1390">    default:</a>
+<a name="ln1391">        return BEH_HOSTILE;</a>
+<a name="ln1392">    }</a>
+<a name="ln1393">}</a>
+<a name="ln1394"> </a>
+<a name="ln1395">// If you're invis and throw/zap whatever, alerts menv to your position.</a>
+<a name="ln1396">void alert_nearby_monsters()</a>
+<a name="ln1397">{</a>
+<a name="ln1398">    // Judging from the above comment, this function isn't</a>
+<a name="ln1399">    // intended to wake up monsters, so we're only going to</a>
+<a name="ln1400">    // alert monsters that aren't sleeping. For cases where an</a>
+<a name="ln1401">    // event should wake up monsters and alert them, I'd suggest</a>
+<a name="ln1402">    // calling noisy() before calling this function. - bwr</a>
+<a name="ln1403">    for (monster_near_iterator mi(you.pos()); mi; ++mi)</a>
+<a name="ln1404">        if (!mi-&gt;asleep())</a>
+<a name="ln1405">             behaviour_event(*mi, ME_ALERT, &amp;you);</a>
+<a name="ln1406">}</a>
+<a name="ln1407"> </a>
+<a name="ln1408">//Make all monsters lose track of a given target after a few turns</a>
+<a name="ln1409">void shake_off_monsters(const actor* target)</a>
+<a name="ln1410">{</a>
+<a name="ln1411">    //If the player is under Ashenzari penance, monsters will not</a>
+<a name="ln1412">    //lose track of them so easily</a>
+<a name="ln1413">    if (target-&gt;is_player() &amp;&amp; you.penance[GOD_ASHENZARI])</a>
+<a name="ln1414">        return;</a>
+<a name="ln1415"> </a>
+<a name="ln1416">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln1417">    {</a>
+<a name="ln1418">        monster* m = mi-&gt;as_monster();</a>
+<a name="ln1419">        if (m-&gt;foe == target-&gt;mindex() &amp;&amp; m-&gt;foe_memory &gt; 0)</a>
+<a name="ln1420">        {</a>
+<a name="ln1421">            // Set foe_memory to a small non-zero amount so that monsters can</a>
+<a name="ln1422">            // still close in on your old location, rather than immediately</a>
+<a name="ln1423">            // realizing their target is gone, even if they took stairs while</a>
+<a name="ln1424">            // out of sight</a>
+<a name="ln1425">            dprf(&quot;Monster %d forgot about foe %d. (Previous foe_memory: %d)&quot;,</a>
+<a name="ln1426">                    m-&gt;mindex(), target-&gt;mindex(), m-&gt;foe_memory);</a>
+<a name="ln1427">            m-&gt;foe_memory = min(m-&gt;foe_memory, 7);</a>
+<a name="ln1428">        }</a>
+<a name="ln1429">    }</a>
+<a name="ln1430">}</a>
+<a name="ln1431"> </a>
+<a name="ln1432">// If _mons_find_level_exits() is ever expanded to handle more grid</a>
+<a name="ln1433">// types, this should be expanded along with it.</a>
+<a name="ln1434">static void _mons_indicate_level_exit(const monster* mon)</a>
+<a name="ln1435">{</a>
+<a name="ln1436">    const dungeon_feature_type feat = grd(mon-&gt;pos());</a>
+<a name="ln1437">    const bool is_shaft = (get_trap_type(mon-&gt;pos()) == TRAP_SHAFT);</a>
+<a name="ln1438"> </a>
+<a name="ln1439">    if (feat_is_gate(feat))</a>
+<a name="ln1440">        simple_monster_message(*mon, &quot; passes through the gate.&quot;);</a>
+<a name="ln1441">    else if (feat_is_travelable_stair(feat))</a>
+<a name="ln1442">    {</a>
+<a name="ln1443">        command_type dir = feat_stair_direction(feat);</a>
+<a name="ln1444">        simple_monster_message(*mon,</a>
+<a name="ln1445">            make_stringf(&quot; %s the %s.&quot;,</a>
+<a name="ln1446">                dir == CMD_GO_UPSTAIRS     ? &quot;goes up&quot; :</a>
+<a name="ln1447">                dir == CMD_GO_DOWNSTAIRS   ? &quot;goes down&quot;</a>
+<a name="ln1448">                                           : &quot;takes&quot;,</a>
+<a name="ln1449">                feat_is_escape_hatch(feat) ? &quot;escape hatch&quot;</a>
+<a name="ln1450">                                           : &quot;stairs&quot;).c_str());</a>
+<a name="ln1451">    }</a>
+<a name="ln1452">    else if (is_shaft)</a>
+<a name="ln1453">    {</a>
+<a name="ln1454">        simple_monster_message(*mon,</a>
+<a name="ln1455">            make_stringf(&quot; %s the shaft.&quot;,</a>
+<a name="ln1456">                mon-&gt;airborne() ? &quot;goes down&quot;</a>
+<a name="ln1457">                                : &quot;jumps into&quot;).c_str());</a>
+<a name="ln1458">    }</a>
+<a name="ln1459">}</a>
+<a name="ln1460"> </a>
+<a name="ln1461">void make_mons_leave_level(monster* mon)</a>
+<a name="ln1462">{</a>
+<a name="ln1463">    if (mon-&gt;pacified())</a>
+<a name="ln1464">    {</a>
+<a name="ln1465">        if (you.can_see(*mon))</a>
+<a name="ln1466">            _mons_indicate_level_exit(mon);</a>
+<a name="ln1467"> </a>
+<a name="ln1468">        // Pacified monsters leaving the level take their stuff with</a>
+<a name="ln1469">        // them.</a>
+<a name="ln1470">        mon-&gt;flags |= MF_HARD_RESET;</a>
+<a name="ln1471">        monster_die(*mon, KILL_DISMISSED, NON_MONSTER);</a>
+<a name="ln1472">    }</a>
+<a name="ln1473">}</a>
+<a name="ln1474"> </a>
+<a name="ln1475">// Given an adjacent monster, returns true if the monster can hit it</a>
+<a name="ln1476">// (the monster should not be submerged, be submerged in shallow water</a>
+<a name="ln1477">// if the monster has a polearm, or be submerged in anything if the</a>
+<a name="ln1478">// monster has tentacles).</a>
+<a name="ln1479">bool monster_can_hit_monster(monster* mons, const monster* targ)</a>
+<a name="ln1480">{</a>
+<a name="ln1481">    if (!summon_can_attack(mons, targ))</a>
+<a name="ln1482">        return false;</a>
+<a name="ln1483"> </a>
+<a name="ln1484">    if (!targ-&gt;submerged() || mons-&gt;has_damage_type(DVORP_TENTACLE))</a>
+<a name="ln1485">        return true;</a>
+<a name="ln1486"> </a>
+<a name="ln1487">    if (grd(targ-&gt;pos()) != DNGN_SHALLOW_WATER)</a>
+<a name="ln1488">        return false;</a>
+<a name="ln1489"> </a>
+<a name="ln1490">    const item_def *weapon = mons-&gt;weapon();</a>
+<a name="ln1491">    return weapon &amp;&amp; item_attack_skill(*weapon) == SK_POLEARMS;</a>
+<a name="ln1492">}</a>
+<a name="ln1493"> </a>
+<a name="ln1494">// Friendly summons can't attack out of the player's LOS, it's too abusable.</a>
+<a name="ln1495">bool summon_can_attack(const monster* mons)</a>
+<a name="ln1496">{</a>
+<a name="ln1497">    return crawl_state.game_is_arena()</a>
+<a name="ln1498">           || !mons-&gt;friendly()</a>
+<a name="ln1499">           || !mons-&gt;is_summoned()</a>
+<a name="ln1500">              &amp;&amp; !mons-&gt;has_ench(ENCH_FAKE_ABJURATION)</a>
+<a name="ln1501">              &amp;&amp; !mons-&gt;has_ench(ENCH_PORTAL_PACIFIED)</a>
+<a name="ln1502">              &amp;&amp; !mons_is_hepliaklqana_ancestor(mons-&gt;type)</a>
+<a name="ln1503">           || you.see_cell_no_trans(mons-&gt;pos());</a>
+<a name="ln1504">}</a>
+<a name="ln1505"> </a>
+<a name="ln1506">bool summon_can_attack(const monster* mons, const coord_def &amp;p)</a>
+<a name="ln1507">{</a>
+<a name="ln1508">    if (crawl_state.game_is_arena())</a>
+<a name="ln1509">        return true;</a>
+<a name="ln1510"> </a>
+<a name="ln1511">    // Spectral weapons only attack their target</a>
+<a name="ln1512">    if (mons-&gt;type == MONS_SPECTRAL_WEAPON)</a>
+<a name="ln1513">    {</a>
+<a name="ln1514">        // FIXME: find a way to use check_target_spectral_weapon</a>
+<a name="ln1515">        //        without potential info leaks about visibility.</a>
+<a name="ln1516">        if (mons-&gt;props.exists(SW_TARGET_MID))</a>
+<a name="ln1517">        {</a>
+<a name="ln1518">            actor *target = actor_by_mid(mons-&gt;props[SW_TARGET_MID].get_int());</a>
+<a name="ln1519">            return target &amp;&amp; target-&gt;pos() == p;</a>
+<a name="ln1520">        }</a>
+<a name="ln1521">        return false;</a>
+<a name="ln1522">    }</a>
+<a name="ln1523"> </a>
+<a name="ln1524">    if (!mons-&gt;friendly()</a>
+<a name="ln1525">        || !mons-&gt;is_summoned()</a>
+<a name="ln1526">            &amp;&amp; !mons-&gt;has_ench(ENCH_FAKE_ABJURATION)</a>
+<a name="ln1527">            &amp;&amp; !mons_is_hepliaklqana_ancestor(mons-&gt;type)</a>
+<a name="ln1528">            &amp;&amp; !mons-&gt;has_ench(ENCH_PORTAL_PACIFIED))</a>
+<a name="ln1529">    {</a>
+<a name="ln1530">        return true;</a>
+<a name="ln1531">    }</a>
+<a name="ln1532"> </a>
+<a name="ln1533">    return you.see_cell_no_trans(mons-&gt;pos()) &amp;&amp; you.see_cell_no_trans(p);</a>
+<a name="ln1534">}</a>
+<a name="ln1535"> </a>
+<a name="ln1536">bool summon_can_attack(const monster* mons, const actor* targ)</a>
+<a name="ln1537">{</a>
+<a name="ln1538">    return summon_can_attack(mons, targ-&gt;pos());</a>
+<a name="ln1539">}</a>
+
+</code></pre>
+<div class="balloon" rel="71"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1051/" target="_blank">V1051</a> Consider checking for misprints. It's possible that the 'foe_mons' should be used inside 'summon_can_attack' function.</p></div>
+<div class="balloon" rel="374"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="489"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="601"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="943"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1368"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

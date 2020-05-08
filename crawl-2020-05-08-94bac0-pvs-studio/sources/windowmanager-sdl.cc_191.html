@@ -1,0 +1,1311 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>windowmanager-sdl.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#ifdef USE_TILE_LOCAL</a>
+<a name="ln4">#ifdef USE_SDL</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;windowmanager-sdl.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;sound.h&quot;      // Needs to be here because WINMM_PLAY_SOUNDS is used below</a>
+<a name="ln9"> </a>
+<a name="ln10">#ifdef __ANDROID__</a>
+<a name="ln11"># include &lt;SDL.h&gt;</a>
+<a name="ln12"># include &lt;SDL_image.h&gt;</a>
+<a name="ln13"># include &lt;android/log.h&gt;</a>
+<a name="ln14"># include &lt;GLES/gl.h&gt;</a>
+<a name="ln15"># include &lt;signal.h&gt;</a>
+<a name="ln16"># include &lt;SDL_mixer.h&gt;</a>
+<a name="ln17">#else</a>
+<a name="ln18"># ifdef TARGET_COMPILER_VC</a>
+<a name="ln19">#  include &lt;SDL.h&gt;</a>
+<a name="ln20"># else</a>
+<a name="ln21">#  include &lt;SDL2/SDL.h&gt;</a>
+<a name="ln22"># endif</a>
+<a name="ln23"># include &lt;SDL_image.h&gt;</a>
+<a name="ln24"># if defined(USE_SOUND) &amp;&amp; !defined(WINMM_PLAY_SOUNDS)</a>
+<a name="ln25">#  include &lt;SDL2/SDL_mixer.h&gt;</a>
+<a name="ln26"># endif</a>
+<a name="ln27">#endif</a>
+<a name="ln28"> </a>
+<a name="ln29">#include &quot;cio.h&quot;</a>
+<a name="ln30">#include &quot;files.h&quot;</a>
+<a name="ln31">#include &quot;glwrapper.h&quot;</a>
+<a name="ln32">#include &quot;libutil.h&quot;</a>
+<a name="ln33">#include &quot;options.h&quot;</a>
+<a name="ln34">#include &quot;syscalls.h&quot;</a>
+<a name="ln35">#include &quot;unicode.h&quot;</a>
+<a name="ln36">#include &quot;version.h&quot;</a>
+<a name="ln37">#include &quot;windowmanager.h&quot;</a>
+<a name="ln38"> </a>
+<a name="ln39">WindowManager *wm = nullptr;</a>
+<a name="ln40"> </a>
+<a name="ln41">#define MIN_SDL_WINDOW_SIZE_X 800</a>
+<a name="ln42">#define MIN_SDL_WINDOW_SIZE_Y 480</a>
+<a name="ln43"> </a>
+<a name="ln44">void WindowManager::create()</a>
+<a name="ln45">{</a>
+<a name="ln46">    if (wm)</a>
+<a name="ln47">        return;</a>
+<a name="ln48"> </a>
+<a name="ln49">    wm = new SDLWrapper();</a>
+<a name="ln50">#if defined(USE_SOUND) &amp;&amp; !defined(WINMM_PLAY_SOUNDS)</a>
+<a name="ln51">    Mix_Init(MIX_INIT_OGG | MIX_INIT_MP3);</a>
+<a name="ln52">    Mix_OpenAudio(MIX_DEFAULT_FREQUENCY, MIX_DEFAULT_FORMAT, 2, 4096);</a>
+<a name="ln53">#endif</a>
+<a name="ln54">}</a>
+<a name="ln55"> </a>
+<a name="ln56">void WindowManager::shutdown()</a>
+<a name="ln57">{</a>
+<a name="ln58">    delete wm;</a>
+<a name="ln59">    wm = nullptr;</a>
+<a name="ln60">#if defined(USE_SOUND) &amp;&amp; !defined(WINMM_PLAY_SOUNDS)</a>
+<a name="ln61">    Mix_CloseAudio();</a>
+<a name="ln62">    while (Mix_Init(0))</a>
+<a name="ln63">        Mix_Quit();</a>
+<a name="ln64">#endif</a>
+<a name="ln65">}</a>
+<a name="ln66"> </a>
+<a name="ln67">static unsigned char _kmod_to_mod(int modifier)</a>
+<a name="ln68">{</a>
+<a name="ln69">    unsigned char mod = 0;</a>
+<a name="ln70">    if (modifier &amp; KMOD_SHIFT)</a>
+<a name="ln71">        mod |= TILES_MOD_SHIFT;</a>
+<a name="ln72">    if (modifier &amp; KMOD_CTRL)</a>
+<a name="ln73">        mod |= TILES_MOD_CTRL;</a>
+<a name="ln74">    if (modifier &amp; KMOD_LALT)</a>
+<a name="ln75">        mod |= TILES_MOD_ALT;</a>
+<a name="ln76">    return mod;</a>
+<a name="ln77">}</a>
+<a name="ln78"> </a>
+<a name="ln79">static unsigned char _get_modifiers(SDL_Keysym &amp;keysym)</a>
+<a name="ln80">{</a>
+<a name="ln81">    switch (keysym.sym)</a>
+<a name="ln82">    {</a>
+<a name="ln83">    case SDLK_LSHIFT:</a>
+<a name="ln84">    case SDLK_RSHIFT:</a>
+<a name="ln85">        return TILES_MOD_SHIFT;</a>
+<a name="ln86">        break;</a>
+<a name="ln87">    case SDLK_LCTRL:</a>
+<a name="ln88">    case SDLK_RCTRL:</a>
+<a name="ln89">        return TILES_MOD_CTRL;</a>
+<a name="ln90">        break;</a>
+<a name="ln91">    case SDLK_LALT:</a>
+<a name="ln92">    case SDLK_RALT:</a>
+<a name="ln93">        return TILES_MOD_ALT;</a>
+<a name="ln94">        break;</a>
+<a name="ln95">    default:</a>
+<a name="ln96">        return _kmod_to_mod(keysym.mod);</a>
+<a name="ln97">    }</a>
+<a name="ln98">}</a>
+<a name="ln99"> </a>
+<a name="ln100">static void _translate_window_event(const SDL_WindowEvent &amp;sdl_event,</a>
+<a name="ln101">                                    wm_event &amp;tile_event)</a>
+<a name="ln102">{</a>
+<a name="ln103">    switch (sdl_event.event)</a>
+<a name="ln104">    {</a>
+<a name="ln105">        case SDL_WINDOWEVENT_SHOWN:</a>
+<a name="ln106">            tile_event.type = WME_ACTIVEEVENT;</a>
+<a name="ln107">            tile_event.active.gain = 1;</a>
+<a name="ln108">            break;</a>
+<a name="ln109">        case SDL_WINDOWEVENT_HIDDEN:</a>
+<a name="ln110">            tile_event.type = WME_ACTIVEEVENT;</a>
+<a name="ln111">            tile_event.active.gain = 0;</a>
+<a name="ln112">            break;</a>
+<a name="ln113">        case SDL_WINDOWEVENT_EXPOSED:</a>
+<a name="ln114">            tile_event.type = WME_EXPOSE;</a>
+<a name="ln115">            break;</a>
+<a name="ln116">        case SDL_WINDOWEVENT_SIZE_CHANGED:</a>
+<a name="ln117">            tile_event.type = WME_RESIZE;</a>
+<a name="ln118">            tile_event.resize.w = sdl_event.data1;</a>
+<a name="ln119">            tile_event.resize.h = sdl_event.data2;</a>
+<a name="ln120">            break;</a>
+<a name="ln121">        case SDL_WINDOWEVENT_MOVED:</a>
+<a name="ln122">            tile_event.type = WME_MOVE;</a>
+<a name="ln123">            break;</a>
+<a name="ln124">        default:</a>
+<a name="ln125">            tile_event.type = WME_NOEVENT;</a>
+<a name="ln126">            break;</a>
+<a name="ln127">    }</a>
+<a name="ln128">}</a>
+<a name="ln129"> </a>
+<a name="ln130">static int _translate_keysym(SDL_Keysym &amp;keysym)</a>
+<a name="ln131">{</a>
+<a name="ln132">    // This function returns the key that was hit. Returning zero implies that</a>
+<a name="ln133">    // the keypress (e.g. hitting shift on its own) should be eaten and not</a>
+<a name="ln134">    // handled.</a>
+<a name="ln135"> </a>
+<a name="ln136">    const int shift_offset = CK_SHIFT_UP - CK_UP;</a>
+<a name="ln137">    const int ctrl_offset  = CK_CTRL_UP - CK_UP;</a>
+<a name="ln138"> </a>
+<a name="ln139">    const int mod = _get_modifiers(keysym);</a>
+<a name="ln140"> </a>
+<a name="ln141">#ifdef TARGET_OS_WINDOWS</a>
+<a name="ln142">    // AltGr looks like right alt + left ctrl on Windows. Let the input</a>
+<a name="ln143">    // method geneate a TextInput event rather than trying to handle it</a>
+<a name="ln144">    // as a KeyDown.</a>
+<a name="ln145">    if (testbits(keysym.mod, KMOD_RALT | KMOD_LCTRL))</a>
+<a name="ln146">        return 0;</a>
+<a name="ln147">#endif</a>
+<a name="ln148"> </a>
+<a name="ln149">    // This is arbitrary, but here's the current mappings.</a>
+<a name="ln150">    // 0-256: ASCII, Crawl arrow keys</a>
+<a name="ln151">    // 0-1k : Other SDL keys (F1, Windows keys, etc...) and modifiers</a>
+<a name="ln152">    // 1k-3k: Non-ASCII with modifiers other than just shift or just ctrl.</a>
+<a name="ln153">    // 3k+  : ASCII with the left alt modifier.</a>
+<a name="ln154"> </a>
+<a name="ln155">    int offset = mod ? 1000 + 256 * mod : 0;</a>
+<a name="ln156">    int numpad_offset = 0;</a>
+<a name="ln157">    if (mod == TILES_MOD_CTRL)</a>
+<a name="ln158">        numpad_offset = ctrl_offset;</a>
+<a name="ln159">    else if (mod == TILES_MOD_SHIFT)</a>
+<a name="ln160">        numpad_offset = shift_offset;</a>
+<a name="ln161">    else</a>
+<a name="ln162">        numpad_offset = offset;</a>
+<a name="ln163"> </a>
+<a name="ln164">    switch (keysym.sym)</a>
+<a name="ln165">    {</a>
+<a name="ln166">    case SDLK_RETURN:</a>
+<a name="ln167">    case SDLK_KP_ENTER:</a>
+<a name="ln168">        return CK_ENTER + offset;</a>
+<a name="ln169">    case SDLK_BACKSPACE:</a>
+<a name="ln170">        return CK_BKSP + offset;</a>
+<a name="ln171">    case SDLK_AC_BACK:</a>
+<a name="ln172">    case SDLK_ESCAPE:</a>
+<a name="ln173">        return CK_ESCAPE + offset;</a>
+<a name="ln174">    case SDLK_DELETE:</a>
+<a name="ln175">    case SDLK_KP_PERIOD:</a>
+<a name="ln176">        return CK_DELETE + offset;</a>
+<a name="ln177"> </a>
+<a name="ln178">    case SDLK_LSHIFT:</a>
+<a name="ln179">    case SDLK_RSHIFT:</a>
+<a name="ln180">    case SDLK_LCTRL:</a>
+<a name="ln181">    case SDLK_RCTRL:</a>
+<a name="ln182">    case SDLK_LALT:</a>
+<a name="ln183">    case SDLK_RALT:</a>
+<a name="ln184">    case SDLK_LGUI:</a>
+<a name="ln185">    case SDLK_RGUI:</a>
+<a name="ln186">    case SDLK_NUMLOCKCLEAR:</a>
+<a name="ln187">    case SDLK_CAPSLOCK:</a>
+<a name="ln188">    case SDLK_SCROLLLOCK:</a>
+<a name="ln189">    case SDLK_MODE:</a>
+<a name="ln190">        // Don't handle these.</a>
+<a name="ln191">        return 0;</a>
+<a name="ln192"> </a>
+<a name="ln193">    case SDLK_F1:</a>
+<a name="ln194">    case SDLK_F2:</a>
+<a name="ln195">    case SDLK_F3:</a>
+<a name="ln196">    case SDLK_F4:</a>
+<a name="ln197">    case SDLK_F5:</a>
+<a name="ln198">    case SDLK_F6:</a>
+<a name="ln199">    case SDLK_F7:</a>
+<a name="ln200">    case SDLK_F8:</a>
+<a name="ln201">    case SDLK_F9:</a>
+<a name="ln202">    case SDLK_F10:</a>
+<a name="ln203">    case SDLK_F11:</a>
+<a name="ln204">    case SDLK_F12:</a>
+<a name="ln205">    case SDLK_F13:</a>
+<a name="ln206">    case SDLK_F14:</a>
+<a name="ln207">    case SDLK_F15:</a>
+<a name="ln208">    case SDLK_HELP:</a>
+<a name="ln209">    case SDLK_PRINTSCREEN:</a>
+<a name="ln210">    case SDLK_SYSREQ:</a>
+<a name="ln211">    case SDLK_PAUSE:</a>
+<a name="ln212">    case SDLK_MENU:</a>
+<a name="ln213">    case SDLK_POWER:</a>
+<a name="ln214">    case SDLK_UNDO:</a>
+<a name="ln215">        ASSERT_RANGE(keysym.sym, SDLK_F1, SDLK_UNDO + 1);</a>
+<a name="ln216">        return -(keysym.sym + (SDLK_UNDO - SDLK_F1 + 1) * mod);</a>
+<a name="ln217"> </a>
+<a name="ln218">        // Hack. libw32c overloads clear with '5' too.</a>
+<a name="ln219">    case SDLK_KP_5:</a>
+<a name="ln220">        return CK_CLEAR + numpad_offset;</a>
+<a name="ln221"> </a>
+<a name="ln222">    case SDLK_KP_8:</a>
+<a name="ln223">    case SDLK_UP:</a>
+<a name="ln224">        return CK_UP + numpad_offset;</a>
+<a name="ln225">    case SDLK_KP_2:</a>
+<a name="ln226">    case SDLK_DOWN:</a>
+<a name="ln227">        return CK_DOWN + numpad_offset;</a>
+<a name="ln228">    case SDLK_KP_4:</a>
+<a name="ln229">    case SDLK_LEFT:</a>
+<a name="ln230">        return CK_LEFT + numpad_offset;</a>
+<a name="ln231">    case SDLK_KP_6:</a>
+<a name="ln232">    case SDLK_RIGHT:</a>
+<a name="ln233">        return CK_RIGHT + numpad_offset;</a>
+<a name="ln234">    case SDLK_KP_0:</a>
+<a name="ln235">    case SDLK_INSERT:</a>
+<a name="ln236">        return CK_INSERT + numpad_offset;</a>
+<a name="ln237">    case SDLK_KP_7:</a>
+<a name="ln238">    case SDLK_HOME:</a>
+<a name="ln239">        return CK_HOME + numpad_offset;</a>
+<a name="ln240">    case SDLK_KP_1:</a>
+<a name="ln241">    case SDLK_END:</a>
+<a name="ln242">        return CK_END + numpad_offset;</a>
+<a name="ln243">    case SDLK_CLEAR:</a>
+<a name="ln244">        return CK_CLEAR + numpad_offset;</a>
+<a name="ln245">    case SDLK_KP_9:</a>
+<a name="ln246">    case SDLK_PAGEUP:</a>
+<a name="ln247">        return CK_PGUP + numpad_offset;</a>
+<a name="ln248">    case SDLK_KP_3:</a>
+<a name="ln249">    case SDLK_PAGEDOWN:</a>
+<a name="ln250">        return CK_PGDN + numpad_offset;</a>
+<a name="ln251">    case SDLK_TAB:</a>
+<a name="ln252">        if (numpad_offset) // keep tab a tab</a>
+<a name="ln253">            return CK_TAB_TILE + numpad_offset;</a>
+<a name="ln254">        return SDLK_TAB;</a>
+<a name="ln255">#ifdef TOUCH_UI</a>
+<a name="ln256">    // used for zoom in/out</a>
+<a name="ln257">    case SDLK_KP_PLUS:</a>
+<a name="ln258">        return CK_NUMPAD_PLUS;</a>
+<a name="ln259">    case SDLK_KP_MINUS:</a>
+<a name="ln260">        return CK_NUMPAD_MINUS;</a>
+<a name="ln261">#endif</a>
+<a name="ln262">    default:</a>
+<a name="ln263">        break;</a>
+<a name="ln264">    }</a>
+<a name="ln265"> </a>
+<a name="ln266">    if (!(mod &amp; (TILES_MOD_CTRL | TILES_MOD_ALT)))</a>
+<a name="ln267">        return 0;</a>
+<a name="ln268"> </a>
+<a name="ln269">    int ret = keysym.sym;</a>
+<a name="ln270"> </a>
+<a name="ln271">    if (mod &amp; TILES_MOD_ALT &amp;&amp; keysym.sym &gt;= 128)</a>
+<a name="ln272">        ret -= 3000; // ???</a>
+<a name="ln273">    if (mod &amp; TILES_MOD_CTRL)</a>
+<a name="ln274">        ret -= SDLK_a - 1; // XXX: this might break for strange keysyms</a>
+<a name="ln275"> </a>
+<a name="ln276">    return ret;</a>
+<a name="ln277">}</a>
+<a name="ln278"> </a>
+<a name="ln279">static void _translate_event(const SDL_MouseMotionEvent &amp;sdl_event,</a>
+<a name="ln280">                             wm_mouse_event &amp;tile_event)</a>
+<a name="ln281">{</a>
+<a name="ln282">    tile_event.held   = wm_mouse_event::NONE;</a>
+<a name="ln283">    tile_event.event  = wm_mouse_event::MOVE;</a>
+<a name="ln284">    tile_event.button = wm_mouse_event::NONE;</a>
+<a name="ln285">    tile_event.px     = sdl_event.x;</a>
+<a name="ln286">    tile_event.py     = sdl_event.y;</a>
+<a name="ln287">    tile_event.held   = wm-&gt;get_mouse_state(nullptr, nullptr);</a>
+<a name="ln288">    tile_event.mod    = wm-&gt;get_mod_state();</a>
+<a name="ln289"> </a>
+<a name="ln290">    // TODO: enne - do we want the relative motion?</a>
+<a name="ln291">}</a>
+<a name="ln292"> </a>
+<a name="ln293">static void _translate_event(const SDL_MouseButtonEvent &amp;sdl_event,</a>
+<a name="ln294">                             wm_mouse_event &amp;tile_event)</a>
+<a name="ln295">{</a>
+<a name="ln296">    tile_event.held  = wm_mouse_event::NONE;</a>
+<a name="ln297">    tile_event.event = (sdl_event.type == SDL_MOUSEBUTTONDOWN) ?</a>
+<a name="ln298">    wm_mouse_event::PRESS : wm_mouse_event::RELEASE;</a>
+<a name="ln299">    switch (sdl_event.button)</a>
+<a name="ln300">    {</a>
+<a name="ln301">    case SDL_BUTTON_LEFT:</a>
+<a name="ln302">        tile_event.button = wm_mouse_event::LEFT;</a>
+<a name="ln303">        break;</a>
+<a name="ln304">    case SDL_BUTTON_RIGHT:</a>
+<a name="ln305">        tile_event.button = wm_mouse_event::RIGHT;</a>
+<a name="ln306">        break;</a>
+<a name="ln307">    case SDL_BUTTON_MIDDLE:</a>
+<a name="ln308">        tile_event.button = wm_mouse_event::MIDDLE;</a>
+<a name="ln309">        break;</a>
+<a name="ln310">    default:</a>
+<a name="ln311">        // Unhandled button.</a>
+<a name="ln312">        tile_event.button = wm_mouse_event::NONE;</a>
+<a name="ln313">        break;</a>
+<a name="ln314">    }</a>
+<a name="ln315">    tile_event.px = sdl_event.x;</a>
+<a name="ln316">    tile_event.py = sdl_event.y;</a>
+<a name="ln317">    tile_event.held = wm-&gt;get_mouse_state(nullptr, nullptr);</a>
+<a name="ln318">    tile_event.mod = wm-&gt;get_mod_state();</a>
+<a name="ln319">}</a>
+<a name="ln320"> </a>
+<a name="ln321">static void _translate_wheel_event(const SDL_MouseWheelEvent &amp;sdl_event,</a>
+<a name="ln322">                                   wm_mouse_event &amp;tile_event)</a>
+<a name="ln323">{</a>
+<a name="ln324">    tile_event.held  = wm_mouse_event::NONE;</a>
+<a name="ln325">    tile_event.event = wm_mouse_event::WHEEL;</a>
+<a name="ln326">    tile_event.button = (sdl_event.y &lt; 0) ? wm_mouse_event::SCROLL_DOWN</a>
+<a name="ln327">                                          : wm_mouse_event::SCROLL_UP;</a>
+<a name="ln328">    tile_event.px = sdl_event.x;</a>
+<a name="ln329">    tile_event.py = sdl_event.y;</a>
+<a name="ln330">}</a>
+<a name="ln331"> </a>
+<a name="ln332">SDLWrapper::SDLWrapper():</a>
+<a name="ln333">    m_window(nullptr), m_context(nullptr), prev_keycode(0)</a>
+<a name="ln334">{</a>
+<a name="ln335">    m_cursors.fill(nullptr);</a>
+<a name="ln336">}</a>
+<a name="ln337"> </a>
+<a name="ln338">SDLWrapper::~SDLWrapper()</a>
+<a name="ln339">{</a>
+<a name="ln340">    for (const auto&amp; cursor : m_cursors)</a>
+<a name="ln341">        if (cursor)</a>
+<a name="ln342">            SDL_FreeCursor(cursor);</a>
+<a name="ln343">    if (m_context)</a>
+<a name="ln344">        SDL_GL_DeleteContext(m_context);</a>
+<a name="ln345">    if (m_window)</a>
+<a name="ln346">        SDL_DestroyWindow(m_window);</a>
+<a name="ln347">    SDL_Quit();</a>
+<a name="ln348">}</a>
+<a name="ln349"> </a>
+<a name="ln350">int SDLWrapper::init(coord_def *m_windowsz)</a>
+<a name="ln351">{</a>
+<a name="ln352">#ifdef __ANDROID__</a>
+<a name="ln353">    // Do SDL initialization</a>
+<a name="ln354">    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER</a>
+<a name="ln355">                 | SDL_INIT_NOPARACHUTE) != 0)</a>
+<a name="ln356">#else</a>
+<a name="ln357">    // Do SDL initialization</a>
+<a name="ln358">    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)</a>
+<a name="ln359">#endif</a>
+<a name="ln360">    {</a>
+<a name="ln361">        printf(&quot;Failed to initialise SDL: %s\n&quot;, SDL_GetError());</a>
+<a name="ln362">        return false;</a>
+<a name="ln363">    }</a>
+<a name="ln364"> </a>
+<a name="ln365">    // find the current display, based on the mouse position</a>
+<a name="ln366">    // TODO: probably want to allow configuring this?</a>
+<a name="ln367">    int mouse_x, mouse_y;</a>
+<a name="ln368">    SDL_GetGlobalMouseState(&amp;mouse_x, &amp;mouse_y);</a>
+<a name="ln369"> </a>
+<a name="ln370">    int displays = SDL_GetNumVideoDisplays();</a>
+<a name="ln371">    int cur_display;</a>
+<a name="ln372">    for (cur_display = 0; cur_display &lt; displays; cur_display++)</a>
+<a name="ln373">    {</a>
+<a name="ln374">        SDL_Rect bounds;</a>
+<a name="ln375">        SDL_GetDisplayBounds(cur_display, &amp;bounds);</a>
+<a name="ln376">        if (mouse_x &gt;= bounds.x &amp;&amp; mouse_y &gt;= bounds.y &amp;&amp;</a>
+<a name="ln377">            mouse_x &lt; bounds.x + bounds.w &amp;&amp; mouse_y &lt; bounds.y + bounds.h)</a>
+<a name="ln378">        {</a>
+<a name="ln379">            break;</a>
+<a name="ln380">        }</a>
+<a name="ln381">    }</a>
+<a name="ln382">    if (cur_display &gt;= displays)</a>
+<a name="ln383">        cur_display = 0; // can this happen?</a>
+<a name="ln384"> </a>
+<a name="ln385">    SDL_DisplayMode display_mode;</a>
+<a name="ln386">    SDL_GetDesktopDisplayMode(cur_display, &amp;display_mode);</a>
+<a name="ln387"> </a>
+<a name="ln388">    _desktop_width = display_mode.w;</a>
+<a name="ln389">    _desktop_height = display_mode.h;</a>
+<a name="ln390"> </a>
+<a name="ln391">#ifdef __ANDROID__</a>
+<a name="ln392">    // Request OpenGL ES 1.0 context</a>
+<a name="ln393">    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);</a>
+<a name="ln394">    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);</a>
+<a name="ln395">#endif</a>
+<a name="ln396"> </a>
+<a name="ln397">    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);</a>
+<a name="ln398">    glDebug(&quot;SDL_GL_DOUBLEBUFFER&quot;);</a>
+<a name="ln399">    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 8);</a>
+<a name="ln400">    glDebug(&quot;SDL_GL_DEPTH_SIZE 8&quot;);</a>
+<a name="ln401">    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);</a>
+<a name="ln402">    glDebug(&quot;SDL_GL_RED_SIZE 8&quot;);</a>
+<a name="ln403">    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);</a>
+<a name="ln404">    glDebug(&quot;SDL_GL_GREEN_SIZE 8&quot;);</a>
+<a name="ln405">    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);</a>
+<a name="ln406">    glDebug(&quot;SDL_GL_BLUE_SIZE 8&quot;);</a>
+<a name="ln407">    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);</a>
+<a name="ln408">    glDebug(&quot;SDL_GL_ALPHA_SIZE 8&quot;);</a>
+<a name="ln409"> </a>
+<a name="ln410">    SDL_SetHint(SDL_HINT_VIDEO_HIGHDPI_DISABLED, &quot;0&quot;);</a>
+<a name="ln411"> </a>
+<a name="ln412">#ifdef USE_GLES</a>
+<a name="ln413">#ifdef __ANDROID__</a>
+<a name="ln414">    unsigned int flags = SDL_WINDOW_OPENGL</a>
+<a name="ln415">                         | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;</a>
+<a name="ln416">#else</a>
+<a name="ln417">    unsigned int flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;</a>
+<a name="ln418">#endif</a>
+<a name="ln419">#else</a>
+<a name="ln420">    unsigned int flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE</a>
+<a name="ln421">                         | SDL_WINDOW_ALLOW_HIGHDPI;</a>
+<a name="ln422">#endif</a>
+<a name="ln423"> </a>
+<a name="ln424">    bool too_small = (_desktop_width &lt; 1024 || _desktop_height &lt; 800);</a>
+<a name="ln425">    if (Options.tile_full_screen == SCREENMODE_FULL</a>
+<a name="ln426">        || too_small &amp;&amp; Options.tile_full_screen == SCREENMODE_AUTO)</a>
+<a name="ln427">    {</a>
+<a name="ln428">        flags |= SDL_WINDOW_FULLSCREEN;</a>
+<a name="ln429">    }</a>
+<a name="ln430"> </a>
+<a name="ln431">    if (flags &amp; SDL_WINDOW_FULLSCREEN)</a>
+<a name="ln432">    {</a>
+<a name="ln433">        const int x = Options.tile_window_width;</a>
+<a name="ln434">        const int y = Options.tile_window_height;</a>
+<a name="ln435">        // By default, fill the whole screen.</a>
+<a name="ln436">        m_windowsz-&gt;x = (x &gt; 0) ? x : _desktop_width;</a>
+<a name="ln437">        m_windowsz-&gt;y = (y &gt; 0) ? y : _desktop_height;</a>
+<a name="ln438">    }</a>
+<a name="ln439">    else</a>
+<a name="ln440">    {</a>
+<a name="ln441">        int x = Options.tile_window_width;</a>
+<a name="ln442">        int y = Options.tile_window_height;</a>
+<a name="ln443">        x = (x &gt; 0) ? x : _desktop_width + x;</a>
+<a name="ln444">        y = (y &gt; 0) ? y : _desktop_height + y;</a>
+<a name="ln445">#ifdef TOUCH_UI</a>
+<a name="ln446">        // allow *much* smaller windows than default, primarily for testing</a>
+<a name="ln447">        // touch_ui features in an x86 build</a>
+<a name="ln448">        m_windowsz-&gt;x = x;</a>
+<a name="ln449">        m_windowsz-&gt;y = y;</a>
+<a name="ln450">#else</a>
+<a name="ln451">        m_windowsz-&gt;x = max(MIN_SDL_WINDOW_SIZE_X, x);</a>
+<a name="ln452">        m_windowsz-&gt;y = max(MIN_SDL_WINDOW_SIZE_Y, y);</a>
+<a name="ln453">#endif</a>
+<a name="ln454"> </a>
+<a name="ln455">#ifdef TARGET_OS_WINDOWS</a>
+<a name="ln456">        set_window_placement(m_windowsz);</a>
+<a name="ln457">#endif</a>
+<a name="ln458">    }</a>
+<a name="ln459"> </a>
+<a name="ln460">    string title = string(CRAWL &quot; &quot;) + Version::Long;</a>
+<a name="ln461">    m_window = SDL_CreateWindow(title.c_str(),</a>
+<a name="ln462">                                SDL_WINDOWPOS_CENTERED_DISPLAY(cur_display),</a>
+<a name="ln463">                                SDL_WINDOWPOS_CENTERED_DISPLAY(cur_display),</a>
+<a name="ln464">                                m_windowsz-&gt;x, m_windowsz-&gt;y, flags);</a>
+<a name="ln465">    glDebug(&quot;SDL_CreateWindow&quot;);</a>
+<a name="ln466">    if (!m_window)</a>
+<a name="ln467">    {</a>
+<a name="ln468">#ifdef __ANDROID__</a>
+<a name="ln469">        __android_log_print(ANDROID_LOG_INFO, &quot;Crawl&quot;,</a>
+<a name="ln470">                            &quot;Failed to create window: %s&quot;, SDL_GetError());</a>
+<a name="ln471">#endif</a>
+<a name="ln472">        printf(&quot;Failed to create window: %s\n&quot;, SDL_GetError());</a>
+<a name="ln473">        return false;</a>
+<a name="ln474">    }</a>
+<a name="ln475"> </a>
+<a name="ln476">    m_context = SDL_GL_CreateContext(m_window);</a>
+<a name="ln477"> </a>
+<a name="ln478">    // The following two lines are a part of the magical dance needed to get</a>
+<a name="ln479">    // Mojave to work with the version of SDL2 we are using.</a>
+<a name="ln480">    SDL_PumpEvents();</a>
+<a name="ln481">    SDL_SetWindowSize(m_window, m_windowsz-&gt;x, m_windowsz-&gt;y);</a>
+<a name="ln482"> </a>
+<a name="ln483">    glDebug(&quot;SDL_GL_CreateContext&quot;);</a>
+<a name="ln484">    if (!m_context)</a>
+<a name="ln485">    {</a>
+<a name="ln486">#ifdef __ANDROID__</a>
+<a name="ln487">        __android_log_print(ANDROID_LOG_INFO, &quot;Crawl&quot;,</a>
+<a name="ln488">                            &quot;Failed to create GL context: %s&quot;, SDL_GetError());</a>
+<a name="ln489">#endif</a>
+<a name="ln490">        printf(&quot;Failed to create GL context: %s\n&quot;, SDL_GetError());</a>
+<a name="ln491">        return false;</a>
+<a name="ln492">    }</a>
+<a name="ln493"> </a>
+<a name="ln494">    int x, y;</a>
+<a name="ln495">    SDL_GetWindowSize(m_window, &amp;x, &amp;y);</a>
+<a name="ln496">    m_windowsz-&gt;x = x;</a>
+<a name="ln497">    m_windowsz-&gt;y = y;</a>
+<a name="ln498">    init_hidpi();</a>
+<a name="ln499">#ifdef __ANDROID__</a>
+<a name="ln500"># ifndef TOUCH_UI</a>
+<a name="ln501">    SDL_StartTextInput();</a>
+<a name="ln502"># endif</a>
+<a name="ln503">    __android_log_print(ANDROID_LOG_INFO, &quot;Crawl&quot;, &quot;Window manager initialised&quot;);</a>
+<a name="ln504">#endif</a>
+<a name="ln505"> </a>
+<a name="ln506">    SDL_GL_GetDrawableSize(m_window, &amp;x, &amp;y);</a>
+<a name="ln507">    SDL_SetWindowMinimumSize(m_window, MIN_SDL_WINDOW_SIZE_X,</a>
+<a name="ln508">                             MIN_SDL_WINDOW_SIZE_Y);</a>
+<a name="ln509"> </a>
+<a name="ln510">    SDL_EnableScreenSaver();</a>
+<a name="ln511"> </a>
+<a name="ln512">    return true;</a>
+<a name="ln513">}</a>
+<a name="ln514"> </a>
+<a name="ln515">int SDLWrapper::screen_width() const</a>
+<a name="ln516">{</a>
+<a name="ln517">    int w, dummy;</a>
+<a name="ln518">    SDL_GetWindowSize(m_window, &amp;w, &amp;dummy);</a>
+<a name="ln519">    return w;</a>
+<a name="ln520">}</a>
+<a name="ln521"> </a>
+<a name="ln522">int SDLWrapper::screen_height() const</a>
+<a name="ln523">{</a>
+<a name="ln524">    int dummy, h;</a>
+<a name="ln525">    SDL_GetWindowSize(m_window, &amp;dummy, &amp;h);</a>
+<a name="ln526">    return h;</a>
+<a name="ln527">}</a>
+<a name="ln528"> </a>
+<a name="ln529">int SDLWrapper::desktop_width() const</a>
+<a name="ln530">{</a>
+<a name="ln531">    return _desktop_width;</a>
+<a name="ln532">}</a>
+<a name="ln533"> </a>
+<a name="ln534">int SDLWrapper::desktop_height() const</a>
+<a name="ln535">{</a>
+<a name="ln536">    return _desktop_height;</a>
+<a name="ln537">}</a>
+<a name="ln538"> </a>
+<a name="ln539">void SDLWrapper::set_window_title(const char *title)</a>
+<a name="ln540">{</a>
+<a name="ln541">    SDL_SetWindowTitle(m_window, title);</a>
+<a name="ln542">}</a>
+<a name="ln543"> </a>
+<a name="ln544">bool SDLWrapper::set_window_icon(const char* icon_name)</a>
+<a name="ln545">{</a>
+<a name="ln546">    string icon_path = datafile_path(icon_name, false, true);</a>
+<a name="ln547">    if (!icon_path.size())</a>
+<a name="ln548">    {</a>
+<a name="ln549">        mprf(MSGCH_ERROR, &quot;Unable to find window icon '%s'&quot;, icon_name);</a>
+<a name="ln550">        return false;</a>
+<a name="ln551">    }</a>
+<a name="ln552"> </a>
+<a name="ln553">    SDL_Surface *surf = load_image(icon_path.c_str());</a>
+<a name="ln554">    if (!surf)</a>
+<a name="ln555">    {</a>
+<a name="ln556">#ifdef __ANDROID__</a>
+<a name="ln557">        __android_log_print(ANDROID_LOG_INFO, &quot;Crawl&quot;,</a>
+<a name="ln558">                            &quot;Failed to load icon: %s&quot;, SDL_GetError());</a>
+<a name="ln559">#endif</a>
+<a name="ln560">        mprf(MSGCH_ERROR, &quot;Failed to load icon '%s': %s\n&quot;, icon_path.c_str(),</a>
+<a name="ln561">                                                                SDL_GetError());</a>
+<a name="ln562">        return false;</a>
+<a name="ln563">    }</a>
+<a name="ln564">    SDL_SetWindowIcon(m_window, surf);</a>
+<a name="ln565">    SDL_FreeSurface(surf);</a>
+<a name="ln566">    return true;</a>
+<a name="ln567">}</a>
+<a name="ln568"> </a>
+<a name="ln569">#ifdef TARGET_OS_WINDOWS</a>
+<a name="ln570">void SDLWrapper::set_window_placement(coord_def *m_windowsz)</a>
+<a name="ln571">{</a>
+<a name="ln572">    // We move the window if it overlaps the taskbar.</a>
+<a name="ln573">    const int title_bar = 29; // Title bar</a>
+<a name="ln574">    const int border = 3; // Window border</a>
+<a name="ln575">    int delta_x = (wm-&gt;desktop_width() - m_windowsz-&gt;x) / 2;</a>
+<a name="ln576">    int delta_y = (wm-&gt;desktop_height() - m_windowsz-&gt;y) / 2;</a>
+<a name="ln577">    taskbar_pos tpos = get_taskbar_pos();</a>
+<a name="ln578">    int tsize = get_taskbar_size();</a>
+<a name="ln579"> </a>
+<a name="ln580">    if (tpos == TASKBAR_TOP)</a>
+<a name="ln581">        tsize += title_bar;</a>
+<a name="ln582">    else</a>
+<a name="ln583">        tsize += border;</a>
+<a name="ln584"> </a>
+<a name="ln585">    int overlap = tsize - (tpos &amp; TASKBAR_H ? delta_y : delta_x);</a>
+<a name="ln586"> </a>
+<a name="ln587">    if (overlap &gt; 0)</a>
+<a name="ln588">    {</a>
+<a name="ln589">        char env_str[50];</a>
+<a name="ln590">        int x = delta_x;</a>
+<a name="ln591">        int y = delta_y;</a>
+<a name="ln592"> </a>
+<a name="ln593">        if (tpos &amp; TASKBAR_H)</a>
+<a name="ln594">            y += tpos == TASKBAR_TOP ? overlap : -overlap;</a>
+<a name="ln595">        else</a>
+<a name="ln596">            x += tpos == TASKBAR_LEFT ? overlap : -overlap;</a>
+<a name="ln597"> </a>
+<a name="ln598">        // Keep the window in the screen.</a>
+<a name="ln599">        x = max(x, border);</a>
+<a name="ln600">        y = max(y, title_bar);</a>
+<a name="ln601"> </a>
+<a name="ln602">        //We resize the window so that it fits in the screen.</a>
+<a name="ln603">        m_windowsz-&gt;x = min(m_windowsz-&gt;x, wm-&gt;desktop_width()</a>
+<a name="ln604">                            - (tpos &amp; TASKBAR_V ? tsize : 0)</a>
+<a name="ln605">                            - border * 2);</a>
+<a name="ln606">        m_windowsz-&gt;y = min(m_windowsz-&gt;y, wm-&gt;desktop_height()</a>
+<a name="ln607">                            - (tpos &amp; TASKBAR_H ? tsize : 0)</a>
+<a name="ln608">                            - (tpos &amp; TASKBAR_TOP ? 0 : title_bar)</a>
+<a name="ln609">                            - border);</a>
+<a name="ln610">        sprintf(env_str, &quot;SDL_VIDEO_WINDOW_POS=%d,%d&quot;, x, y);</a>
+<a name="ln611">        putenv(env_str);</a>
+<a name="ln612">    }</a>
+<a name="ln613">    else</a>
+<a name="ln614">    {</a>
+<a name="ln615">        putenv(&quot;SDL_VIDEO_WINDOW_POS=center&quot;);</a>
+<a name="ln616">        putenv(&quot;SDL_VIDEO_CENTERED=1&quot;);</a>
+<a name="ln617">    }</a>
+<a name="ln618">}</a>
+<a name="ln619">#endif</a>
+<a name="ln620"> </a>
+<a name="ln621">bool SDLWrapper::init_hidpi()</a>
+<a name="ln622">{</a>
+<a name="ln623">    coord_def windowsz;</a>
+<a name="ln624">    coord_def drawablesz;</a>
+<a name="ln625">    SDL_GetWindowSize(m_window, &amp;(windowsz.x), &amp;(windowsz.y));</a>
+<a name="ln626">    SDL_GL_GetDrawableSize(m_window, &amp;(drawablesz.x), &amp;(drawablesz.y));</a>
+<a name="ln627">    return display_density.update(drawablesz.x, windowsz.x);</a>
+<a name="ln628">}</a>
+<a name="ln629"> </a>
+<a name="ln630">void SDLWrapper::resize(coord_def &amp;m_windowsz)</a>
+<a name="ln631">{</a>
+<a name="ln632">    coord_def m_drawablesz;</a>
+<a name="ln633">    init_hidpi();</a>
+<a name="ln634">    SDL_GL_GetDrawableSize(m_window, &amp;(m_drawablesz.x), &amp;(m_drawablesz.y));</a>
+<a name="ln635">    glmanager-&gt;reset_view_for_resize(m_windowsz, m_drawablesz);</a>
+<a name="ln636">}</a>
+<a name="ln637"> </a>
+<a name="ln638">unsigned int SDLWrapper::get_ticks() const</a>
+<a name="ln639">{</a>
+<a name="ln640">    return SDL_GetTicks();</a>
+<a name="ln641">}</a>
+<a name="ln642"> </a>
+<a name="ln643">tiles_key_mod SDLWrapper::get_mod_state() const</a>
+<a name="ln644">{</a>
+<a name="ln645">    SDL_Keymod mod = SDL_GetModState();</a>
+<a name="ln646"> </a>
+<a name="ln647">    switch (mod)</a>
+<a name="ln648">    {</a>
+<a name="ln649">    case KMOD_LSHIFT:</a>
+<a name="ln650">    case KMOD_RSHIFT:</a>
+<a name="ln651">        return TILES_MOD_SHIFT;</a>
+<a name="ln652">        break;</a>
+<a name="ln653">    case KMOD_LCTRL:</a>
+<a name="ln654">    case KMOD_RCTRL:</a>
+<a name="ln655">        return TILES_MOD_CTRL;</a>
+<a name="ln656">        break;</a>
+<a name="ln657">    case KMOD_LALT:</a>
+<a name="ln658">    case KMOD_RALT:</a>
+<a name="ln659">        return TILES_MOD_ALT;</a>
+<a name="ln660">        break;</a>
+<a name="ln661">    case KMOD_NONE:</a>
+<a name="ln662">    default:</a>
+<a name="ln663">        return TILES_MOD_NONE;</a>
+<a name="ln664">    }</a>
+<a name="ln665">}</a>
+<a name="ln666"> </a>
+<a name="ln667">void SDLWrapper::set_mod_state(tiles_key_mod mod)</a>
+<a name="ln668">{</a>
+<a name="ln669">    SDL_Keymod set_to;</a>
+<a name="ln670">    switch (mod)</a>
+<a name="ln671">    {</a>
+<a name="ln672">    case TILES_MOD_NONE:</a>
+<a name="ln673">        set_to = KMOD_NONE;</a>
+<a name="ln674">        break;</a>
+<a name="ln675">    case TILES_MOD_SHIFT:</a>
+<a name="ln676">        set_to = KMOD_LSHIFT;</a>
+<a name="ln677">        break;</a>
+<a name="ln678">    case TILES_MOD_CTRL:</a>
+<a name="ln679">        set_to = KMOD_LCTRL;</a>
+<a name="ln680">        break;</a>
+<a name="ln681">    case TILES_MOD_ALT:</a>
+<a name="ln682">        set_to = KMOD_LALT;</a>
+<a name="ln683">        break;</a>
+<a name="ln684">    default:</a>
+<a name="ln685">        set_to = KMOD_NONE;</a>
+<a name="ln686">        break;</a>
+<a name="ln687">    }</a>
+<a name="ln688"> </a>
+<a name="ln689">    SDL_SetModState(set_to);</a>
+<a name="ln690">}</a>
+<a name="ln691"> </a>
+<a name="ln692">void SDLWrapper::set_mouse_cursor(mouse_cursor_type type)</a>
+<a name="ln693">{</a>
+<a name="ln694">    SDL_Cursor *cursor = m_cursors[type];</a>
+<a name="ln695"> </a>
+<a name="ln696">    if (!cursor)</a>
+<a name="ln697">    {</a>
+<a name="ln698">        SDL_SystemCursor sdl_cursor_id;</a>
+<a name="ln699">        switch (type)</a>
+<a name="ln700">        {</a>
+<a name="ln701">            case MOUSE_CURSOR_ARROW:</a>
+<a name="ln702">                sdl_cursor_id = SDL_SYSTEM_CURSOR_ARROW;</a>
+<a name="ln703">                break;</a>
+<a name="ln704">            case MOUSE_CURSOR_POINTER:</a>
+<a name="ln705">                sdl_cursor_id = SDL_SYSTEM_CURSOR_HAND;</a>
+<a name="ln706">                break;</a>
+<a name="ln707">            default:</a>
+<a name="ln708">                die(&quot;bad mouse cursor type&quot;);</a>
+<a name="ln709">        }</a>
+<a name="ln710">        cursor = m_cursors[type] = SDL_CreateSystemCursor(sdl_cursor_id);</a>
+<a name="ln711">        if (!cursor)</a>
+<a name="ln712">        {</a>
+<a name="ln713">            printf(&quot;Failed to create cursor: %s\n&quot;, SDL_GetError());</a>
+<a name="ln714">            return;</a>
+<a name="ln715">        }</a>
+<a name="ln716">    }</a>
+<a name="ln717"> </a>
+<a name="ln718">    SDL_SetCursor(cursor);</a>
+<a name="ln719">}</a>
+<a name="ln720"> </a>
+<a name="ln721">unsigned short SDLWrapper::get_mouse_state(int *x, int *y) const</a>
+<a name="ln722">{</a>
+<a name="ln723">    Uint32 state = SDL_GetMouseState(x, y);</a>
+<a name="ln724">    unsigned short ret = 0;</a>
+<a name="ln725">    if (state &amp; SDL_BUTTON(SDL_BUTTON_LEFT))</a>
+<a name="ln726">        ret |= wm_mouse_event::LEFT;</a>
+<a name="ln727">    if (state &amp; SDL_BUTTON(SDL_BUTTON_RIGHT))</a>
+<a name="ln728">        ret |= wm_mouse_event::RIGHT;</a>
+<a name="ln729">    if (state &amp; SDL_BUTTON(SDL_BUTTON_MIDDLE))</a>
+<a name="ln730">        ret |= wm_mouse_event::MIDDLE;</a>
+<a name="ln731">    return ret;</a>
+<a name="ln732">}</a>
+<a name="ln733"> </a>
+<a name="ln734">string SDLWrapper::get_clipboard()</a>
+<a name="ln735">{</a>
+<a name="ln736">    string result;</a>
+<a name="ln737">    char *clip = SDL_GetClipboardText();</a>
+<a name="ln738">    if (!clip)</a>
+<a name="ln739">        return result;</a>
+<a name="ln740">    result = string(clip);</a>
+<a name="ln741">    SDL_free(clip);</a>
+<a name="ln742">    return result;</a>
+<a name="ln743">}</a>
+<a name="ln744"> </a>
+<a name="ln745">bool SDLWrapper::has_clipboard()</a>
+<a name="ln746">{</a>
+<a name="ln747">    return SDL_HasClipboardText() == SDL_TRUE;</a>
+<a name="ln748">}</a>
+<a name="ln749"> </a>
+<a name="ln750">static char32_t _key_suppresses_textinput(int keycode)</a>
+<a name="ln751">{</a>
+<a name="ln752">    char result_char = 0;</a>
+<a name="ln753">    char32_t result = 0;</a>
+<a name="ln754">    switch (keycode)</a>
+<a name="ln755">    {</a>
+<a name="ln756">    case SDLK_KP_5:</a>
+<a name="ln757">    case SDLK_CLEAR:</a>
+<a name="ln758">        result_char = '5';</a>
+<a name="ln759">        break;</a>
+<a name="ln760">    case SDLK_KP_8:</a>
+<a name="ln761">    case SDLK_UP:</a>
+<a name="ln762">        result_char = '8';</a>
+<a name="ln763">        break;</a>
+<a name="ln764">    case SDLK_KP_2:</a>
+<a name="ln765">    case SDLK_DOWN:</a>
+<a name="ln766">        result_char = '2';</a>
+<a name="ln767">        break;</a>
+<a name="ln768">    case SDLK_KP_4:</a>
+<a name="ln769">    case SDLK_LEFT:</a>
+<a name="ln770">        result_char = '4';</a>
+<a name="ln771">        break;</a>
+<a name="ln772">    case SDLK_KP_6:</a>
+<a name="ln773">    case SDLK_RIGHT:</a>
+<a name="ln774">        result_char = '6';</a>
+<a name="ln775">        break;</a>
+<a name="ln776">    case SDLK_KP_0:</a>
+<a name="ln777">    case SDLK_INSERT:</a>
+<a name="ln778">        result_char = '0';</a>
+<a name="ln779">        break;</a>
+<a name="ln780">    case SDLK_KP_7:</a>
+<a name="ln781">    case SDLK_HOME:</a>
+<a name="ln782">        result_char = '7';</a>
+<a name="ln783">        break;</a>
+<a name="ln784">    case SDLK_KP_1:</a>
+<a name="ln785">    case SDLK_END:</a>
+<a name="ln786">        result_char = '1';</a>
+<a name="ln787">        break;</a>
+<a name="ln788">    case SDLK_KP_9:</a>
+<a name="ln789">    case SDLK_PAGEUP:</a>
+<a name="ln790">        result_char = '9';</a>
+<a name="ln791">        break;</a>
+<a name="ln792">    case SDLK_KP_3:</a>
+<a name="ln793">    case SDLK_PAGEDOWN:</a>
+<a name="ln794">        result_char = '3';</a>
+<a name="ln795">        break;</a>
+<a name="ln796">    }</a>
+<a name="ln797">    if (result_char)</a>
+<a name="ln798">        utf8towc(&amp;result, &amp;result_char);</a>
+<a name="ln799">    return result;</a>
+<a name="ln800">}</a>
+<a name="ln801"> </a>
+<a name="ln802">int SDLWrapper::send_textinput(wm_event *event)</a>
+<a name="ln803">{</a>
+<a name="ln804">    event-&gt;type = WME_KEYDOWN;</a>
+<a name="ln805">    do</a>
+<a name="ln806">    {</a>
+<a name="ln807">        // pop a key off the input queue</a>
+<a name="ln808">        char32_t wc;</a>
+<a name="ln809">        int wc_bytelen = utf8towc(&amp;wc, m_textinput_queue.c_str());</a>
+<a name="ln810">        m_textinput_queue.erase(0, wc_bytelen);</a>
+<a name="ln811"> </a>
+<a name="ln812">        // SDL2 on linux sends an apparently spurious '=' text event for ctrl-=,</a>
+<a name="ln813">        // but not for key combinations like ctrl-f (no 'f' text event is sent).</a>
+<a name="ln814">        // this is relevant only for ctrl-- and ctrl-= bindings at the moment,</a>
+<a name="ln815">        // and I'm somewhat nervous about blocking genuine text entry via the alt</a>
+<a name="ln816">        // key, so for the moment this only blacklists text events with ctrl held</a>
+<a name="ln817">        bool nontext_modifier_held = wm-&gt;get_mod_state() == TILES_MOD_CTRL;</a>
+<a name="ln818"> </a>
+<a name="ln819">        bool should_suppress = prev_keycode &amp;&amp; _key_suppresses_textinput(prev_keycode) == wc;</a>
+<a name="ln820">        if (nontext_modifier_held || should_suppress)</a>
+<a name="ln821">        {</a>
+<a name="ln822">            // this needs to return something, or the event loop in</a>
+<a name="ln823">            // TilesFramework::getch_ck will block. Currently, CK_NO_KEY</a>
+<a name="ln824">            // is handled in macro.cc:_getch_mul.</a>
+<a name="ln825">            prev_keycode = 0;</a>
+<a name="ln826">            if (!m_textinput_queue.empty())</a>
+<a name="ln827">                continue;</a>
+<a name="ln828">            event-&gt;key.keysym.sym = CK_NO_KEY;</a>
+<a name="ln829">            return 1;</a>
+<a name="ln830">        }</a>
+<a name="ln831">        event-&gt;key.keysym.sym = wc;</a>
+<a name="ln832">    }</a>
+<a name="ln833">    while (false);</a>
+<a name="ln834">    return 1;</a>
+<a name="ln835">}</a>
+<a name="ln836"> </a>
+<a name="ln837">int SDLWrapper::wait_event(wm_event *event, int timeout)</a>
+<a name="ln838">{</a>
+<a name="ln839">    SDL_Event sdlevent;</a>
+<a name="ln840"> </a>
+<a name="ln841">    if (!m_textinput_queue.empty())</a>
+<a name="ln842">        return send_textinput(event);</a>
+<a name="ln843"> </a>
+<a name="ln844">    if (!SDL_WaitEventTimeout(&amp;sdlevent, timeout))</a>
+<a name="ln845">        return 0;</a>
+<a name="ln846"> </a>
+<a name="ln847">    if (sdlevent.type != SDL_TEXTINPUT)</a>
+<a name="ln848">        prev_keycode = 0;</a>
+<a name="ln849"> </a>
+<a name="ln850">    // translate the SDL_Event into the almost-analogous wm_event</a>
+<a name="ln851">    switch (sdlevent.type)</a>
+<a name="ln852">    {</a>
+<a name="ln853">    case SDL_WINDOWEVENT:</a>
+<a name="ln854">        SDL_SetModState(KMOD_NONE);</a>
+<a name="ln855">        _translate_window_event(sdlevent.window, *event);</a>
+<a name="ln856">        break;</a>
+<a name="ln857">    case SDL_KEYDOWN:</a>
+<a name="ln858">        if (Options.tile_key_repeat_delay &lt;= 0 &amp;&amp; sdlevent.key.repeat != 0)</a>
+<a name="ln859">            return 0;</a>
+<a name="ln860">        event-&gt;type = WME_KEYDOWN;</a>
+<a name="ln861">        event-&gt;key.state = sdlevent.key.state;</a>
+<a name="ln862">        event-&gt;key.keysym.scancode = sdlevent.key.keysym.scancode;</a>
+<a name="ln863">        event-&gt;key.keysym.key_mod = _get_modifiers(sdlevent.key.keysym);</a>
+<a name="ln864">        event-&gt;key.keysym.unicode = sdlevent.key.keysym.sym; // ???</a>
+<a name="ln865">        event-&gt;key.keysym.sym = _translate_keysym(sdlevent.key.keysym);</a>
+<a name="ln866"> </a>
+<a name="ln867">        if (!event-&gt;key.keysym.unicode &amp;&amp; event-&gt;key.keysym.sym &gt; 0)</a>
+<a name="ln868">            return 0;</a>
+<a name="ln869"> </a>
+<a name="ln870">        // If we're going to accept this keydown, don't generate subsequent</a>
+<a name="ln871">        // textinput events for the same key. This mechanism assumes that a</a>
+<a name="ln872">        // fake textinput will arrive as the immediately following SDL event.</a>
+<a name="ln873">        prev_keycode = sdlevent.key.keysym.sym;</a>
+<a name="ln874"> </a>
+<a name="ln875">/*</a>
+<a name="ln876"> * LShift = scancode 0x30; tiles_key_mod 0x1; unicode 0x130; sym 0x130 SDLK_LSHIFT</a>
+<a name="ln877"> * LCtrl  = scancode 0x32; tiles_key_mod 0x2; unicode 0x132; sym 0x132 SDLK_LCTRL</a>
+<a name="ln878"> * LAlt   = scancode 0x34; tiles_key_mod 0x4; unicode 0x134; sym 0x134 SDLK_LALT</a>
+<a name="ln879"> */</a>
+<a name="ln880">        break;</a>
+<a name="ln881">    case SDL_KEYUP:</a>
+<a name="ln882">        event-&gt;type = WME_KEYUP;</a>
+<a name="ln883">        event-&gt;key.state = sdlevent.key.state;</a>
+<a name="ln884">        event-&gt;key.keysym.scancode = sdlevent.key.keysym.scancode;</a>
+<a name="ln885">        event-&gt;key.keysym.key_mod = _get_modifiers(sdlevent.key.keysym);</a>
+<a name="ln886">        event-&gt;key.keysym.unicode = sdlevent.key.keysym.sym; // ???</a>
+<a name="ln887">        event-&gt;key.keysym.sym = _translate_keysym(sdlevent.key.keysym);</a>
+<a name="ln888"> </a>
+<a name="ln889">        break;</a>
+<a name="ln890">    case SDL_TEXTINPUT:</a>
+<a name="ln891">    {</a>
+<a name="ln892">        ASSERT(m_textinput_queue.empty());</a>
+<a name="ln893">        m_textinput_queue = string(sdlevent.text.text);</a>
+<a name="ln894">        return send_textinput(event);</a>
+<a name="ln895">    }</a>
+<a name="ln896">    case SDL_MOUSEMOTION:</a>
+<a name="ln897">        event-&gt;type = WME_MOUSEMOTION;</a>
+<a name="ln898">        _translate_event(sdlevent.motion, event-&gt;mouse_event);</a>
+<a name="ln899">        break;</a>
+<a name="ln900">    case SDL_MOUSEBUTTONUP:</a>
+<a name="ln901">        event-&gt;type = WME_MOUSEBUTTONUP;</a>
+<a name="ln902">        _translate_event(sdlevent.button, event-&gt;mouse_event);</a>
+<a name="ln903">        break;</a>
+<a name="ln904">    case SDL_MOUSEBUTTONDOWN:</a>
+<a name="ln905">        event-&gt;type = WME_MOUSEBUTTONDOWN;</a>
+<a name="ln906">        _translate_event(sdlevent.button, event-&gt;mouse_event);</a>
+<a name="ln907">        break;</a>
+<a name="ln908">    case SDL_MOUSEWHEEL:</a>
+<a name="ln909">        event-&gt;type = WME_MOUSEWHEEL;</a>
+<a name="ln910">        _translate_wheel_event(sdlevent.wheel, event-&gt;mouse_event);</a>
+<a name="ln911">        break;</a>
+<a name="ln912">    case SDL_QUIT:</a>
+<a name="ln913">        event-&gt;type = WME_QUIT;</a>
+<a name="ln914">        break;</a>
+<a name="ln915"> </a>
+<a name="ln916">    // I leave these as the same, because the original tilesdl does, too</a>
+<a name="ln917">    case SDL_USEREVENT:</a>
+<a name="ln918">        event-&gt;type = WME_CUSTOMEVENT;</a>
+<a name="ln919">        event-&gt;custom.code = sdlevent.user.code;</a>
+<a name="ln920">        event-&gt;custom.data1 = sdlevent.user.data1;</a>
+<a name="ln921">        event-&gt;custom.data2 = sdlevent.user.data2;</a>
+<a name="ln922">        break;</a>
+<a name="ln923"> </a>
+<a name="ln924">    default:</a>
+<a name="ln925">        return 0;</a>
+<a name="ln926">    }</a>
+<a name="ln927"> </a>
+<a name="ln928">    return 1;</a>
+<a name="ln929">}</a>
+<a name="ln930"> </a>
+<a name="ln931">static unsigned int _timer_callback(unsigned int ticks, void *param)</a>
+<a name="ln932">{</a>
+<a name="ln933">    UNUSED(ticks);</a>
+<a name="ln934"> </a>
+<a name="ln935">    SDL_Event event;</a>
+<a name="ln936">    memset(&amp;event, 0, sizeof(event));</a>
+<a name="ln937">    event.type = SDL_USEREVENT;</a>
+<a name="ln938">    event.user.data1 = param;</a>
+<a name="ln939">    SDL_PushEvent(&amp;event);</a>
+<a name="ln940">    return 0;</a>
+<a name="ln941">}</a>
+<a name="ln942"> </a>
+<a name="ln943">unsigned int SDLWrapper::set_timer(unsigned int interval,</a>
+<a name="ln944">                                   wm_timer_callback callback)</a>
+<a name="ln945">{</a>
+<a name="ln946">    return SDL_AddTimer(interval, _timer_callback, reinterpret_cast&lt;void*&gt;(callback));</a>
+<a name="ln947">}</a>
+<a name="ln948"> </a>
+<a name="ln949">void SDLWrapper::remove_timer(unsigned int&amp; timer_id)</a>
+<a name="ln950">{</a>
+<a name="ln951">    if (timer_id)</a>
+<a name="ln952">    {</a>
+<a name="ln953">        SDL_RemoveTimer(timer_id);</a>
+<a name="ln954">        timer_id = 0;</a>
+<a name="ln955">    }</a>
+<a name="ln956">}</a>
+<a name="ln957"> </a>
+<a name="ln958">void SDLWrapper::swap_buffers()</a>
+<a name="ln959">{</a>
+<a name="ln960">    SDL_GL_SwapWindow(m_window);</a>
+<a name="ln961">}</a>
+<a name="ln962"> </a>
+<a name="ln963">void SDLWrapper::delay(unsigned int ms)</a>
+<a name="ln964">{</a>
+<a name="ln965">    SDL_Delay(ms);</a>
+<a name="ln966">}</a>
+<a name="ln967"> </a>
+<a name="ln968">bool SDLWrapper::next_event_is(wm_event_type type)</a>
+<a name="ln969">{</a>
+<a name="ln970">    // check for enqueued characters from a multi-char textinput event</a>
+<a name="ln971">    // count is floored to 1 for consistency with other event types</a>
+<a name="ln972">    if (type == WME_KEYDOWN &amp;&amp; m_textinput_queue.size() &gt; 0)</a>
+<a name="ln973">        return true;</a>
+<a name="ln974"> </a>
+<a name="ln975">    // Look for the presence of any keyboard events in the queue.</a>
+<a name="ln976">    Uint32 event;</a>
+<a name="ln977">    switch (type)</a>
+<a name="ln978">    {</a>
+<a name="ln979">    case WME_ACTIVEEVENT:</a>
+<a name="ln980">    case WME_RESIZE: // XXX</a>
+<a name="ln981">    case WME_MOVE:</a>
+<a name="ln982">    case WME_EXPOSE: // XXX</a>
+<a name="ln983">        event = SDL_WINDOWEVENT;</a>
+<a name="ln984">        break;</a>
+<a name="ln985"> </a>
+<a name="ln986">    case WME_KEYDOWN:</a>
+<a name="ln987">        event = SDL_KEYDOWN;</a>
+<a name="ln988">        break;</a>
+<a name="ln989"> </a>
+<a name="ln990">    case WME_KEYUP:</a>
+<a name="ln991">        event = SDL_KEYUP;</a>
+<a name="ln992">        break;</a>
+<a name="ln993"> </a>
+<a name="ln994">    case WME_MOUSEMOTION:</a>
+<a name="ln995">        event = SDL_MOUSEMOTION;</a>
+<a name="ln996">        break;</a>
+<a name="ln997"> </a>
+<a name="ln998">    case WME_MOUSEBUTTONUP:</a>
+<a name="ln999">        event = SDL_MOUSEBUTTONUP;</a>
+<a name="ln1000">        break;</a>
+<a name="ln1001"> </a>
+<a name="ln1002">    case WME_MOUSEBUTTONDOWN:</a>
+<a name="ln1003">        event = SDL_MOUSEBUTTONDOWN;</a>
+<a name="ln1004">        break;</a>
+<a name="ln1005"> </a>
+<a name="ln1006">    case WME_MOUSEWHEEL:</a>
+<a name="ln1007">        event = SDL_MOUSEWHEEL;</a>
+<a name="ln1008">        break;</a>
+<a name="ln1009"> </a>
+<a name="ln1010">    case WME_QUIT:</a>
+<a name="ln1011">        event = SDL_QUIT;</a>
+<a name="ln1012">        break;</a>
+<a name="ln1013"> </a>
+<a name="ln1014">    case WME_CUSTOMEVENT:</a>
+<a name="ln1015">        event = SDL_USEREVENT;</a>
+<a name="ln1016">        break;</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    default:</a>
+<a name="ln1019">        // Error</a>
+<a name="ln1020">        return 0;</a>
+<a name="ln1021">    }</a>
+<a name="ln1022"> </a>
+<a name="ln1023">    SDL_Event store;</a>
+<a name="ln1024">    SDL_PumpEvents();</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    // Note: this returns -1 for error.</a>
+<a name="ln1027">    int count = SDL_PeepEvents(&amp;store, 1, SDL_PEEKEVENT, event, event);</a>
+<a name="ln1028">    if (type == WME_KEYDOWN)</a>
+<a name="ln1029">        count += SDL_PeepEvents(&amp;store, 1, SDL_PEEKEVENT, SDL_TEXTINPUT, SDL_TEXTINPUT);</a>
+<a name="ln1030">    ASSERT(count &gt;= 0);</a>
+<a name="ln1031"> </a>
+<a name="ln1032">    return count != 0;</a>
+<a name="ln1033">}</a>
+<a name="ln1034"> </a>
+<a name="ln1035">void SDLWrapper::show_keyboard()</a>
+<a name="ln1036">{</a>
+<a name="ln1037">    SDL_StartTextInput(); // XXX: Intended for Android; harmless elsewhere?</a>
+<a name="ln1038">}</a>
+<a name="ln1039"> </a>
+<a name="ln1040">bool SDLWrapper::load_texture(GenericTexture *tex, const char *filename,</a>
+<a name="ln1041">                              MipMapOptions mip_opt, unsigned int &amp;orig_width,</a>
+<a name="ln1042">                              unsigned int &amp;orig_height, tex_proc_func proc,</a>
+<a name="ln1043">                              bool force_power_of_two)</a>
+<a name="ln1044">{</a>
+<a name="ln1045">    char acBuffer[512];</a>
+<a name="ln1046"> </a>
+<a name="ln1047">    string tex_path = datafile_path(filename);</a>
+<a name="ln1048"> </a>
+<a name="ln1049">    if (tex_path.c_str()[0] == 0)</a>
+<a name="ln1050">    {</a>
+<a name="ln1051">#ifdef __ANDROID__</a>
+<a name="ln1052">        __android_log_print(ANDROID_LOG_INFO, &quot;Crawl&quot;,</a>
+<a name="ln1053">                            &quot;Couldn't find texture '%s'.&quot;, filename);</a>
+<a name="ln1054">#endif</a>
+<a name="ln1055">        fprintf(stderr, &quot;Couldn't find texture '%s'.\n&quot;, filename);</a>
+<a name="ln1056">        return false;</a>
+<a name="ln1057">    }</a>
+<a name="ln1058"> </a>
+<a name="ln1059">    SDL_Surface *img = load_image(tex_path.c_str());</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    if (!img)</a>
+<a name="ln1062">    {</a>
+<a name="ln1063">#ifdef __ANDROID__</a>
+<a name="ln1064">        __android_log_print(ANDROID_LOG_INFO, &quot;Crawl&quot;,</a>
+<a name="ln1065">                            &quot;Couldn't load texture '%s'.&quot;, tex_path.c_str());</a>
+<a name="ln1066">#endif</a>
+<a name="ln1067">        fprintf(stderr, &quot;Couldn't load texture '%s'.\n&quot;, tex_path.c_str());</a>
+<a name="ln1068">        return false;</a>
+<a name="ln1069">    }</a>
+<a name="ln1070"> </a>
+<a name="ln1071">    unsigned int bpp = img-&gt;format-&gt;BytesPerPixel;</a>
+<a name="ln1072">    glmanager-&gt;pixelstore_unpack_alignment(1);</a>
+<a name="ln1073"> </a>
+<a name="ln1074">    // Determine texture format</a>
+<a name="ln1075">    unsigned char *pixels = (unsigned char*)img-&gt;pixels;</a>
+<a name="ln1076"> </a>
+<a name="ln1077">    int new_width;</a>
+<a name="ln1078">    int new_height;</a>
+<a name="ln1079">    if (force_power_of_two)</a>
+<a name="ln1080">    {</a>
+<a name="ln1081">        new_width = 1;</a>
+<a name="ln1082">        while (new_width &lt; img-&gt;w)</a>
+<a name="ln1083">            new_width *= 2;</a>
+<a name="ln1084"> </a>
+<a name="ln1085">        new_height = 1;</a>
+<a name="ln1086">        while (new_height &lt; img-&gt;h)</a>
+<a name="ln1087">            new_height *= 2;</a>
+<a name="ln1088">    }</a>
+<a name="ln1089">    else</a>
+<a name="ln1090">    {</a>
+<a name="ln1091">        new_width = img-&gt;w;</a>
+<a name="ln1092">        new_height = img-&gt;h;</a>
+<a name="ln1093">    }</a>
+<a name="ln1094"> </a>
+<a name="ln1095">    // GLenum texture_format</a>
+<a name="ln1096">    if (bpp == 4)</a>
+<a name="ln1097">    {</a>
+<a name="ln1098">        // Even if the size is the same, still go through</a>
+<a name="ln1099">        // SDL_GetRGBA to put the image in the right format.</a>
+<a name="ln1100">        SDL_LockSurface(img);</a>
+<a name="ln1101">        pixels = new unsigned char[4 * new_width * new_height];</a>
+<a name="ln1102">        memset(pixels, 0, 4 * new_width * new_height);</a>
+<a name="ln1103"> </a>
+<a name="ln1104">        int dest = 0;</a>
+<a name="ln1105">        for (int y = 0; y &lt; img-&gt;h; y++)</a>
+<a name="ln1106">        {</a>
+<a name="ln1107">            for (int x = 0; x &lt; img-&gt;w; x++)</a>
+<a name="ln1108">            {</a>
+<a name="ln1109">                unsigned char *p = ((unsigned char*)img-&gt;pixels</a>
+<a name="ln1110">                                  + y * img-&gt;pitch + x * bpp);</a>
+<a name="ln1111">                unsigned int pixel = *(unsigned int*)p;</a>
+<a name="ln1112">                SDL_GetRGBA(pixel, img-&gt;format, &amp;pixels[dest],</a>
+<a name="ln1113">                            &amp;pixels[dest+1], &amp;pixels[dest+2],</a>
+<a name="ln1114">                            &amp;pixels[dest+3]);</a>
+<a name="ln1115">                dest += 4;</a>
+<a name="ln1116">            }</a>
+<a name="ln1117">            dest += 4 * (new_width - img-&gt;w);</a>
+<a name="ln1118">        }</a>
+<a name="ln1119"> </a>
+<a name="ln1120">        SDL_UnlockSurface(img);</a>
+<a name="ln1121">    }</a>
+<a name="ln1122">    else if (bpp == 3)</a>
+<a name="ln1123">    {</a>
+<a name="ln1124">        if (new_width != img-&gt;w || new_height != img-&gt;h)</a>
+<a name="ln1125">        {</a>
+<a name="ln1126">            SDL_LockSurface(img);</a>
+<a name="ln1127">            pixels = new unsigned char[4 * new_width * new_height];</a>
+<a name="ln1128">            memset(pixels, 0, 4 * new_width * new_height);</a>
+<a name="ln1129"> </a>
+<a name="ln1130">            int dest = 0;</a>
+<a name="ln1131">            for (int y = 0; y &lt; img-&gt;h; y++)</a>
+<a name="ln1132">            {</a>
+<a name="ln1133">                for (int x = 0; x &lt; img-&gt;w; x++)</a>
+<a name="ln1134">                {</a>
+<a name="ln1135">                    unsigned char *p = ((unsigned char*)img-&gt;pixels</a>
+<a name="ln1136">                                       + y * img-&gt;pitch + x * bpp);</a>
+<a name="ln1137">                    unsigned int pixel;</a>
+<a name="ln1138">                    if (SDL_BYTEORDER == SDL_BIG_ENDIAN)</a>
+<a name="ln1139">                        pixel = p[0] &lt;&lt; 16 | p[1] &lt;&lt; 8 | p[2];</a>
+<a name="ln1140">                    else</a>
+<a name="ln1141">                        pixel = p[0] | p[1] &lt;&lt; 8 | p[2] &lt;&lt; 16;</a>
+<a name="ln1142">                    SDL_GetRGBA(pixel, img-&gt;format, &amp;pixels[dest],</a>
+<a name="ln1143">                                &amp;pixels[dest+1], &amp;pixels[dest+2],</a>
+<a name="ln1144">                                &amp;pixels[dest+3]);</a>
+<a name="ln1145">                    dest += 4;</a>
+<a name="ln1146">                }</a>
+<a name="ln1147">                dest += 4 * (new_width - img-&gt;w);</a>
+<a name="ln1148">            }</a>
+<a name="ln1149"> </a>
+<a name="ln1150">            SDL_UnlockSurface(img);</a>
+<a name="ln1151">        }</a>
+<a name="ln1152">    }</a>
+<a name="ln1153">    else if (bpp == 1)</a>
+<a name="ln1154">    {</a>
+<a name="ln1155">        // need to depalettize</a>
+<a name="ln1156">        SDL_LockSurface(img);</a>
+<a name="ln1157"> </a>
+<a name="ln1158">        pixels = new unsigned char[4 * new_width * new_height];</a>
+<a name="ln1159"> </a>
+<a name="ln1160">        SDL_Palette* pal = img-&gt;format-&gt;palette;</a>
+<a name="ln1161">        ASSERT(pal);</a>
+<a name="ln1162">        ASSERT(pal-&gt;colors);</a>
+<a name="ln1163"> </a>
+<a name="ln1164">        int src = 0;</a>
+<a name="ln1165">        int dest = 0;</a>
+<a name="ln1166">        for (int y = 0; y &lt; img-&gt;h; y++)</a>
+<a name="ln1167">        {</a>
+<a name="ln1168">            int x;</a>
+<a name="ln1169">            for (x = 0; x &lt; img-&gt;w; x++)</a>
+<a name="ln1170">            {</a>
+<a name="ln1171">                unsigned int index = ((unsigned char*)img-&gt;pixels)[src+x];</a>
+<a name="ln1172">                pixels[dest*4    ] = pal-&gt;colors[index].r;</a>
+<a name="ln1173">                pixels[dest*4 + 1] = pal-&gt;colors[index].g;</a>
+<a name="ln1174">                pixels[dest*4 + 2] = pal-&gt;colors[index].b;</a>
+<a name="ln1175">                pixels[dest*4 + 3] = pal-&gt;colors[index].a;</a>
+<a name="ln1176">                dest++;</a>
+<a name="ln1177">            }</a>
+<a name="ln1178">            while (x++ &lt; new_width)</a>
+<a name="ln1179">            {</a>
+<a name="ln1180">                // Extend to the right with transparent pixels</a>
+<a name="ln1181">                pixels[dest*4    ] = 0;</a>
+<a name="ln1182">                pixels[dest*4 + 1] = 0;</a>
+<a name="ln1183">                pixels[dest*4 + 2] = 0;</a>
+<a name="ln1184">                pixels[dest*4 + 3] = 0;</a>
+<a name="ln1185">                dest++;</a>
+<a name="ln1186">            }</a>
+<a name="ln1187">            src += img-&gt;pitch;</a>
+<a name="ln1188">        }</a>
+<a name="ln1189">        while (dest &lt; new_width * new_height)</a>
+<a name="ln1190">        {</a>
+<a name="ln1191">            // Extend down with transparent pixels</a>
+<a name="ln1192">            pixels[dest*4    ] = 0;</a>
+<a name="ln1193">            pixels[dest*4 + 1] = 0;</a>
+<a name="ln1194">            pixels[dest*4 + 2] = 0;</a>
+<a name="ln1195">            pixels[dest*4 + 3] = 0;</a>
+<a name="ln1196">            dest++;</a>
+<a name="ln1197">        }</a>
+<a name="ln1198"> </a>
+<a name="ln1199">        SDL_UnlockSurface(img);</a>
+<a name="ln1200">    }</a>
+<a name="ln1201">    else</a>
+<a name="ln1202">    {</a>
+<a name="ln1203">        printf(&quot;Warning: unsupported format, bpp = %d for '%s'\n&quot;,</a>
+<a name="ln1204">               bpp, acBuffer);</a>
+<a name="ln1205">        return false;</a>
+<a name="ln1206">    }</a>
+<a name="ln1207"> </a>
+<a name="ln1208">    bool success = false;</a>
+<a name="ln1209">    if (!proc || proc(pixels, new_width, new_height))</a>
+<a name="ln1210">    {</a>
+<a name="ln1211">        // TODO: could fail if texture is too large / if there are opengl errs</a>
+<a name="ln1212">        opengl::check_texture_size(filename, new_width, new_height);</a>
+<a name="ln1213">        success |= tex-&gt;load_texture(pixels, new_width, new_height, mip_opt);</a>
+<a name="ln1214">        opengl::flush_opengl_errors();</a>
+<a name="ln1215">    }</a>
+<a name="ln1216"> </a>
+<a name="ln1217">    // If conversion has occurred, delete converted data.</a>
+<a name="ln1218">    if (pixels != img-&gt;pixels)</a>
+<a name="ln1219">        delete[] pixels;</a>
+<a name="ln1220"> </a>
+<a name="ln1221">    orig_width  = img-&gt;w;</a>
+<a name="ln1222">    orig_height = img-&gt;h;</a>
+<a name="ln1223"> </a>
+<a name="ln1224">    SDL_FreeSurface(img);</a>
+<a name="ln1225"> </a>
+<a name="ln1226">    return success;</a>
+<a name="ln1227">}</a>
+<a name="ln1228"> </a>
+<a name="ln1229">SDL_Surface *SDLWrapper::load_image(const char *file) const</a>
+<a name="ln1230">{</a>
+<a name="ln1231">    SDL_Surface *surf = nullptr;</a>
+<a name="ln1232">    FILE *imgfile = fopen_u(file, &quot;rb&quot;);</a>
+<a name="ln1233">    if (imgfile)</a>
+<a name="ln1234">    {</a>
+<a name="ln1235">        SDL_RWops *rw = SDL_RWFromFP(imgfile, SDL_FALSE);</a>
+<a name="ln1236">        if (rw)</a>
+<a name="ln1237">        {</a>
+<a name="ln1238">            surf = IMG_Load_RW(rw, 0);</a>
+<a name="ln1239">            SDL_RWclose(rw);</a>
+<a name="ln1240">        }</a>
+<a name="ln1241">        fclose(imgfile);</a>
+<a name="ln1242">    }</a>
+<a name="ln1243"> </a>
+<a name="ln1244">    if (!surf)</a>
+<a name="ln1245">        return nullptr;</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    return surf;</a>
+<a name="ln1248">}</a>
+<a name="ln1249"> </a>
+<a name="ln1250">void SDLWrapper::glDebug(const char* msg)</a>
+<a name="ln1251">{</a>
+<a name="ln1252">#ifdef __ANDROID__</a>
+<a name="ln1253">    int e = glGetError();</a>
+<a name="ln1254">    if (e &gt; 0)</a>
+<a name="ln1255">       __android_log_print(ANDROID_LOG_INFO, &quot;Crawl&quot;, &quot;ERROR %x: %s&quot;, e, msg);</a>
+<a name="ln1256">#else</a>
+<a name="ln1257">    UNUSED(msg);</a>
+<a name="ln1258">#endif</a>
+<a name="ln1259">}</a>
+<a name="ln1260">#endif // USE_SDL</a>
+<a name="ln1261">#endif // USE_TILE_LOCAL</a>
+
+</code></pre>
+<div class="balloon" rel="39"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v707/" target="_blank">V707</a> Giving short names to global variables is considered to be bad practice. It is suggested to rename 'wm' variable.</p></div>
+<div class="balloon" rel="287"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v519/" target="_blank">V519</a> The 'tile_event.held' variable is assigned values twice successively. Perhaps this is a mistake. Check lines: 282, 287.</p></div>
+<div class="balloon" rel="426"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="827"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v696/" target="_blank">V696</a> The 'continue' operator will terminate 'do { ... } while (FALSE)' loop because the condition is always false. Check lines: 827, 833.</p></div>
+<div class="balloon" rel="332"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: _desktop_width, _desktop_height.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

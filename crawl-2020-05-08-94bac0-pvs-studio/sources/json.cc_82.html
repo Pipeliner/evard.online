@@ -1,0 +1,1526 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>json.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*</a>
+<a name="ln2">  Copyright (C) 2011 Joseph A. Adams (joeyadams3.14159@gmail.com)</a>
+<a name="ln3">  All rights reserved.</a>
+<a name="ln4"> </a>
+<a name="ln5">  Permission is hereby granted, free of charge, to any person obtaining a copy</a>
+<a name="ln6">  of this software and associated documentation files (the &quot;Software&quot;), to deal</a>
+<a name="ln7">  in the Software without restriction, including without limitation the rights</a>
+<a name="ln8">  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell</a>
+<a name="ln9">  copies of the Software, and to permit persons to whom the Software is</a>
+<a name="ln10">  furnished to do so, subject to the following conditions:</a>
+<a name="ln11"> </a>
+<a name="ln12">  The above copyright notice and this permission notice shall be included in</a>
+<a name="ln13">  all copies or substantial portions of the Software.</a>
+<a name="ln14"> </a>
+<a name="ln15">  THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR</a>
+<a name="ln16">  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,</a>
+<a name="ln17">  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE</a>
+<a name="ln18">  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER</a>
+<a name="ln19">  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,</a>
+<a name="ln20">  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN</a>
+<a name="ln21">  THE SOFTWARE.</a>
+<a name="ln22">*/</a>
+<a name="ln23"> </a>
+<a name="ln24">#include &quot;AppHdr.h&quot;</a>
+<a name="ln25"> </a>
+<a name="ln26">#include &quot;json.h&quot;</a>
+<a name="ln27">#include &quot;unicode.h&quot;</a>
+<a name="ln28"> </a>
+<a name="ln29">#include &lt;stdint.h&gt;</a>
+<a name="ln30">#include &lt;stdio.h&gt;</a>
+<a name="ln31">#include &lt;stdlib.h&gt;</a>
+<a name="ln32">#include &lt;string.h&gt;</a>
+<a name="ln33"> </a>
+<a name="ln34">#define out_of_memory() do                                       \</a>
+<a name="ln35">                        {                                        \</a>
+<a name="ln36">                            fprintf(stderr, &quot;Out of memory.\n&quot;); \</a>
+<a name="ln37">                            exit(EXIT_FAILURE);                  \</a>
+<a name="ln38">                        } while (0)</a>
+<a name="ln39"> </a>
+<a name="ln40">/* Sadly, strdup is not portable. */</a>
+<a name="ln41">static char *json_strdup(const char *str)</a>
+<a name="ln42">{</a>
+<a name="ln43">    char *ret = (char*)malloc(strlen(str) + 1);</a>
+<a name="ln44">    if (ret == nullptr)</a>
+<a name="ln45">        out_of_memory();</a>
+<a name="ln46">    strcpy(ret, str);</a>
+<a name="ln47">    return ret;</a>
+<a name="ln48">}</a>
+<a name="ln49"> </a>
+<a name="ln50">/* String buffer */</a>
+<a name="ln51"> </a>
+<a name="ln52">struct SB</a>
+<a name="ln53">{</a>
+<a name="ln54">    char *cur;</a>
+<a name="ln55">    char *end;</a>
+<a name="ln56">    char *start;</a>
+<a name="ln57">};</a>
+<a name="ln58"> </a>
+<a name="ln59">static void sb_init(SB *sb)</a>
+<a name="ln60">{</a>
+<a name="ln61">    sb-&gt;start = (char*)malloc(17);</a>
+<a name="ln62">    if (sb-&gt;start == nullptr)</a>
+<a name="ln63">        out_of_memory();</a>
+<a name="ln64">    sb-&gt;cur = sb-&gt;start;</a>
+<a name="ln65">    sb-&gt;end = sb-&gt;start + 16;</a>
+<a name="ln66">}</a>
+<a name="ln67"> </a>
+<a name="ln68">/* sb and need may be evaluated multiple times. */</a>
+<a name="ln69">#define sb_need(sb, need) do                                      \</a>
+<a name="ln70">                          {                                       \</a>
+<a name="ln71">                              if ((sb)-&gt;end - (sb)-&gt;cur &lt; (need)) \</a>
+<a name="ln72">                                  sb_grow(sb, need);              \</a>
+<a name="ln73">                          } while (0)</a>
+<a name="ln74"> </a>
+<a name="ln75">static void sb_grow(SB *sb, int need)</a>
+<a name="ln76">{</a>
+<a name="ln77">    size_t length = sb-&gt;cur - sb-&gt;start;</a>
+<a name="ln78">    size_t alloc = sb-&gt;end - sb-&gt;start;</a>
+<a name="ln79"> </a>
+<a name="ln80">    do { alloc *= 2; }</a>
+<a name="ln81">    while (alloc &lt; length + need);</a>
+<a name="ln82"> </a>
+<a name="ln83">    sb-&gt;start = (char*)realloc(sb-&gt;start, alloc + 1);</a>
+<a name="ln84">    if (sb-&gt;start == nullptr)</a>
+<a name="ln85">        out_of_memory();</a>
+<a name="ln86">    sb-&gt;cur = sb-&gt;start + length;</a>
+<a name="ln87">    sb-&gt;end = sb-&gt;start + alloc;</a>
+<a name="ln88">}</a>
+<a name="ln89"> </a>
+<a name="ln90">static void sb_put(SB *sb, const char *bytes, int count)</a>
+<a name="ln91">{</a>
+<a name="ln92">    sb_need(sb, count);</a>
+<a name="ln93">    memcpy(sb-&gt;cur, bytes, count);</a>
+<a name="ln94">    sb-&gt;cur += count;</a>
+<a name="ln95">}</a>
+<a name="ln96"> </a>
+<a name="ln97">#define sb_putc(sb, c) do                              \</a>
+<a name="ln98">                       {                               \</a>
+<a name="ln99">                           if ((sb)-&gt;cur &gt;= (sb)-&gt;end) \</a>
+<a name="ln100">                               sb_grow(sb, 1);         \</a>
+<a name="ln101">                           *(sb)-&gt;cur++ = (c);         \</a>
+<a name="ln102">                       } while (0)</a>
+<a name="ln103"> </a>
+<a name="ln104">static void sb_puts(SB *sb, const char *str)</a>
+<a name="ln105">{</a>
+<a name="ln106">    sb_put(sb, str, strlen(str));</a>
+<a name="ln107">}</a>
+<a name="ln108"> </a>
+<a name="ln109">static char *sb_finish(SB *sb)</a>
+<a name="ln110">{</a>
+<a name="ln111">    *sb-&gt;cur = 0;</a>
+<a name="ln112">    ASSERT(sb-&gt;start &lt;= sb-&gt;cur);</a>
+<a name="ln113">    ASSERT(strlen(sb-&gt;start) == (size_t)(sb-&gt;cur - sb-&gt;start));</a>
+<a name="ln114">    return sb-&gt;start;</a>
+<a name="ln115">}</a>
+<a name="ln116"> </a>
+<a name="ln117">static void sb_free(SB *sb)</a>
+<a name="ln118">{</a>
+<a name="ln119">    free(sb-&gt;start);</a>
+<a name="ln120">}</a>
+<a name="ln121"> </a>
+<a name="ln122">/*</a>
+<a name="ln123"> * Unicode helper functions</a>
+<a name="ln124"> *</a>
+<a name="ln125"> * These are taken from the ccan/charset module and customized a bit.</a>
+<a name="ln126"> * Putting them here means the compiler can (choose to) inline them,</a>
+<a name="ln127"> * and it keeps ccan/json from having a dependency.</a>
+<a name="ln128"> */</a>
+<a name="ln129"> </a>
+<a name="ln130">/*</a>
+<a name="ln131"> * Type for Unicode codepoints.</a>
+<a name="ln132"> * We need our own because wchar_t might be 16 bits.</a>
+<a name="ln133"> */</a>
+<a name="ln134">typedef uint32_t uchar_t;</a>
+<a name="ln135"> </a>
+<a name="ln136">/*</a>
+<a name="ln137"> * Validate a single UTF-8 character starting at @s.</a>
+<a name="ln138"> * The string must be null-terminated.</a>
+<a name="ln139"> *</a>
+<a name="ln140"> * If it's valid, return its length (1 through 4).</a>
+<a name="ln141"> * If it's invalid or clipped, return 0.</a>
+<a name="ln142"> *</a>
+<a name="ln143"> * This function implements the syntax given in RFC3629, which is</a>
+<a name="ln144"> * the same as that given in The Unicode Standard, Version 6.0.</a>
+<a name="ln145"> *</a>
+<a name="ln146"> * It has the following properties:</a>
+<a name="ln147"> *</a>
+<a name="ln148"> *  * All codepoints U+0000..U+10FFFF may be encoded,</a>
+<a name="ln149"> *    except for U+D800..U+DFFF, which are reserved</a>
+<a name="ln150"> *    for UTF-16 surrogate pair encoding.</a>
+<a name="ln151"> *  * UTF-8 byte sequences longer than 4 bytes are not permitted,</a>
+<a name="ln152"> *    as they exceed the range of Unicode.</a>
+<a name="ln153"> *  * The sixty-six Unicode &quot;non-characters&quot; are permitted</a>
+<a name="ln154"> *    (namely, U+FDD0..U+FDEF, U+xxFFFE, and U+xxFFFF).</a>
+<a name="ln155"> */</a>
+<a name="ln156">static int utf8_validate_cz(const char *s)</a>
+<a name="ln157">{</a>
+<a name="ln158">    unsigned char c = *s++;</a>
+<a name="ln159"> </a>
+<a name="ln160">    if (c &lt;= 0x7F)      /* 00..7F */</a>
+<a name="ln161">        return 1;</a>
+<a name="ln162">    else if (c &lt;= 0xC1) /* 80..C1 */</a>
+<a name="ln163">    {</a>
+<a name="ln164">        /* Disallow overlong 2-byte sequence. */</a>
+<a name="ln165">        return 0;</a>
+<a name="ln166">    }</a>
+<a name="ln167">    else if (c &lt;= 0xDF) /* C2..DF */</a>
+<a name="ln168">    {</a>
+<a name="ln169">        /* Make sure subsequent byte is in the range 0x80..0xBF. */</a>
+<a name="ln170">        if (((unsigned char)*s++ &amp; 0xC0) != 0x80)</a>
+<a name="ln171">            return 0;</a>
+<a name="ln172"> </a>
+<a name="ln173">        return 2;</a>
+<a name="ln174">    }</a>
+<a name="ln175">    else if (c &lt;= 0xEF) /* E0..EF */</a>
+<a name="ln176">    {</a>
+<a name="ln177">        /* Disallow overlong 3-byte sequence. */</a>
+<a name="ln178">        if (c == 0xE0 &amp;&amp; (unsigned char)*s &lt; 0xA0)</a>
+<a name="ln179">            return 0;</a>
+<a name="ln180"> </a>
+<a name="ln181">        /* Disallow U+D800..U+DFFF. */</a>
+<a name="ln182">        if (c == 0xED &amp;&amp; (unsigned char)*s &gt; 0x9F)</a>
+<a name="ln183">            return 0;</a>
+<a name="ln184"> </a>
+<a name="ln185">        /* Make sure subsequent bytes are in the range 0x80..0xBF. */</a>
+<a name="ln186">        if (((unsigned char)*s++ &amp; 0xC0) != 0x80)</a>
+<a name="ln187">            return 0;</a>
+<a name="ln188">        if (((unsigned char)*s++ &amp; 0xC0) != 0x80)</a>
+<a name="ln189">            return 0;</a>
+<a name="ln190"> </a>
+<a name="ln191">        return 3;</a>
+<a name="ln192">    }</a>
+<a name="ln193">    else if (c &lt;= 0xF4) /* F0..F4 */</a>
+<a name="ln194">    {</a>
+<a name="ln195">        /* Disallow overlong 4-byte sequence. */</a>
+<a name="ln196">        if (c == 0xF0 &amp;&amp; (unsigned char)*s &lt; 0x90)</a>
+<a name="ln197">            return 0;</a>
+<a name="ln198"> </a>
+<a name="ln199">        /* Disallow codepoints beyond U+10FFFF. */</a>
+<a name="ln200">        if (c == 0xF4 &amp;&amp; (unsigned char)*s &gt; 0x8F)</a>
+<a name="ln201">            return 0;</a>
+<a name="ln202"> </a>
+<a name="ln203">        /* Make sure subsequent bytes are in the range 0x80..0xBF. */</a>
+<a name="ln204">        if (((unsigned char)*s++ &amp; 0xC0) != 0x80)</a>
+<a name="ln205">            return 0;</a>
+<a name="ln206">        if (((unsigned char)*s++ &amp; 0xC0) != 0x80)</a>
+<a name="ln207">            return 0;</a>
+<a name="ln208">        if (((unsigned char)*s++ &amp; 0xC0) != 0x80)</a>
+<a name="ln209">            return 0;</a>
+<a name="ln210"> </a>
+<a name="ln211">        return 4;</a>
+<a name="ln212">    }</a>
+<a name="ln213">    else                /* F5..FF */</a>
+<a name="ln214">        return 0;</a>
+<a name="ln215">}</a>
+<a name="ln216"> </a>
+<a name="ln217">/* Validate a null-terminated UTF-8 string. */</a>
+<a name="ln218">static bool utf8_validate(const char *s)</a>
+<a name="ln219">{</a>
+<a name="ln220">    int len;</a>
+<a name="ln221"> </a>
+<a name="ln222">    for (; *s != 0; s += len)</a>
+<a name="ln223">    {</a>
+<a name="ln224">        len = utf8_validate_cz(s);</a>
+<a name="ln225">        if (len == 0)</a>
+<a name="ln226">            return false;</a>
+<a name="ln227">    }</a>
+<a name="ln228"> </a>
+<a name="ln229">    return true;</a>
+<a name="ln230">}</a>
+<a name="ln231"> </a>
+<a name="ln232">/*</a>
+<a name="ln233"> * Read a single UTF-8 character starting at @s,</a>
+<a name="ln234"> * returning the length, in bytes, of the character read.</a>
+<a name="ln235"> *</a>
+<a name="ln236"> * This function assumes input is valid UTF-8,</a>
+<a name="ln237"> * and that there are enough characters in front of @s.</a>
+<a name="ln238"> */</a>
+<a name="ln239">static int utf8_read_char(const char *s, uchar_t *out)</a>
+<a name="ln240">{</a>
+<a name="ln241">    const unsigned char *c = (const unsigned char*) s;</a>
+<a name="ln242"> </a>
+<a name="ln243">    ASSERT(utf8_validate_cz(s));</a>
+<a name="ln244"> </a>
+<a name="ln245">    if (c[0] &lt;= 0x7F)</a>
+<a name="ln246">    {</a>
+<a name="ln247">        /* 00..7F */</a>
+<a name="ln248">        *out = c[0];</a>
+<a name="ln249">        return 1;</a>
+<a name="ln250">    }</a>
+<a name="ln251">    else if (c[0] &lt;= 0xDF)</a>
+<a name="ln252">    {</a>
+<a name="ln253">        /* C2..DF (unless input is invalid) */</a>
+<a name="ln254">        *out = ((uchar_t)c[0] &amp; 0x1F) &lt;&lt; 6 |</a>
+<a name="ln255">               ((uchar_t)c[1] &amp; 0x3F);</a>
+<a name="ln256">        return 2;</a>
+<a name="ln257">    }</a>
+<a name="ln258">    else if (c[0] &lt;= 0xEF)</a>
+<a name="ln259">    {</a>
+<a name="ln260">        /* E0..EF */</a>
+<a name="ln261">        *out = ((uchar_t)c[0] &amp;  0xF) &lt;&lt; 12 |</a>
+<a name="ln262">               ((uchar_t)c[1] &amp; 0x3F) &lt;&lt; 6  |</a>
+<a name="ln263">               ((uchar_t)c[2] &amp; 0x3F);</a>
+<a name="ln264">        return 3;</a>
+<a name="ln265">    }</a>
+<a name="ln266">    else</a>
+<a name="ln267">    {</a>
+<a name="ln268">        /* F0..F4 (unless input is invalid) */</a>
+<a name="ln269">        *out = ((uchar_t)c[0] &amp;  0x7) &lt;&lt; 18 |</a>
+<a name="ln270">               ((uchar_t)c[1] &amp; 0x3F) &lt;&lt; 12 |</a>
+<a name="ln271">               ((uchar_t)c[2] &amp; 0x3F) &lt;&lt; 6  |</a>
+<a name="ln272">               ((uchar_t)c[3] &amp; 0x3F);</a>
+<a name="ln273">        return 4;</a>
+<a name="ln274">    }</a>
+<a name="ln275">}</a>
+<a name="ln276"> </a>
+<a name="ln277">/*</a>
+<a name="ln278"> * Write a single UTF-8 character to @s,</a>
+<a name="ln279"> * returning the length, in bytes, of the character written.</a>
+<a name="ln280"> *</a>
+<a name="ln281"> * @unicode must be U+0000..U+10FFFF, but not U+D800..U+DFFF.</a>
+<a name="ln282"> *</a>
+<a name="ln283"> * This function will write up to 4 bytes to @out.</a>
+<a name="ln284"> */</a>
+<a name="ln285">static int utf8_write_char(uchar_t unicode, char *out)</a>
+<a name="ln286">{</a>
+<a name="ln287">    unsigned char *o = (unsigned char*) out;</a>
+<a name="ln288"> </a>
+<a name="ln289">    ASSERT(unicode &lt;= 0x10FFFF);</a>
+<a name="ln290">    ASSERT(!(unicode &gt;= 0xD800 &amp;&amp; unicode &lt;= 0xDFFF)); // UTF-16 surrogates</a>
+<a name="ln291"> </a>
+<a name="ln292">    if (unicode &lt;= 0x7F)</a>
+<a name="ln293">    {</a>
+<a name="ln294">        /* U+0000..U+007F */</a>
+<a name="ln295">        *o++ = unicode;</a>
+<a name="ln296">        return 1;</a>
+<a name="ln297">    }</a>
+<a name="ln298">    else if (unicode &lt;= 0x7FF)</a>
+<a name="ln299">    {</a>
+<a name="ln300">        /* U+0080..U+07FF */</a>
+<a name="ln301">        *o++ = 0xC0 | unicode &gt;&gt; 6;</a>
+<a name="ln302">        *o++ = 0x80 | (unicode &amp; 0x3F);</a>
+<a name="ln303">        return 2;</a>
+<a name="ln304">    }</a>
+<a name="ln305">    else if (unicode &lt;= 0xFFFF)</a>
+<a name="ln306">    {</a>
+<a name="ln307">        /* U+0800..U+FFFF */</a>
+<a name="ln308">        *o++ = 0xE0 | unicode &gt;&gt; 12;</a>
+<a name="ln309">        *o++ = 0x80 | (unicode &gt;&gt; 6 &amp; 0x3F);</a>
+<a name="ln310">        *o++ = 0x80 | (unicode &amp; 0x3F);</a>
+<a name="ln311">        return 3;</a>
+<a name="ln312">    }</a>
+<a name="ln313">    else</a>
+<a name="ln314">    {</a>
+<a name="ln315">        /* U+10000..U+10FFFF */</a>
+<a name="ln316">        *o++ = 0xF0 | unicode &gt;&gt; 18;</a>
+<a name="ln317">        *o++ = 0x80 | (unicode &gt;&gt; 12 &amp; 0x3F);</a>
+<a name="ln318">        *o++ = 0x80 | (unicode &gt;&gt; 6 &amp; 0x3F);</a>
+<a name="ln319">        *o++ = 0x80 | (unicode &amp; 0x3F);</a>
+<a name="ln320">        return 4;</a>
+<a name="ln321">    }</a>
+<a name="ln322">}</a>
+<a name="ln323"> </a>
+<a name="ln324">/*</a>
+<a name="ln325"> * Compute the Unicode codepoint of a UTF-16 surrogate pair.</a>
+<a name="ln326"> *</a>
+<a name="ln327"> * @uc should be 0xD800..0xDBFF, and @lc should be 0xDC00..0xDFFF.</a>
+<a name="ln328"> * If they aren't, this function returns false.</a>
+<a name="ln329"> */</a>
+<a name="ln330">static bool from_surrogate_pair(uint16_t uc, uint16_t lc, uchar_t *unicode)</a>
+<a name="ln331">{</a>
+<a name="ln332">    if (uc &gt;= 0xD800 &amp;&amp; uc &lt;= 0xDBFF &amp;&amp; lc &gt;= 0xDC00 &amp;&amp; lc &lt;= 0xDFFF)</a>
+<a name="ln333">    {</a>
+<a name="ln334">        *unicode = 0x10000 + ((((uchar_t)uc &amp; 0x3FF) &lt;&lt; 10) | (lc &amp; 0x3FF));</a>
+<a name="ln335">        return true;</a>
+<a name="ln336">    }</a>
+<a name="ln337">    else</a>
+<a name="ln338">        return false;</a>
+<a name="ln339">}</a>
+<a name="ln340"> </a>
+<a name="ln341">/*</a>
+<a name="ln342"> * Construct a UTF-16 surrogate pair given a Unicode codepoint.</a>
+<a name="ln343"> *</a>
+<a name="ln344"> * @unicode must be U+10000..U+10FFFF.</a>
+<a name="ln345"> */</a>
+<a name="ln346">static void to_surrogate_pair(uchar_t unicode, uint16_t *uc, uint16_t *lc)</a>
+<a name="ln347">{</a>
+<a name="ln348">    uchar_t n;</a>
+<a name="ln349"> </a>
+<a name="ln350">    ASSERT_RANGE(unicode, 0x10000, 0x10FFFF + 1);</a>
+<a name="ln351"> </a>
+<a name="ln352">    n = unicode - 0x10000;</a>
+<a name="ln353">    *uc = ((n &gt;&gt; 10) &amp; 0x3FF) | 0xD800;</a>
+<a name="ln354">    *lc = (n &amp; 0x3FF) | 0xDC00;</a>
+<a name="ln355">}</a>
+<a name="ln356"> </a>
+<a name="ln357">#define is_space(c) ((c) == '\t' || (c) == '\n' || (c) == '\r' || (c) == ' ')</a>
+<a name="ln358">#define is_digit(c) ((c) &gt;= '0' &amp;&amp; (c) &lt;= '9')</a>
+<a name="ln359"> </a>
+<a name="ln360">static bool parse_value     (const char **sp, JsonNode    **out);</a>
+<a name="ln361">static bool parse_string    (const char **sp, char        **out);</a>
+<a name="ln362">static bool parse_number    (const char **sp, double       *out);</a>
+<a name="ln363">static bool parse_array     (const char **sp, JsonNode    **out);</a>
+<a name="ln364">static bool parse_object    (const char **sp, JsonNode    **out);</a>
+<a name="ln365">static bool parse_hex16     (const char **sp, uint16_t     *out);</a>
+<a name="ln366"> </a>
+<a name="ln367">static bool expect_literal  (const char **sp, const char *str);</a>
+<a name="ln368">static void skip_space      (const char **sp);</a>
+<a name="ln369"> </a>
+<a name="ln370">static void emit_value          (SB *out, const JsonNode *node);</a>
+<a name="ln371">static void emit_value_indented     (SB *out, const JsonNode *node, const char *space, int indent_level);</a>
+<a name="ln372">static void emit_string         (SB *out, const char *str);</a>
+<a name="ln373">static void emit_number         (SB *out, double num);</a>
+<a name="ln374">static void emit_array          (SB *out, const JsonNode *array);</a>
+<a name="ln375">static void emit_array_indented     (SB *out, const JsonNode *array, const char *space, int indent_level);</a>
+<a name="ln376">static void emit_object         (SB *out, const JsonNode *object);</a>
+<a name="ln377">static void emit_object_indented    (SB *out, const JsonNode *object, const char *space, int indent_level);</a>
+<a name="ln378"> </a>
+<a name="ln379">static int write_hex16(char *out, uint16_t val);</a>
+<a name="ln380"> </a>
+<a name="ln381">static JsonNode *mknode(JsonTag tag);</a>
+<a name="ln382">static void append_node(JsonNode *parent, JsonNode *child);</a>
+<a name="ln383">static void prepend_node(JsonNode *parent, JsonNode *child);</a>
+<a name="ln384">static void append_member(JsonNode *object, char *key, JsonNode *value);</a>
+<a name="ln385"> </a>
+<a name="ln386">/* Assertion-friendly validity checks */</a>
+<a name="ln387">static bool tag_is_valid(unsigned int tag);</a>
+<a name="ln388">static bool number_is_valid(const char *num);</a>
+<a name="ln389"> </a>
+<a name="ln390">JsonNode *json_decode(const char *json)</a>
+<a name="ln391">{</a>
+<a name="ln392">    const char *s = json;</a>
+<a name="ln393">    JsonNode *ret;</a>
+<a name="ln394"> </a>
+<a name="ln395">    skip_space(&amp;s);</a>
+<a name="ln396">    if (!parse_value(&amp;s, &amp;ret))</a>
+<a name="ln397">        return nullptr;</a>
+<a name="ln398"> </a>
+<a name="ln399">    skip_space(&amp;s);</a>
+<a name="ln400">    if (*s != 0)</a>
+<a name="ln401">    {</a>
+<a name="ln402">        json_delete(ret);</a>
+<a name="ln403">        return nullptr;</a>
+<a name="ln404">    }</a>
+<a name="ln405"> </a>
+<a name="ln406">    return ret;</a>
+<a name="ln407">}</a>
+<a name="ln408"> </a>
+<a name="ln409">char *json_encode(const JsonNode *node)</a>
+<a name="ln410">{</a>
+<a name="ln411">    return json_stringify(node, nullptr);</a>
+<a name="ln412">}</a>
+<a name="ln413"> </a>
+<a name="ln414">char *json_encode_string(const char *str)</a>
+<a name="ln415">{</a>
+<a name="ln416">    SB sb;</a>
+<a name="ln417">    sb_init(&amp;sb);</a>
+<a name="ln418"> </a>
+<a name="ln419">    emit_string(&amp;sb, str);</a>
+<a name="ln420"> </a>
+<a name="ln421">    return sb_finish(&amp;sb);</a>
+<a name="ln422">}</a>
+<a name="ln423"> </a>
+<a name="ln424">char *json_stringify(const JsonNode *node, const char *space)</a>
+<a name="ln425">{</a>
+<a name="ln426">    SB sb;</a>
+<a name="ln427">    sb_init(&amp;sb);</a>
+<a name="ln428"> </a>
+<a name="ln429">    if (space != nullptr)</a>
+<a name="ln430">        emit_value_indented(&amp;sb, node, space, 0);</a>
+<a name="ln431">    else</a>
+<a name="ln432">        emit_value(&amp;sb, node);</a>
+<a name="ln433"> </a>
+<a name="ln434">    return sb_finish(&amp;sb);</a>
+<a name="ln435">}</a>
+<a name="ln436"> </a>
+<a name="ln437">void json_delete(JsonNode *node)</a>
+<a name="ln438">{</a>
+<a name="ln439">    if (node != nullptr)</a>
+<a name="ln440">    {</a>
+<a name="ln441">        json_remove_from_parent(node);</a>
+<a name="ln442"> </a>
+<a name="ln443">        switch (node-&gt;tag)</a>
+<a name="ln444">        {</a>
+<a name="ln445">            case JSON_STRING:</a>
+<a name="ln446">                free(node-&gt;string_);</a>
+<a name="ln447">                break;</a>
+<a name="ln448">            case JSON_ARRAY:</a>
+<a name="ln449">            case JSON_OBJECT:</a>
+<a name="ln450">            {</a>
+<a name="ln451">                JsonNode *child, *next;</a>
+<a name="ln452">                for (child = node-&gt;children.head; child != nullptr; child = next)</a>
+<a name="ln453">                {</a>
+<a name="ln454">                    next = child-&gt;next;</a>
+<a name="ln455">                    json_delete(child);</a>
+<a name="ln456">                }</a>
+<a name="ln457">                break;</a>
+<a name="ln458">            }</a>
+<a name="ln459">            default:;</a>
+<a name="ln460">        }</a>
+<a name="ln461"> </a>
+<a name="ln462">        free(node);</a>
+<a name="ln463">    }</a>
+<a name="ln464">}</a>
+<a name="ln465"> </a>
+<a name="ln466">bool json_validate(const char *json)</a>
+<a name="ln467">{</a>
+<a name="ln468">    const char *s = json;</a>
+<a name="ln469"> </a>
+<a name="ln470">    skip_space(&amp;s);</a>
+<a name="ln471">    if (!parse_value(&amp;s, nullptr))</a>
+<a name="ln472">        return false;</a>
+<a name="ln473"> </a>
+<a name="ln474">    skip_space(&amp;s);</a>
+<a name="ln475">    if (*s != 0)</a>
+<a name="ln476">        return false;</a>
+<a name="ln477"> </a>
+<a name="ln478">    return true;</a>
+<a name="ln479">}</a>
+<a name="ln480"> </a>
+<a name="ln481">JsonNode *json_find_element(const JsonNode *array, int index)</a>
+<a name="ln482">{</a>
+<a name="ln483">    JsonNode *element;</a>
+<a name="ln484">    int i = 0;</a>
+<a name="ln485"> </a>
+<a name="ln486">    if (array == nullptr || array-&gt;tag != JSON_ARRAY)</a>
+<a name="ln487">        return nullptr;</a>
+<a name="ln488"> </a>
+<a name="ln489">    json_foreach(element, array)</a>
+<a name="ln490">    {</a>
+<a name="ln491">        if (i == index)</a>
+<a name="ln492">            return element;</a>
+<a name="ln493">        i++;</a>
+<a name="ln494">    }</a>
+<a name="ln495"> </a>
+<a name="ln496">    return nullptr;</a>
+<a name="ln497">}</a>
+<a name="ln498"> </a>
+<a name="ln499">JsonNode *json_find_member(const JsonNode *object, const char *name)</a>
+<a name="ln500">{</a>
+<a name="ln501">    JsonNode *member;</a>
+<a name="ln502"> </a>
+<a name="ln503">    if (object == nullptr || object-&gt;tag != JSON_OBJECT)</a>
+<a name="ln504">        return nullptr;</a>
+<a name="ln505"> </a>
+<a name="ln506">    json_foreach(member, object)</a>
+<a name="ln507">        if (strcmp(member-&gt;key, name) == 0)</a>
+<a name="ln508">            return member;</a>
+<a name="ln509"> </a>
+<a name="ln510">    return nullptr;</a>
+<a name="ln511">}</a>
+<a name="ln512"> </a>
+<a name="ln513">JsonNode *json_first_child(const JsonNode *node)</a>
+<a name="ln514">{</a>
+<a name="ln515">    if (node != nullptr &amp;&amp; (node-&gt;tag == JSON_ARRAY || node-&gt;tag == JSON_OBJECT))</a>
+<a name="ln516">        return node-&gt;children.head;</a>
+<a name="ln517">    return nullptr;</a>
+<a name="ln518">}</a>
+<a name="ln519"> </a>
+<a name="ln520">static JsonNode *mknode(JsonTag tag)</a>
+<a name="ln521">{</a>
+<a name="ln522">    JsonNode *ret = (JsonNode*) calloc(1, sizeof(JsonNode));</a>
+<a name="ln523">    if (ret == nullptr)</a>
+<a name="ln524">        out_of_memory();</a>
+<a name="ln525">    ret-&gt;tag = tag;</a>
+<a name="ln526">    return ret;</a>
+<a name="ln527">}</a>
+<a name="ln528"> </a>
+<a name="ln529">JsonNode *json_mknull()</a>
+<a name="ln530">{</a>
+<a name="ln531">    return mknode(JSON_NULL);</a>
+<a name="ln532">}</a>
+<a name="ln533"> </a>
+<a name="ln534">JsonNode *json_mkbool(bool b)</a>
+<a name="ln535">{</a>
+<a name="ln536">    JsonNode *ret = mknode(JSON_BOOL);</a>
+<a name="ln537">    ret-&gt;bool_ = b;</a>
+<a name="ln538">    return ret;</a>
+<a name="ln539">}</a>
+<a name="ln540"> </a>
+<a name="ln541">static JsonNode *mkstring(char *s)</a>
+<a name="ln542">{</a>
+<a name="ln543">    JsonNode *ret = mknode(JSON_STRING);</a>
+<a name="ln544">    ret-&gt;string_ = s;</a>
+<a name="ln545">    return ret;</a>
+<a name="ln546">}</a>
+<a name="ln547"> </a>
+<a name="ln548">JsonNode *json_mkstring(const char *s)</a>
+<a name="ln549">{</a>
+<a name="ln550">    return mkstring(json_strdup(s));</a>
+<a name="ln551">}</a>
+<a name="ln552"> </a>
+<a name="ln553">JsonNode *json_mkstring(string s)</a>
+<a name="ln554">{</a>
+<a name="ln555">    return json_mkstring(s.c_str());</a>
+<a name="ln556">}</a>
+<a name="ln557"> </a>
+<a name="ln558">JsonNode *json_mknumber(double n)</a>
+<a name="ln559">{</a>
+<a name="ln560">    JsonNode *node = mknode(JSON_NUMBER);</a>
+<a name="ln561">    node-&gt;number_ = n;</a>
+<a name="ln562">    return node;</a>
+<a name="ln563">}</a>
+<a name="ln564"> </a>
+<a name="ln565">JsonNode *json_mkarray()</a>
+<a name="ln566">{</a>
+<a name="ln567">    return mknode(JSON_ARRAY);</a>
+<a name="ln568">}</a>
+<a name="ln569"> </a>
+<a name="ln570">JsonNode *json_mkobject()</a>
+<a name="ln571">{</a>
+<a name="ln572">    return mknode(JSON_OBJECT);</a>
+<a name="ln573">}</a>
+<a name="ln574"> </a>
+<a name="ln575">static void append_node(JsonNode *parent, JsonNode *child)</a>
+<a name="ln576">{</a>
+<a name="ln577">    child-&gt;parent = parent;</a>
+<a name="ln578">    child-&gt;prev = parent-&gt;children.tail;</a>
+<a name="ln579">    child-&gt;next = nullptr;</a>
+<a name="ln580"> </a>
+<a name="ln581">    if (parent-&gt;children.tail != nullptr)</a>
+<a name="ln582">        parent-&gt;children.tail-&gt;next = child;</a>
+<a name="ln583">    else</a>
+<a name="ln584">        parent-&gt;children.head = child;</a>
+<a name="ln585">    parent-&gt;children.tail = child;</a>
+<a name="ln586">}</a>
+<a name="ln587"> </a>
+<a name="ln588">static void prepend_node(JsonNode *parent, JsonNode *child)</a>
+<a name="ln589">{</a>
+<a name="ln590">    child-&gt;parent = parent;</a>
+<a name="ln591">    child-&gt;prev = nullptr;</a>
+<a name="ln592">    child-&gt;next = parent-&gt;children.head;</a>
+<a name="ln593"> </a>
+<a name="ln594">    if (parent-&gt;children.head != nullptr)</a>
+<a name="ln595">        parent-&gt;children.head-&gt;prev = child;</a>
+<a name="ln596">    else</a>
+<a name="ln597">        parent-&gt;children.tail = child;</a>
+<a name="ln598">    parent-&gt;children.head = child;</a>
+<a name="ln599">}</a>
+<a name="ln600"> </a>
+<a name="ln601">static void append_member(JsonNode *object, char *key, JsonNode *value)</a>
+<a name="ln602">{</a>
+<a name="ln603">    value-&gt;key = key;</a>
+<a name="ln604">    append_node(object, value);</a>
+<a name="ln605">}</a>
+<a name="ln606"> </a>
+<a name="ln607">void json_append_element(JsonNode *array, JsonNode *element)</a>
+<a name="ln608">{</a>
+<a name="ln609">    ASSERT(array-&gt;tag == JSON_ARRAY);</a>
+<a name="ln610">    ASSERT(element-&gt;parent == nullptr);</a>
+<a name="ln611"> </a>
+<a name="ln612">    append_node(array, element);</a>
+<a name="ln613">}</a>
+<a name="ln614"> </a>
+<a name="ln615">void json_prepend_element(JsonNode *array, JsonNode *element)</a>
+<a name="ln616">{</a>
+<a name="ln617">    ASSERT(array-&gt;tag == JSON_ARRAY);</a>
+<a name="ln618">    ASSERT(element-&gt;parent == nullptr);</a>
+<a name="ln619"> </a>
+<a name="ln620">    prepend_node(array, element);</a>
+<a name="ln621">}</a>
+<a name="ln622"> </a>
+<a name="ln623">void json_append_member(JsonNode *object, const char *key, JsonNode *value)</a>
+<a name="ln624">{</a>
+<a name="ln625">    ASSERT(object-&gt;tag == JSON_OBJECT);</a>
+<a name="ln626">    ASSERT(value-&gt;parent == nullptr);</a>
+<a name="ln627"> </a>
+<a name="ln628">    append_member(object, json_strdup(key), value);</a>
+<a name="ln629">}</a>
+<a name="ln630"> </a>
+<a name="ln631">void json_prepend_member(JsonNode *object, const char *key, JsonNode *value)</a>
+<a name="ln632">{</a>
+<a name="ln633">    ASSERT(object-&gt;tag == JSON_OBJECT);</a>
+<a name="ln634">    ASSERT(value-&gt;parent == nullptr);</a>
+<a name="ln635"> </a>
+<a name="ln636">    value-&gt;key = json_strdup(key);</a>
+<a name="ln637">    prepend_node(object, value);</a>
+<a name="ln638">}</a>
+<a name="ln639"> </a>
+<a name="ln640">void json_remove_from_parent(JsonNode *node)</a>
+<a name="ln641">{</a>
+<a name="ln642">    JsonNode *parent = node-&gt;parent;</a>
+<a name="ln643"> </a>
+<a name="ln644">    if (parent != nullptr)</a>
+<a name="ln645">    {</a>
+<a name="ln646">        if (node-&gt;prev != nullptr)</a>
+<a name="ln647">            node-&gt;prev-&gt;next = node-&gt;next;</a>
+<a name="ln648">        else</a>
+<a name="ln649">            parent-&gt;children.head = node-&gt;next;</a>
+<a name="ln650">        if (node-&gt;next != nullptr)</a>
+<a name="ln651">            node-&gt;next-&gt;prev = node-&gt;prev;</a>
+<a name="ln652">        else</a>
+<a name="ln653">            parent-&gt;children.tail = node-&gt;prev;</a>
+<a name="ln654"> </a>
+<a name="ln655">        free(node-&gt;key);</a>
+<a name="ln656"> </a>
+<a name="ln657">        node-&gt;parent = nullptr;</a>
+<a name="ln658">        node-&gt;prev = node-&gt;next = nullptr;</a>
+<a name="ln659">        node-&gt;key = nullptr;</a>
+<a name="ln660">    }</a>
+<a name="ln661">}</a>
+<a name="ln662"> </a>
+<a name="ln663">static bool parse_value(const char **sp, JsonNode **out)</a>
+<a name="ln664">{</a>
+<a name="ln665">    const char *s = *sp;</a>
+<a name="ln666"> </a>
+<a name="ln667">    switch (*s)</a>
+<a name="ln668">    {</a>
+<a name="ln669">    case 'n':</a>
+<a name="ln670">        if (expect_literal(&amp;s, &quot;null&quot;))</a>
+<a name="ln671">        {</a>
+<a name="ln672">            if (out)</a>
+<a name="ln673">                *out = json_mknull();</a>
+<a name="ln674">            *sp = s;</a>
+<a name="ln675">            return true;</a>
+<a name="ln676">        }</a>
+<a name="ln677">        return false;</a>
+<a name="ln678"> </a>
+<a name="ln679">    case 'f':</a>
+<a name="ln680">        if (expect_literal(&amp;s, &quot;false&quot;))</a>
+<a name="ln681">        {</a>
+<a name="ln682">            if (out)</a>
+<a name="ln683">                *out = json_mkbool(false);</a>
+<a name="ln684">            *sp = s;</a>
+<a name="ln685">            return true;</a>
+<a name="ln686">        }</a>
+<a name="ln687">        return false;</a>
+<a name="ln688"> </a>
+<a name="ln689">    case 't':</a>
+<a name="ln690">        if (expect_literal(&amp;s, &quot;true&quot;))</a>
+<a name="ln691">        {</a>
+<a name="ln692">            if (out)</a>
+<a name="ln693">                *out = json_mkbool(true);</a>
+<a name="ln694">            *sp = s;</a>
+<a name="ln695">            return true;</a>
+<a name="ln696">        }</a>
+<a name="ln697">        return false;</a>
+<a name="ln698"> </a>
+<a name="ln699">    case '&quot;':</a>
+<a name="ln700">    {</a>
+<a name="ln701">        char *str;</a>
+<a name="ln702">        if (parse_string(&amp;s, out ? &amp;str : nullptr))</a>
+<a name="ln703">        {</a>
+<a name="ln704">            if (out)</a>
+<a name="ln705">                *out = mkstring(str);</a>
+<a name="ln706">            *sp = s;</a>
+<a name="ln707">            return true;</a>
+<a name="ln708">        }</a>
+<a name="ln709">        return false;</a>
+<a name="ln710">    }</a>
+<a name="ln711"> </a>
+<a name="ln712">    case '[':</a>
+<a name="ln713">        if (parse_array(&amp;s, out))</a>
+<a name="ln714">        {</a>
+<a name="ln715">            *sp = s;</a>
+<a name="ln716">            return true;</a>
+<a name="ln717">        }</a>
+<a name="ln718">        return false;</a>
+<a name="ln719"> </a>
+<a name="ln720">    case '{':</a>
+<a name="ln721">        if (parse_object(&amp;s, out))</a>
+<a name="ln722">        {</a>
+<a name="ln723">            *sp = s;</a>
+<a name="ln724">            return true;</a>
+<a name="ln725">        }</a>
+<a name="ln726">        return false;</a>
+<a name="ln727"> </a>
+<a name="ln728">    default:</a>
+<a name="ln729">    {</a>
+<a name="ln730">        double num;</a>
+<a name="ln731">        if (parse_number(&amp;s, out ? &amp;num : nullptr))</a>
+<a name="ln732">        {</a>
+<a name="ln733">            if (out)</a>
+<a name="ln734">                *out = json_mknumber(num);</a>
+<a name="ln735">            *sp = s;</a>
+<a name="ln736">            return true;</a>
+<a name="ln737">        }</a>
+<a name="ln738">        return false;</a>
+<a name="ln739">    }</a>
+<a name="ln740">    }</a>
+<a name="ln741">}</a>
+<a name="ln742"> </a>
+<a name="ln743">static bool parse_array(const char **sp, JsonNode **out)</a>
+<a name="ln744">{</a>
+<a name="ln745">    const char *s = *sp;</a>
+<a name="ln746">    JsonNode *ret = out ? json_mkarray() : nullptr;</a>
+<a name="ln747">    JsonNode *element;</a>
+<a name="ln748"> </a>
+<a name="ln749">    if (*s++ != '[')</a>
+<a name="ln750">        goto failure;</a>
+<a name="ln751">    skip_space(&amp;s);</a>
+<a name="ln752"> </a>
+<a name="ln753">    if (*s == ']')</a>
+<a name="ln754">    {</a>
+<a name="ln755">        s++;</a>
+<a name="ln756">        goto success;</a>
+<a name="ln757">    }</a>
+<a name="ln758"> </a>
+<a name="ln759">    for (;;)</a>
+<a name="ln760">    {</a>
+<a name="ln761">        if (!parse_value(&amp;s, out ? &amp;element : nullptr))</a>
+<a name="ln762">            goto failure;</a>
+<a name="ln763">        skip_space(&amp;s);</a>
+<a name="ln764"> </a>
+<a name="ln765">        if (out)</a>
+<a name="ln766">            json_append_element(ret, element);</a>
+<a name="ln767"> </a>
+<a name="ln768">        if (*s == ']')</a>
+<a name="ln769">        {</a>
+<a name="ln770">            s++;</a>
+<a name="ln771">            goto success;</a>
+<a name="ln772">        }</a>
+<a name="ln773"> </a>
+<a name="ln774">        if (*s++ != ',')</a>
+<a name="ln775">            goto failure;</a>
+<a name="ln776">        skip_space(&amp;s);</a>
+<a name="ln777">    }</a>
+<a name="ln778"> </a>
+<a name="ln779">success:</a>
+<a name="ln780">    *sp = s;</a>
+<a name="ln781">    if (out)</a>
+<a name="ln782">        *out = ret;</a>
+<a name="ln783">    return true;</a>
+<a name="ln784"> </a>
+<a name="ln785">failure:</a>
+<a name="ln786">    json_delete(ret);</a>
+<a name="ln787">    return false;</a>
+<a name="ln788">}</a>
+<a name="ln789"> </a>
+<a name="ln790">static bool parse_object(const char **sp, JsonNode **out)</a>
+<a name="ln791">{</a>
+<a name="ln792">    const char *s = *sp;</a>
+<a name="ln793">    JsonNode *ret = out ? json_mkobject() : nullptr;</a>
+<a name="ln794">    char *key;</a>
+<a name="ln795">    JsonNode *value;</a>
+<a name="ln796"> </a>
+<a name="ln797">    if (*s++ != '{')</a>
+<a name="ln798">        goto failure;</a>
+<a name="ln799">    skip_space(&amp;s);</a>
+<a name="ln800"> </a>
+<a name="ln801">    if (*s == '}')</a>
+<a name="ln802">    {</a>
+<a name="ln803">        s++;</a>
+<a name="ln804">        goto success;</a>
+<a name="ln805">    }</a>
+<a name="ln806"> </a>
+<a name="ln807">    for (;;)</a>
+<a name="ln808">    {</a>
+<a name="ln809">        if (!parse_string(&amp;s, out ? &amp;key : nullptr))</a>
+<a name="ln810">            goto failure;</a>
+<a name="ln811">        skip_space(&amp;s);</a>
+<a name="ln812"> </a>
+<a name="ln813">        if (*s++ != ':')</a>
+<a name="ln814">            goto failure_free_key;</a>
+<a name="ln815">        skip_space(&amp;s);</a>
+<a name="ln816"> </a>
+<a name="ln817">        if (!parse_value(&amp;s, out ? &amp;value : nullptr))</a>
+<a name="ln818">            goto failure_free_key;</a>
+<a name="ln819">        skip_space(&amp;s);</a>
+<a name="ln820"> </a>
+<a name="ln821">        if (out)</a>
+<a name="ln822">            append_member(ret, key, value);</a>
+<a name="ln823"> </a>
+<a name="ln824">        if (*s == '}')</a>
+<a name="ln825">        {</a>
+<a name="ln826">            s++;</a>
+<a name="ln827">            goto success;</a>
+<a name="ln828">        }</a>
+<a name="ln829"> </a>
+<a name="ln830">        if (*s++ != ',')</a>
+<a name="ln831">            goto failure;</a>
+<a name="ln832">        skip_space(&amp;s);</a>
+<a name="ln833">    }</a>
+<a name="ln834"> </a>
+<a name="ln835">success:</a>
+<a name="ln836">    *sp = s;</a>
+<a name="ln837">    if (out)</a>
+<a name="ln838">        *out = ret;</a>
+<a name="ln839">    return true;</a>
+<a name="ln840"> </a>
+<a name="ln841">failure_free_key:</a>
+<a name="ln842">    if (out)</a>
+<a name="ln843">        free(key);</a>
+<a name="ln844">failure:</a>
+<a name="ln845">    json_delete(ret);</a>
+<a name="ln846">    return false;</a>
+<a name="ln847">}</a>
+<a name="ln848"> </a>
+<a name="ln849">bool parse_string(const char **sp, char **out)</a>
+<a name="ln850">{</a>
+<a name="ln851">    const char *s = *sp;</a>
+<a name="ln852">    SB sb;</a>
+<a name="ln853">    char throwaway_buffer[4];</a>
+<a name="ln854">        /* enough space for a UTF-8 character */</a>
+<a name="ln855">    char *b;</a>
+<a name="ln856"> </a>
+<a name="ln857">    if (*s++ != '&quot;')</a>
+<a name="ln858">        return false;</a>
+<a name="ln859"> </a>
+<a name="ln860">    if (out)</a>
+<a name="ln861">    {</a>
+<a name="ln862">        sb_init(&amp;sb);</a>
+<a name="ln863">        sb_need(&amp;sb, 4);</a>
+<a name="ln864">        b = sb.cur;</a>
+<a name="ln865">    }</a>
+<a name="ln866">    else</a>
+<a name="ln867">        b = throwaway_buffer;</a>
+<a name="ln868"> </a>
+<a name="ln869">    while (*s != '&quot;')</a>
+<a name="ln870">    {</a>
+<a name="ln871">        unsigned char c = *s++;</a>
+<a name="ln872"> </a>
+<a name="ln873">        /* Parse next character, and write it to b. */</a>
+<a name="ln874">        if (c == '\\')</a>
+<a name="ln875">        {</a>
+<a name="ln876">            c = *s++;</a>
+<a name="ln877">            switch (c)</a>
+<a name="ln878">            {</a>
+<a name="ln879">            case '&quot;':</a>
+<a name="ln880">            case '\\':</a>
+<a name="ln881">            case '/':</a>
+<a name="ln882">                *b++ = c;</a>
+<a name="ln883">                break;</a>
+<a name="ln884">            case 'b':</a>
+<a name="ln885">                *b++ = '\b';</a>
+<a name="ln886">                break;</a>
+<a name="ln887">            case 'f':</a>
+<a name="ln888">                *b++ = '\f';</a>
+<a name="ln889">                break;</a>
+<a name="ln890">            case 'n':</a>
+<a name="ln891">                *b++ = '\n';</a>
+<a name="ln892">                break;</a>
+<a name="ln893">            case 'r':</a>
+<a name="ln894">                *b++ = '\r';</a>
+<a name="ln895">                break;</a>
+<a name="ln896">            case 't':</a>
+<a name="ln897">                *b++ = '\t';</a>
+<a name="ln898">                break;</a>
+<a name="ln899">            case 'u':</a>
+<a name="ln900">            {</a>
+<a name="ln901">                uint16_t uc, lc;</a>
+<a name="ln902">                uchar_t unicode;</a>
+<a name="ln903"> </a>
+<a name="ln904">                if (!parse_hex16(&amp;s, &amp;uc))</a>
+<a name="ln905">                    goto failed;</a>
+<a name="ln906"> </a>
+<a name="ln907">                if (uc &gt;= 0xD800 &amp;&amp; uc &lt;= 0xDFFF)</a>
+<a name="ln908">                {</a>
+<a name="ln909">                    /* Handle UTF-16 surrogate pair. */</a>
+<a name="ln910">                    if (*s++ != '\\' || *s++ != 'u' || !parse_hex16(&amp;s, &amp;lc))</a>
+<a name="ln911">                        goto failed; /* Incomplete surrogate pair. */</a>
+<a name="ln912">                    if (!from_surrogate_pair(uc, lc, &amp;unicode))</a>
+<a name="ln913">                        goto failed; /* Invalid surrogate pair. */</a>
+<a name="ln914">                }</a>
+<a name="ln915">                else if (uc == 0)</a>
+<a name="ln916">                {</a>
+<a name="ln917">                    /* Disallow &quot;\u0000&quot;. */</a>
+<a name="ln918">                    goto failed;</a>
+<a name="ln919">                }</a>
+<a name="ln920">                else</a>
+<a name="ln921">                    unicode = uc;</a>
+<a name="ln922"> </a>
+<a name="ln923">                b += utf8_write_char(unicode, b);</a>
+<a name="ln924">                break;</a>
+<a name="ln925">            }</a>
+<a name="ln926">            default:</a>
+<a name="ln927">                /* Invalid escape */</a>
+<a name="ln928">                goto failed;</a>
+<a name="ln929">            }</a>
+<a name="ln930">        }</a>
+<a name="ln931">        else if (c &lt;= 0x1F)</a>
+<a name="ln932">        {</a>
+<a name="ln933">            /* Control characters are not allowed in string literals. */</a>
+<a name="ln934">            goto failed;</a>
+<a name="ln935">        }</a>
+<a name="ln936">        else</a>
+<a name="ln937">        {</a>
+<a name="ln938">            /* Validate and echo a UTF-8 character. */</a>
+<a name="ln939">            int len;</a>
+<a name="ln940"> </a>
+<a name="ln941">            s--;</a>
+<a name="ln942">            len = utf8_validate_cz(s);</a>
+<a name="ln943">            if (len == 0)</a>
+<a name="ln944">                goto failed; /* Invalid UTF-8 character. */</a>
+<a name="ln945"> </a>
+<a name="ln946">            while (len--)</a>
+<a name="ln947">                *b++ = *s++;</a>
+<a name="ln948">        }</a>
+<a name="ln949"> </a>
+<a name="ln950">        /*</a>
+<a name="ln951">         * Update sb to know about the new bytes,</a>
+<a name="ln952">         * and set up b to write another character.</a>
+<a name="ln953">         */</a>
+<a name="ln954">        if (out)</a>
+<a name="ln955">        {</a>
+<a name="ln956">            sb.cur = b;</a>
+<a name="ln957">            sb_need(&amp;sb, 4);</a>
+<a name="ln958">            b = sb.cur;</a>
+<a name="ln959">        }</a>
+<a name="ln960">        else</a>
+<a name="ln961">            b = throwaway_buffer;</a>
+<a name="ln962">    }</a>
+<a name="ln963">    s++;</a>
+<a name="ln964"> </a>
+<a name="ln965">    if (out)</a>
+<a name="ln966">        *out = sb_finish(&amp;sb);</a>
+<a name="ln967">    *sp = s;</a>
+<a name="ln968">    return true;</a>
+<a name="ln969"> </a>
+<a name="ln970">failed:</a>
+<a name="ln971">    if (out)</a>
+<a name="ln972">        sb_free(&amp;sb);</a>
+<a name="ln973">    return false;</a>
+<a name="ln974">}</a>
+<a name="ln975"> </a>
+<a name="ln976">/*</a>
+<a name="ln977"> * The JSON spec says that a number shall follow this precise pattern</a>
+<a name="ln978"> * (spaces and quotes added for readability):</a>
+<a name="ln979"> *     '-'? (0 | [1-9][0-9]*) ('.' [0-9]+)? ([Ee] [+-]? [0-9]+)?</a>
+<a name="ln980"> *</a>
+<a name="ln981"> * However, some JSON parsers are more liberal. For instance, PHP accepts</a>
+<a name="ln982"> * '.5' and '1.'. JSON.parse accepts '+3'.</a>
+<a name="ln983"> *</a>
+<a name="ln984"> * This function takes the strict approach.</a>
+<a name="ln985"> */</a>
+<a name="ln986">bool parse_number(const char **sp, double *out)</a>
+<a name="ln987">{</a>
+<a name="ln988">    const char *s = *sp;</a>
+<a name="ln989"> </a>
+<a name="ln990">    /* '-'? */</a>
+<a name="ln991">    if (*s == '-')</a>
+<a name="ln992">        s++;</a>
+<a name="ln993"> </a>
+<a name="ln994">    /* (0 | [1-9][0-9]*) */</a>
+<a name="ln995">    if (*s == '0')</a>
+<a name="ln996">        s++;</a>
+<a name="ln997">    else</a>
+<a name="ln998">    {</a>
+<a name="ln999">        if (!is_digit(*s))</a>
+<a name="ln1000">            return false;</a>
+<a name="ln1001">        do { s++; } while (is_digit(*s));</a>
+<a name="ln1002">    }</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    /* ('.' [0-9]+)? */</a>
+<a name="ln1005">    if (*s == '.')</a>
+<a name="ln1006">    {</a>
+<a name="ln1007">        s++;</a>
+<a name="ln1008">        if (!is_digit(*s))</a>
+<a name="ln1009">            return false;</a>
+<a name="ln1010">        do { s++; } while (is_digit(*s));</a>
+<a name="ln1011">    }</a>
+<a name="ln1012"> </a>
+<a name="ln1013">    /* ([Ee] [+-]? [0-9]+)? */</a>
+<a name="ln1014">    if (*s == 'E' || *s == 'e')</a>
+<a name="ln1015">    {</a>
+<a name="ln1016">        s++;</a>
+<a name="ln1017">        if (*s == '+' || *s == '-')</a>
+<a name="ln1018">            s++;</a>
+<a name="ln1019">        if (!is_digit(*s))</a>
+<a name="ln1020">            return false;</a>
+<a name="ln1021">        do { s++; } while (is_digit(*s));</a>
+<a name="ln1022">    }</a>
+<a name="ln1023"> </a>
+<a name="ln1024">    if (out)</a>
+<a name="ln1025">        *out = strtod(*sp, nullptr);</a>
+<a name="ln1026"> </a>
+<a name="ln1027">    *sp = s;</a>
+<a name="ln1028">    return true;</a>
+<a name="ln1029">}</a>
+<a name="ln1030"> </a>
+<a name="ln1031">static void skip_space(const char **sp)</a>
+<a name="ln1032">{</a>
+<a name="ln1033">    const char *s = *sp;</a>
+<a name="ln1034">    while (is_space(*s))</a>
+<a name="ln1035">        s++;</a>
+<a name="ln1036">    *sp = s;</a>
+<a name="ln1037">}</a>
+<a name="ln1038"> </a>
+<a name="ln1039">static void emit_value(SB *out, const JsonNode *node)</a>
+<a name="ln1040">{</a>
+<a name="ln1041">    ASSERT(tag_is_valid(node-&gt;tag));</a>
+<a name="ln1042">    switch (node-&gt;tag)</a>
+<a name="ln1043">    {</a>
+<a name="ln1044">        case JSON_NULL:</a>
+<a name="ln1045">            sb_puts(out, &quot;null&quot;);</a>
+<a name="ln1046">            break;</a>
+<a name="ln1047">        case JSON_BOOL:</a>
+<a name="ln1048">            sb_puts(out, node-&gt;bool_ ? &quot;true&quot; : &quot;false&quot;);</a>
+<a name="ln1049">            break;</a>
+<a name="ln1050">        case JSON_STRING:</a>
+<a name="ln1051">            emit_string(out, node-&gt;string_);</a>
+<a name="ln1052">            break;</a>
+<a name="ln1053">        case JSON_NUMBER:</a>
+<a name="ln1054">            emit_number(out, node-&gt;number_);</a>
+<a name="ln1055">            break;</a>
+<a name="ln1056">        case JSON_ARRAY:</a>
+<a name="ln1057">            emit_array(out, node);</a>
+<a name="ln1058">            break;</a>
+<a name="ln1059">        case JSON_OBJECT:</a>
+<a name="ln1060">            emit_object(out, node);</a>
+<a name="ln1061">            break;</a>
+<a name="ln1062">        default:</a>
+<a name="ln1063">            die(&quot;invalid JSON tag type&quot;);</a>
+<a name="ln1064">    }</a>
+<a name="ln1065">}</a>
+<a name="ln1066"> </a>
+<a name="ln1067">void emit_value_indented(SB *out, const JsonNode *node, const char *space, int indent_level)</a>
+<a name="ln1068">{</a>
+<a name="ln1069">    ASSERT(tag_is_valid(node-&gt;tag));</a>
+<a name="ln1070">    switch (node-&gt;tag)</a>
+<a name="ln1071">    {</a>
+<a name="ln1072">        case JSON_NULL:</a>
+<a name="ln1073">            sb_puts(out, &quot;null&quot;);</a>
+<a name="ln1074">            break;</a>
+<a name="ln1075">        case JSON_BOOL:</a>
+<a name="ln1076">            sb_puts(out, node-&gt;bool_ ? &quot;true&quot; : &quot;false&quot;);</a>
+<a name="ln1077">            break;</a>
+<a name="ln1078">        case JSON_STRING:</a>
+<a name="ln1079">            emit_string(out, node-&gt;string_);</a>
+<a name="ln1080">            break;</a>
+<a name="ln1081">        case JSON_NUMBER:</a>
+<a name="ln1082">            emit_number(out, node-&gt;number_);</a>
+<a name="ln1083">            break;</a>
+<a name="ln1084">        case JSON_ARRAY:</a>
+<a name="ln1085">            emit_array_indented(out, node, space, indent_level);</a>
+<a name="ln1086">            break;</a>
+<a name="ln1087">        case JSON_OBJECT:</a>
+<a name="ln1088">            emit_object_indented(out, node, space, indent_level);</a>
+<a name="ln1089">            break;</a>
+<a name="ln1090">        default:</a>
+<a name="ln1091">            die(&quot;invalid JSON tag type&quot;);</a>
+<a name="ln1092">    }</a>
+<a name="ln1093">}</a>
+<a name="ln1094"> </a>
+<a name="ln1095">static void emit_array(SB *out, const JsonNode *array)</a>
+<a name="ln1096">{</a>
+<a name="ln1097">    const JsonNode *element;</a>
+<a name="ln1098"> </a>
+<a name="ln1099">    sb_putc(out, '[');</a>
+<a name="ln1100">    json_foreach(element, array)</a>
+<a name="ln1101">    {</a>
+<a name="ln1102">        emit_value(out, element);</a>
+<a name="ln1103">        if (element-&gt;next != nullptr)</a>
+<a name="ln1104">            sb_putc(out, ',');</a>
+<a name="ln1105">    }</a>
+<a name="ln1106">    sb_putc(out, ']');</a>
+<a name="ln1107">}</a>
+<a name="ln1108"> </a>
+<a name="ln1109">static void emit_array_indented(SB *out, const JsonNode *array, const char *space, int indent_level)</a>
+<a name="ln1110">{</a>
+<a name="ln1111">    const JsonNode *element = array-&gt;children.head;</a>
+<a name="ln1112">    int i;</a>
+<a name="ln1113"> </a>
+<a name="ln1114">    if (element == nullptr)</a>
+<a name="ln1115">    {</a>
+<a name="ln1116">        sb_puts(out, &quot;[]&quot;);</a>
+<a name="ln1117">        return;</a>
+<a name="ln1118">    }</a>
+<a name="ln1119"> </a>
+<a name="ln1120">    sb_puts(out, &quot;[\n&quot;);</a>
+<a name="ln1121">    while (element != nullptr)</a>
+<a name="ln1122">    {</a>
+<a name="ln1123">        for (i = 0; i &lt; indent_level + 1; i++)</a>
+<a name="ln1124">            sb_puts(out, space);</a>
+<a name="ln1125">        emit_value_indented(out, element, space, indent_level + 1);</a>
+<a name="ln1126"> </a>
+<a name="ln1127">        element = element-&gt;next;</a>
+<a name="ln1128">        sb_puts(out, element != nullptr ? &quot;,\n&quot; : &quot;\n&quot;);</a>
+<a name="ln1129">    }</a>
+<a name="ln1130">    for (i = 0; i &lt; indent_level; i++)</a>
+<a name="ln1131">        sb_puts(out, space);</a>
+<a name="ln1132">    sb_putc(out, ']');</a>
+<a name="ln1133">}</a>
+<a name="ln1134"> </a>
+<a name="ln1135">static void emit_object(SB *out, const JsonNode *object)</a>
+<a name="ln1136">{</a>
+<a name="ln1137">    const JsonNode *member;</a>
+<a name="ln1138"> </a>
+<a name="ln1139">    sb_putc(out, '{');</a>
+<a name="ln1140">    json_foreach(member, object)</a>
+<a name="ln1141">    {</a>
+<a name="ln1142">        emit_string(out, member-&gt;key);</a>
+<a name="ln1143">        sb_putc(out, ':');</a>
+<a name="ln1144">        emit_value(out, member);</a>
+<a name="ln1145">        if (member-&gt;next != nullptr)</a>
+<a name="ln1146">            sb_putc(out, ',');</a>
+<a name="ln1147">    }</a>
+<a name="ln1148">    sb_putc(out, '}');</a>
+<a name="ln1149">}</a>
+<a name="ln1150"> </a>
+<a name="ln1151">static void emit_object_indented(SB *out, const JsonNode *object, const char *space, int indent_level)</a>
+<a name="ln1152">{</a>
+<a name="ln1153">    const JsonNode *member = object-&gt;children.head;</a>
+<a name="ln1154">    int i;</a>
+<a name="ln1155"> </a>
+<a name="ln1156">    if (member == nullptr)</a>
+<a name="ln1157">    {</a>
+<a name="ln1158">        sb_puts(out, &quot;{}&quot;);</a>
+<a name="ln1159">        return;</a>
+<a name="ln1160">    }</a>
+<a name="ln1161"> </a>
+<a name="ln1162">    sb_puts(out, &quot;{\n&quot;);</a>
+<a name="ln1163">    while (member != nullptr)</a>
+<a name="ln1164">    {</a>
+<a name="ln1165">        for (i = 0; i &lt; indent_level + 1; i++)</a>
+<a name="ln1166">            sb_puts(out, space);</a>
+<a name="ln1167">        emit_string(out, member-&gt;key);</a>
+<a name="ln1168">        sb_puts(out, &quot;: &quot;);</a>
+<a name="ln1169">        emit_value_indented(out, member, space, indent_level + 1);</a>
+<a name="ln1170"> </a>
+<a name="ln1171">        member = member-&gt;next;</a>
+<a name="ln1172">        sb_puts(out, member != nullptr ? &quot;,\n&quot; : &quot;\n&quot;);</a>
+<a name="ln1173">    }</a>
+<a name="ln1174">    for (i = 0; i &lt; indent_level; i++)</a>
+<a name="ln1175">        sb_puts(out, space);</a>
+<a name="ln1176">    sb_putc(out, '}');</a>
+<a name="ln1177">}</a>
+<a name="ln1178"> </a>
+<a name="ln1179">void emit_string(SB *out, const char *str)</a>
+<a name="ln1180">{</a>
+<a name="ln1181">    bool escape_unicode = false;</a>
+<a name="ln1182">    const char *s = str;</a>
+<a name="ln1183">    char *b;</a>
+<a name="ln1184"> </a>
+<a name="ln1185">    ASSERT(utf8_validate(str));</a>
+<a name="ln1186"> </a>
+<a name="ln1187">    /*</a>
+<a name="ln1188">     * 14 bytes is enough space to write up to two</a>
+<a name="ln1189">     * \uXXXX escapes and two quotation marks.</a>
+<a name="ln1190">     */</a>
+<a name="ln1191">    sb_need(out, 14);</a>
+<a name="ln1192">    b = out-&gt;cur;</a>
+<a name="ln1193"> </a>
+<a name="ln1194">    *b++ = '&quot;';</a>
+<a name="ln1195">    while (*s != 0)</a>
+<a name="ln1196">    {</a>
+<a name="ln1197">        unsigned char c = *s++;</a>
+<a name="ln1198"> </a>
+<a name="ln1199">        /* Encode the next character, and write it to b. */</a>
+<a name="ln1200">        switch (c)</a>
+<a name="ln1201">        {</a>
+<a name="ln1202">        case '&quot;':</a>
+<a name="ln1203">            *b++ = '\\';</a>
+<a name="ln1204">            *b++ = '&quot;';</a>
+<a name="ln1205">            break;</a>
+<a name="ln1206">        case '\\':</a>
+<a name="ln1207">            *b++ = '\\';</a>
+<a name="ln1208">            *b++ = '\\';</a>
+<a name="ln1209">            break;</a>
+<a name="ln1210">        case '\b':</a>
+<a name="ln1211">            *b++ = '\\';</a>
+<a name="ln1212">            *b++ = 'b';</a>
+<a name="ln1213">            break;</a>
+<a name="ln1214">        case '\f':</a>
+<a name="ln1215">            *b++ = '\\';</a>
+<a name="ln1216">            *b++ = 'f';</a>
+<a name="ln1217">            break;</a>
+<a name="ln1218">        case '\n':</a>
+<a name="ln1219">            *b++ = '\\';</a>
+<a name="ln1220">            *b++ = 'n';</a>
+<a name="ln1221">            break;</a>
+<a name="ln1222">        case '\r':</a>
+<a name="ln1223">            *b++ = '\\';</a>
+<a name="ln1224">            *b++ = 'r';</a>
+<a name="ln1225">            break;</a>
+<a name="ln1226">        case '\t':</a>
+<a name="ln1227">            *b++ = '\\';</a>
+<a name="ln1228">            *b++ = 't';</a>
+<a name="ln1229">            break;</a>
+<a name="ln1230">        default:</a>
+<a name="ln1231">        {</a>
+<a name="ln1232">            int len;</a>
+<a name="ln1233"> </a>
+<a name="ln1234">            s--;</a>
+<a name="ln1235">            len = utf8_validate_cz(s);</a>
+<a name="ln1236"> </a>
+<a name="ln1237">            if (len == 0)</a>
+<a name="ln1238">            {</a>
+<a name="ln1239">                /*</a>
+<a name="ln1240">                 * Handle invalid UTF-8 character gracefully in production</a>
+<a name="ln1241">                 * by writing a replacement character (U+FFFD)</a>
+<a name="ln1242">                 * and skipping a single byte.</a>
+<a name="ln1243">                 *</a>
+<a name="ln1244">                 * This should never happen when assertions are enabled</a>
+<a name="ln1245">                 * due to the assertion at the beginning of this function.</a>
+<a name="ln1246">                 */</a>
+<a name="ln1247">                die(&quot;mangled character&quot;);</a>
+<a name="ln1248">                if (escape_unicode)</a>
+<a name="ln1249">                {</a>
+<a name="ln1250">                    strcpy(b, &quot;\\uFFFD&quot;);</a>
+<a name="ln1251">                    b += 6;</a>
+<a name="ln1252">                }</a>
+<a name="ln1253">                else</a>
+<a name="ln1254">                {</a>
+<a name="ln1255">                    // Invalid char marker (U+FFFD).</a>
+<a name="ln1256">                    b += wctoutf8(b, 0xFFFD);</a>
+<a name="ln1257">                }</a>
+<a name="ln1258">                s++;</a>
+<a name="ln1259">            }</a>
+<a name="ln1260">            else if (c &lt; 0x1F || (c &gt;= 0x80 &amp;&amp; escape_unicode))</a>
+<a name="ln1261">            {</a>
+<a name="ln1262">                /* Encode using \u.... */</a>
+<a name="ln1263">                uint32_t unicode;</a>
+<a name="ln1264"> </a>
+<a name="ln1265">                s += utf8_read_char(s, &amp;unicode);</a>
+<a name="ln1266"> </a>
+<a name="ln1267">                if (unicode &lt;= 0xFFFF)</a>
+<a name="ln1268">                {</a>
+<a name="ln1269">                    *b++ = '\\';</a>
+<a name="ln1270">                    *b++ = 'u';</a>
+<a name="ln1271">                    b += write_hex16(b, unicode);</a>
+<a name="ln1272">                }</a>
+<a name="ln1273">                else</a>
+<a name="ln1274">                {</a>
+<a name="ln1275">                    /* Produce a surrogate pair. */</a>
+<a name="ln1276">                    uint16_t uc, lc;</a>
+<a name="ln1277">                    ASSERT(unicode &lt;= 0x10FFFF);</a>
+<a name="ln1278">                    to_surrogate_pair(unicode, &amp;uc, &amp;lc);</a>
+<a name="ln1279">                    *b++ = '\\';</a>
+<a name="ln1280">                    *b++ = 'u';</a>
+<a name="ln1281">                    b += write_hex16(b, uc);</a>
+<a name="ln1282">                    *b++ = '\\';</a>
+<a name="ln1283">                    *b++ = 'u';</a>
+<a name="ln1284">                    b += write_hex16(b, lc);</a>
+<a name="ln1285">                }</a>
+<a name="ln1286">            }</a>
+<a name="ln1287">            else</a>
+<a name="ln1288">            {</a>
+<a name="ln1289">                /* Write the character directly. */</a>
+<a name="ln1290">                while (len--)</a>
+<a name="ln1291">                    *b++ = *s++;</a>
+<a name="ln1292">            }</a>
+<a name="ln1293"> </a>
+<a name="ln1294">            break;</a>
+<a name="ln1295">        }</a>
+<a name="ln1296">        }</a>
+<a name="ln1297"> </a>
+<a name="ln1298">        /*</a>
+<a name="ln1299">         * Update *out to know about the new bytes,</a>
+<a name="ln1300">         * and set up b to write another encoded character.</a>
+<a name="ln1301">         */</a>
+<a name="ln1302">        out-&gt;cur = b;</a>
+<a name="ln1303">        sb_need(out, 14);</a>
+<a name="ln1304">        b = out-&gt;cur;</a>
+<a name="ln1305">    }</a>
+<a name="ln1306">    *b++ = '&quot;';</a>
+<a name="ln1307"> </a>
+<a name="ln1308">    out-&gt;cur = b;</a>
+<a name="ln1309">}</a>
+<a name="ln1310"> </a>
+<a name="ln1311">static void emit_number(SB *out, double num)</a>
+<a name="ln1312">{</a>
+<a name="ln1313">    /*</a>
+<a name="ln1314">     * This isn't exactly how JavaScript renders numbers,</a>
+<a name="ln1315">     * but it should produce valid JSON for reasonable numbers</a>
+<a name="ln1316">     * preserve precision well enough, and avoid some oddities</a>
+<a name="ln1317">     * like 0.3 -&gt; 0.299999999999999988898 .</a>
+<a name="ln1318">     */</a>
+<a name="ln1319">    char buf[64];</a>
+<a name="ln1320">    sprintf(buf, &quot;%.16g&quot;, num);</a>
+<a name="ln1321"> </a>
+<a name="ln1322">    if (number_is_valid(buf))</a>
+<a name="ln1323">        sb_puts(out, buf);</a>
+<a name="ln1324">    else</a>
+<a name="ln1325">        sb_puts(out, &quot;null&quot;);</a>
+<a name="ln1326">}</a>
+<a name="ln1327"> </a>
+<a name="ln1328">static bool tag_is_valid(unsigned int tag)</a>
+<a name="ln1329">{</a>
+<a name="ln1330">    return /* tag &gt;= JSON_NULL &amp;&amp; */ tag &lt;= JSON_OBJECT;</a>
+<a name="ln1331">}</a>
+<a name="ln1332"> </a>
+<a name="ln1333">static bool number_is_valid(const char *num)</a>
+<a name="ln1334">{</a>
+<a name="ln1335">    return parse_number(&amp;num, nullptr) &amp;&amp; *num == '\0';</a>
+<a name="ln1336">}</a>
+<a name="ln1337"> </a>
+<a name="ln1338">static bool expect_literal(const char **sp, const char *str)</a>
+<a name="ln1339">{</a>
+<a name="ln1340">    const char *s = *sp;</a>
+<a name="ln1341"> </a>
+<a name="ln1342">    while (*str != '\0')</a>
+<a name="ln1343">    {</a>
+<a name="ln1344">        if (*s++ != *str++)</a>
+<a name="ln1345">            return false;</a>
+<a name="ln1346">    }</a>
+<a name="ln1347"> </a>
+<a name="ln1348">    *sp = s;</a>
+<a name="ln1349">    return true;</a>
+<a name="ln1350">}</a>
+<a name="ln1351"> </a>
+<a name="ln1352">/*</a>
+<a name="ln1353"> * Parses exactly 4 hex characters (capital or lowercase).</a>
+<a name="ln1354"> * Fails if any input chars are not [0-9A-Fa-f].</a>
+<a name="ln1355"> */</a>
+<a name="ln1356">static bool parse_hex16(const char **sp, uint16_t *out)</a>
+<a name="ln1357">{</a>
+<a name="ln1358">    const char *s = *sp;</a>
+<a name="ln1359">    uint16_t ret = 0;</a>
+<a name="ln1360">    uint16_t i;</a>
+<a name="ln1361">    uint16_t tmp;</a>
+<a name="ln1362">    char c;</a>
+<a name="ln1363"> </a>
+<a name="ln1364">    for (i = 0; i &lt; 4; i++)</a>
+<a name="ln1365">    {</a>
+<a name="ln1366">        c = *s++;</a>
+<a name="ln1367">        if (c &gt;= '0' &amp;&amp; c &lt;= '9')</a>
+<a name="ln1368">            tmp = c - '0';</a>
+<a name="ln1369">        else if (c &gt;= 'A' &amp;&amp; c &lt;= 'F')</a>
+<a name="ln1370">            tmp = c - 'A' + 10;</a>
+<a name="ln1371">        else if (c &gt;= 'a' &amp;&amp; c &lt;= 'f')</a>
+<a name="ln1372">            tmp = c - 'a' + 10;</a>
+<a name="ln1373">        else</a>
+<a name="ln1374">            return false;</a>
+<a name="ln1375"> </a>
+<a name="ln1376">        ret &lt;&lt;= 4;</a>
+<a name="ln1377">        ret += tmp;</a>
+<a name="ln1378">    }</a>
+<a name="ln1379"> </a>
+<a name="ln1380">    if (out)</a>
+<a name="ln1381">        *out = ret;</a>
+<a name="ln1382">    *sp = s;</a>
+<a name="ln1383">    return true;</a>
+<a name="ln1384">}</a>
+<a name="ln1385"> </a>
+<a name="ln1386">/*</a>
+<a name="ln1387"> * Encodes a 16-bit number into hexadecimal,</a>
+<a name="ln1388"> * writing exactly 4 hex chars.</a>
+<a name="ln1389"> */</a>
+<a name="ln1390">static int write_hex16(char *out, uint16_t val)</a>
+<a name="ln1391">{</a>
+<a name="ln1392">    const char *hex = &quot;0123456789ABCDEF&quot;;</a>
+<a name="ln1393"> </a>
+<a name="ln1394">    *out++ = hex[(val &gt;&gt; 12) &amp; 0xF];</a>
+<a name="ln1395">    *out++ = hex[(val &gt;&gt; 8)  &amp; 0xF];</a>
+<a name="ln1396">    *out++ = hex[(val &gt;&gt; 4)  &amp; 0xF];</a>
+<a name="ln1397">    *out++ = hex[ val    &amp; 0xF];</a>
+<a name="ln1398"> </a>
+<a name="ln1399">    return 4;</a>
+<a name="ln1400">}</a>
+<a name="ln1401"> </a>
+<a name="ln1402">bool json_check(const JsonNode *node, char errmsg[256])</a>
+<a name="ln1403">{</a>
+<a name="ln1404">    #define problem(...) do { \</a>
+<a name="ln1405">            if (errmsg != nullptr) \</a>
+<a name="ln1406">                snprintf(errmsg, 256, __VA_ARGS__); \</a>
+<a name="ln1407">            return false; \</a>
+<a name="ln1408">        } while (0)</a>
+<a name="ln1409"> </a>
+<a name="ln1410">    if (node-&gt;key != nullptr &amp;&amp; !utf8_validate(node-&gt;key))</a>
+<a name="ln1411">        problem(&quot;key contains invalid UTF-8&quot;);</a>
+<a name="ln1412"> </a>
+<a name="ln1413">    if (!tag_is_valid(node-&gt;tag))</a>
+<a name="ln1414">        problem(&quot;tag is invalid (%d)&quot;, node-&gt;tag);</a>
+<a name="ln1415"> </a>
+<a name="ln1416">    if (node-&gt;tag == JSON_BOOL)</a>
+<a name="ln1417">    {</a>
+<a name="ln1418">        if (node-&gt;bool_ != false &amp;&amp; node-&gt;bool_ != true)</a>
+<a name="ln1419">            problem(&quot;bool_ is neither false (%d) nor true (%d)&quot;, (int)false, (int)true);</a>
+<a name="ln1420">    }</a>
+<a name="ln1421">    else if (node-&gt;tag == JSON_STRING)</a>
+<a name="ln1422">    {</a>
+<a name="ln1423">        if (node-&gt;string_ == nullptr)</a>
+<a name="ln1424">            problem(&quot;string_ is nullptr&quot;);</a>
+<a name="ln1425">        if (!utf8_validate(node-&gt;string_))</a>
+<a name="ln1426">            problem(&quot;string_ contains invalid UTF-8&quot;);</a>
+<a name="ln1427">    }</a>
+<a name="ln1428">    else if (node-&gt;tag == JSON_ARRAY || node-&gt;tag == JSON_OBJECT)</a>
+<a name="ln1429">    {</a>
+<a name="ln1430">        JsonNode *head = node-&gt;children.head;</a>
+<a name="ln1431">        JsonNode *tail = node-&gt;children.tail;</a>
+<a name="ln1432"> </a>
+<a name="ln1433">        if (head == nullptr || tail == nullptr)</a>
+<a name="ln1434">        {</a>
+<a name="ln1435">            if (head != nullptr)</a>
+<a name="ln1436">                problem(&quot;tail is nullptr, but head is not&quot;);</a>
+<a name="ln1437">            if (tail != nullptr)</a>
+<a name="ln1438">                problem(&quot;head is nullptr, but tail is not&quot;);</a>
+<a name="ln1439">        }</a>
+<a name="ln1440">        else</a>
+<a name="ln1441">        {</a>
+<a name="ln1442">            JsonNode *child;</a>
+<a name="ln1443">            JsonNode *last = nullptr;</a>
+<a name="ln1444"> </a>
+<a name="ln1445">            if (head-&gt;prev != nullptr)</a>
+<a name="ln1446">                problem(&quot;First child's prev pointer is not nullptr&quot;);</a>
+<a name="ln1447"> </a>
+<a name="ln1448">            for (child = head; child != nullptr; last = child, child = child-&gt;next)</a>
+<a name="ln1449">            {</a>
+<a name="ln1450">                if (child == node)</a>
+<a name="ln1451">                    problem(&quot;node is its own child&quot;);</a>
+<a name="ln1452">                if (child-&gt;next == child)</a>
+<a name="ln1453">                    problem(&quot;child-&gt;next == child (cycle)&quot;);</a>
+<a name="ln1454">                if (child-&gt;next == head)</a>
+<a name="ln1455">                    problem(&quot;child-&gt;next == head (cycle)&quot;);</a>
+<a name="ln1456"> </a>
+<a name="ln1457">                if (child-&gt;parent != node)</a>
+<a name="ln1458">                    problem(&quot;child does not point back to parent&quot;);</a>
+<a name="ln1459">                if (child-&gt;next != nullptr &amp;&amp; child-&gt;next-&gt;prev != child)</a>
+<a name="ln1460">                    problem(&quot;child-&gt;next does not point back to child&quot;);</a>
+<a name="ln1461"> </a>
+<a name="ln1462">                if (node-&gt;tag == JSON_ARRAY &amp;&amp; child-&gt;key != nullptr)</a>
+<a name="ln1463">                    problem(&quot;Array element's key is not nullptr&quot;);</a>
+<a name="ln1464">                if (node-&gt;tag == JSON_OBJECT &amp;&amp; child-&gt;key == nullptr)</a>
+<a name="ln1465">                    problem(&quot;Object member's key is nullptr&quot;);</a>
+<a name="ln1466"> </a>
+<a name="ln1467">                if (!json_check(child, errmsg))</a>
+<a name="ln1468">                    return false;</a>
+<a name="ln1469">            }</a>
+<a name="ln1470"> </a>
+<a name="ln1471">            if (last != tail)</a>
+<a name="ln1472">                problem(&quot;tail does not match pointer found by starting at head and following next links&quot;);</a>
+<a name="ln1473">        }</a>
+<a name="ln1474">    }</a>
+<a name="ln1475"> </a>
+<a name="ln1476">    return true;</a>
+<a name="ln1477"> </a>
+<a name="ln1478">    #undef problem</a>
+<a name="ln1479">}</a>
+
+</code></pre>
+<div class="balloon" rel="83"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v701/" target="_blank">V701</a> realloc() possible leak: when realloc() fails in allocating memory, original pointer 'sb->start' is lost. Consider assigning realloc() to a temporary pointer.</p></div>
+<div class="balloon" rel="1248"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v779/" target="_blank">V779</a> Unreachable code detected. It is possible that an error is present.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

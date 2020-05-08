@@ -1,0 +1,3142 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>item-prop.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Misc functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;item-prop.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cctype&gt;</a>
+<a name="ln12">#include &lt;cstdio&gt;</a>
+<a name="ln13">#include &lt;cstdlib&gt;</a>
+<a name="ln14">#include &lt;cstring&gt;</a>
+<a name="ln15"> </a>
+<a name="ln16">#include &quot;artefact.h&quot;</a>
+<a name="ln17">#include &quot;art-enum.h&quot;</a>
+<a name="ln18">#include &quot;describe.h&quot;</a>
+<a name="ln19">#include &quot;god-passive.h&quot;</a>
+<a name="ln20">#include &quot;invent.h&quot;</a>
+<a name="ln21">#include &quot;items.h&quot;</a>
+<a name="ln22">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln23">#include &quot;item-use.h&quot;</a>
+<a name="ln24">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln25">#include &quot;message.h&quot;</a>
+<a name="ln26">#include &quot;notes.h&quot;</a>
+<a name="ln27">#include &quot;orb-type.h&quot;</a>
+<a name="ln28">#include &quot;potion-type.h&quot;</a>
+<a name="ln29">#include &quot;random.h&quot;</a>
+<a name="ln30">#include &quot;religion.h&quot;</a>
+<a name="ln31">#include &quot;shopping.h&quot;</a>
+<a name="ln32">#include &quot;skills.h&quot;</a>
+<a name="ln33">#include &quot;spl-wpnench.h&quot;</a>
+<a name="ln34">#include &quot;stringutil.h&quot;</a>
+<a name="ln35">#include &quot;terrain.h&quot;</a>
+<a name="ln36">#include &quot;xom.h&quot;</a>
+<a name="ln37"> </a>
+<a name="ln38">static iflags_t _full_ident_mask(const item_def&amp; item);</a>
+<a name="ln39"> </a>
+<a name="ln40">// XXX: Name strings in most of the following are currently unused!</a>
+<a name="ln41">struct armour_def</a>
+<a name="ln42">{</a>
+<a name="ln43">    /// The armour_type enum of this armour type.</a>
+<a name="ln44">    armour_type         id;</a>
+<a name="ln45">    /// The name of the armour. (E.g. &quot;robe&quot;.)</a>
+<a name="ln46">    const char         *name;</a>
+<a name="ln47">    /// The base AC value provided by the armour, before skill &amp; enchant.</a>
+<a name="ln48">    int                 ac;</a>
+<a name="ln49">    /// The base EV penalty of the armour; used for EV, stealth, spell %, &amp;c.</a>
+<a name="ln50">    int                 ev;</a>
+<a name="ln51">    /// The base price of the item in shops.</a>
+<a name="ln52">    int                 price;</a>
+<a name="ln53"> </a>
+<a name="ln54">    /// The slot the armour is equipped into; e.g. EQ_BOOTS.</a>
+<a name="ln55">    equipment_type      slot;</a>
+<a name="ln56">    /// The smallest size creature the armour will fit.</a>
+<a name="ln57">    size_type           fit_min;</a>
+<a name="ln58">    /// The largest size creature the armour will fit.</a>
+<a name="ln59">    size_type           fit_max;</a>
+<a name="ln60">    /// Whether this armour is mundane or inherently 'special', for acq.</a>
+<a name="ln61">    bool                mundane; // (special armour doesn't need egos etc)</a>
+<a name="ln62">    /// The resists, vulns, &amp;c that this armour type gives when worn.</a>
+<a name="ln63">    armflags_t          flags;</a>
+<a name="ln64">    /// Used in body armour 'acquirement' code; higher = generated more.</a>
+<a name="ln65">    int                 acquire_weight;</a>
+<a name="ln66">};</a>
+<a name="ln67"> </a>
+<a name="ln68">// would be nice to lookup the name from monster_for_armour, but that</a>
+<a name="ln69">// leads to static initialization races (plus 'gold' special case)</a>
+<a name="ln70">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln71">#define DRAGON_ARMOUR(id, name, ac, evp, prc, res)                          \</a>
+<a name="ln72">    { ARM_ ## id ## _DRAGON_HIDE, &quot;removed &quot; name &quot; dragon hide&quot;, 0, 0, 0,  \</a>
+<a name="ln73">      EQ_BODY_ARMOUR, SIZE_LITTLE, SIZE_GIANT, false, res, 0 },             \</a>
+<a name="ln74">    { ARM_ ## id ## _DRAGON_ARMOUR, name &quot; dragon scales&quot;,  ac, evp, prc,   \</a>
+<a name="ln75">      EQ_BODY_ARMOUR, SIZE_LITTLE, SIZE_GIANT, false, res, 25 }</a>
+<a name="ln76">#else</a>
+<a name="ln77">#define DRAGON_ARMOUR(id, name, ac, evp, prc, res)                          \</a>
+<a name="ln78">    { ARM_ ## id ## _DRAGON_ARMOUR, name &quot; dragon scales&quot;,  ac, evp, prc,   \</a>
+<a name="ln79">      EQ_BODY_ARMOUR, SIZE_LITTLE, SIZE_GIANT, false, res, 25 }</a>
+<a name="ln80">#endif</a>
+<a name="ln81"> </a>
+<a name="ln82">// Note: the Little-Giant range is used to make armours which are very</a>
+<a name="ln83">// flexible and adjustable and can be worn by any player character...</a>
+<a name="ln84">// providing they also pass the shape test, of course.</a>
+<a name="ln85">static int Armour_index[NUM_ARMOURS];</a>
+<a name="ln86">static const armour_def Armour_prop[] =</a>
+<a name="ln87">{</a>
+<a name="ln88">    { ARM_ANIMAL_SKIN,          &quot;animal skin&quot;,            2,   0,     3,</a>
+<a name="ln89">        EQ_BODY_ARMOUR, SIZE_LITTLE, SIZE_GIANT, true, ARMF_NO_FLAGS, 333 },</a>
+<a name="ln90">    { ARM_ROBE,                 &quot;robe&quot;,                   2,   0,     7,</a>
+<a name="ln91">        EQ_BODY_ARMOUR, SIZE_LITTLE, SIZE_BIG, true, ARMF_NO_FLAGS, 1000 },</a>
+<a name="ln92">    { ARM_LEATHER_ARMOUR,       &quot;leather armour&quot;,         3,  -40,   20,</a>
+<a name="ln93">        EQ_BODY_ARMOUR, SIZE_SMALL,  SIZE_MEDIUM, true },</a>
+<a name="ln94"> </a>
+<a name="ln95">    { ARM_RING_MAIL,            &quot;ring mail&quot;,              5,  -70,   40,</a>
+<a name="ln96">        EQ_BODY_ARMOUR, SIZE_SMALL,  SIZE_MEDIUM, true, ARMF_NO_FLAGS, 1000 },</a>
+<a name="ln97">    { ARM_SCALE_MAIL,           &quot;scale mail&quot;,             6, -100,   40,</a>
+<a name="ln98">        EQ_BODY_ARMOUR, SIZE_SMALL,  SIZE_MEDIUM, true, ARMF_NO_FLAGS, 1000 },</a>
+<a name="ln99">    { ARM_CHAIN_MAIL,           &quot;chain mail&quot;,             8, -150,   45,</a>
+<a name="ln100">        EQ_BODY_ARMOUR, SIZE_SMALL,  SIZE_MEDIUM, true, ARMF_NO_FLAGS, 1000 },</a>
+<a name="ln101">    { ARM_PLATE_ARMOUR,         &quot;plate armour&quot;,          10, -180,   230,</a>
+<a name="ln102">        EQ_BODY_ARMOUR, SIZE_SMALL, SIZE_MEDIUM, true, ARMF_NO_FLAGS, 1000 },</a>
+<a name="ln103">    { ARM_CRYSTAL_PLATE_ARMOUR, &quot;crystal plate armour&quot;,  14, -230,   800,</a>
+<a name="ln104">        EQ_BODY_ARMOUR, SIZE_SMALL, SIZE_MEDIUM, false, ARMF_NO_FLAGS, 500 },</a>
+<a name="ln105"> </a>
+<a name="ln106">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln107">    { ARM_TROLL_HIDE, &quot;removed troll hide&quot;,              0,    0,      0,</a>
+<a name="ln108">       EQ_BODY_ARMOUR, SIZE_LITTLE, SIZE_GIANT, false, ARMF_REGENERATION, 0 },</a>
+<a name="ln109">#endif</a>
+<a name="ln110">    { ARM_TROLL_LEATHER_ARMOUR, &quot;troll leather armour&quot;,  4,  -40,    150,</a>
+<a name="ln111">       EQ_BODY_ARMOUR, SIZE_LITTLE, SIZE_GIANT, false, ARMF_REGENERATION, 50 },</a>
+<a name="ln112"> </a>
+<a name="ln113">    { ARM_CLOAK,                &quot;cloak&quot;,                  1,   0,   45,</a>
+<a name="ln114">        EQ_CLOAK,       SIZE_LITTLE, SIZE_BIG, true },</a>
+<a name="ln115">    { ARM_SCARF,                &quot;scarf&quot;,                  0,   0,   50,</a>
+<a name="ln116">        EQ_CLOAK,       SIZE_LITTLE, SIZE_BIG, true },</a>
+<a name="ln117"> </a>
+<a name="ln118">    { ARM_GLOVES,               &quot;gloves&quot;,                 1,   0,   45,</a>
+<a name="ln119">        EQ_GLOVES,      SIZE_SMALL,  SIZE_MEDIUM, true },</a>
+<a name="ln120"> </a>
+<a name="ln121">    { ARM_HELMET,               &quot;helmet&quot;,                 1,   0,   45,</a>
+<a name="ln122">        EQ_HELMET,      SIZE_SMALL,  SIZE_MEDIUM, true },</a>
+<a name="ln123"> </a>
+<a name="ln124">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln125">    { ARM_CAP,                  &quot;cap&quot;,                    0,   0,   45,</a>
+<a name="ln126">        EQ_HELMET,      SIZE_LITTLE, SIZE_LARGE, true },</a>
+<a name="ln127">#endif</a>
+<a name="ln128"> </a>
+<a name="ln129">    { ARM_HAT,                  &quot;hat&quot;,                    0,   0,   40,</a>
+<a name="ln130">        EQ_HELMET,      SIZE_TINY, SIZE_LARGE, true },</a>
+<a name="ln131"> </a>
+<a name="ln132">    // Note that barding size is compared against torso so it currently</a>
+<a name="ln133">    // needs to fit medium, but that doesn't matter as much as race</a>
+<a name="ln134">    // and shapeshift status.</a>
+<a name="ln135">    { ARM_BOOTS,                &quot;boots&quot;,                  1,   0,   45,</a>
+<a name="ln136">        EQ_BOOTS,       SIZE_SMALL,  SIZE_MEDIUM, true },</a>
+<a name="ln137">    // Changed max. barding size to large to allow for the appropriate</a>
+<a name="ln138">    // monster types (monsters don't differentiate between torso and general).</a>
+<a name="ln139">    { ARM_CENTAUR_BARDING,      &quot;centaur barding&quot;,        4,  -60,  230,</a>
+<a name="ln140">        EQ_BOOTS,       SIZE_MEDIUM, SIZE_LARGE, true },</a>
+<a name="ln141">    { ARM_NAGA_BARDING,         &quot;naga barding&quot;,           4,  -60,  230,</a>
+<a name="ln142">        EQ_BOOTS,       SIZE_MEDIUM, SIZE_LARGE, true },</a>
+<a name="ln143"> </a>
+<a name="ln144">    // Note: shields use ac-value as sh-value, EV pen is used as the basis</a>
+<a name="ln145">    // to calculate adjusted shield penalty.</a>
+<a name="ln146">    { ARM_BUCKLER,              &quot;buckler&quot;,                3,  -8,   45,</a>
+<a name="ln147">        EQ_SHIELD,      SIZE_LITTLE, SIZE_MEDIUM, true },</a>
+<a name="ln148">    { ARM_KITE_SHIELD,               &quot;kite shield&quot;,                 8,  -30,  45,</a>
+<a name="ln149">        EQ_SHIELD,      SIZE_SMALL,  SIZE_BIG, true    },</a>
+<a name="ln150">    { ARM_TOWER_SHIELD,         &quot;tower shield&quot;,          13,  -50,  45,</a>
+<a name="ln151">        EQ_SHIELD,      SIZE_MEDIUM, SIZE_GIANT, true  },</a>
+<a name="ln152"> </a>
+<a name="ln153">    // Following all ARM_ entries for the benefit of util/gather_items</a>
+<a name="ln154">    DRAGON_ARMOUR(STEAM,       &quot;steam&quot;,                   5,   0,   400,</a>
+<a name="ln155">        ARMF_RES_STEAM),</a>
+<a name="ln156">    DRAGON_ARMOUR(ACID,        &quot;acid&quot;,                    6,  -50,  400,</a>
+<a name="ln157">        ARMF_RES_CORR),</a>
+<a name="ln158">    DRAGON_ARMOUR(QUICKSILVER, &quot;quicksilver&quot;,             9,  -70,  600,</a>
+<a name="ln159">        ARMF_RES_MAGIC),</a>
+<a name="ln160">    DRAGON_ARMOUR(SWAMP,       &quot;swamp&quot;,                   7,  -70,  500,</a>
+<a name="ln161">        ARMF_RES_POISON),</a>
+<a name="ln162">    DRAGON_ARMOUR(FIRE,        &quot;fire&quot;,                    8, -110,  600,</a>
+<a name="ln163">        ard(ARMF_RES_FIRE, 2) | ARMF_VUL_COLD),</a>
+<a name="ln164">    DRAGON_ARMOUR(ICE,         &quot;ice&quot;,                     9, -110,  600,</a>
+<a name="ln165">        ard(ARMF_RES_COLD, 2) | ARMF_VUL_FIRE),</a>
+<a name="ln166">    DRAGON_ARMOUR(PEARL,       &quot;pearl&quot;,                  10, -110, 1000,</a>
+<a name="ln167">        ARMF_RES_NEG),</a>
+<a name="ln168">    DRAGON_ARMOUR(STORM,       &quot;storm&quot;,                  10, -150,  800,</a>
+<a name="ln169">        ARMF_RES_ELEC),</a>
+<a name="ln170">    DRAGON_ARMOUR(SHADOW,      &quot;shadow&quot;,                 10, -150,  800,</a>
+<a name="ln171">        ard(ARMF_STEALTH, 4)),</a>
+<a name="ln172">    DRAGON_ARMOUR(GOLD,        &quot;gold&quot;,                   12, -230,  800,</a>
+<a name="ln173">        ARMF_RES_FIRE | ARMF_RES_COLD | ARMF_RES_POISON),</a>
+<a name="ln174"> </a>
+<a name="ln175">#undef DRAGON_ARMOUR</a>
+<a name="ln176">};</a>
+<a name="ln177"> </a>
+<a name="ln178">typedef pair&lt;brand_type, int&gt; brand_weight_tuple;</a>
+<a name="ln179"> </a>
+<a name="ln180">/// The standard properties for a given weapon type. (E.g. falchions)</a>
+<a name="ln181">struct weapon_def</a>
+<a name="ln182">{</a>
+<a name="ln183">    /// The weapon_type enum for this weapon type.</a>
+<a name="ln184">    int                 id;</a>
+<a name="ln185">    /// The name of this weapon type. (E.g. &quot;club&quot;.)</a>
+<a name="ln186">    const char         *name;</a>
+<a name="ln187">    /// The base damage of the weapon. (Later multiplied by skill, etc)</a>
+<a name="ln188">    int                 dam;</a>
+<a name="ln189">    /// The base to-hit bonus of the weapon.</a>
+<a name="ln190">    int                 hit;</a>
+<a name="ln191">    /// The number of aut it takes to swing the weapon with 0 skill.</a>
+<a name="ln192">    int                 speed;</a>
+<a name="ln193"> </a>
+<a name="ln194">    /// The weapon skill corresponding to this weapon's use.</a>
+<a name="ln195">    skill_type          skill;</a>
+<a name="ln196">    /// The size of the smallest creature that can wield the weapon.</a>
+<a name="ln197">    size_type           min_2h_size;</a>
+<a name="ln198">    /// The smallest creature that can wield the weapon one-handed.</a>
+<a name="ln199">    size_type           min_1h_size;</a>
+<a name="ln200">    /// The ammo fired by the weapon; MI_NONE for non-launchers.</a>
+<a name="ln201">    missile_type        ammo;</a>
+<a name="ln202"> </a>
+<a name="ln203">    /// A union of vorpal_damage_type flags (slash, crush, etc)</a>
+<a name="ln204">    int                 dam_type;</a>
+<a name="ln205">    /// Used in *some* item generation code; higher = generated more often.</a>
+<a name="ln206">    int                 commonness;</a>
+<a name="ln207">    /// Used in *some* item 'acquirement' code; higher = generated more.</a>
+<a name="ln208">    int                 acquire_weight;</a>
+<a name="ln209">    /// Base pricing for shops, before egos, enchantment, etc.</a>
+<a name="ln210">    int                 price;</a>
+<a name="ln211">    /// Used in non-artefact ego item generation. If empty, default to NORMAL.</a>
+<a name="ln212">    vector&lt;brand_weight_tuple&gt; brand_weights;</a>
+<a name="ln213">};</a>
+<a name="ln214"> </a>
+<a name="ln215">/**</a>
+<a name="ln216">  * &quot;Why do we have all these ridiculous brand tables?&quot;</a>
+<a name="ln217"> </a>
+<a name="ln218">  1) The main purpose of weapon brand distribution varying across weapon type</a>
+<a name="ln219">     is to help to balance the different weapon skills against each other -</a>
+<a name="ln220">     staves and short blades getting better brands as partial compensation for</a>
+<a name="ln221">     their other drawbacks, for instance. It is true that we have other knobs</a>
+<a name="ln222">     that we also use to balance different weapon types, but they don't all</a>
+<a name="ln223">     affect things in the same way. For instance, lajatangs having very good</a>
+<a name="ln224">     brands on average partially compensates for the rarity of good staves in a</a>
+<a name="ln225">     different way from how raising their base damage would - it means that</a>
+<a name="ln226">     finding a really great staff is of more comparable rarity to finding a</a>
+<a name="ln227">     really great axe. (This is important because finding a really great weapon</a>
+<a name="ln228">     like a lajatang of speed or elec or pain is one of the ways that players</a>
+<a name="ln229">     decide to use a weapon type in the first place.) Having this knob isn't</a>
+<a name="ln230">     redundant with having base damage and delay to modify - it is similar to</a>
+<a name="ln231">     being able to adjust the rarity of different base types of weapons.</a>
+<a name="ln232"> </a>
+<a name="ln233"> 2)  The secondary purpose of varying weapon brand distribution is to give</a>
+<a name="ln234">     different weapon skills more individual feel. For instance, if you play a</a>
+<a name="ln235">     lot of maces chars in a row, then you will get used to using a lot of</a>
+<a name="ln236">     protection weapons and you'll never see vamp except on rare randarts, and</a>
+<a name="ln237">     then when you switch to axes for a few games you'll actually find vamp</a>
+<a name="ln238">     axes with some regularity and use them and be excited about that.</a>
+<a name="ln239"> </a>
+<a name="ln240">     This isn't a particularly strong effect with the current distributions -</a>
+<a name="ln241">     among the four &quot;normal&quot; weapon skills (axes/maces/polearms/longblades),</a>
+<a name="ln242">     only the m&amp;f distribution is particularly distinctive. But it is</a>
+<a name="ln243">     definitely a noticeable effect if you play 5 non-maces games in a row and</a>
+<a name="ln244">     follow up with 5 maces games, and it contributes to making maces feel more</a>
+<a name="ln245">     distinct.</a>
+<a name="ln246"> </a>
+<a name="ln247">     They could probably be simplified to a certain extent (only one set of</a>
+<a name="ln248">     brands per weapon skill, for example), but there is a reason not to</a>
+<a name="ln249">     simplify them down to just one table.</a>
+<a name="ln250"> */</a>
+<a name="ln251"> </a>
+<a name="ln252">/// brand weights for non-dagger shortblades (short sword &amp; rapier)</a>
+<a name="ln253">static const vector&lt;brand_weight_tuple&gt; SBL_BRANDS = {</a>
+<a name="ln254">    { SPWPN_NORMAL, 33 },</a>
+<a name="ln255">    { SPWPN_VENOM, 17 },</a>
+<a name="ln256">    { SPWPN_SPEED, 10 },</a>
+<a name="ln257">    { SPWPN_DRAINING, 9 },</a>
+<a name="ln258">    { SPWPN_PROTECTION, 6 },</a>
+<a name="ln259">    { SPWPN_ELECTROCUTION, 6 },</a>
+<a name="ln260">    { SPWPN_HOLY_WRATH, 5 },</a>
+<a name="ln261">    { SPWPN_VAMPIRISM, 4 },</a>
+<a name="ln262">    { SPWPN_FLAMING, 4 },</a>
+<a name="ln263">    { SPWPN_FREEZING, 4 },</a>
+<a name="ln264">    { SPWPN_DISTORTION, 1 },</a>
+<a name="ln265">    { SPWPN_ANTIMAGIC, 1 },</a>
+<a name="ln266">};</a>
+<a name="ln267"> </a>
+<a name="ln268">/// brand weights for most m&amp;f weapons</a>
+<a name="ln269">static const vector&lt;brand_weight_tuple&gt; M_AND_F_BRANDS = {</a>
+<a name="ln270">    { SPWPN_PROTECTION,     30 },</a>
+<a name="ln271">    { SPWPN_NORMAL,         28 },</a>
+<a name="ln272">    { SPWPN_HOLY_WRATH,     15 },</a>
+<a name="ln273">    { SPWPN_VORPAL,         14 },</a>
+<a name="ln274">    { SPWPN_DRAINING,       10 },</a>
+<a name="ln275">    { SPWPN_VENOM,           5 },</a>
+<a name="ln276">    { SPWPN_DISTORTION,      1 },</a>
+<a name="ln277">    { SPWPN_ANTIMAGIC,       1 },</a>
+<a name="ln278">    { SPWPN_PAIN,            1 },</a>
+<a name="ln279">};</a>
+<a name="ln280"> </a>
+<a name="ln281">/// brand weights for demon weapons (whip, blade, trident)</a>
+<a name="ln282">static const vector&lt;brand_weight_tuple&gt; DEMON_BRANDS = {</a>
+<a name="ln283">    { SPWPN_NORMAL,         27 },</a>
+<a name="ln284">    { SPWPN_VENOM,          19 },</a>
+<a name="ln285">    { SPWPN_ELECTROCUTION,  16 },</a>
+<a name="ln286">    { SPWPN_DRAINING,       10 },</a>
+<a name="ln287">    { SPWPN_FLAMING,         7 },</a>
+<a name="ln288">    { SPWPN_FREEZING,        7 },</a>
+<a name="ln289">    { SPWPN_VAMPIRISM,       7 },</a>
+<a name="ln290">    { SPWPN_PAIN,            4 },</a>
+<a name="ln291">    { SPWPN_ANTIMAGIC,       3 },</a>
+<a name="ln292">};</a>
+<a name="ln293"> </a>
+<a name="ln294">/// brand weights for long blades.</a>
+<a name="ln295">static const vector&lt;brand_weight_tuple&gt; LBL_BRANDS = {</a>
+<a name="ln296">    { SPWPN_HOLY_WRATH,     23 },</a>
+<a name="ln297">    { SPWPN_NORMAL,         19 },</a>
+<a name="ln298">    { SPWPN_VORPAL,         15 },</a>
+<a name="ln299">    { SPWPN_ELECTROCUTION,  10 },</a>
+<a name="ln300">    { SPWPN_PROTECTION,      8 },</a>
+<a name="ln301">    { SPWPN_FREEZING,        5 },</a>
+<a name="ln302">    { SPWPN_FLAMING,         5 },</a>
+<a name="ln303">    { SPWPN_DRAINING,        5 },</a>
+<a name="ln304">    { SPWPN_VAMPIRISM,       4 },</a>
+<a name="ln305">    { SPWPN_VENOM,           2 },</a>
+<a name="ln306">    { SPWPN_DISTORTION,      2 },</a>
+<a name="ln307">    { SPWPN_PAIN,            1 },</a>
+<a name="ln308">    { SPWPN_ANTIMAGIC,       1 },</a>
+<a name="ln309">};</a>
+<a name="ln310"> </a>
+<a name="ln311">/// brand weights for axes.</a>
+<a name="ln312">static const vector&lt;brand_weight_tuple&gt; AXE_BRANDS = {</a>
+<a name="ln313">    { SPWPN_NORMAL,         31 },</a>
+<a name="ln314">    { SPWPN_VORPAL,         16 },</a>
+<a name="ln315">    { SPWPN_ELECTROCUTION,  11 },</a>
+<a name="ln316">    { SPWPN_FLAMING,        10 },</a>
+<a name="ln317">    { SPWPN_FREEZING,       10 },</a>
+<a name="ln318">    { SPWPN_VENOM,           8 },</a>
+<a name="ln319">    { SPWPN_VAMPIRISM,       5 },</a>
+<a name="ln320">    { SPWPN_DRAINING,        3 },</a>
+<a name="ln321">    { SPWPN_DISTORTION,      2 },</a>
+<a name="ln322">    { SPWPN_ANTIMAGIC,       2 },</a>
+<a name="ln323">    { SPWPN_PAIN,            1 },</a>
+<a name="ln324">    { SPWPN_HOLY_WRATH,      1 },</a>
+<a name="ln325">};</a>
+<a name="ln326"> </a>
+<a name="ln327">/// brand weights for most polearms.</a>
+<a name="ln328">static const vector&lt;brand_weight_tuple&gt; POLEARM_BRANDS = {</a>
+<a name="ln329">    { SPWPN_NORMAL,     36 },</a>
+<a name="ln330">    { SPWPN_VENOM,      17 },</a>
+<a name="ln331">    { SPWPN_PROTECTION, 12 },</a>
+<a name="ln332">    { SPWPN_VORPAL,      9 },</a>
+<a name="ln333">    { SPWPN_FLAMING,     7 },</a>
+<a name="ln334">    { SPWPN_FREEZING,    7 },</a>
+<a name="ln335">    { SPWPN_VAMPIRISM,   5 },</a>
+<a name="ln336">    { SPWPN_DISTORTION,  2 },</a>
+<a name="ln337">    { SPWPN_PAIN,        2 },</a>
+<a name="ln338">    { SPWPN_ANTIMAGIC,   2 },</a>
+<a name="ln339">    { SPWPN_HOLY_WRATH,  1 },</a>
+<a name="ln340">};</a>
+<a name="ln341"> </a>
+<a name="ln342">/// brand weights for most ranged weapons.</a>
+<a name="ln343">static const vector&lt;brand_weight_tuple&gt; RANGED_BRANDS = {</a>
+<a name="ln344">    { SPWPN_NORMAL,   58 },</a>
+<a name="ln345">    { SPWPN_FLAMING,  16 },</a>
+<a name="ln346">    { SPWPN_FREEZING, 16 },</a>
+<a name="ln347">    { SPWPN_VORPAL,   10 },</a>
+<a name="ln348">};</a>
+<a name="ln349"> </a>
+<a name="ln350">/// brand weights for holy (TSO-blessed) weapons.</a>
+<a name="ln351">static const vector&lt;brand_weight_tuple&gt; HOLY_BRANDS = {</a>
+<a name="ln352">    { SPWPN_HOLY_WRATH, 100 },</a>
+<a name="ln353">};</a>
+<a name="ln354"> </a>
+<a name="ln355"> </a>
+<a name="ln356">static int Weapon_index[NUM_WEAPONS];</a>
+<a name="ln357">static const weapon_def Weapon_prop[] =</a>
+<a name="ln358">{</a>
+<a name="ln359">    // Maces &amp; Flails</a>
+<a name="ln360">    { WPN_CLUB,              &quot;club&quot;,                5,  3, 13,</a>
+<a name="ln361">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln362">        DAMV_CRUSHING, 10, 0, 10, {} },</a>
+<a name="ln363">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln364">    { WPN_SPIKED_FLAIL,      &quot;spiked flail&quot;,        5,  3, 13,</a>
+<a name="ln365">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln366">        DAMV_CRUSHING, 0, 0, 0, {} },</a>
+<a name="ln367">#endif</a>
+<a name="ln368">    { WPN_WHIP,              &quot;whip&quot;,                6,  2, 11,</a>
+<a name="ln369">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln370">        DAMV_SLASHING, 4, 0, 25, {</a>
+<a name="ln371">            { SPWPN_NORMAL,        34 },</a>
+<a name="ln372">            { SPWPN_VENOM,         16 },</a>
+<a name="ln373">            { SPWPN_ELECTROCUTION, 16 },</a>
+<a name="ln374">            { SPWPN_DRAINING,       7 },</a>
+<a name="ln375">            { SPWPN_FREEZING,       6 },</a>
+<a name="ln376">            { SPWPN_FLAMING,        6 },</a>
+<a name="ln377">            { SPWPN_VAMPIRISM,      5 },</a>
+<a name="ln378">            { SPWPN_PAIN,           4 },</a>
+<a name="ln379">            { SPWPN_HOLY_WRATH,     3 },</a>
+<a name="ln380">            { SPWPN_DISTORTION,     2 },</a>
+<a name="ln381">            { SPWPN_ANTIMAGIC,      1 },</a>
+<a name="ln382">        }},</a>
+<a name="ln383">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln384">    { WPN_HAMMER,            &quot;hammer&quot;,              7,  3, 13,</a>
+<a name="ln385">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln386">        DAMV_CRUSHING, 0, 0, 0, M_AND_F_BRANDS },</a>
+<a name="ln387">#endif</a>
+<a name="ln388">    { WPN_MACE,              &quot;mace&quot;,                8,  3, 14,</a>
+<a name="ln389">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln390">        DAMV_CRUSHING, 9, 10, 30, M_AND_F_BRANDS },</a>
+<a name="ln391">    { WPN_FLAIL,             &quot;flail&quot;,              10,  0, 14,</a>
+<a name="ln392">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln393">        DAMV_CRUSHING, 8, 10, 35, M_AND_F_BRANDS },</a>
+<a name="ln394">    { WPN_MORNINGSTAR,       &quot;morningstar&quot;,        13, -2, 15,</a>
+<a name="ln395">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln396">        DAMV_CRUSHING | DAM_PIERCE, 7, 10, 40, {</a>
+<a name="ln397">            { SPWPN_PROTECTION,     30 },</a>
+<a name="ln398">            { SPWPN_NORMAL,         15 },</a>
+<a name="ln399">            { SPWPN_HOLY_WRATH,     15 },</a>
+<a name="ln400">            { SPWPN_DRAINING,       10 },</a>
+<a name="ln401">            { SPWPN_VORPAL,          9 },</a>
+<a name="ln402">            { SPWPN_VENOM,           5 },</a>
+<a name="ln403">            { SPWPN_FLAMING,         4 },</a>
+<a name="ln404">            { SPWPN_FREEZING,        4 },</a>
+<a name="ln405">            { SPWPN_DISTORTION,      2 },</a>
+<a name="ln406">            { SPWPN_ANTIMAGIC,       2 },</a>
+<a name="ln407">            { SPWPN_PAIN,            2 },</a>
+<a name="ln408">            { SPWPN_VAMPIRISM,       2 },</a>
+<a name="ln409">        }},</a>
+<a name="ln410">    { WPN_DEMON_WHIP,        &quot;demon whip&quot;,         11,  1, 11,</a>
+<a name="ln411">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln412">        DAMV_SLASHING, 0, 2, 150, DEMON_BRANDS },</a>
+<a name="ln413">    { WPN_SACRED_SCOURGE,    &quot;sacred scourge&quot;,     12,  0, 11,</a>
+<a name="ln414">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln415">        DAMV_SLASHING, 0, 0, 200, HOLY_BRANDS },</a>
+<a name="ln416">    { WPN_DIRE_FLAIL,        &quot;dire flail&quot;,         13, -3, 13,</a>
+<a name="ln417">        SK_MACES_FLAILS, SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln418">        DAMV_CRUSHING | DAM_PIERCE, 2, 10, 40, M_AND_F_BRANDS },</a>
+<a name="ln419">    { WPN_EVENINGSTAR,       &quot;eveningstar&quot;,        15, -1, 15,</a>
+<a name="ln420">        SK_MACES_FLAILS, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln421">        DAMV_CRUSHING | DAM_PIERCE, 0, 2, 150, {</a>
+<a name="ln422">            { SPWPN_PROTECTION,     30 },</a>
+<a name="ln423">            { SPWPN_DRAINING,       19 },</a>
+<a name="ln424">            { SPWPN_HOLY_WRATH,     15 },</a>
+<a name="ln425">            { SPWPN_NORMAL,          8 },</a>
+<a name="ln426">            { SPWPN_VORPAL,          6 },</a>
+<a name="ln427">            { SPWPN_VENOM,           6 },</a>
+<a name="ln428">            { SPWPN_FLAMING,         6 },</a>
+<a name="ln429">            { SPWPN_FREEZING,        6 },</a>
+<a name="ln430">            { SPWPN_DISTORTION,      2 },</a>
+<a name="ln431">            { SPWPN_ANTIMAGIC,       2 },</a>
+<a name="ln432">            { SPWPN_PAIN,            2 },</a>
+<a name="ln433">            { SPWPN_VAMPIRISM,       2 },</a>
+<a name="ln434">        }},</a>
+<a name="ln435">    { WPN_GREAT_MACE,        &quot;great mace&quot;,         17, -4, 17,</a>
+<a name="ln436">        SK_MACES_FLAILS, SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln437">        DAMV_CRUSHING, 3, 10, 65, M_AND_F_BRANDS },</a>
+<a name="ln438">    { WPN_GIANT_CLUB,        &quot;giant club&quot;,         20, -6, 16,</a>
+<a name="ln439">        SK_MACES_FLAILS, SIZE_LARGE, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln440">        DAMV_CRUSHING, 1, 10, 17, {} },</a>
+<a name="ln441">    { WPN_GIANT_SPIKED_CLUB, &quot;giant spiked club&quot;,  22, -7, 18,</a>
+<a name="ln442">        SK_MACES_FLAILS, SIZE_LARGE, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln443">        DAMV_CRUSHING | DAM_PIERCE, 1, 10, 19, {} },</a>
+<a name="ln444"> </a>
+<a name="ln445">    // Short Blades</a>
+<a name="ln446">    { WPN_DAGGER,            &quot;dagger&quot;,              4,  6, 10,</a>
+<a name="ln447">        SK_SHORT_BLADES, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln448">        DAMV_PIERCING, 10, 10, 20, {</a>
+<a name="ln449">            { SPWPN_VENOM,          28 },</a>
+<a name="ln450">            { SPWPN_NORMAL,         20 },</a>
+<a name="ln451">            { SPWPN_SPEED,          10 },</a>
+<a name="ln452">            { SPWPN_DRAINING,        9 },</a>
+<a name="ln453">            { SPWPN_PROTECTION,      6 },</a>
+<a name="ln454">            { SPWPN_ELECTROCUTION,   6 },</a>
+<a name="ln455">            { SPWPN_HOLY_WRATH,      5 },</a>
+<a name="ln456">            { SPWPN_VAMPIRISM,       4 },</a>
+<a name="ln457">            { SPWPN_FLAMING,         4 },</a>
+<a name="ln458">            { SPWPN_FREEZING,        4 },</a>
+<a name="ln459">            { SPWPN_PAIN,            2 },</a>
+<a name="ln460">            { SPWPN_DISTORTION,      1 },</a>
+<a name="ln461">            { SPWPN_ANTIMAGIC,       1 },</a>
+<a name="ln462">        }},</a>
+<a name="ln463">    { WPN_QUICK_BLADE,       &quot;quick blade&quot;,         5,  6,  7,</a>
+<a name="ln464">        SK_SHORT_BLADES, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln465">        DAMV_PIERCING, 0, 2, 150, {} },</a>
+<a name="ln466">    { WPN_SHORT_SWORD,       &quot;short sword&quot;,         6,  4, 11,</a>
+<a name="ln467">        SK_SHORT_BLADES, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln468">        DAMV_PIERCING, 8, 10, 30, SBL_BRANDS },</a>
+<a name="ln469">    { WPN_RAPIER,           &quot;rapier&quot;,               8,  4, 12,</a>
+<a name="ln470">        SK_SHORT_BLADES, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln471">        DAMV_PIERCING, 8, 10, 40, SBL_BRANDS },</a>
+<a name="ln472">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln473">    { WPN_CUTLASS,          &quot;cutlass&quot;,              8,  4, 12,</a>
+<a name="ln474">        SK_SHORT_BLADES, SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln475">        DAMV_SLICING | DAM_PIERCE, 0, 0, 0, {}},</a>
+<a name="ln476">#endif</a>
+<a name="ln477"> </a>
+<a name="ln478"> </a>
+<a name="ln479">    // Long Blades</a>
+<a name="ln480">    { WPN_FALCHION,              &quot;falchion&quot;,               7,  2, 13,</a>
+<a name="ln481">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln482">        DAMV_SLICING, 7, 10, 30, LBL_BRANDS }, // DAMV_CHOPPING...?</a>
+<a name="ln483">    { WPN_LONG_SWORD,            &quot;long sword&quot;,            9,  1, 14,</a>
+<a name="ln484">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln485">        DAMV_SLICING, 7, 10, 35, LBL_BRANDS },</a>
+<a name="ln486">    { WPN_SCIMITAR,              &quot;scimitar&quot;,              11, 0, 14,</a>
+<a name="ln487">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln488">        DAMV_SLICING, 6, 10, 40, LBL_BRANDS },</a>
+<a name="ln489">    { WPN_DEMON_BLADE,           &quot;demon blade&quot;,           12, -1, 13,</a>
+<a name="ln490">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln491">        DAMV_SLICING, 0, 2, 150, DEMON_BRANDS },</a>
+<a name="ln492">    { WPN_EUDEMON_BLADE,         &quot;eudemon blade&quot;,         13, -2, 12,</a>
+<a name="ln493">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln494">        DAMV_SLICING, 0, 0, 200, HOLY_BRANDS },</a>
+<a name="ln495">    { WPN_DOUBLE_SWORD,          &quot;double sword&quot;,          14, -1, 15,</a>
+<a name="ln496">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_MEDIUM, MI_NONE,</a>
+<a name="ln497">        DAMV_SLICING, 0, 2, 150, LBL_BRANDS },</a>
+<a name="ln498">    { WPN_GREAT_SWORD,           &quot;great sword&quot;,           15, -3, 17,</a>
+<a name="ln499">        SK_LONG_BLADES,  SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln500">        DAMV_SLICING, 6, 10, 65, LBL_BRANDS },</a>
+<a name="ln501">    { WPN_TRIPLE_SWORD,          &quot;triple sword&quot;,          17, -4, 19,</a>
+<a name="ln502">        SK_LONG_BLADES,  SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln503">        DAMV_SLICING, 0, 2, 100, LBL_BRANDS },</a>
+<a name="ln504">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln505">    { WPN_BLESSED_FALCHION,      &quot;old falchion&quot;,         7,  2, 13,</a>
+<a name="ln506">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln507">        DAMV_SLICING, 0, 0, 0, {} },</a>
+<a name="ln508">    { WPN_BLESSED_LONG_SWORD,    &quot;old long sword&quot;,      9,  1, 14,</a>
+<a name="ln509">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln510">        DAMV_SLICING, 0, 0, 0, {} },</a>
+<a name="ln511">    { WPN_BLESSED_SCIMITAR,      &quot;old scimitar&quot;,        11, -2, 14,</a>
+<a name="ln512">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln513">        DAMV_SLICING, 0, 0, 0, {} },</a>
+<a name="ln514">    { WPN_BLESSED_DOUBLE_SWORD, &quot;old double sword&quot;,     14, -1, 15,</a>
+<a name="ln515">        SK_LONG_BLADES,  SIZE_LITTLE, SIZE_MEDIUM, MI_NONE,</a>
+<a name="ln516">        DAMV_SLICING, 0, 0, 0, {} },</a>
+<a name="ln517">    { WPN_BLESSED_GREAT_SWORD,   &quot;old great sword&quot;,     14, -3, 16,</a>
+<a name="ln518">        SK_LONG_BLADES,  SIZE_MEDIUM, NUM_SIZE_LEVELS,  MI_NONE,</a>
+<a name="ln519">        DAMV_SLICING, 0, 0, 0, {} },</a>
+<a name="ln520">    { WPN_BLESSED_TRIPLE_SWORD,      &quot;old triple sword&quot;, 17, -4, 19,</a>
+<a name="ln521">        SK_LONG_BLADES,  SIZE_MEDIUM, NUM_SIZE_LEVELS,  MI_NONE,</a>
+<a name="ln522">        DAMV_SLICING, 0, 0, 0, {} },</a>
+<a name="ln523">#endif</a>
+<a name="ln524"> </a>
+<a name="ln525">    // Axes</a>
+<a name="ln526">    { WPN_HAND_AXE,          &quot;hand axe&quot;,            7,  3, 13,</a>
+<a name="ln527">        SK_AXES,       SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln528">        DAMV_CHOPPING, 9, 10, 30, AXE_BRANDS },</a>
+<a name="ln529">    { WPN_WAR_AXE,           &quot;war axe&quot;,            11,  0, 15,</a>
+<a name="ln530">        SK_AXES,       SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln531">        DAMV_CHOPPING, 7, 10, 35, AXE_BRANDS },</a>
+<a name="ln532">    { WPN_BROAD_AXE,         &quot;broad axe&quot;,          13, -2, 16,</a>
+<a name="ln533">        SK_AXES,       SIZE_LITTLE, SIZE_MEDIUM, MI_NONE,</a>
+<a name="ln534">        DAMV_CHOPPING, 4, 10, 40, AXE_BRANDS },</a>
+<a name="ln535">    { WPN_BATTLEAXE,         &quot;battleaxe&quot;,          15, -4, 17,</a>
+<a name="ln536">        SK_AXES,       SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln537">        DAMV_CHOPPING, 6, 10, 65, AXE_BRANDS },</a>
+<a name="ln538">    { WPN_EXECUTIONERS_AXE,  &quot;executioner's axe&quot;,  18, -6, 20,</a>
+<a name="ln539">        SK_AXES,       SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln540">        DAMV_CHOPPING, 0, 2, 100, AXE_BRANDS },</a>
+<a name="ln541"> </a>
+<a name="ln542">    // Polearms</a>
+<a name="ln543">    { WPN_SPEAR,             &quot;spear&quot;,               6,  4, 11,</a>
+<a name="ln544">        SK_POLEARMS,     SIZE_LITTLE, SIZE_LITTLE, MI_NONE,</a>
+<a name="ln545">        DAMV_PIERCING, 8, 10, 30, {</a>
+<a name="ln546">            { SPWPN_NORMAL,     46 },</a>
+<a name="ln547">            { SPWPN_VENOM,      17 },</a>
+<a name="ln548">            { SPWPN_VORPAL,     12 },</a>
+<a name="ln549">            { SPWPN_FLAMING,     7 },</a>
+<a name="ln550">            { SPWPN_FREEZING,    7 },</a>
+<a name="ln551">            { SPWPN_VAMPIRISM,   5 },</a>
+<a name="ln552">            { SPWPN_DISTORTION,  2 },</a>
+<a name="ln553">            { SPWPN_PAIN,        2 },</a>
+<a name="ln554">            { SPWPN_ANTIMAGIC,   2 },</a>
+<a name="ln555">        }},</a>
+<a name="ln556">    { WPN_TRIDENT,           &quot;trident&quot;,             9,  1, 13,</a>
+<a name="ln557">        SK_POLEARMS,     SIZE_LITTLE, SIZE_MEDIUM, MI_NONE,</a>
+<a name="ln558">        DAMV_PIERCING, 6, 10, 35, POLEARM_BRANDS },</a>
+<a name="ln559">    { WPN_HALBERD,           &quot;halberd&quot;,            13, -3, 15,</a>
+<a name="ln560">        SK_POLEARMS,     SIZE_MEDIUM, NUM_SIZE_LEVELS,  MI_NONE,</a>
+<a name="ln561">        DAMV_CHOPPING | DAM_PIERCE, 5, 10, 40, POLEARM_BRANDS },</a>
+<a name="ln562">    { WPN_SCYTHE,            &quot;scythe&quot;,             14, -4, 20,</a>
+<a name="ln563">        SK_POLEARMS,     SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln564">        DAMV_SLICING, 2, 0, 30, POLEARM_BRANDS },</a>
+<a name="ln565">    { WPN_DEMON_TRIDENT,     &quot;demon trident&quot;,      12,  1, 13,</a>
+<a name="ln566">        SK_POLEARMS,     SIZE_LITTLE, SIZE_MEDIUM, MI_NONE,</a>
+<a name="ln567">        DAMV_PIERCING, 0, 2, 150, DEMON_BRANDS },</a>
+<a name="ln568">    { WPN_TRISHULA,          &quot;trishula&quot;,           13,  0, 13,</a>
+<a name="ln569">        SK_POLEARMS,     SIZE_LITTLE, SIZE_MEDIUM, MI_NONE,</a>
+<a name="ln570">        DAMV_PIERCING, 0, 0, 200, HOLY_BRANDS },</a>
+<a name="ln571">    { WPN_GLAIVE,            &quot;glaive&quot;,             15, -3, 17,</a>
+<a name="ln572">        SK_POLEARMS,     SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln573">        DAMV_CHOPPING, 5, 10, 65, POLEARM_BRANDS },</a>
+<a name="ln574">    { WPN_BARDICHE,          &quot;bardiche&quot;,           18, -6, 20,</a>
+<a name="ln575">        SK_POLEARMS,     SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln576">        DAMV_CHOPPING, 1, 2, 90, POLEARM_BRANDS },</a>
+<a name="ln577"> </a>
+<a name="ln578">    // Staves</a>
+<a name="ln579">    // WPN_STAFF is for weapon stats for magical staves only.</a>
+<a name="ln580">    { WPN_STAFF,             &quot;staff&quot;,               5,  5, 12,</a>
+<a name="ln581">        SK_STAVES,       SIZE_LITTLE, SIZE_MEDIUM, MI_NONE,</a>
+<a name="ln582">        DAMV_CRUSHING, 0, 0, 15, {} },</a>
+<a name="ln583">    { WPN_QUARTERSTAFF,      &quot;quarterstaff&quot;,        10, 3, 13,</a>
+<a name="ln584">        SK_STAVES,       SIZE_LITTLE, NUM_SIZE_LEVELS,  MI_NONE,</a>
+<a name="ln585">        DAMV_CRUSHING, 8, 10, 40, {</a>
+<a name="ln586">            { SPWPN_NORMAL,     50 },</a>
+<a name="ln587">            { SPWPN_PROTECTION, 18 },</a>
+<a name="ln588">            { SPWPN_DRAINING,    8 },</a>
+<a name="ln589">            { SPWPN_VORPAL,      8 },</a>
+<a name="ln590">            { SPWPN_SPEED,       8 },</a>
+<a name="ln591">            { SPWPN_DISTORTION,  2 },</a>
+<a name="ln592">            { SPWPN_PAIN,        2 },</a>
+<a name="ln593">            { SPWPN_HOLY_WRATH,  2 },</a>
+<a name="ln594">            { SPWPN_ANTIMAGIC,   2 },</a>
+<a name="ln595">        }},</a>
+<a name="ln596">    { WPN_LAJATANG,          &quot;lajatang&quot;,            16,-3, 14,</a>
+<a name="ln597">        SK_STAVES,       SIZE_LITTLE, NUM_SIZE_LEVELS, MI_NONE,</a>
+<a name="ln598">        DAMV_SLICING, 2, 2, 150, {</a>
+<a name="ln599">            { SPWPN_NORMAL,         34 },</a>
+<a name="ln600">            { SPWPN_SPEED,          12 },</a>
+<a name="ln601">            { SPWPN_ELECTROCUTION,  12 },</a>
+<a name="ln602">            { SPWPN_VAMPIRISM,      12 },</a>
+<a name="ln603">            { SPWPN_PROTECTION,      9 },</a>
+<a name="ln604">            { SPWPN_VENOM,           7 },</a>
+<a name="ln605">            { SPWPN_PAIN,            7 },</a>
+<a name="ln606">            { SPWPN_ANTIMAGIC,       4 },</a>
+<a name="ln607">            { SPWPN_DISTORTION,      3 },</a>
+<a name="ln608">        }},</a>
+<a name="ln609"> </a>
+<a name="ln610">    // Range weapons</a>
+<a name="ln611">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln612">    { WPN_BLOWGUN,           &quot;blowgun&quot;,             0,  2, 10,</a>
+<a name="ln613">        SK_THROWING,     SIZE_LITTLE, SIZE_LITTLE, MI_NEEDLE,</a>
+<a name="ln614">        DAMV_NON_MELEE, 0, 0, 0, {}, },</a>
+<a name="ln615">#endif</a>
+<a name="ln616"> </a>
+<a name="ln617">    { WPN_HUNTING_SLING,     &quot;hunting sling&quot;,       5,  2, 12,</a>
+<a name="ln618">        SK_SLINGS,       SIZE_LITTLE, SIZE_LITTLE, MI_STONE,</a>
+<a name="ln619">        DAMV_NON_MELEE, 8, 10, 15, RANGED_BRANDS },</a>
+<a name="ln620">    { WPN_FUSTIBALUS,        &quot;fustibalus&quot;,          8, -1, 14,</a>
+<a name="ln621">        SK_SLINGS,       SIZE_LITTLE, SIZE_LITTLE, MI_STONE,</a>
+<a name="ln622">        DAMV_NON_MELEE, 2, 2, 150, RANGED_BRANDS },</a>
+<a name="ln623"> </a>
+<a name="ln624">    { WPN_HAND_CROSSBOW,     &quot;hand crossbow&quot;,      12,  5, 15,</a>
+<a name="ln625">        SK_CROSSBOWS,    SIZE_LITTLE, SIZE_LITTLE, MI_BOLT,</a>
+<a name="ln626">        DAMV_NON_MELEE, 7, 10, 35, RANGED_BRANDS },</a>
+<a name="ln627">    { WPN_ARBALEST,          &quot;arbalest&quot;,           18,  2, 19,</a>
+<a name="ln628">        SK_CROSSBOWS,    SIZE_LITTLE, NUM_SIZE_LEVELS, MI_BOLT,</a>
+<a name="ln629">        DAMV_NON_MELEE, 5, 10, 45, RANGED_BRANDS },</a>
+<a name="ln630">    { WPN_TRIPLE_CROSSBOW,   &quot;triple crossbow&quot;,    22,  0, 23,</a>
+<a name="ln631">        SK_CROSSBOWS,    SIZE_LITTLE, NUM_SIZE_LEVELS, MI_BOLT,</a>
+<a name="ln632">        DAMV_NON_MELEE, 0, 2, 100, RANGED_BRANDS },</a>
+<a name="ln633"> </a>
+<a name="ln634">    { WPN_SHORTBOW,          &quot;shortbow&quot;,            9,  2, 13,</a>
+<a name="ln635">        SK_BOWS,         SIZE_LITTLE, NUM_SIZE_LEVELS, MI_ARROW,</a>
+<a name="ln636">        DAMV_NON_MELEE, 8, 10, 30, RANGED_BRANDS },</a>
+<a name="ln637">    { WPN_LONGBOW,           &quot;longbow&quot;,            15,  0, 17,</a>
+<a name="ln638">        SK_BOWS,         SIZE_MEDIUM, NUM_SIZE_LEVELS, MI_ARROW,</a>
+<a name="ln639">        DAMV_NON_MELEE, 2, 10, 45, RANGED_BRANDS },</a>
+<a name="ln640">};</a>
+<a name="ln641"> </a>
+<a name="ln642">struct missile_def</a>
+<a name="ln643">{</a>
+<a name="ln644">    int         id;</a>
+<a name="ln645">    const char *name;</a>
+<a name="ln646">    int         dam;</a>
+<a name="ln647">    int         mulch_rate;</a>
+<a name="ln648">    int         price;</a>
+<a name="ln649">    bool        throwable;</a>
+<a name="ln650">};</a>
+<a name="ln651"> </a>
+<a name="ln652">static int Missile_index[NUM_MISSILES];</a>
+<a name="ln653">static const missile_def Missile_prop[] =</a>
+<a name="ln654">{</a>
+<a name="ln655">    { MI_DART,          &quot;dart&quot;,          0, 12, 2,  true  },</a>
+<a name="ln656">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln657">    { MI_NEEDLE,        &quot;needle&quot;,        0, 12, 2,  false },</a>
+<a name="ln658">#endif</a>
+<a name="ln659">    { MI_STONE,         &quot;stone&quot;,         2, 8,  1,  true  },</a>
+<a name="ln660">    { MI_ARROW,         &quot;arrow&quot;,         0, 8,  2,  false },</a>
+<a name="ln661">    { MI_BOLT,          &quot;bolt&quot;,          0, 8,  2,  false },</a>
+<a name="ln662">    { MI_LARGE_ROCK,    &quot;large rock&quot;,   20, 25, 7,  true  },</a>
+<a name="ln663">    { MI_SLING_BULLET,  &quot;sling bullet&quot;,  4, 8,  5,  false },</a>
+<a name="ln664">    { MI_JAVELIN,       &quot;javelin&quot;,      10, 20, 8,  true  },</a>
+<a name="ln665">    { MI_THROWING_NET,  &quot;throwing net&quot;,  0, 0,  30, true  },</a>
+<a name="ln666">    { MI_BOOMERANG,     &quot;boomerang&quot;,     6, 20, 5,  true  },</a>
+<a name="ln667">};</a>
+<a name="ln668"> </a>
+<a name="ln669">struct food_def</a>
+<a name="ln670">{</a>
+<a name="ln671">    int         id;</a>
+<a name="ln672">    const char *name;</a>
+<a name="ln673">    int         normal_nutr;</a>
+<a name="ln674">    int         carn_nutr;</a>
+<a name="ln675">    int         herb_nutr;</a>
+<a name="ln676">};</a>
+<a name="ln677"> </a>
+<a name="ln678">static int Food_index[NUM_FOODS];</a>
+<a name="ln679">static const food_def Food_prop[] =</a>
+<a name="ln680">{</a>
+<a name="ln681">    { FOOD_RATION,       &quot;ration&quot;,       3400,  1900,  1900 },</a>
+<a name="ln682">    { FOOD_CHUNK,        &quot;chunk&quot;,        1000,  1300,     0 },</a>
+<a name="ln683"> </a>
+<a name="ln684">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln685">    // is_real_food assumes we list FOOD_ROYAL_JELLY as the first removed</a>
+<a name="ln686">    // food here, after all the unremoved foods.</a>
+<a name="ln687">    { FOOD_UNUSED,       &quot;buggy pizza&quot;,     0,     0,     0 },</a>
+<a name="ln688">    { FOOD_ROYAL_JELLY,  &quot;buggy jelly&quot;,  2000,  2000,  2000 },</a>
+<a name="ln689">    { FOOD_BREAD_RATION, &quot;buggy ration&quot;, 4400,     0,  5900 },</a>
+<a name="ln690">    { FOOD_FRUIT,        &quot;buggy fruit&quot;,   850,     0,  1000 },</a>
+<a name="ln691">    { FOOD_AMBROSIA,     &quot;buggy fruit&quot;,     0,     0,     0 },</a>
+<a name="ln692">    { FOOD_ORANGE,       &quot;buggy fruit&quot;,  1000,  -300,   300 },</a>
+<a name="ln693">    { FOOD_BANANA,       &quot;buggy fruit&quot;,  1000,  -300,   300 },</a>
+<a name="ln694">    { FOOD_LEMON,        &quot;buggy fruit&quot;,  1000,  -300,   300 },</a>
+<a name="ln695">    { FOOD_PEAR,         &quot;buggy fruit&quot;,   700,  -200,   200 },</a>
+<a name="ln696">    { FOOD_APPLE,        &quot;buggy fruit&quot;,   700,  -200,   200 },</a>
+<a name="ln697">    { FOOD_APRICOT,      &quot;buggy fruit&quot;,   700,  -200,   200 },</a>
+<a name="ln698">    { FOOD_CHOKO,        &quot;buggy fruit&quot;,   600,  -200,   200 },</a>
+<a name="ln699">    { FOOD_RAMBUTAN,     &quot;buggy fruit&quot;,   600,  -200,   200 },</a>
+<a name="ln700">    { FOOD_LYCHEE,       &quot;buggy fruit&quot;,   600,  -200,   200 },</a>
+<a name="ln701">    { FOOD_STRAWBERRY,   &quot;buggy fruit&quot;,   200,   -50,    50 },</a>
+<a name="ln702">    { FOOD_GRAPE,        &quot;buggy fruit&quot;,   100,   -20,    20 },</a>
+<a name="ln703">    { FOOD_SULTANA,      &quot;buggy fruit&quot;,    70,   -20,    20 },</a>
+<a name="ln704">    { FOOD_CHEESE,       &quot;buggy fruit&quot;,  1200,     0,     0 },</a>
+<a name="ln705">    { FOOD_SAUSAGE,      &quot;buggy fruit&quot;,  1200,   150,  -400 },</a>
+<a name="ln706">    { FOOD_BEEF_JERKY,   &quot;buggy fruit&quot;,  1500,   200,  -200 },</a>
+<a name="ln707">    { FOOD_PIZZA,        &quot;buggy fruit&quot;,  1500,     0,     0 },</a>
+<a name="ln708">#endif</a>
+<a name="ln709">};</a>
+<a name="ln710"> </a>
+<a name="ln711">// Must call this functions early on so that the above tables can</a>
+<a name="ln712">// be accessed correctly.</a>
+<a name="ln713">void init_properties()</a>
+<a name="ln714">{</a>
+<a name="ln715">    // The compiler would complain about too many initializers but not</a>
+<a name="ln716">    // about too few, so we check this ourselves.</a>
+<a name="ln717">    COMPILE_CHECK(NUM_ARMOURS  == ARRAYSZ(Armour_prop));</a>
+<a name="ln718">    COMPILE_CHECK(NUM_WEAPONS  == ARRAYSZ(Weapon_prop));</a>
+<a name="ln719">    COMPILE_CHECK(NUM_MISSILES == ARRAYSZ(Missile_prop));</a>
+<a name="ln720">    COMPILE_CHECK(NUM_FOODS    == ARRAYSZ(Food_prop));</a>
+<a name="ln721"> </a>
+<a name="ln722">    for (int i = 0; i &lt; NUM_ARMOURS; i++)</a>
+<a name="ln723">        Armour_index[ Armour_prop[i].id ] = i;</a>
+<a name="ln724"> </a>
+<a name="ln725">    for (int i = 0; i &lt; NUM_WEAPONS; i++)</a>
+<a name="ln726">        Weapon_index[ Weapon_prop[i].id ] = i;</a>
+<a name="ln727"> </a>
+<a name="ln728">    for (int i = 0; i &lt; NUM_MISSILES; i++)</a>
+<a name="ln729">        Missile_index[ Missile_prop[i].id ] = i;</a>
+<a name="ln730"> </a>
+<a name="ln731">    for (int i = 0; i &lt; NUM_FOODS; i++)</a>
+<a name="ln732">        Food_index[ Food_prop[i].id ] = i;</a>
+<a name="ln733">}</a>
+<a name="ln734"> </a>
+<a name="ln735">const set&lt;pair&lt;object_class_type, int&gt; &gt; removed_items =</a>
+<a name="ln736">{</a>
+<a name="ln737">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln738">    { OBJ_JEWELLERY, AMU_CONTROLLED_FLIGHT },</a>
+<a name="ln739">    { OBJ_JEWELLERY, AMU_CONSERVATION },</a>
+<a name="ln740">    { OBJ_JEWELLERY, RING_REGENERATION },</a>
+<a name="ln741">    { OBJ_JEWELLERY, RING_SUSTAIN_ATTRIBUTES },</a>
+<a name="ln742">    { OBJ_JEWELLERY, RING_TELEPORT_CONTROL },</a>
+<a name="ln743">    { OBJ_STAVES,    STAFF_ENCHANTMENT },</a>
+<a name="ln744">    { OBJ_STAVES,    STAFF_CHANNELING },</a>
+<a name="ln745">    { OBJ_STAVES,    STAFF_POWER },</a>
+<a name="ln746">    { OBJ_POTIONS,   POT_GAIN_STRENGTH },</a>
+<a name="ln747">    { OBJ_POTIONS,   POT_GAIN_DEXTERITY },</a>
+<a name="ln748">    { OBJ_POTIONS,   POT_GAIN_INTELLIGENCE },</a>
+<a name="ln749">    { OBJ_POTIONS,   POT_WATER },</a>
+<a name="ln750">    { OBJ_POTIONS,   POT_STRONG_POISON },</a>
+<a name="ln751">    { OBJ_POTIONS,   POT_BLOOD_COAGULATED },</a>
+<a name="ln752">    { OBJ_POTIONS,   POT_BLOOD },</a>
+<a name="ln753">    { OBJ_POTIONS,   POT_PORRIDGE },</a>
+<a name="ln754">    { OBJ_POTIONS,   POT_SLOWING },</a>
+<a name="ln755">    { OBJ_POTIONS,   POT_DECAY },</a>
+<a name="ln756">    { OBJ_POTIONS,   POT_POISON },</a>
+<a name="ln757">    { OBJ_POTIONS,   POT_RESTORE_ABILITIES },</a>
+<a name="ln758">    { OBJ_POTIONS,   POT_CURE_MUTATION },</a>
+<a name="ln759">    { OBJ_POTIONS,   POT_BENEFICIAL_MUTATION },</a>
+<a name="ln760">    { OBJ_POTIONS,   POT_DUMMY_AGILITY },</a>
+<a name="ln761">    { OBJ_BOOKS,     BOOK_WIZARDRY },</a>
+<a name="ln762">    { OBJ_BOOKS,     BOOK_CONTROL },</a>
+<a name="ln763">    { OBJ_BOOKS,     BOOK_BUGGY_DESTRUCTION },</a>
+<a name="ln764">    { OBJ_BOOKS,     BOOK_ENVENOMATIONS },</a>
+<a name="ln765">    { OBJ_BOOKS,     BOOK_AKASHIC_RECORD },</a>
+<a name="ln766">    { OBJ_RODS,      ROD_VENOM },</a>
+<a name="ln767">    { OBJ_RODS,      ROD_WARDING },</a>
+<a name="ln768">    { OBJ_RODS,      ROD_DESTRUCTION },</a>
+<a name="ln769">    { OBJ_RODS,      ROD_SWARM },</a>
+<a name="ln770">    { OBJ_RODS,      ROD_LIGHTNING },</a>
+<a name="ln771">    { OBJ_RODS,      ROD_IGNITION },</a>
+<a name="ln772">    { OBJ_RODS,      ROD_CLOUDS },</a>
+<a name="ln773">    { OBJ_RODS,      ROD_INACCURACY },</a>
+<a name="ln774">    { OBJ_RODS,      ROD_SHADOWS },</a>
+<a name="ln775">    { OBJ_RODS,      ROD_IRON },</a>
+<a name="ln776">    { OBJ_SCROLLS,   SCR_ENCHANT_WEAPON_II },</a>
+<a name="ln777">    { OBJ_SCROLLS,   SCR_ENCHANT_WEAPON_III },</a>
+<a name="ln778">    { OBJ_SCROLLS,   SCR_RECHARGING},</a>
+<a name="ln779">    { OBJ_WANDS,     WAND_MAGIC_DARTS_REMOVED },</a>
+<a name="ln780">    { OBJ_WANDS,     WAND_FROST_REMOVED },</a>
+<a name="ln781">    { OBJ_WANDS,     WAND_FIRE_REMOVED },</a>
+<a name="ln782">    { OBJ_WANDS,     WAND_COLD_REMOVED },</a>
+<a name="ln783">    { OBJ_WANDS,     WAND_INVISIBILITY_REMOVED },</a>
+<a name="ln784">    { OBJ_WANDS,     WAND_HEAL_WOUNDS_REMOVED },</a>
+<a name="ln785">    { OBJ_WANDS,     WAND_HASTING_REMOVED },</a>
+<a name="ln786">    { OBJ_WANDS,     WAND_TELEPORTATION_REMOVED },</a>
+<a name="ln787">    { OBJ_WANDS,     WAND_SLOWING_REMOVED },</a>
+<a name="ln788">    { OBJ_WANDS,     WAND_CONFUSION_REMOVED },</a>
+<a name="ln789">    { OBJ_WANDS,     WAND_LIGHTNING_REMOVED },</a>
+<a name="ln790">    { OBJ_SCROLLS,   SCR_CURSE_WEAPON },</a>
+<a name="ln791">    { OBJ_SCROLLS,   SCR_CURSE_ARMOUR },</a>
+<a name="ln792">    { OBJ_SCROLLS,   SCR_CURSE_JEWELLERY },</a>
+<a name="ln793">    { OBJ_FOOD,      FOOD_BREAD_RATION },</a>
+<a name="ln794">    { OBJ_FOOD,      FOOD_ROYAL_JELLY },</a>
+<a name="ln795">    { OBJ_FOOD,      FOOD_UNUSED },</a>
+<a name="ln796">    { OBJ_FOOD,      FOOD_FRUIT },</a>
+<a name="ln797">#endif</a>
+<a name="ln798">    { OBJ_JEWELLERY, AMU_NOTHING }, // These should only spawn as uniques</a>
+<a name="ln799">};</a>
+<a name="ln800"> </a>
+<a name="ln801">bool item_type_removed(object_class_type base, int subtype)</a>
+<a name="ln802">{</a>
+<a name="ln803">    return removed_items.count({ base, subtype }) != 0;</a>
+<a name="ln804">}</a>
+<a name="ln805"> </a>
+<a name="ln806">// Some convenient functions to hide the bit operations and create</a>
+<a name="ln807">// an interface layer between the code and the data in case this</a>
+<a name="ln808">// gets changed again. - bwr</a>
+<a name="ln809"> </a>
+<a name="ln810">//</a>
+<a name="ln811">// Item cursed status functions:</a>
+<a name="ln812">//</a>
+<a name="ln813">bool item_known_cursed(const item_def &amp;item)</a>
+<a name="ln814">{</a>
+<a name="ln815">    return _full_ident_mask(item) &amp; ISFLAG_KNOW_CURSE</a>
+<a name="ln816">           &amp;&amp; item_ident(item, ISFLAG_KNOW_CURSE) &amp;&amp; item.cursed();</a>
+<a name="ln817">}</a>
+<a name="ln818"> </a>
+<a name="ln819">// If item is a new unrand, takes a note of it and returns true.</a>
+<a name="ln820">// Otherwise, takes no action and returns false.</a>
+<a name="ln821">static bool _maybe_note_found_unrand(const item_def &amp;item)</a>
+<a name="ln822">{</a>
+<a name="ln823">    if (is_unrandom_artefact(item) &amp;&amp; !(item.flags &amp; ISFLAG_SEEN))</a>
+<a name="ln824">    {</a>
+<a name="ln825">        take_note(Note(NOTE_FOUND_UNRAND, 0, 0, item.name(DESC_THE),</a>
+<a name="ln826">                       origin_desc(item)));</a>
+<a name="ln827">        return true;</a>
+<a name="ln828">    }</a>
+<a name="ln829">    return false;</a>
+<a name="ln830">}</a>
+<a name="ln831"> </a>
+<a name="ln832">/**</a>
+<a name="ln833"> * Is the provided item cursable?</a>
+<a name="ln834"> *</a>
+<a name="ln835"> * @param item  The item under consideration.</a>
+<a name="ln836"> * @return      Whether the given item is cursable.</a>
+<a name="ln837"> */</a>
+<a name="ln838">bool item_is_cursable(const item_def &amp;item)</a>
+<a name="ln839">{</a>
+<a name="ln840">    if (!item_type_has_curses(item.base_type))</a>
+<a name="ln841">        return false;</a>
+<a name="ln842">    if (item_known_cursed(item))</a>
+<a name="ln843">        return false;</a>
+<a name="ln844">    return true;</a>
+<a name="ln845">}</a>
+<a name="ln846"> </a>
+<a name="ln847">// Curses a random player inventory item.</a>
+<a name="ln848">bool curse_an_item()</a>
+<a name="ln849">{</a>
+<a name="ln850">    // allowing these would enable mummy scumming</a>
+<a name="ln851">    if (have_passive(passive_t::want_curses))</a>
+<a name="ln852">    {</a>
+<a name="ln853">        mprf(MSGCH_GOD, &quot;The curse is absorbed by %s.&quot;,</a>
+<a name="ln854">             god_name(you.religion).c_str());</a>
+<a name="ln855">        return false;</a>
+<a name="ln856">    }</a>
+<a name="ln857"> </a>
+<a name="ln858">    int count = 0;</a>
+<a name="ln859">    item_def *found = nullptr;</a>
+<a name="ln860"> </a>
+<a name="ln861">    for (auto &amp;item : you.inv)</a>
+<a name="ln862">    {</a>
+<a name="ln863">        if (!item.defined())</a>
+<a name="ln864">            continue;</a>
+<a name="ln865"> </a>
+<a name="ln866">        if (!item_is_cursable(item))</a>
+<a name="ln867">            continue;</a>
+<a name="ln868"> </a>
+<a name="ln869">        // Item is valid for cursing, so we'll give it a chance.</a>
+<a name="ln870">        count++;</a>
+<a name="ln871">        if (one_chance_in(count))</a>
+<a name="ln872">            found = &amp;item;</a>
+<a name="ln873">    }</a>
+<a name="ln874"> </a>
+<a name="ln875">    // Any item to curse?</a>
+<a name="ln876">    if (!found)</a>
+<a name="ln877">        return false;</a>
+<a name="ln878"> </a>
+<a name="ln879">    do_curse_item(*found, false);</a>
+<a name="ln880"> </a>
+<a name="ln881">    return true;</a>
+<a name="ln882">}</a>
+<a name="ln883"> </a>
+<a name="ln884">void auto_id_inventory()</a>
+<a name="ln885">{</a>
+<a name="ln886">    for (auto &amp;item : you.inv)</a>
+<a name="ln887">        if (item.defined())</a>
+<a name="ln888">            god_id_item(item, false);</a>
+<a name="ln889">}</a>
+<a name="ln890"> </a>
+<a name="ln891">void do_curse_item(item_def &amp;item, bool quiet)</a>
+<a name="ln892">{</a>
+<a name="ln893">    // Already cursed?</a>
+<a name="ln894">    if (item.flags &amp; ISFLAG_CURSED)</a>
+<a name="ln895">        return;</a>
+<a name="ln896"> </a>
+<a name="ln897">    if (!is_weapon(item) &amp;&amp; item.base_type != OBJ_ARMOUR</a>
+<a name="ln898">        &amp;&amp; item.base_type != OBJ_JEWELLERY)</a>
+<a name="ln899">    {</a>
+<a name="ln900">        return;</a>
+<a name="ln901">    }</a>
+<a name="ln902"> </a>
+<a name="ln903">    if (!quiet)</a>
+<a name="ln904">    {</a>
+<a name="ln905">        mprf(&quot;Your %s glows black for a moment.&quot;,</a>
+<a name="ln906">             item.name(DESC_PLAIN).c_str());</a>
+<a name="ln907"> </a>
+<a name="ln908">        // If we get the message, we know the item is cursed now.</a>
+<a name="ln909">        item.flags |= ISFLAG_KNOW_CURSE;</a>
+<a name="ln910">    }</a>
+<a name="ln911"> </a>
+<a name="ln912">    item.flags |= ISFLAG_CURSED;</a>
+<a name="ln913"> </a>
+<a name="ln914">    // Xom is amused by the player's items being cursed, especially if</a>
+<a name="ln915">    // they're worn/equipped.</a>
+<a name="ln916">    if (in_inventory(item))</a>
+<a name="ln917">    {</a>
+<a name="ln918">        int amusement = 50;</a>
+<a name="ln919"> </a>
+<a name="ln920">        if (item_is_equipped(item))</a>
+<a name="ln921">        {</a>
+<a name="ln922">            amusement *= 2;</a>
+<a name="ln923"> </a>
+<a name="ln924">            if (you.equip[EQ_WEAPON] == item.link)</a>
+<a name="ln925">            {</a>
+<a name="ln926">                // Redraw the weapon.</a>
+<a name="ln927">                you.wield_change = true;</a>
+<a name="ln928">            }</a>
+<a name="ln929"> </a>
+<a name="ln930">            ash_check_bondage();</a>
+<a name="ln931">            auto_id_inventory();</a>
+<a name="ln932">        }</a>
+<a name="ln933"> </a>
+<a name="ln934">        xom_is_stimulated(amusement);</a>
+<a name="ln935">    }</a>
+<a name="ln936">}</a>
+<a name="ln937"> </a>
+<a name="ln938">/**</a>
+<a name="ln939"> * Attempt to un-curse the given item.</a>
+<a name="ln940"> *</a>
+<a name="ln941"> * @param item      The item in question.</a>
+<a name="ln942"> * @param check_bondage     Whether to update the player's Ash bondage status.</a>
+<a name="ln943"> *                          (Ash ?rc delays this until later.)</a>
+<a name="ln944"> */</a>
+<a name="ln945">void do_uncurse_item(item_def &amp;item, bool check_bondage)</a>
+<a name="ln946">{</a>
+<a name="ln947">    const bool in_inv = in_inventory(item);</a>
+<a name="ln948">    if (!item.cursed())</a>
+<a name="ln949">    {</a>
+<a name="ln950">        if (in_inv)</a>
+<a name="ln951">            item.flags |= ISFLAG_KNOW_CURSE;</a>
+<a name="ln952">        return;</a>
+<a name="ln953">    }</a>
+<a name="ln954"> </a>
+<a name="ln955">    if (in_inv)</a>
+<a name="ln956">    {</a>
+<a name="ln957">        if (you.equip[EQ_WEAPON] == item.link)</a>
+<a name="ln958">        {</a>
+<a name="ln959">            // Redraw the weapon.</a>
+<a name="ln960">            you.wield_change = true;</a>
+<a name="ln961">        }</a>
+<a name="ln962">        item.flags |= ISFLAG_KNOW_CURSE;</a>
+<a name="ln963">    }</a>
+<a name="ln964">    item.flags &amp;= (~ISFLAG_CURSED);</a>
+<a name="ln965"> </a>
+<a name="ln966">    if (check_bondage &amp;&amp; in_inv)</a>
+<a name="ln967">        ash_check_bondage();</a>
+<a name="ln968">}</a>
+<a name="ln969"> </a>
+<a name="ln970">/**</a>
+<a name="ln971"> * Make a net stationary (because it currently traps a victim).</a>
+<a name="ln972"> *</a>
+<a name="ln973"> * @param item The net item.</a>
+<a name="ln974">*/</a>
+<a name="ln975">void set_net_stationary(item_def &amp;item)</a>
+<a name="ln976">{</a>
+<a name="ln977">    if (item.is_type(OBJ_MISSILES, MI_THROWING_NET))</a>
+<a name="ln978">        item.net_placed = true;</a>
+<a name="ln979">}</a>
+<a name="ln980"> </a>
+<a name="ln981">/**</a>
+<a name="ln982"> * Is the item stationary (unmovable)?</a>
+<a name="ln983"> *</a>
+<a name="ln984"> * Currently only carrion and nets with a trapped victim are stationary.</a>
+<a name="ln985"> * @param item The item.</a>
+<a name="ln986"> * @return  True iff the item is stationary.</a>
+<a name="ln987">*/</a>
+<a name="ln988">bool item_is_stationary(const item_def &amp;item)</a>
+<a name="ln989">{</a>
+<a name="ln990">    return item.base_type == OBJ_CORPSES || item_is_stationary_net(item);</a>
+<a name="ln991">}</a>
+<a name="ln992"> </a>
+<a name="ln993">/**</a>
+<a name="ln994"> * Is the item a stationary net?</a>
+<a name="ln995"> *</a>
+<a name="ln996"> * @param item The item.</a>
+<a name="ln997"> * @return  True iff the item is a stationary net.</a>
+<a name="ln998">*/</a>
+<a name="ln999">bool item_is_stationary_net(const item_def &amp;item)</a>
+<a name="ln1000">{</a>
+<a name="ln1001">    return item.is_type(OBJ_MISSILES, MI_THROWING_NET) &amp;&amp; item.net_placed;</a>
+<a name="ln1002">}</a>
+<a name="ln1003"> </a>
+<a name="ln1004">static bool _is_affordable(const item_def &amp;item)</a>
+<a name="ln1005">{</a>
+<a name="ln1006">    // Temp items never count.</a>
+<a name="ln1007">    if (item.flags &amp; ISFLAG_SUMMONED)</a>
+<a name="ln1008">        return false;</a>
+<a name="ln1009"> </a>
+<a name="ln1010">    // Already in our grubby mitts.</a>
+<a name="ln1011">    if (in_inventory(item))</a>
+<a name="ln1012">        return true;</a>
+<a name="ln1013"> </a>
+<a name="ln1014">    // Disregard shop stuff above your reach.</a>
+<a name="ln1015">    if (is_shop_item(item))</a>
+<a name="ln1016">        return (int)item_value(item) &lt;= you.gold;</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    // Explicitly marked by a vault.</a>
+<a name="ln1019">    if (item.flags &amp; ISFLAG_UNOBTAINABLE)</a>
+<a name="ln1020">        return false;</a>
+<a name="ln1021"> </a>
+<a name="ln1022">    // On the ground or a monster has it. Violence is the answer.</a>
+<a name="ln1023">    return true;</a>
+<a name="ln1024">}</a>
+<a name="ln1025"> </a>
+<a name="ln1026">//</a>
+<a name="ln1027">// Item identification status:</a>
+<a name="ln1028">//</a>
+<a name="ln1029">bool item_ident(const item_def &amp;item, iflags_t flags)</a>
+<a name="ln1030">{</a>
+<a name="ln1031">    return (item.flags &amp; flags) == flags;</a>
+<a name="ln1032">}</a>
+<a name="ln1033"> </a>
+<a name="ln1034">void set_ident_flags(item_def &amp;item, iflags_t flags)</a>
+<a name="ln1035">{</a>
+<a name="ln1036">    preserve_quiver_slots p;</a>
+<a name="ln1037">    if ((item.flags &amp; flags) != flags)</a>
+<a name="ln1038">    {</a>
+<a name="ln1039">        item.flags |= flags;</a>
+<a name="ln1040">        request_autoinscribe();</a>
+<a name="ln1041"> </a>
+<a name="ln1042">        if (in_inventory(item))</a>
+<a name="ln1043">        {</a>
+<a name="ln1044">            shopping_list.cull_identical_items(item);</a>
+<a name="ln1045">            item_skills(item, you.start_train);</a>
+<a name="ln1046">        }</a>
+<a name="ln1047">    }</a>
+<a name="ln1048"> </a>
+<a name="ln1049">    if (fully_identified(item))</a>
+<a name="ln1050">    {</a>
+<a name="ln1051">        if (notes_are_active() &amp;&amp; !(item.flags &amp; ISFLAG_NOTED_ID)</a>
+<a name="ln1052">            &amp;&amp; !get_ident_type(item)</a>
+<a name="ln1053">            &amp;&amp; is_interesting_item(item))</a>
+<a name="ln1054">        {</a>
+<a name="ln1055">            if (!_maybe_note_found_unrand(item))</a>
+<a name="ln1056">            {</a>
+<a name="ln1057">                // Make a note of this non-unrand item</a>
+<a name="ln1058">                take_note(Note(NOTE_ID_ITEM, 0, 0, item.name(DESC_A),</a>
+<a name="ln1059">                               origin_desc(item)));</a>
+<a name="ln1060">            }</a>
+<a name="ln1061"> </a>
+<a name="ln1062">            // Sometimes (e.g. shops) you can ID an item before you get it;</a>
+<a name="ln1063">            // don't note twice in those cases.</a>
+<a name="ln1064">            item.flags |= (ISFLAG_NOTED_ID | ISFLAG_NOTED_GET);</a>
+<a name="ln1065">        }</a>
+<a name="ln1066">    }</a>
+<a name="ln1067"> </a>
+<a name="ln1068">    if (item.flags &amp; ISFLAG_KNOW_TYPE &amp;&amp; !is_artefact(item)</a>
+<a name="ln1069">        &amp;&amp; _is_affordable(item))</a>
+<a name="ln1070">    {</a>
+<a name="ln1071">        if (item.base_type == OBJ_WEAPONS)</a>
+<a name="ln1072">            you.seen_weapon[item.sub_type] |= 1 &lt;&lt; item.brand;</a>
+<a name="ln1073">        if (item.base_type == OBJ_ARMOUR)</a>
+<a name="ln1074">            you.seen_armour[item.sub_type] |= 1 &lt;&lt; item.brand;</a>
+<a name="ln1075">        if (item.base_type == OBJ_MISCELLANY)</a>
+<a name="ln1076">            you.seen_misc.set(item.sub_type);</a>
+<a name="ln1077">    }</a>
+<a name="ln1078">}</a>
+<a name="ln1079"> </a>
+<a name="ln1080">void unset_ident_flags(item_def &amp;item, iflags_t flags)</a>
+<a name="ln1081">{</a>
+<a name="ln1082">    preserve_quiver_slots p;</a>
+<a name="ln1083">    item.flags &amp;= (~flags);</a>
+<a name="ln1084">}</a>
+<a name="ln1085"> </a>
+<a name="ln1086">// Returns the mask of interesting identify bits for this item</a>
+<a name="ln1087">// (e.g., scrolls don't have know-cursedness).</a>
+<a name="ln1088">static iflags_t _full_ident_mask(const item_def&amp; item)</a>
+<a name="ln1089">{</a>
+<a name="ln1090">    // KNOW_PROPERTIES is only relevant for artefacts, handled later.</a>
+<a name="ln1091">    iflags_t flagset = ISFLAG_IDENT_MASK &amp; ~ISFLAG_KNOW_PROPERTIES;</a>
+<a name="ln1092">    switch (item.base_type)</a>
+<a name="ln1093">    {</a>
+<a name="ln1094">    case OBJ_FOOD:</a>
+<a name="ln1095">    case OBJ_CORPSES:</a>
+<a name="ln1096">    case OBJ_MISSILES:</a>
+<a name="ln1097">    case OBJ_ORBS:</a>
+<a name="ln1098">    case OBJ_RUNES:</a>
+<a name="ln1099">    case OBJ_GOLD:</a>
+<a name="ln1100">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1101">    case OBJ_RODS:</a>
+<a name="ln1102">#endif</a>
+<a name="ln1103">        flagset = 0;</a>
+<a name="ln1104">        break;</a>
+<a name="ln1105">    case OBJ_BOOKS:</a>
+<a name="ln1106">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1107">        if (item.sub_type == BOOK_BUGGY_DESTRUCTION)</a>
+<a name="ln1108">        {</a>
+<a name="ln1109">            flagset = 0;</a>
+<a name="ln1110">            break;</a>
+<a name="ln1111">        }</a>
+<a name="ln1112">        // Intentional fall-through.</a>
+<a name="ln1113">#endif</a>
+<a name="ln1114">    case OBJ_SCROLLS:</a>
+<a name="ln1115">    case OBJ_POTIONS:</a>
+<a name="ln1116">    case OBJ_WANDS:</a>
+<a name="ln1117">        flagset = ISFLAG_KNOW_TYPE;</a>
+<a name="ln1118">        break;</a>
+<a name="ln1119">    case OBJ_STAVES:</a>
+<a name="ln1120">        flagset = ISFLAG_KNOW_TYPE | ISFLAG_KNOW_CURSE;</a>
+<a name="ln1121">        break;</a>
+<a name="ln1122">    case OBJ_JEWELLERY:</a>
+<a name="ln1123">        flagset = (ISFLAG_KNOW_CURSE | ISFLAG_KNOW_TYPE);</a>
+<a name="ln1124">        if (jewellery_has_pluses(item))</a>
+<a name="ln1125">            flagset |= ISFLAG_KNOW_PLUSES;</a>
+<a name="ln1126">        break;</a>
+<a name="ln1127">    case OBJ_MISCELLANY:</a>
+<a name="ln1128">        flagset = 0;</a>
+<a name="ln1129">        break;</a>
+<a name="ln1130">    case OBJ_WEAPONS:</a>
+<a name="ln1131">    case OBJ_ARMOUR:</a>
+<a name="ln1132">        // All flags necessary for full identification.</a>
+<a name="ln1133">    default:</a>
+<a name="ln1134">        break;</a>
+<a name="ln1135">    }</a>
+<a name="ln1136"> </a>
+<a name="ln1137">    if (item_type_known(item.base_type, item.sub_type) &amp;&amp; !is_artefact(item))</a>
+<a name="ln1138">        flagset &amp;= (~ISFLAG_KNOW_TYPE);</a>
+<a name="ln1139"> </a>
+<a name="ln1140">    if (is_artefact(item))</a>
+<a name="ln1141">        flagset |= ISFLAG_KNOW_PROPERTIES;</a>
+<a name="ln1142"> </a>
+<a name="ln1143">    return flagset;</a>
+<a name="ln1144">}</a>
+<a name="ln1145"> </a>
+<a name="ln1146">bool fully_identified(const item_def&amp; item)</a>
+<a name="ln1147">{</a>
+<a name="ln1148">    return item_ident(item, _full_ident_mask(item));</a>
+<a name="ln1149">}</a>
+<a name="ln1150"> </a>
+<a name="ln1151">//</a>
+<a name="ln1152">// Equipment description:</a>
+<a name="ln1153">//</a>
+<a name="ln1154">iflags_t get_equip_desc(const item_def &amp;item)</a>
+<a name="ln1155">{</a>
+<a name="ln1156">    return item.flags &amp; ISFLAG_COSMETIC_MASK;</a>
+<a name="ln1157">}</a>
+<a name="ln1158"> </a>
+<a name="ln1159">void set_equip_desc(item_def &amp;item, iflags_t flags)</a>
+<a name="ln1160">{</a>
+<a name="ln1161">    ASSERT((flags &amp; ~ISFLAG_COSMETIC_MASK) == 0);</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    item.flags &amp;= ~ISFLAG_COSMETIC_MASK; // delete previous</a>
+<a name="ln1164">    item.flags |= flags;</a>
+<a name="ln1165">}</a>
+<a name="ln1166"> </a>
+<a name="ln1167">bool is_helmet(const item_def&amp; item)</a>
+<a name="ln1168">{</a>
+<a name="ln1169">    return item.base_type == OBJ_ARMOUR &amp;&amp; get_armour_slot(item) == EQ_HELMET;</a>
+<a name="ln1170">}</a>
+<a name="ln1171"> </a>
+<a name="ln1172">bool is_hard_helmet(const item_def &amp;item)</a>
+<a name="ln1173">{</a>
+<a name="ln1174">    return item.is_type(OBJ_ARMOUR, ARM_HELMET);</a>
+<a name="ln1175">}</a>
+<a name="ln1176"> </a>
+<a name="ln1177">//</a>
+<a name="ln1178">// Ego item functions:</a>
+<a name="ln1179">//</a>
+<a name="ln1180"> </a>
+<a name="ln1181">/**</a>
+<a name="ln1182"> * For a given weapon type, randomly choose an appropriate brand.</a>
+<a name="ln1183"> *</a>
+<a name="ln1184"> * @param wpn_type  The type of weapon in question.</a>
+<a name="ln1185"> * @return          An appropriate brand. (e.g. fire, pain, venom, etc)</a>
+<a name="ln1186"> *                  May be SPWPN_NORMAL.</a>
+<a name="ln1187"> */</a>
+<a name="ln1188">brand_type choose_weapon_brand(weapon_type wpn_type)</a>
+<a name="ln1189">{</a>
+<a name="ln1190">    const vector&lt;brand_weight_tuple&gt; weights</a>
+<a name="ln1191">        = Weapon_prop[ Weapon_index[wpn_type] ].brand_weights;</a>
+<a name="ln1192">    if (!weights.size())</a>
+<a name="ln1193">        return SPWPN_NORMAL;</a>
+<a name="ln1194"> </a>
+<a name="ln1195">    const brand_type *brand = random_choose_weighted(weights);</a>
+<a name="ln1196">    ASSERT(brand);</a>
+<a name="ln1197">    return *brand;</a>
+<a name="ln1198">}</a>
+<a name="ln1199"> </a>
+<a name="ln1200">bool set_item_ego_type(item_def &amp;item, object_class_type item_type,</a>
+<a name="ln1201">                       int ego_type)</a>
+<a name="ln1202">{</a>
+<a name="ln1203">    if (item.base_type == item_type &amp;&amp; !is_artefact(item))</a>
+<a name="ln1204">    {</a>
+<a name="ln1205">        item.brand = ego_type;</a>
+<a name="ln1206">        return true;</a>
+<a name="ln1207">    }</a>
+<a name="ln1208"> </a>
+<a name="ln1209">    return false;</a>
+<a name="ln1210">}</a>
+<a name="ln1211"> </a>
+<a name="ln1212">brand_type get_weapon_brand(const item_def &amp;item)</a>
+<a name="ln1213">{</a>
+<a name="ln1214">    // Weapon ego types are &quot;brands&quot;, so we do the randart lookup here.</a>
+<a name="ln1215"> </a>
+<a name="ln1216">    // Staves &quot;brands&quot; handled specially</a>
+<a name="ln1217">    if (item.base_type != OBJ_WEAPONS)</a>
+<a name="ln1218">        return SPWPN_NORMAL;</a>
+<a name="ln1219"> </a>
+<a name="ln1220">    if (is_artefact(item))</a>
+<a name="ln1221">        return static_cast&lt;brand_type&gt;(artefact_property(item, ARTP_BRAND));</a>
+<a name="ln1222"> </a>
+<a name="ln1223">    return static_cast&lt;brand_type&gt;(item.brand);</a>
+<a name="ln1224">}</a>
+<a name="ln1225"> </a>
+<a name="ln1226">special_missile_type get_ammo_brand(const item_def &amp;item)</a>
+<a name="ln1227">{</a>
+<a name="ln1228">    // No artefact arrows yet. -- bwr</a>
+<a name="ln1229">    if (item.base_type != OBJ_MISSILES || is_artefact(item))</a>
+<a name="ln1230">        return SPMSL_NORMAL;</a>
+<a name="ln1231"> </a>
+<a name="ln1232">    return static_cast&lt;special_missile_type&gt;(item.brand);</a>
+<a name="ln1233">}</a>
+<a name="ln1234"> </a>
+<a name="ln1235">special_armour_type get_armour_ego_type(const item_def &amp;item)</a>
+<a name="ln1236">{</a>
+<a name="ln1237">    // Armour ego types are &quot;brands&quot;, so we do the randart lookup here.</a>
+<a name="ln1238">    if (item.base_type != OBJ_ARMOUR)</a>
+<a name="ln1239">        return SPARM_NORMAL;</a>
+<a name="ln1240"> </a>
+<a name="ln1241">    if (is_artefact(item))</a>
+<a name="ln1242">    {</a>
+<a name="ln1243">        return static_cast&lt;special_armour_type&gt;(</a>
+<a name="ln1244">                   artefact_property(item, ARTP_BRAND));</a>
+<a name="ln1245">    }</a>
+<a name="ln1246"> </a>
+<a name="ln1247">    return static_cast&lt;special_armour_type&gt;(item.brand);</a>
+<a name="ln1248">}</a>
+<a name="ln1249"> </a>
+<a name="ln1250">/// A map between monster species &amp; their hides.</a>
+<a name="ln1251">static map&lt;monster_type, armour_type&gt; _monster_hides = {</a>
+<a name="ln1252">    { MONS_TROLL,               ARM_TROLL_LEATHER_ARMOUR },</a>
+<a name="ln1253">    { MONS_DEEP_TROLL,          ARM_TROLL_LEATHER_ARMOUR },</a>
+<a name="ln1254">    { MONS_IRON_TROLL,          ARM_TROLL_LEATHER_ARMOUR },</a>
+<a name="ln1255"> </a>
+<a name="ln1256">    { MONS_FIRE_DRAGON,         ARM_FIRE_DRAGON_ARMOUR },</a>
+<a name="ln1257">    { MONS_ICE_DRAGON,          ARM_ICE_DRAGON_ARMOUR },</a>
+<a name="ln1258">    { MONS_STEAM_DRAGON,        ARM_STEAM_DRAGON_ARMOUR },</a>
+<a name="ln1259">    { MONS_ACID_DRAGON,         ARM_ACID_DRAGON_ARMOUR },</a>
+<a name="ln1260">    { MONS_STORM_DRAGON,        ARM_STORM_DRAGON_ARMOUR },</a>
+<a name="ln1261">    { MONS_GOLDEN_DRAGON,       ARM_GOLD_DRAGON_ARMOUR },</a>
+<a name="ln1262">    { MONS_SWAMP_DRAGON,        ARM_SWAMP_DRAGON_ARMOUR },</a>
+<a name="ln1263">    { MONS_PEARL_DRAGON,        ARM_PEARL_DRAGON_ARMOUR },</a>
+<a name="ln1264">    { MONS_SHADOW_DRAGON,       ARM_SHADOW_DRAGON_ARMOUR },</a>
+<a name="ln1265">    { MONS_QUICKSILVER_DRAGON,  ARM_QUICKSILVER_DRAGON_ARMOUR },</a>
+<a name="ln1266">};</a>
+<a name="ln1267"> </a>
+<a name="ln1268">/**</a>
+<a name="ln1269"> * If a monster of the given type dies, what kind of armour can it leave?</a>
+<a name="ln1270"> *</a>
+<a name="ln1271"> * @param mc    The class of monster in question.</a>
+<a name="ln1272"> * @return      The armour_type of the given monster's armour, or NUM_ARMOURS</a>
+<a name="ln1273"> *              if the monster does not leave armour.</a>
+<a name="ln1274"> */</a>
+<a name="ln1275">armour_type hide_for_monster(monster_type mc)</a>
+<a name="ln1276">{</a>
+<a name="ln1277">    return lookup(_monster_hides, mons_species(mc), NUM_ARMOURS);</a>
+<a name="ln1278">}</a>
+<a name="ln1279"> </a>
+<a name="ln1280">/**</a>
+<a name="ln1281"> * Return whether a piece of armour is enchantable.</a>
+<a name="ln1282"> *</a>
+<a name="ln1283"> * This function ignores the current enchantment level, so is still</a>
+<a name="ln1284"> * true for maximally-enchanted items.</a>
+<a name="ln1285"> *</a>
+<a name="ln1286"> * @param item      The item being considered.</a>
+<a name="ln1287"> * @return          True if the armour can have a +X enchantment.</a>
+<a name="ln1288"> */</a>
+<a name="ln1289">bool armour_is_enchantable(const item_def &amp;item)</a>
+<a name="ln1290">{</a>
+<a name="ln1291">    ASSERT(item.base_type == OBJ_ARMOUR);</a>
+<a name="ln1292">    return item.sub_type != ARM_QUICKSILVER_DRAGON_ARMOUR</a>
+<a name="ln1293">        &amp;&amp; item.sub_type != ARM_SCARF;</a>
+<a name="ln1294">}</a>
+<a name="ln1295"> </a>
+<a name="ln1296">/**</a>
+<a name="ln1297"> * Return the enchantment limit of a piece of armour.</a>
+<a name="ln1298"> *</a>
+<a name="ln1299"> * @param item      The item being considered.</a>
+<a name="ln1300"> * @return          The maximum enchantment the item can hold.</a>
+<a name="ln1301"> */</a>
+<a name="ln1302">int armour_max_enchant(const item_def &amp;item)</a>
+<a name="ln1303">{</a>
+<a name="ln1304">    ASSERT(item.base_type == OBJ_ARMOUR);</a>
+<a name="ln1305"> </a>
+<a name="ln1306">    // Unenchantables.</a>
+<a name="ln1307">    if (!armour_is_enchantable(item))</a>
+<a name="ln1308">        return 0;</a>
+<a name="ln1309"> </a>
+<a name="ln1310">    const int eq_slot = get_armour_slot(item);</a>
+<a name="ln1311"> </a>
+<a name="ln1312">    int max_plus = MAX_SEC_ENCHANT;</a>
+<a name="ln1313">    if (eq_slot == EQ_BODY_ARMOUR</a>
+<a name="ln1314">        || item.sub_type == ARM_CENTAUR_BARDING</a>
+<a name="ln1315">        || item.sub_type == ARM_NAGA_BARDING)</a>
+<a name="ln1316">    {</a>
+<a name="ln1317">        max_plus = property(item, PARM_AC);</a>
+<a name="ln1318">    }</a>
+<a name="ln1319">    else if (eq_slot == EQ_SHIELD)</a>
+<a name="ln1320">        // 3 / 5 / 8 for bucklers/shields/lg. shields</a>
+<a name="ln1321">        max_plus = (property(item, PARM_AC) - 3)/2 + 3;</a>
+<a name="ln1322"> </a>
+<a name="ln1323">    return max_plus;</a>
+<a name="ln1324">}</a>
+<a name="ln1325"> </a>
+<a name="ln1326">/**</a>
+<a name="ln1327"> * Find the set of all armours made from monsters.</a>
+<a name="ln1328"> */</a>
+<a name="ln1329">static set&lt;armour_type&gt; _make_hide_armour_set()</a>
+<a name="ln1330">{</a>
+<a name="ln1331">    set&lt;armour_type&gt; _hide_armour_set;</a>
+<a name="ln1332">    // iter over armours created from monsters</a>
+<a name="ln1333">    for (auto it: _monster_hides)</a>
+<a name="ln1334">        _hide_armour_set.insert(it.second);</a>
+<a name="ln1335">    return _hide_armour_set;</a>
+<a name="ln1336">}</a>
+<a name="ln1337">static set&lt;armour_type&gt; _hide_armour_set = _make_hide_armour_set();</a>
+<a name="ln1338"> </a>
+<a name="ln1339">/**</a>
+<a name="ln1340"> * Is the given armour a type that drops from dead monsters (i.e. dragon or</a>
+<a name="ln1341"> * troll armour)?</a>
+<a name="ln1342"> *</a>
+<a name="ln1343"> * @param item      The armour in question.</a>
+<a name="ln1344"> * @return          Whether the given item comes from a monster corpse.</a>
+<a name="ln1345"> *                  (Note that ARM_ANIMAL_SKIN doesn't come from in-game</a>
+<a name="ln1346">*                    monsters (these days) and so doesn't count.)</a>
+<a name="ln1347"> */</a>
+<a name="ln1348">bool armour_is_hide(const item_def &amp;item)</a>
+<a name="ln1349">{</a>
+<a name="ln1350">    return item.base_type == OBJ_ARMOUR</a>
+<a name="ln1351">           &amp;&amp; armour_type_is_hide(static_cast&lt;armour_type&gt;(item.sub_type));</a>
+<a name="ln1352">}</a>
+<a name="ln1353"> </a>
+<a name="ln1354">/**</a>
+<a name="ln1355"> * Is the given armour a type that drops from dead monsters (i.e. dragon or</a>
+<a name="ln1356"> * troll armour)?</a>
+<a name="ln1357"> *</a>
+<a name="ln1358"> * @param type      The armour_type in question.</a>
+<a name="ln1359"> * @return          Whether the given item comes from a monster corpse.</a>
+<a name="ln1360"> *                  (Note that ARM_ANIMAL_SKIN doesn't come from in-game</a>
+<a name="ln1361"> *                   monsters (these days) and so doesn't count.)</a>
+<a name="ln1362"> */</a>
+<a name="ln1363">bool armour_type_is_hide(armour_type type)</a>
+<a name="ln1364">{</a>
+<a name="ln1365">    return _hide_armour_set.count(type);</a>
+<a name="ln1366">}</a>
+<a name="ln1367"> </a>
+<a name="ln1368">/**</a>
+<a name="ln1369"> * Generate a map from monster armours to the monsters that drop them.</a>
+<a name="ln1370"> */</a>
+<a name="ln1371">static map&lt;armour_type, monster_type&gt; _make_hide_monster_map()</a>
+<a name="ln1372">{</a>
+<a name="ln1373">    map&lt;armour_type, monster_type&gt; hide_to_mons;</a>
+<a name="ln1374">    for (auto monster_data : _monster_hides)</a>
+<a name="ln1375">    {</a>
+<a name="ln1376">        const armour_type hide = monster_data.second;</a>
+<a name="ln1377">        const monster_type mon = monster_data.first;</a>
+<a name="ln1378">        hide_to_mons[hide] = mon;</a>
+<a name="ln1379">    }</a>
+<a name="ln1380"> </a>
+<a name="ln1381">    // troll hides are generated by multiple monsters, so set a canonical troll</a>
+<a name="ln1382">    // by hand</a>
+<a name="ln1383">    hide_to_mons[ARM_TROLL_LEATHER_ARMOUR] = MONS_TROLL;</a>
+<a name="ln1384"> </a>
+<a name="ln1385">    return hide_to_mons;</a>
+<a name="ln1386">}</a>
+<a name="ln1387"> </a>
+<a name="ln1388">static map&lt;armour_type, monster_type&gt; hide_to_mons = _make_hide_monster_map();</a>
+<a name="ln1389"> </a>
+<a name="ln1390">/**</a>
+<a name="ln1391"> * Find the monster that the given type of dragon/troll armour came from.</a>
+<a name="ln1392"> *</a>
+<a name="ln1393"> * @param arm   The type of armour in question.</a>
+<a name="ln1394"> * @return      The corresponding monster type; e.g. MONS_FIRE_DRAGON for</a>
+<a name="ln1395"> *              ARM_FIRE_DRAGON_ARMOUR,</a>
+<a name="ln1396"> *              MONS_TROLL for ARM_TROLL_LEATHER_ARMOUR...</a>
+<a name="ln1397"> */</a>
+<a name="ln1398">monster_type monster_for_hide(armour_type arm)</a>
+<a name="ln1399">{</a>
+<a name="ln1400">    monster_type *mon = map_find(hide_to_mons, arm);</a>
+<a name="ln1401">    ASSERT(mon);</a>
+<a name="ln1402">    return *mon;</a>
+<a name="ln1403">}</a>
+<a name="ln1404"> </a>
+<a name="ln1405">/**</a>
+<a name="ln1406"> * Is this armour considered inherently 'special' for acquirement?</a>
+<a name="ln1407"> *</a>
+<a name="ln1408"> * @param arm   The armour item in question.</a>
+<a name="ln1409"> * @return      Whether that type of armour is considered 'special'.</a>
+<a name="ln1410"> */</a>
+<a name="ln1411">bool armour_is_special(const item_def &amp;item)</a>
+<a name="ln1412">{</a>
+<a name="ln1413">    ASSERT(item.base_type == OBJ_ARMOUR);</a>
+<a name="ln1414"> </a>
+<a name="ln1415">    return !Armour_prop[ Armour_index[item.sub_type] ].mundane;</a>
+<a name="ln1416">}</a>
+<a name="ln1417"> </a>
+<a name="ln1418">/**</a>
+<a name="ln1419"> * What weight does this armour type have for acquirement? (Higher = appears</a>
+<a name="ln1420"> * more often.)</a>
+<a name="ln1421"> *</a>
+<a name="ln1422"> * @param arm   The armour item in question.</a>
+<a name="ln1423"> * @return      The base weight the armour should have in acquirement, before</a>
+<a name="ln1424"> *              skills &amp; other effects are factored in.</a>
+<a name="ln1425"> */</a>
+<a name="ln1426">int armour_acq_weight(const armour_type armour)</a>
+<a name="ln1427">{</a>
+<a name="ln1428">    return Armour_prop[ Armour_index[armour] ].acquire_weight;</a>
+<a name="ln1429">}</a>
+<a name="ln1430"> </a>
+<a name="ln1431">equipment_type get_armour_slot(const item_def &amp;item)</a>
+<a name="ln1432">{</a>
+<a name="ln1433">    ASSERT(item.base_type == OBJ_ARMOUR);</a>
+<a name="ln1434"> </a>
+<a name="ln1435">    return Armour_prop[ Armour_index[item.sub_type] ].slot;</a>
+<a name="ln1436">}</a>
+<a name="ln1437"> </a>
+<a name="ln1438">equipment_type get_armour_slot(armour_type arm)</a>
+<a name="ln1439">{</a>
+<a name="ln1440">    return Armour_prop[ Armour_index[arm] ].slot;</a>
+<a name="ln1441">}</a>
+<a name="ln1442"> </a>
+<a name="ln1443">bool jewellery_is_amulet(const item_def &amp;item)</a>
+<a name="ln1444">{</a>
+<a name="ln1445">    ASSERT(item.base_type == OBJ_JEWELLERY);</a>
+<a name="ln1446"> </a>
+<a name="ln1447">    return jewellery_is_amulet(item.sub_type);</a>
+<a name="ln1448">}</a>
+<a name="ln1449"> </a>
+<a name="ln1450">bool jewellery_is_amulet(int sub_type)</a>
+<a name="ln1451">{</a>
+<a name="ln1452">    return sub_type &gt;= AMU_FIRST_AMULET;</a>
+<a name="ln1453">}</a>
+<a name="ln1454"> </a>
+<a name="ln1455">/**</a>
+<a name="ln1456"> * How many size categories away is the given type of armour from fitting a</a>
+<a name="ln1457"> * creature of the given size - and in what direction?</a>
+<a name="ln1458"> *</a>
+<a name="ln1459"> * @param sub_type  The type of armour in question.</a>
+<a name="ln1460"> * @param size      The size of the creature in question.</a>
+<a name="ln1461"> * @return          The difference between the size of the creature and the</a>
+<a name="ln1462"> *                  closest size of creature that might wear the armour.</a>
+<a name="ln1463"> *                  Negative if the creature is too small.</a>
+<a name="ln1464"> *                  Positive if the creature is too large.</a>
+<a name="ln1465"> *                  0 if the creature is just right.</a>
+<a name="ln1466"> */</a>
+<a name="ln1467">static int _fit_armour_size(armour_type sub_type, size_type size)</a>
+<a name="ln1468">{</a>
+<a name="ln1469">    const size_type min = Armour_prop[ Armour_index[sub_type] ].fit_min;</a>
+<a name="ln1470">    const size_type max = Armour_prop[ Armour_index[sub_type] ].fit_max;</a>
+<a name="ln1471"> </a>
+<a name="ln1472">    if (size &lt; min)</a>
+<a name="ln1473">        return min - size;    // negative means levels too small</a>
+<a name="ln1474">    else if (size &gt; max)</a>
+<a name="ln1475">        return max - size;    // positive means levels too large</a>
+<a name="ln1476"> </a>
+<a name="ln1477">    return 0;</a>
+<a name="ln1478">}</a>
+<a name="ln1479"> </a>
+<a name="ln1480">/**</a>
+<a name="ln1481"> * How many size categories away is the given armour from fitting a creature of</a>
+<a name="ln1482"> * the given size - and in what direction?</a>
+<a name="ln1483"> *</a>
+<a name="ln1484"> * @param item      The armour in question.</a>
+<a name="ln1485"> * @param size      The size of the creature in question.</a>
+<a name="ln1486"> * @return          The difference between the size of the creature and the</a>
+<a name="ln1487"> *                  closest size of creature that might wear the armour.</a>
+<a name="ln1488"> *                  Negative if the creature is too small.</a>
+<a name="ln1489"> *                  Positive if the creature is too large.</a>
+<a name="ln1490"> *                  0 if the creature is just right.</a>
+<a name="ln1491"> */</a>
+<a name="ln1492">int fit_armour_size(const item_def &amp;item, size_type size)</a>
+<a name="ln1493">{</a>
+<a name="ln1494">    ASSERT(item.base_type == OBJ_ARMOUR);</a>
+<a name="ln1495">    return _fit_armour_size(static_cast&lt;armour_type&gt;(item.sub_type), size);</a>
+<a name="ln1496">}</a>
+<a name="ln1497"> </a>
+<a name="ln1498">/**</a>
+<a name="ln1499"> * Does the given type of armour fit a creature of the given size?</a>
+<a name="ln1500"> *</a>
+<a name="ln1501"> * @param sub_type  The type of armour in question.</a>
+<a name="ln1502"> * @param size      The size of the creature that might wear the armour.</a>
+<a name="ln1503"> * @return          Whether the armour fits based on size. (It might still not</a>
+<a name="ln1504"> *                  fit for other reasons, e.g. mutations...)</a>
+<a name="ln1505"> */</a>
+<a name="ln1506">bool check_armour_size(armour_type sub_type, size_type size)</a>
+<a name="ln1507">{</a>
+<a name="ln1508">    return _fit_armour_size(sub_type, size) == 0;</a>
+<a name="ln1509">}</a>
+<a name="ln1510"> </a>
+<a name="ln1511">/**</a>
+<a name="ln1512"> * Does the given armour fit a creature of the given size?</a>
+<a name="ln1513"> *</a>
+<a name="ln1514"> * @param item      The armour in question.</a>
+<a name="ln1515"> * @param size      The size of the creature that might wear the armour.</a>
+<a name="ln1516"> * @return          Whether the armour fits based on size. (It might still not</a>
+<a name="ln1517"> *                  fit for other reasons, e.g. mutations...)</a>
+<a name="ln1518"> */</a>
+<a name="ln1519">bool check_armour_size(const item_def &amp;item, size_type size)</a>
+<a name="ln1520">{</a>
+<a name="ln1521">    ASSERT(item.base_type == OBJ_ARMOUR);</a>
+<a name="ln1522"> </a>
+<a name="ln1523">    return check_armour_size(static_cast&lt;armour_type&gt;(item.sub_type), size);</a>
+<a name="ln1524">}</a>
+<a name="ln1525"> </a>
+<a name="ln1526">int wand_charge_value(int type)</a>
+<a name="ln1527">{</a>
+<a name="ln1528">    switch (type)</a>
+<a name="ln1529">    {</a>
+<a name="ln1530">    case WAND_CLOUDS:</a>
+<a name="ln1531">    case WAND_SCATTERSHOT:</a>
+<a name="ln1532">    case WAND_DIGGING:</a>
+<a name="ln1533">        return 9;</a>
+<a name="ln1534"> </a>
+<a name="ln1535">    case WAND_ICEBLAST:</a>
+<a name="ln1536">    case WAND_ACID:</a>
+<a name="ln1537">    case WAND_ENSLAVEMENT:</a>
+<a name="ln1538">    case WAND_PARALYSIS:</a>
+<a name="ln1539">    case WAND_POLYMORPH:</a>
+<a name="ln1540">        return 15;</a>
+<a name="ln1541"> </a>
+<a name="ln1542">    default:</a>
+<a name="ln1543">        return 24;</a>
+<a name="ln1544"> </a>
+<a name="ln1545">    case WAND_FLAME:</a>
+<a name="ln1546">    case WAND_RANDOM_EFFECTS:</a>
+<a name="ln1547">        return 32;</a>
+<a name="ln1548">    }</a>
+<a name="ln1549">}</a>
+<a name="ln1550"> </a>
+<a name="ln1551"> </a>
+<a name="ln1552">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1553">/**</a>
+<a name="ln1554"> * Is the given item a wand which is empty? Wands are normally destroyed when</a>
+<a name="ln1555"> * their charges are exhausted, but empty wands can still happen through</a>
+<a name="ln1556"> * transfered games.</a>
+<a name="ln1557"> *</a>
+<a name="ln1558"> * @param item  The item in question.</a>
+<a name="ln1559"> * @return      Whether the wand is empty.</a>
+<a name="ln1560"> */</a>
+<a name="ln1561">bool is_known_empty_wand(const item_def &amp;item)</a>
+<a name="ln1562">{</a>
+<a name="ln1563">    if (item.base_type != OBJ_WANDS)</a>
+<a name="ln1564">        return false;</a>
+<a name="ln1565"> </a>
+<a name="ln1566">    return item_ident(item, ISFLAG_KNOW_TYPE) &amp;&amp; item.charges &lt;= 0;</a>
+<a name="ln1567">}</a>
+<a name="ln1568">#endif</a>
+<a name="ln1569"> </a>
+<a name="ln1570">/**</a>
+<a name="ln1571"> * What wands could a monster use to directly harm the player?</a>
+<a name="ln1572"> *</a>
+<a name="ln1573"> * @param item      The wand to be examined.</a>
+<a name="ln1574"> * @return          True if the wand could harm the player, false otherwise.</a>
+<a name="ln1575"> */</a>
+<a name="ln1576">bool is_offensive_wand(const item_def&amp; item)</a>
+<a name="ln1577">{</a>
+<a name="ln1578">    switch (item.sub_type)</a>
+<a name="ln1579">    {</a>
+<a name="ln1580">    // Monsters don't use it</a>
+<a name="ln1581">    case WAND_RANDOM_EFFECTS:</a>
+<a name="ln1582">    // Monsters use it, but it's not an offensive wand</a>
+<a name="ln1583">    case WAND_DIGGING:</a>
+<a name="ln1584">        return false;</a>
+<a name="ln1585"> </a>
+<a name="ln1586">    case WAND_ACID:</a>
+<a name="ln1587">    case WAND_CLOUDS:</a>
+<a name="ln1588">    case WAND_DISINTEGRATION:</a>
+<a name="ln1589">    case WAND_ENSLAVEMENT:</a>
+<a name="ln1590">    case WAND_FLAME:</a>
+<a name="ln1591">    case WAND_ICEBLAST:</a>
+<a name="ln1592">    case WAND_PARALYSIS:</a>
+<a name="ln1593">    case WAND_POLYMORPH:</a>
+<a name="ln1594">    case WAND_SCATTERSHOT:</a>
+<a name="ln1595">        return true;</a>
+<a name="ln1596">    }</a>
+<a name="ln1597">    return false;</a>
+<a name="ln1598">}</a>
+<a name="ln1599"> </a>
+<a name="ln1600">// Returns whether a piece of armour can be enchanted further.</a>
+<a name="ln1601">// If unknown is true, unidentified armour will return true.</a>
+<a name="ln1602">bool is_enchantable_armour(const item_def &amp;arm, bool unknown)</a>
+<a name="ln1603">{</a>
+<a name="ln1604">    if (arm.base_type != OBJ_ARMOUR)</a>
+<a name="ln1605">        return false;</a>
+<a name="ln1606"> </a>
+<a name="ln1607">    // Armour types that can never be enchanted.</a>
+<a name="ln1608">    if (!armour_is_enchantable(arm))</a>
+<a name="ln1609">        return false;</a>
+<a name="ln1610"> </a>
+<a name="ln1611">    // If we don't know the plusses, assume enchanting is possible.</a>
+<a name="ln1612">    if (unknown &amp;&amp; !is_artefact(arm) &amp;&amp; !item_ident(arm, ISFLAG_KNOW_PLUSES))</a>
+<a name="ln1613">        return true;</a>
+<a name="ln1614"> </a>
+<a name="ln1615">    // Artefacts or highly enchanted armour cannot be enchanted.</a>
+<a name="ln1616">    if (is_artefact(arm) || arm.plus &gt;= armour_max_enchant(arm))</a>
+<a name="ln1617">        return false;</a>
+<a name="ln1618"> </a>
+<a name="ln1619">    return true;</a>
+<a name="ln1620">}</a>
+<a name="ln1621"> </a>
+<a name="ln1622">//</a>
+<a name="ln1623">// Weapon information and checking functions:</a>
+<a name="ln1624">//</a>
+<a name="ln1625"> </a>
+<a name="ln1626">// Checks how rare a weapon is. Many of these have special routines for</a>
+<a name="ln1627">// placement, especially those with a rarity of zero. Chance is out of 10.</a>
+<a name="ln1628">// ^^^ vvv &quot;rarity&quot; is exactly the wrong term - inverted...</a>
+<a name="ln1629">int weapon_rarity(int w_type)</a>
+<a name="ln1630">{</a>
+<a name="ln1631">    return Weapon_prop[Weapon_index[w_type]].commonness;</a>
+<a name="ln1632">}</a>
+<a name="ln1633"> </a>
+<a name="ln1634">int get_vorpal_type(const item_def &amp;item)</a>
+<a name="ln1635">{</a>
+<a name="ln1636">    int ret = DVORP_NONE;</a>
+<a name="ln1637"> </a>
+<a name="ln1638">    if (item.base_type == OBJ_WEAPONS)</a>
+<a name="ln1639">        ret = (Weapon_prop[Weapon_index[item.sub_type]].dam_type &amp; DAMV_MASK);</a>
+<a name="ln1640"> </a>
+<a name="ln1641">    return ret;</a>
+<a name="ln1642">}</a>
+<a name="ln1643"> </a>
+<a name="ln1644">int get_damage_type(const item_def &amp;item)</a>
+<a name="ln1645">{</a>
+<a name="ln1646">    if (item.base_type == OBJ_WEAPONS)</a>
+<a name="ln1647">        return Weapon_prop[Weapon_index[item.sub_type]].dam_type &amp; DAM_MASK;</a>
+<a name="ln1648"> </a>
+<a name="ln1649">    return DAM_BASH;</a>
+<a name="ln1650">}</a>
+<a name="ln1651"> </a>
+<a name="ln1652">static bool _does_damage_type(const item_def &amp;item, int dam_type)</a>
+<a name="ln1653">{</a>
+<a name="ln1654">    return get_damage_type(item) &amp; dam_type;</a>
+<a name="ln1655">}</a>
+<a name="ln1656"> </a>
+<a name="ln1657">int single_damage_type(const item_def &amp;item)</a>
+<a name="ln1658">{</a>
+<a name="ln1659">    int ret = get_damage_type(item);</a>
+<a name="ln1660"> </a>
+<a name="ln1661">    if (ret &gt; 0)</a>
+<a name="ln1662">    {</a>
+<a name="ln1663">        int count = 0;</a>
+<a name="ln1664"> </a>
+<a name="ln1665">        for (int i = 1; i &lt;= DAM_MAX_TYPE; i &lt;&lt;= 1)</a>
+<a name="ln1666">        {</a>
+<a name="ln1667">            if (!_does_damage_type(item, i))</a>
+<a name="ln1668">                continue;</a>
+<a name="ln1669"> </a>
+<a name="ln1670">            if (one_chance_in(++count))</a>
+<a name="ln1671">                ret = i;</a>
+<a name="ln1672">        }</a>
+<a name="ln1673">    }</a>
+<a name="ln1674"> </a>
+<a name="ln1675">    return ret;</a>
+<a name="ln1676">}</a>
+<a name="ln1677"> </a>
+<a name="ln1678">// Give hands required to wield weapon for a torso of &quot;size&quot;.</a>
+<a name="ln1679">// Not adjusted by species or anything, which is why it's &quot;basic&quot;.</a>
+<a name="ln1680">hands_reqd_type basic_hands_reqd(const item_def &amp;item, size_type size)</a>
+<a name="ln1681">{</a>
+<a name="ln1682">    const auto wpn_type = [&amp;item]() {</a>
+<a name="ln1683">        if (item.base_type == OBJ_WEAPONS)</a>
+<a name="ln1684">            return static_cast&lt;weapon_type&gt;(item.sub_type);</a>
+<a name="ln1685">        if (item.base_type == OBJ_STAVES)</a>
+<a name="ln1686">            return WPN_STAFF;</a>
+<a name="ln1687">        return WPN_UNKNOWN;</a>
+<a name="ln1688">    }();</a>
+<a name="ln1689"> </a>
+<a name="ln1690">    // Non-weapons.</a>
+<a name="ln1691">    if (wpn_type == WPN_UNKNOWN)</a>
+<a name="ln1692">        return HANDS_ONE;</a>
+<a name="ln1693">    if (is_unrandom_artefact(item, UNRAND_GYRE))</a>
+<a name="ln1694">        return HANDS_TWO;</a>
+<a name="ln1695">    return size &gt;= Weapon_prop[Weapon_index[wpn_type]].min_1h_size ? HANDS_ONE</a>
+<a name="ln1696">                                                                   : HANDS_TWO;</a>
+<a name="ln1697">}</a>
+<a name="ln1698"> </a>
+<a name="ln1699">hands_reqd_type hands_reqd(const actor* ac, object_class_type base_type, int sub_type)</a>
+<a name="ln1700">{</a>
+<a name="ln1701">    item_def item;</a>
+<a name="ln1702">    item.base_type = base_type;</a>
+<a name="ln1703">    item.sub_type  = sub_type;</a>
+<a name="ln1704">    // This function is used for item generation only, so use the actor's</a>
+<a name="ln1705">    // (player's) base size, not its current form.</a>
+<a name="ln1706">    return ac-&gt;hands_reqd(item, true);</a>
+<a name="ln1707">}</a>
+<a name="ln1708"> </a>
+<a name="ln1709">/**</a>
+<a name="ln1710"> * Is the provided type a kind of giant club?</a>
+<a name="ln1711"> *</a>
+<a name="ln1712"> * @param wpn_type  The weapon_type under consideration.</a>
+<a name="ln1713"> * @return          Whether it's a kind of giant club.</a>
+<a name="ln1714"> */</a>
+<a name="ln1715">bool is_giant_club_type(int wpn_type)</a>
+<a name="ln1716">{</a>
+<a name="ln1717">    return wpn_type == WPN_GIANT_CLUB</a>
+<a name="ln1718">           || wpn_type == WPN_GIANT_SPIKED_CLUB;</a>
+<a name="ln1719">}</a>
+<a name="ln1720"> </a>
+<a name="ln1721">/**</a>
+<a name="ln1722"> * Is the provided type a kind of ranged weapon?</a>
+<a name="ln1723"> *</a>
+<a name="ln1724"> * @param wpn_type  The weapon_type under consideration.</a>
+<a name="ln1725"> * @return          Whether it's a kind of launcher.</a>
+<a name="ln1726"> */</a>
+<a name="ln1727">bool is_ranged_weapon_type(int wpn_type)</a>
+<a name="ln1728">{</a>
+<a name="ln1729">    return Weapon_prop[Weapon_index[wpn_type]].ammo != MI_NONE;</a>
+<a name="ln1730">}</a>
+<a name="ln1731"> </a>
+<a name="ln1732">/**</a>
+<a name="ln1733"> * Is the provided type a kind of demon weapon?</a>
+<a name="ln1734"> *</a>
+<a name="ln1735"> * @param wpn_type  The weapon_type under consideration.</a>
+<a name="ln1736"> * @return          Whether it's a kind of demon weapon.</a>
+<a name="ln1737"> */</a>
+<a name="ln1738">bool is_demonic_weapon_type(int wpn_type)</a>
+<a name="ln1739">{</a>
+<a name="ln1740">    return wpn_type == WPN_DEMON_BLADE</a>
+<a name="ln1741">           || wpn_type == WPN_DEMON_WHIP</a>
+<a name="ln1742">           || wpn_type == WPN_DEMON_TRIDENT;</a>
+<a name="ln1743">}</a>
+<a name="ln1744"> </a>
+<a name="ln1745">/**</a>
+<a name="ln1746"> * Is the provided type a kind of blessed weapon?</a>
+<a name="ln1747"> *</a>
+<a name="ln1748"> * @param wpn_type  The weapon_type under consideration.</a>
+<a name="ln1749"> * @return          Whether it's a kind of blessed weapon.</a>
+<a name="ln1750"> */</a>
+<a name="ln1751">bool is_blessed_weapon_type(int wpn_type)</a>
+<a name="ln1752">{</a>
+<a name="ln1753">    return wpn_type == WPN_EUDEMON_BLADE</a>
+<a name="ln1754">           || wpn_type == WPN_SACRED_SCOURGE</a>
+<a name="ln1755">           || wpn_type == WPN_TRISHULA;</a>
+<a name="ln1756">}</a>
+<a name="ln1757"> </a>
+<a name="ln1758">/**</a>
+<a name="ln1759"> * Is the weapon type provided magical (&amp; can't be generated in a usual way)?</a>
+<a name="ln1760"> * (I.e., magic staves.)</a>
+<a name="ln1761"> *</a>
+<a name="ln1762"> * @param wpn_type  The weapon_type under consideration.</a>
+<a name="ln1763"> * @return          Whether it's a magic staff.</a>
+<a name="ln1764"> */</a>
+<a name="ln1765">bool is_magic_weapon_type(int wpn_type)</a>
+<a name="ln1766">{</a>
+<a name="ln1767">    return wpn_type == WPN_STAFF;</a>
+<a name="ln1768">}</a>
+<a name="ln1769"> </a>
+<a name="ln1770"> </a>
+<a name="ln1771">bool is_melee_weapon(const item_def &amp;weapon)</a>
+<a name="ln1772">{</a>
+<a name="ln1773">    return is_weapon(weapon) &amp;&amp; !is_range_weapon(weapon);</a>
+<a name="ln1774">}</a>
+<a name="ln1775"> </a>
+<a name="ln1776">/**</a>
+<a name="ln1777"> * Is the provided item a demon weapon?</a>
+<a name="ln1778"> *</a>
+<a name="ln1779"> * @param item  The item under consideration.</a>
+<a name="ln1780"> * @return      Whether the given item is a demon weapon.</a>
+<a name="ln1781"> */</a>
+<a name="ln1782">bool is_demonic(const item_def &amp;item)</a>
+<a name="ln1783">{</a>
+<a name="ln1784">    return item.base_type == OBJ_WEAPONS</a>
+<a name="ln1785">           &amp;&amp; is_demonic_weapon_type(item.sub_type);</a>
+<a name="ln1786">}</a>
+<a name="ln1787"> </a>
+<a name="ln1788">/**</a>
+<a name="ln1789"> * Is the provided item a blessed weapon? (Not just holy wrath.)</a>
+<a name="ln1790"> *</a>
+<a name="ln1791"> * @param item  The item under consideration.</a>
+<a name="ln1792"> * @return      Whether the given item is a blessed weapon.</a>
+<a name="ln1793"> */</a>
+<a name="ln1794">bool is_blessed(const item_def &amp;item)</a>
+<a name="ln1795">{</a>
+<a name="ln1796">    return item.base_type == OBJ_WEAPONS</a>
+<a name="ln1797">            &amp;&amp; is_blessed_weapon_type(item.sub_type);</a>
+<a name="ln1798">}</a>
+<a name="ln1799"> </a>
+<a name="ln1800">bool is_blessed_convertible(const item_def &amp;item)</a>
+<a name="ln1801">{</a>
+<a name="ln1802">    return !is_artefact(item)</a>
+<a name="ln1803">           &amp;&amp; (item.base_type == OBJ_WEAPONS</a>
+<a name="ln1804">               &amp;&amp; (is_demonic(item)</a>
+<a name="ln1805">                   || is_blessed(item)));</a>
+<a name="ln1806">}</a>
+<a name="ln1807"> </a>
+<a name="ln1808">static map&lt;weapon_type, weapon_type&gt; _holy_upgrades =</a>
+<a name="ln1809">{</a>
+<a name="ln1810">    { WPN_DEMON_BLADE, WPN_EUDEMON_BLADE },</a>
+<a name="ln1811">    { WPN_DEMON_WHIP, WPN_SACRED_SCOURGE },</a>
+<a name="ln1812">    { WPN_DEMON_TRIDENT, WPN_TRISHULA },</a>
+<a name="ln1813">};</a>
+<a name="ln1814"> </a>
+<a name="ln1815">bool convert2good(item_def &amp;item)</a>
+<a name="ln1816">{</a>
+<a name="ln1817">    if (item.base_type != OBJ_WEAPONS)</a>
+<a name="ln1818">        return false;</a>
+<a name="ln1819"> </a>
+<a name="ln1820">    if (auto repl = map_find(_holy_upgrades, (weapon_type) item.sub_type))</a>
+<a name="ln1821">    {</a>
+<a name="ln1822">        item.sub_type = *repl;</a>
+<a name="ln1823">        return true;</a>
+<a name="ln1824">    }</a>
+<a name="ln1825"> </a>
+<a name="ln1826">    return false;</a>
+<a name="ln1827">}</a>
+<a name="ln1828"> </a>
+<a name="ln1829">bool convert2bad(item_def &amp;item)</a>
+<a name="ln1830">{</a>
+<a name="ln1831">    if (item.base_type != OBJ_WEAPONS)</a>
+<a name="ln1832">        return false;</a>
+<a name="ln1833"> </a>
+<a name="ln1834">    auto it = find_if(begin(_holy_upgrades), end(_holy_upgrades),</a>
+<a name="ln1835">                      [&amp;item](const pair&lt;const weapon_type, weapon_type&gt; elt)</a>
+<a name="ln1836">                      {</a>
+<a name="ln1837">                          return elt.second == item.sub_type;</a>
+<a name="ln1838">                      });</a>
+<a name="ln1839">    if  (it != end(_holy_upgrades))</a>
+<a name="ln1840">    {</a>
+<a name="ln1841">        item.sub_type = it-&gt;first;</a>
+<a name="ln1842">        return true;</a>
+<a name="ln1843">    }</a>
+<a name="ln1844"> </a>
+<a name="ln1845">    return false;</a>
+<a name="ln1846">}</a>
+<a name="ln1847"> </a>
+<a name="ln1848">bool is_brandable_weapon(const item_def &amp;wpn, bool allow_ranged, bool divine)</a>
+<a name="ln1849">{</a>
+<a name="ln1850">    if (wpn.base_type != OBJ_WEAPONS)</a>
+<a name="ln1851">        return false;</a>
+<a name="ln1852"> </a>
+<a name="ln1853">    if (is_artefact(wpn))</a>
+<a name="ln1854">        return false;</a>
+<a name="ln1855"> </a>
+<a name="ln1856">    if (!allow_ranged &amp;&amp; is_range_weapon(wpn)</a>
+<a name="ln1857">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1858">        || wpn.sub_type == WPN_BLOWGUN</a>
+<a name="ln1859">#endif</a>
+<a name="ln1860">       )</a>
+<a name="ln1861">    {</a>
+<a name="ln1862">        return false;</a>
+<a name="ln1863">    }</a>
+<a name="ln1864"> </a>
+<a name="ln1865">    // Only gods can rebrand blessed weapons, and they revert back to their</a>
+<a name="ln1866">    // old base type in the process.</a>
+<a name="ln1867">    if (is_blessed(wpn) &amp;&amp; !divine)</a>
+<a name="ln1868">        return false;</a>
+<a name="ln1869"> </a>
+<a name="ln1870">    return true;</a>
+<a name="ln1871">}</a>
+<a name="ln1872"> </a>
+<a name="ln1873">/**</a>
+<a name="ln1874"> * Returns the skill used by the given item to attack.</a>
+<a name="ln1875"> *</a>
+<a name="ln1876"> * @param item  The item under consideration.</a>
+<a name="ln1877"> * @return      The skill used to attack with the given item; defaults to</a>
+<a name="ln1878"> *              SK_FIGHTING if no melee or ranged skill applies.</a>
+<a name="ln1879"> */</a>
+<a name="ln1880">skill_type item_attack_skill(const item_def &amp;item)</a>
+<a name="ln1881">{</a>
+<a name="ln1882">    if (item.base_type == OBJ_WEAPONS)</a>
+<a name="ln1883">        return Weapon_prop[ Weapon_index[item.sub_type] ].skill;</a>
+<a name="ln1884">    else if (item.base_type == OBJ_STAVES)</a>
+<a name="ln1885">        return SK_STAVES;</a>
+<a name="ln1886">    else if (item.base_type == OBJ_MISSILES &amp;&amp; !has_launcher(item))</a>
+<a name="ln1887">        return SK_THROWING;</a>
+<a name="ln1888"> </a>
+<a name="ln1889">    // This is used to mark that only fighting applies.</a>
+<a name="ln1890">    return SK_FIGHTING;</a>
+<a name="ln1891">}</a>
+<a name="ln1892"> </a>
+<a name="ln1893">/**</a>
+<a name="ln1894"> * Returns the skill used by the given item type to attack.</a>
+<a name="ln1895"> *</a>
+<a name="ln1896"> * @param wclass  The item base type under consideration.</a>
+<a name="ln1897"> * @param wtype   The item subtype under consideration.</a>
+<a name="ln1898"> * @return      The skill used to attack with the given item type; defaults to</a>
+<a name="ln1899"> *              SK_FIGHTING if no melee skill applies.</a>
+<a name="ln1900"> */</a>
+<a name="ln1901">skill_type item_attack_skill(object_class_type wclass, int wtype)</a>
+<a name="ln1902">{</a>
+<a name="ln1903">    item_def    wpn;</a>
+<a name="ln1904"> </a>
+<a name="ln1905">    wpn.base_type = wclass;</a>
+<a name="ln1906">    wpn.sub_type = wtype;</a>
+<a name="ln1907"> </a>
+<a name="ln1908">    return item_attack_skill(wpn);</a>
+<a name="ln1909">}</a>
+<a name="ln1910"> </a>
+<a name="ln1911">// True if item is a staff that deals extra damage based on Evocations skill.</a>
+<a name="ln1912">bool staff_uses_evocations(const item_def &amp;item)</a>
+<a name="ln1913">{</a>
+<a name="ln1914">    if (is_unrandom_artefact(item, UNRAND_ELEMENTAL_STAFF)</a>
+<a name="ln1915">        || is_unrandom_artefact(item, UNRAND_OLGREB))</a>
+<a name="ln1916">    {</a>
+<a name="ln1917">        return true;</a>
+<a name="ln1918">    }</a>
+<a name="ln1919"> </a>
+<a name="ln1920">    if (!item_type_known(item) || item.base_type != OBJ_STAVES)</a>
+<a name="ln1921">        return false;</a>
+<a name="ln1922"> </a>
+<a name="ln1923">    switch (item.sub_type)</a>
+<a name="ln1924">    {</a>
+<a name="ln1925">    case STAFF_FIRE:</a>
+<a name="ln1926">    case STAFF_COLD:</a>
+<a name="ln1927">    case STAFF_POISON:</a>
+<a name="ln1928">    case STAFF_DEATH:</a>
+<a name="ln1929">    case STAFF_AIR:</a>
+<a name="ln1930">    case STAFF_EARTH:</a>
+<a name="ln1931">        return true;</a>
+<a name="ln1932">    default:</a>
+<a name="ln1933">        return false;</a>
+<a name="ln1934">    }</a>
+<a name="ln1935">}</a>
+<a name="ln1936"> </a>
+<a name="ln1937">bool item_skills(const item_def &amp;item, set&lt;skill_type&gt; &amp;skills)</a>
+<a name="ln1938">{</a>
+<a name="ln1939">    if (item.is_type(OBJ_BOOKS, BOOK_MANUAL))</a>
+<a name="ln1940">    {</a>
+<a name="ln1941">        const skill_type skill = static_cast&lt;skill_type&gt;(item.plus);</a>
+<a name="ln1942">        if (training_restricted(skill))</a>
+<a name="ln1943">            skills.insert(skill);</a>
+<a name="ln1944">    }</a>
+<a name="ln1945"> </a>
+<a name="ln1946">    // Jewellery with evokable abilities, wands and similar unwielded</a>
+<a name="ln1947">    // evokers allow training.</a>
+<a name="ln1948">    if (item_is_evokable(item, false, false, false, true)</a>
+<a name="ln1949">        || item.base_type == OBJ_JEWELLERY &amp;&amp; gives_ability(item))</a>
+<a name="ln1950">    {</a>
+<a name="ln1951">        skills.insert(SK_EVOCATIONS);</a>
+<a name="ln1952">    }</a>
+<a name="ln1953"> </a>
+<a name="ln1954">    // Shields and abilities on armours allow training as long as your species</a>
+<a name="ln1955">    // can wear them.</a>
+<a name="ln1956">    if (item.base_type == OBJ_ARMOUR &amp;&amp; can_wear_armour(item, false, true))</a>
+<a name="ln1957">    {</a>
+<a name="ln1958">        if (is_shield(item))</a>
+<a name="ln1959">            skills.insert(SK_SHIELDS);</a>
+<a name="ln1960"> </a>
+<a name="ln1961">        if (gives_ability(item))</a>
+<a name="ln1962">            skills.insert(SK_EVOCATIONS);</a>
+<a name="ln1963">    }</a>
+<a name="ln1964"> </a>
+<a name="ln1965">    // Weapons and staves allow training as long as your species can wield them.</a>
+<a name="ln1966">    if (!you.could_wield(item, true, true))</a>
+<a name="ln1967">        return !skills.empty();</a>
+<a name="ln1968"> </a>
+<a name="ln1969">    if (item_is_evokable(item, false, false, false, false)</a>
+<a name="ln1970">        || staff_uses_evocations(item)</a>
+<a name="ln1971">        || item.base_type == OBJ_WEAPONS &amp;&amp; gives_ability(item))</a>
+<a name="ln1972">    {</a>
+<a name="ln1973">        skills.insert(SK_EVOCATIONS);</a>
+<a name="ln1974">    }</a>
+<a name="ln1975"> </a>
+<a name="ln1976">    skill_type sk = item_attack_skill(item);</a>
+<a name="ln1977">    if (sk != SK_FIGHTING &amp;&amp; sk != SK_THROWING)</a>
+<a name="ln1978">        skills.insert(sk);</a>
+<a name="ln1979"> </a>
+<a name="ln1980">    return !skills.empty();</a>
+<a name="ln1981">}</a>
+<a name="ln1982"> </a>
+<a name="ln1983">/**</a>
+<a name="ln1984"> * Checks if the provided weapon is wieldable by a creature of the given size.</a>
+<a name="ln1985"> *</a>
+<a name="ln1986"> * @param item      The weapon in question.</a>
+<a name="ln1987"> * @param size      The size of the creature trying to wield the weapon.</a>
+<a name="ln1988"> * @return          Whether a creature of the given size can wield the weapon.</a>
+<a name="ln1989"> */</a>
+<a name="ln1990">bool is_weapon_wieldable(const item_def &amp;item, size_type size)</a>
+<a name="ln1991">{</a>
+<a name="ln1992">    ASSERT(is_weapon(item));</a>
+<a name="ln1993"> </a>
+<a name="ln1994">    const int subtype = OBJ_STAVES == item.base_type ? int{WPN_STAFF}</a>
+<a name="ln1995">                                                     : item.sub_type;</a>
+<a name="ln1996">    return Weapon_prop[Weapon_index[subtype]].min_2h_size &lt;= size;</a>
+<a name="ln1997">}</a>
+<a name="ln1998"> </a>
+<a name="ln1999">//</a>
+<a name="ln2000">// Launcher and ammo functions:</a>
+<a name="ln2001">//</a>
+<a name="ln2002">missile_type fires_ammo_type(const item_def &amp;item)</a>
+<a name="ln2003">{</a>
+<a name="ln2004">    if (item.base_type != OBJ_WEAPONS)</a>
+<a name="ln2005">        return MI_NONE;</a>
+<a name="ln2006"> </a>
+<a name="ln2007">    return Weapon_prop[Weapon_index[item.sub_type]].ammo;</a>
+<a name="ln2008">}</a>
+<a name="ln2009"> </a>
+<a name="ln2010">bool is_range_weapon(const item_def &amp;item)</a>
+<a name="ln2011">{</a>
+<a name="ln2012">    return is_weapon(item) &amp;&amp; is_ranged_weapon_type(item.sub_type);</a>
+<a name="ln2013">}</a>
+<a name="ln2014"> </a>
+<a name="ln2015">const char *ammo_name(missile_type ammo)</a>
+<a name="ln2016">{</a>
+<a name="ln2017">    return ammo &lt; 0 || ammo &gt;= NUM_MISSILES ? &quot;eggplant&quot;</a>
+<a name="ln2018">           : Missile_prop[ Missile_index[ammo] ].name;</a>
+<a name="ln2019">}</a>
+<a name="ln2020"> </a>
+<a name="ln2021">const char *ammo_name(const item_def &amp;bow)</a>
+<a name="ln2022">{</a>
+<a name="ln2023">    ASSERT(is_range_weapon(bow));</a>
+<a name="ln2024">    return ammo_name(fires_ammo_type(bow));</a>
+<a name="ln2025">}</a>
+<a name="ln2026"> </a>
+<a name="ln2027">const char *ammo_name(const weapon_type bow)</a>
+<a name="ln2028">{</a>
+<a name="ln2029">    missile_type mi = Weapon_prop[Weapon_index[bow]].ammo;</a>
+<a name="ln2030">    ASSERT(mi != MI_NONE);</a>
+<a name="ln2031">    return ammo_name(mi);</a>
+<a name="ln2032">}</a>
+<a name="ln2033"> </a>
+<a name="ln2034">// Returns true if item has an associated launcher.</a>
+<a name="ln2035">bool has_launcher(const item_def &amp;ammo)</a>
+<a name="ln2036">{</a>
+<a name="ln2037">    ASSERT(ammo.base_type == OBJ_MISSILES);</a>
+<a name="ln2038">    return ammo.sub_type != MI_LARGE_ROCK</a>
+<a name="ln2039">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2040">           &amp;&amp; ammo.sub_type != MI_DART</a>
+<a name="ln2041">#endif</a>
+<a name="ln2042">           &amp;&amp; ammo.sub_type != MI_JAVELIN</a>
+<a name="ln2043">           &amp;&amp; ammo.sub_type != MI_BOOMERANG</a>
+<a name="ln2044">           &amp;&amp; ammo.sub_type != MI_THROWING_NET;</a>
+<a name="ln2045">}</a>
+<a name="ln2046"> </a>
+<a name="ln2047">// Returns true if item can be reasonably thrown without a launcher.</a>
+<a name="ln2048">bool is_throwable(const actor *actor, const item_def &amp;wpn, bool force)</a>
+<a name="ln2049">{</a>
+<a name="ln2050">    if (wpn.base_type != OBJ_MISSILES)</a>
+<a name="ln2051">        return false;</a>
+<a name="ln2052"> </a>
+<a name="ln2053">    const size_type bodysize = actor-&gt;body_size();</a>
+<a name="ln2054"> </a>
+<a name="ln2055">    if (!force)</a>
+<a name="ln2056">    {</a>
+<a name="ln2057">        if (wpn.sub_type == MI_LARGE_ROCK)</a>
+<a name="ln2058">            return actor-&gt;can_throw_large_rocks();</a>
+<a name="ln2059"> </a>
+<a name="ln2060">        if (bodysize &lt; SIZE_MEDIUM</a>
+<a name="ln2061">            &amp;&amp; wpn.sub_type == MI_JAVELIN)</a>
+<a name="ln2062">        {</a>
+<a name="ln2063">            return false;</a>
+<a name="ln2064">        }</a>
+<a name="ln2065">    }</a>
+<a name="ln2066"> </a>
+<a name="ln2067">    return Missile_prop[Missile_index[wpn.sub_type]].throwable;</a>
+<a name="ln2068">}</a>
+<a name="ln2069"> </a>
+<a name="ln2070">// Decide if something is launched or thrown.</a>
+<a name="ln2071">launch_retval is_launched(const actor *actor, const item_def *launcher,</a>
+<a name="ln2072">                          const item_def &amp;missile)</a>
+<a name="ln2073">{</a>
+<a name="ln2074">    if (missile.base_type != OBJ_MISSILES)</a>
+<a name="ln2075">        return launch_retval::FUMBLED;</a>
+<a name="ln2076"> </a>
+<a name="ln2077">    if (launcher &amp;&amp; missile.launched_by(*launcher))</a>
+<a name="ln2078">        return launch_retval::LAUNCHED;</a>
+<a name="ln2079"> </a>
+<a name="ln2080">    return is_throwable(actor, missile) ? launch_retval::THROWN : launch_retval::FUMBLED;</a>
+<a name="ln2081">}</a>
+<a name="ln2082"> </a>
+<a name="ln2083"> </a>
+<a name="ln2084">/**</a>
+<a name="ln2085"> * Returns whether a given missile will always destroyed on impact.</a>
+<a name="ln2086"> *</a>
+<a name="ln2087"> * @param missile      The missile in question.</a>
+<a name="ln2088"> * @return             Whether the missile should always be destroyed on</a>
+<a name="ln2089"> *                     impact.</a>
+<a name="ln2090"> */</a>
+<a name="ln2091">bool ammo_always_destroyed(const item_def &amp;missile)</a>
+<a name="ln2092">{</a>
+<a name="ln2093">    const int brand = get_ammo_brand(missile);</a>
+<a name="ln2094">    return brand == SPMSL_CHAOS</a>
+<a name="ln2095">           || brand == SPMSL_DISPERSAL</a>
+<a name="ln2096">           || brand == SPMSL_EXPLODING;</a>
+<a name="ln2097">}</a>
+<a name="ln2098"> </a>
+<a name="ln2099">/**</a>
+<a name="ln2100"> * Returns whether a given missile will never destroyed on impact.</a>
+<a name="ln2101"> *</a>
+<a name="ln2102"> * @param missile      The missile in question.</a>
+<a name="ln2103"> * @return             Whether the missile should never be destroyed on impact.</a>
+<a name="ln2104"> */</a>
+<a name="ln2105">bool ammo_never_destroyed(const item_def &amp;missile)</a>
+<a name="ln2106">{</a>
+<a name="ln2107">    return missile.sub_type == MI_THROWING_NET;</a>
+<a name="ln2108">}</a>
+<a name="ln2109"> </a>
+<a name="ln2110">/**</a>
+<a name="ln2111"> * Returns the one_chance_in for a missile type for be destroyed on impact.</a>
+<a name="ln2112"> *</a>
+<a name="ln2113"> * @param missile_type      The missile type to get the mulch chance for.</a>
+<a name="ln2114"> * @return                  The inverse of the missile type's mulch chance.</a>
+<a name="ln2115"> */</a>
+<a name="ln2116">int ammo_type_destroy_chance(int missile_type)</a>
+<a name="ln2117">{</a>
+<a name="ln2118">    return Missile_prop[ Missile_index[missile_type] ].mulch_rate;</a>
+<a name="ln2119">}</a>
+<a name="ln2120"> </a>
+<a name="ln2121">/**</a>
+<a name="ln2122"> * Returns the base damage of a given item type.</a>
+<a name="ln2123"> *</a>
+<a name="ln2124"> * @param missile_type      The missile type to get the damage for.</a>
+<a name="ln2125"> * @return                  The base damage of the given missile type.</a>
+<a name="ln2126"> */</a>
+<a name="ln2127">int ammo_type_damage(int missile_type)</a>
+<a name="ln2128">{</a>
+<a name="ln2129">    return Missile_prop[ Missile_index[missile_type] ].dam;</a>
+<a name="ln2130">}</a>
+<a name="ln2131"> </a>
+<a name="ln2132"> </a>
+<a name="ln2133">//</a>
+<a name="ln2134">// Reaching functions:</a>
+<a name="ln2135">//</a>
+<a name="ln2136">reach_type weapon_reach(const item_def &amp;item)</a>
+<a name="ln2137">{</a>
+<a name="ln2138">    if (is_unrandom_artefact(item, UNRAND_RIFT))</a>
+<a name="ln2139">        return REACH_THREE;</a>
+<a name="ln2140">    if (item_attack_skill(item) == SK_POLEARMS)</a>
+<a name="ln2141">        return REACH_TWO;</a>
+<a name="ln2142">    return REACH_NONE;</a>
+<a name="ln2143">}</a>
+<a name="ln2144"> </a>
+<a name="ln2145">//</a>
+<a name="ln2146">// Macguffins</a>
+<a name="ln2147">//</a>
+<a name="ln2148">bool item_is_unique_rune(const item_def &amp;item)</a>
+<a name="ln2149">{</a>
+<a name="ln2150">    return item.base_type == OBJ_RUNES</a>
+<a name="ln2151">           &amp;&amp; item.sub_type != RUNE_DEMONIC</a>
+<a name="ln2152">           &amp;&amp; item.sub_type != RUNE_ABYSSAL;</a>
+<a name="ln2153">}</a>
+<a name="ln2154"> </a>
+<a name="ln2155">bool item_is_orb(const item_def &amp;item)</a>
+<a name="ln2156">{</a>
+<a name="ln2157">    return item.is_type(OBJ_ORBS, ORB_ZOT);</a>
+<a name="ln2158">}</a>
+<a name="ln2159"> </a>
+<a name="ln2160">bool item_is_horn_of_geryon(const item_def &amp;item)</a>
+<a name="ln2161">{</a>
+<a name="ln2162">    return item.is_type(OBJ_MISCELLANY, MISC_HORN_OF_GERYON);</a>
+<a name="ln2163">}</a>
+<a name="ln2164"> </a>
+<a name="ln2165">bool item_is_spellbook(const item_def &amp;item)</a>
+<a name="ln2166">{</a>
+<a name="ln2167">    return item.base_type == OBJ_BOOKS</a>
+<a name="ln2168">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2169">           &amp;&amp; item.sub_type != BOOK_BUGGY_DESTRUCTION</a>
+<a name="ln2170">#endif</a>
+<a name="ln2171">           &amp;&amp; item.sub_type != BOOK_MANUAL;</a>
+<a name="ln2172">}</a>
+<a name="ln2173"> </a>
+<a name="ln2174">//</a>
+<a name="ln2175">// Ring functions:</a>
+<a name="ln2176"> </a>
+<a name="ln2177">// Returns whether jewellery has plusses.</a>
+<a name="ln2178">bool jewellery_has_pluses(const item_def &amp;item)</a>
+<a name="ln2179">{</a>
+<a name="ln2180">    ASSERT(item.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2181"> </a>
+<a name="ln2182">    // not known -&gt; no plusses</a>
+<a name="ln2183">    if (!item_type_known(item))</a>
+<a name="ln2184">        return false;</a>
+<a name="ln2185"> </a>
+<a name="ln2186">    switch (item.sub_type)</a>
+<a name="ln2187">    {</a>
+<a name="ln2188">    case RING_SLAYING:</a>
+<a name="ln2189">    case RING_PROTECTION:</a>
+<a name="ln2190">    case RING_EVASION:</a>
+<a name="ln2191">    case RING_STRENGTH:</a>
+<a name="ln2192">    case RING_INTELLIGENCE:</a>
+<a name="ln2193">    case RING_DEXTERITY:</a>
+<a name="ln2194">    case AMU_REFLECTION:</a>
+<a name="ln2195">        return true;</a>
+<a name="ln2196"> </a>
+<a name="ln2197">    default:</a>
+<a name="ln2198">        break;</a>
+<a name="ln2199">    }</a>
+<a name="ln2200"> </a>
+<a name="ln2201">    return false;</a>
+<a name="ln2202">}</a>
+<a name="ln2203"> </a>
+<a name="ln2204">// Returns true if having two rings of the same type on at the same</a>
+<a name="ln2205">// has more effect than just having one on.</a>
+<a name="ln2206">bool ring_has_stackable_effect(const item_def &amp;item)</a>
+<a name="ln2207">{</a>
+<a name="ln2208">    ASSERT(item.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2209">    ASSERT(!jewellery_is_amulet(item));</a>
+<a name="ln2210"> </a>
+<a name="ln2211">    if (!item_type_known(item))</a>
+<a name="ln2212">        return false;</a>
+<a name="ln2213"> </a>
+<a name="ln2214">    if (jewellery_has_pluses(item))</a>
+<a name="ln2215">        return true;</a>
+<a name="ln2216"> </a>
+<a name="ln2217">    switch (item.sub_type)</a>
+<a name="ln2218">    {</a>
+<a name="ln2219">    case RING_PROTECTION_FROM_FIRE:</a>
+<a name="ln2220">    case RING_PROTECTION_FROM_COLD:</a>
+<a name="ln2221">    case RING_LIFE_PROTECTION:</a>
+<a name="ln2222">    case RING_STEALTH:</a>
+<a name="ln2223">    case RING_ATTENTION:</a>
+<a name="ln2224">    case RING_WIZARDRY:</a>
+<a name="ln2225">    case RING_FIRE:</a>
+<a name="ln2226">    case RING_ICE:</a>
+<a name="ln2227">        return true;</a>
+<a name="ln2228"> </a>
+<a name="ln2229">    default:</a>
+<a name="ln2230">        break;</a>
+<a name="ln2231">    }</a>
+<a name="ln2232"> </a>
+<a name="ln2233">    return false;</a>
+<a name="ln2234">}</a>
+<a name="ln2235"> </a>
+<a name="ln2236">//</a>
+<a name="ln2237">// Food functions:</a>
+<a name="ln2238">//</a>
+<a name="ln2239">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2240">bool is_real_food(food_type food)</a>
+<a name="ln2241">{</a>
+<a name="ln2242">    return food &lt; NUM_FOODS &amp;&amp; Food_index[food] &lt; Food_index[FOOD_UNUSED];</a>
+<a name="ln2243">}</a>
+<a name="ln2244">#endif</a>
+<a name="ln2245"> </a>
+<a name="ln2246">bool food_is_meaty(int food_type)</a>
+<a name="ln2247">{</a>
+<a name="ln2248">    ASSERTM(food_type &gt;= 0 &amp;&amp; food_type &lt; NUM_FOODS,</a>
+<a name="ln2249">            &quot;Bad food type %d (NUM_FOODS = %d)&quot;,</a>
+<a name="ln2250">            food_type, NUM_FOODS);</a>
+<a name="ln2251"> </a>
+<a name="ln2252">    return Food_prop[Food_index[food_type]].herb_nutr == 0;</a>
+<a name="ln2253">}</a>
+<a name="ln2254"> </a>
+<a name="ln2255">bool food_is_meaty(const item_def &amp;item)</a>
+<a name="ln2256">{</a>
+<a name="ln2257">    if (item.base_type != OBJ_FOOD)</a>
+<a name="ln2258">        return false;</a>
+<a name="ln2259"> </a>
+<a name="ln2260">    return food_is_meaty(item.sub_type);</a>
+<a name="ln2261">}</a>
+<a name="ln2262"> </a>
+<a name="ln2263">int food_value(const item_def &amp;item)</a>
+<a name="ln2264">{</a>
+<a name="ln2265">    ASSERT(item.defined() &amp;&amp; item.base_type == OBJ_FOOD);</a>
+<a name="ln2266"> </a>
+<a name="ln2267">    const food_def &amp;food = Food_prop[Food_index[item.sub_type]];</a>
+<a name="ln2268"> </a>
+<a name="ln2269">    return you.get_mutation_level(MUT_HERBIVOROUS) &gt; 0 ? food.herb_nutr</a>
+<a name="ln2270">         : you.get_mutation_level(MUT_CARNIVOROUS) &gt; 0 ? food.carn_nutr</a>
+<a name="ln2271">                                                       : food.normal_nutr;</a>
+<a name="ln2272">}</a>
+<a name="ln2273"> </a>
+<a name="ln2274">//</a>
+<a name="ln2275">// Generic item functions:</a>
+<a name="ln2276">//</a>
+<a name="ln2277">int get_armour_res_fire(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2278">{</a>
+<a name="ln2279">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2280"> </a>
+<a name="ln2281">    int res = 0;</a>
+<a name="ln2282"> </a>
+<a name="ln2283">    // intrinsic armour abilities</a>
+<a name="ln2284">    res += armour_type_prop(arm.sub_type, ARMF_RES_FIRE);</a>
+<a name="ln2285"> </a>
+<a name="ln2286">    // check ego resistance</a>
+<a name="ln2287">    const int ego = get_armour_ego_type(arm);</a>
+<a name="ln2288">    if (ego == SPARM_FIRE_RESISTANCE || ego == SPARM_RESISTANCE)</a>
+<a name="ln2289">        res += 1;</a>
+<a name="ln2290"> </a>
+<a name="ln2291">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2292">        res += artefact_property(arm, ARTP_FIRE);</a>
+<a name="ln2293"> </a>
+<a name="ln2294">    return res;</a>
+<a name="ln2295">}</a>
+<a name="ln2296"> </a>
+<a name="ln2297">int get_armour_res_cold(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2298">{</a>
+<a name="ln2299">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2300"> </a>
+<a name="ln2301">    int res = 0;</a>
+<a name="ln2302"> </a>
+<a name="ln2303">    // intrinsic armour abilities</a>
+<a name="ln2304">    res += armour_type_prop(arm.sub_type, ARMF_RES_COLD);</a>
+<a name="ln2305"> </a>
+<a name="ln2306">    // check ego resistance</a>
+<a name="ln2307">    const int ego = get_armour_ego_type(arm);</a>
+<a name="ln2308">    if (ego == SPARM_COLD_RESISTANCE || ego == SPARM_RESISTANCE)</a>
+<a name="ln2309">        res += 1;</a>
+<a name="ln2310"> </a>
+<a name="ln2311">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2312">        res += artefact_property(arm, ARTP_COLD);</a>
+<a name="ln2313"> </a>
+<a name="ln2314">    return res;</a>
+<a name="ln2315">}</a>
+<a name="ln2316"> </a>
+<a name="ln2317">int get_armour_res_poison(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2318">{</a>
+<a name="ln2319">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2320"> </a>
+<a name="ln2321">    int res = 0;</a>
+<a name="ln2322"> </a>
+<a name="ln2323">    // intrinsic armour abilities</a>
+<a name="ln2324">    res += armour_type_prop(arm.sub_type, ARMF_RES_POISON);</a>
+<a name="ln2325"> </a>
+<a name="ln2326">    // check ego resistance</a>
+<a name="ln2327">    if (get_armour_ego_type(arm) == SPARM_POISON_RESISTANCE)</a>
+<a name="ln2328">        res += 1;</a>
+<a name="ln2329"> </a>
+<a name="ln2330">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2331">        res += artefact_property(arm, ARTP_POISON);</a>
+<a name="ln2332"> </a>
+<a name="ln2333">    return res;</a>
+<a name="ln2334">}</a>
+<a name="ln2335"> </a>
+<a name="ln2336">int get_armour_res_elec(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2337">{</a>
+<a name="ln2338">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2339"> </a>
+<a name="ln2340">    int res = 0;</a>
+<a name="ln2341"> </a>
+<a name="ln2342">    // intrinsic armour abilities</a>
+<a name="ln2343">    res += armour_type_prop(arm.sub_type, ARMF_RES_ELEC);</a>
+<a name="ln2344"> </a>
+<a name="ln2345">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2346">        res += artefact_property(arm, ARTP_ELECTRICITY);</a>
+<a name="ln2347"> </a>
+<a name="ln2348">    return res;</a>
+<a name="ln2349">}</a>
+<a name="ln2350"> </a>
+<a name="ln2351">int get_armour_life_protection(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2352">{</a>
+<a name="ln2353">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2354"> </a>
+<a name="ln2355">    int res = 0;</a>
+<a name="ln2356"> </a>
+<a name="ln2357">    // intrinsic armour abilities</a>
+<a name="ln2358">    res += armour_type_prop(arm.sub_type, ARMF_RES_NEG);</a>
+<a name="ln2359"> </a>
+<a name="ln2360">    // check for ego resistance</a>
+<a name="ln2361">    if (get_armour_ego_type(arm) == SPARM_POSITIVE_ENERGY)</a>
+<a name="ln2362">        res += 1;</a>
+<a name="ln2363"> </a>
+<a name="ln2364">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2365">        res += artefact_property(arm, ARTP_NEGATIVE_ENERGY);</a>
+<a name="ln2366"> </a>
+<a name="ln2367">    return res;</a>
+<a name="ln2368">}</a>
+<a name="ln2369"> </a>
+<a name="ln2370">int get_armour_res_magic(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2371">{</a>
+<a name="ln2372">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2373"> </a>
+<a name="ln2374">    int res = 0;</a>
+<a name="ln2375"> </a>
+<a name="ln2376">    // intrinsic armour abilities</a>
+<a name="ln2377">    res += armour_type_prop(arm.sub_type, ARMF_RES_MAGIC) * MR_PIP;</a>
+<a name="ln2378"> </a>
+<a name="ln2379">    // check for ego resistance</a>
+<a name="ln2380">    if (get_armour_ego_type(arm) == SPARM_MAGIC_RESISTANCE)</a>
+<a name="ln2381">        res += MR_PIP;</a>
+<a name="ln2382"> </a>
+<a name="ln2383">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2384">        res += MR_PIP * artefact_property(arm, ARTP_MAGIC_RESISTANCE);</a>
+<a name="ln2385"> </a>
+<a name="ln2386">    return res;</a>
+<a name="ln2387">}</a>
+<a name="ln2388"> </a>
+<a name="ln2389">bool get_armour_see_invisible(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2390">{</a>
+<a name="ln2391">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2392"> </a>
+<a name="ln2393">    // check for ego resistance</a>
+<a name="ln2394">    if (get_armour_ego_type(arm) == SPARM_SEE_INVISIBLE)</a>
+<a name="ln2395">        return true;</a>
+<a name="ln2396"> </a>
+<a name="ln2397">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2398">        return artefact_property(arm, ARTP_SEE_INVISIBLE);</a>
+<a name="ln2399"> </a>
+<a name="ln2400">    return false;</a>
+<a name="ln2401">}</a>
+<a name="ln2402"> </a>
+<a name="ln2403">int get_armour_res_corr(const item_def &amp;arm)</a>
+<a name="ln2404">{</a>
+<a name="ln2405">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2406"> </a>
+<a name="ln2407">    // intrinsic armour abilities</a>
+<a name="ln2408">    return armour_type_prop(arm.sub_type, ARMF_RES_CORR);</a>
+<a name="ln2409">}</a>
+<a name="ln2410"> </a>
+<a name="ln2411">int get_armour_repel_missiles(const item_def &amp;arm, bool check_artp)</a>
+<a name="ln2412">{</a>
+<a name="ln2413">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2414"> </a>
+<a name="ln2415">    // check for ego resistance</a>
+<a name="ln2416">    if (get_armour_ego_type(arm) == SPARM_REPULSION)</a>
+<a name="ln2417">        return true;</a>
+<a name="ln2418"> </a>
+<a name="ln2419">    if (check_artp &amp;&amp; is_artefact(arm))</a>
+<a name="ln2420">        return artefact_property(arm, ARTP_RMSL);</a>
+<a name="ln2421"> </a>
+<a name="ln2422">    return false;</a>
+<a name="ln2423">}</a>
+<a name="ln2424"> </a>
+<a name="ln2425">int get_armour_cloud_immunity(const item_def &amp;arm)</a>
+<a name="ln2426">{</a>
+<a name="ln2427">    ASSERT(arm.base_type == OBJ_ARMOUR);</a>
+<a name="ln2428"> </a>
+<a name="ln2429">    if (get_armour_ego_type(arm) == SPARM_CLOUD_IMMUNE)</a>
+<a name="ln2430">        return true;</a>
+<a name="ln2431"> </a>
+<a name="ln2432">    return false;</a>
+<a name="ln2433">}</a>
+<a name="ln2434"> </a>
+<a name="ln2435">int get_jewellery_res_fire(const item_def &amp;ring, bool check_artp)</a>
+<a name="ln2436">{</a>
+<a name="ln2437">    ASSERT(ring.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2438"> </a>
+<a name="ln2439">    int res = 0;</a>
+<a name="ln2440"> </a>
+<a name="ln2441">    // intrinsic jewellery abilities</a>
+<a name="ln2442">    switch (ring.sub_type)</a>
+<a name="ln2443">    {</a>
+<a name="ln2444">    case RING_PROTECTION_FROM_FIRE:</a>
+<a name="ln2445">    case RING_FIRE:</a>
+<a name="ln2446">        res += 1;</a>
+<a name="ln2447">        break;</a>
+<a name="ln2448">    case RING_ICE:</a>
+<a name="ln2449">        res -= 1;</a>
+<a name="ln2450">        break;</a>
+<a name="ln2451">    default:</a>
+<a name="ln2452">        break;</a>
+<a name="ln2453">    }</a>
+<a name="ln2454"> </a>
+<a name="ln2455">    if (check_artp &amp;&amp; is_artefact(ring))</a>
+<a name="ln2456">        res += artefact_property(ring, ARTP_FIRE);</a>
+<a name="ln2457"> </a>
+<a name="ln2458">    return res;</a>
+<a name="ln2459">}</a>
+<a name="ln2460"> </a>
+<a name="ln2461">int get_jewellery_res_cold(const item_def &amp;ring, bool check_artp)</a>
+<a name="ln2462">{</a>
+<a name="ln2463">    ASSERT(ring.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2464"> </a>
+<a name="ln2465">    int res = 0;</a>
+<a name="ln2466"> </a>
+<a name="ln2467">    // intrinsic jewellery abilities</a>
+<a name="ln2468">    switch (ring.sub_type)</a>
+<a name="ln2469">    {</a>
+<a name="ln2470">    case RING_PROTECTION_FROM_COLD:</a>
+<a name="ln2471">    case RING_ICE:</a>
+<a name="ln2472">        res += 1;</a>
+<a name="ln2473">        break;</a>
+<a name="ln2474">    case RING_FIRE:</a>
+<a name="ln2475">        res -= 1;</a>
+<a name="ln2476">        break;</a>
+<a name="ln2477">    default:</a>
+<a name="ln2478">        break;</a>
+<a name="ln2479">    }</a>
+<a name="ln2480"> </a>
+<a name="ln2481">    if (check_artp &amp;&amp; is_artefact(ring))</a>
+<a name="ln2482">        res += artefact_property(ring, ARTP_COLD);</a>
+<a name="ln2483"> </a>
+<a name="ln2484">    return res;</a>
+<a name="ln2485">}</a>
+<a name="ln2486"> </a>
+<a name="ln2487">int get_jewellery_res_poison(const item_def &amp;ring, bool check_artp)</a>
+<a name="ln2488">{</a>
+<a name="ln2489">    ASSERT(ring.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2490"> </a>
+<a name="ln2491">    int res = 0;</a>
+<a name="ln2492"> </a>
+<a name="ln2493">    if (ring.sub_type == RING_POISON_RESISTANCE)</a>
+<a name="ln2494">        res += 1;</a>
+<a name="ln2495"> </a>
+<a name="ln2496">    if (check_artp &amp;&amp; is_artefact(ring))</a>
+<a name="ln2497">        res += artefact_property(ring, ARTP_POISON);</a>
+<a name="ln2498"> </a>
+<a name="ln2499">    return res;</a>
+<a name="ln2500">}</a>
+<a name="ln2501"> </a>
+<a name="ln2502">int get_jewellery_res_elec(const item_def &amp;ring, bool check_artp)</a>
+<a name="ln2503">{</a>
+<a name="ln2504">    ASSERT(ring.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2505"> </a>
+<a name="ln2506">    int res = 0;</a>
+<a name="ln2507"> </a>
+<a name="ln2508">    if (check_artp &amp;&amp; is_artefact(ring))</a>
+<a name="ln2509">        res += artefact_property(ring, ARTP_ELECTRICITY);</a>
+<a name="ln2510"> </a>
+<a name="ln2511">    return res;</a>
+<a name="ln2512">}</a>
+<a name="ln2513"> </a>
+<a name="ln2514">int get_jewellery_life_protection(const item_def &amp;ring, bool check_artp)</a>
+<a name="ln2515">{</a>
+<a name="ln2516">    ASSERT(ring.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2517"> </a>
+<a name="ln2518">    int res = 0;</a>
+<a name="ln2519"> </a>
+<a name="ln2520">    // check for ego resistance</a>
+<a name="ln2521">    if (ring.sub_type == RING_LIFE_PROTECTION)</a>
+<a name="ln2522">        res += 1;</a>
+<a name="ln2523"> </a>
+<a name="ln2524">    if (check_artp &amp;&amp; is_artefact(ring))</a>
+<a name="ln2525">        res += artefact_property(ring, ARTP_NEGATIVE_ENERGY);</a>
+<a name="ln2526"> </a>
+<a name="ln2527">    return res;</a>
+<a name="ln2528">}</a>
+<a name="ln2529"> </a>
+<a name="ln2530">int get_jewellery_res_magic(const item_def &amp;ring, bool check_artp)</a>
+<a name="ln2531">{</a>
+<a name="ln2532">    ASSERT(ring.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2533"> </a>
+<a name="ln2534">    int res = 0;</a>
+<a name="ln2535"> </a>
+<a name="ln2536">    if (ring.sub_type == RING_PROTECTION_FROM_MAGIC)</a>
+<a name="ln2537">        res += 40;</a>
+<a name="ln2538"> </a>
+<a name="ln2539">    if (check_artp &amp;&amp; is_artefact(ring))</a>
+<a name="ln2540">        res += 40 * artefact_property(ring, ARTP_MAGIC_RESISTANCE);</a>
+<a name="ln2541"> </a>
+<a name="ln2542">    return res;</a>
+<a name="ln2543">}</a>
+<a name="ln2544"> </a>
+<a name="ln2545">bool get_jewellery_see_invisible(const item_def &amp;ring, bool check_artp)</a>
+<a name="ln2546">{</a>
+<a name="ln2547">    ASSERT(ring.base_type == OBJ_JEWELLERY);</a>
+<a name="ln2548"> </a>
+<a name="ln2549">    if (ring.sub_type == RING_SEE_INVISIBLE)</a>
+<a name="ln2550">        return true;</a>
+<a name="ln2551"> </a>
+<a name="ln2552">    if (check_artp &amp;&amp; is_artefact(ring))</a>
+<a name="ln2553">        return artefact_property(ring, ARTP_SEE_INVISIBLE);</a>
+<a name="ln2554"> </a>
+<a name="ln2555">    return false;</a>
+<a name="ln2556">}</a>
+<a name="ln2557"> </a>
+<a name="ln2558">int property(const item_def &amp;item, int prop_type)</a>
+<a name="ln2559">{</a>
+<a name="ln2560">    weapon_type weapon_sub;</a>
+<a name="ln2561"> </a>
+<a name="ln2562">    switch (item.base_type)</a>
+<a name="ln2563">    {</a>
+<a name="ln2564">    case OBJ_ARMOUR:</a>
+<a name="ln2565">        return armour_prop(item.sub_type, prop_type);</a>
+<a name="ln2566"> </a>
+<a name="ln2567">    case OBJ_WEAPONS:</a>
+<a name="ln2568">        if (is_unrandom_artefact(item))</a>
+<a name="ln2569">        {</a>
+<a name="ln2570">            switch (prop_type)</a>
+<a name="ln2571">            {</a>
+<a name="ln2572">            case PWPN_DAMAGE:</a>
+<a name="ln2573">                return Weapon_prop[ Weapon_index[item.sub_type] ].dam</a>
+<a name="ln2574">                       + artefact_property(item, ARTP_BASE_DAM);</a>
+<a name="ln2575">            case PWPN_HIT:</a>
+<a name="ln2576">                return Weapon_prop[ Weapon_index[item.sub_type] ].hit</a>
+<a name="ln2577">                       + artefact_property(item, ARTP_BASE_ACC);</a>
+<a name="ln2578">            case PWPN_SPEED:</a>
+<a name="ln2579">                return Weapon_prop[ Weapon_index[item.sub_type] ].speed</a>
+<a name="ln2580">                       + artefact_property(item, ARTP_BASE_DELAY);</a>
+<a name="ln2581">            }</a>
+<a name="ln2582">        }</a>
+<a name="ln2583">        if (prop_type == PWPN_DAMAGE)</a>
+<a name="ln2584">            return Weapon_prop[ Weapon_index[item.sub_type] ].dam;</a>
+<a name="ln2585">        else if (prop_type == PWPN_HIT)</a>
+<a name="ln2586">            return Weapon_prop[ Weapon_index[item.sub_type] ].hit;</a>
+<a name="ln2587">        else if (prop_type == PWPN_SPEED)</a>
+<a name="ln2588">            return Weapon_prop[ Weapon_index[item.sub_type] ].speed;</a>
+<a name="ln2589">        else if (prop_type == PWPN_ACQ_WEIGHT)</a>
+<a name="ln2590">            return Weapon_prop[ Weapon_index[item.sub_type] ].acquire_weight;</a>
+<a name="ln2591">        break;</a>
+<a name="ln2592"> </a>
+<a name="ln2593">    case OBJ_MISSILES:</a>
+<a name="ln2594">        if (prop_type == PWPN_DAMAGE)</a>
+<a name="ln2595">            return Missile_prop[ Missile_index[item.sub_type] ].dam;</a>
+<a name="ln2596">        break;</a>
+<a name="ln2597"> </a>
+<a name="ln2598">    case OBJ_STAVES:</a>
+<a name="ln2599">        weapon_sub = WPN_STAFF;</a>
+<a name="ln2600"> </a>
+<a name="ln2601">        if (prop_type == PWPN_DAMAGE)</a>
+<a name="ln2602">            return Weapon_prop[ Weapon_index[weapon_sub] ].dam;</a>
+<a name="ln2603">        else if (prop_type == PWPN_HIT)</a>
+<a name="ln2604">            return Weapon_prop[ Weapon_index[weapon_sub] ].hit;</a>
+<a name="ln2605">        else if (prop_type == PWPN_SPEED)</a>
+<a name="ln2606">            return Weapon_prop[ Weapon_index[weapon_sub] ].speed;</a>
+<a name="ln2607">        break;</a>
+<a name="ln2608"> </a>
+<a name="ln2609">    default:</a>
+<a name="ln2610">        break;</a>
+<a name="ln2611">    }</a>
+<a name="ln2612"> </a>
+<a name="ln2613">    return 0;</a>
+<a name="ln2614">}</a>
+<a name="ln2615"> </a>
+<a name="ln2616">/**</a>
+<a name="ln2617"> * Find a given property of a given armour_type.</a>
+<a name="ln2618"> *</a>
+<a name="ln2619"> * @param armour        The armour_type in question (e.g. ARM_ROBE)</a>
+<a name="ln2620"> * @param prop_type     The property being requested (e.g. PARM_AC)</a>
+<a name="ln2621"> * @return              The property value, if the prop_type is valid.</a>
+<a name="ln2622"> *                      Otherwise, 0 (!?)</a>
+<a name="ln2623"> *                      ^ hopefully never comes up...</a>
+<a name="ln2624"> */</a>
+<a name="ln2625">int armour_prop(int armour, int prop_type)</a>
+<a name="ln2626">{</a>
+<a name="ln2627">    switch (prop_type)</a>
+<a name="ln2628">    {</a>
+<a name="ln2629">        case PARM_AC:</a>
+<a name="ln2630">            return Armour_prop[ Armour_index[armour] ].ac;</a>
+<a name="ln2631">        case PARM_EVASION:</a>
+<a name="ln2632">            return Armour_prop[ Armour_index[armour] ].ev;</a>
+<a name="ln2633">        default:</a>
+<a name="ln2634">            return 0; // !?</a>
+<a name="ln2635">    }</a>
+<a name="ln2636">}</a>
+<a name="ln2637"> </a>
+<a name="ln2638">// Returns true if item is evokable.</a>
+<a name="ln2639">bool gives_ability(const item_def &amp;item)</a>
+<a name="ln2640">{</a>
+<a name="ln2641">    if (!item_type_known(item))</a>
+<a name="ln2642">        return false;</a>
+<a name="ln2643"> </a>
+<a name="ln2644">    switch (item.base_type)</a>
+<a name="ln2645">    {</a>
+<a name="ln2646">    case OBJ_WEAPONS:</a>
+<a name="ln2647">        break;</a>
+<a name="ln2648">    case OBJ_JEWELLERY:</a>
+<a name="ln2649">        if (item.sub_type == RING_FLIGHT</a>
+<a name="ln2650">            || item.sub_type == AMU_RAGE)</a>
+<a name="ln2651">        {</a>
+<a name="ln2652">            return true;</a>
+<a name="ln2653">        }</a>
+<a name="ln2654">        break;</a>
+<a name="ln2655">    case OBJ_ARMOUR:</a>
+<a name="ln2656">    {</a>
+<a name="ln2657">        const equipment_type eq = get_armour_slot(item);</a>
+<a name="ln2658">        if (eq == EQ_NONE)</a>
+<a name="ln2659">            return false;</a>
+<a name="ln2660">        const special_armour_type ego = get_armour_ego_type(item);</a>
+<a name="ln2661"> </a>
+<a name="ln2662">        if (ego == SPARM_INVISIBILITY || ego == SPARM_FLYING)</a>
+<a name="ln2663">            return true;</a>
+<a name="ln2664">        break;</a>
+<a name="ln2665">    }</a>
+<a name="ln2666">    default:</a>
+<a name="ln2667">        return false;</a>
+<a name="ln2668">    }</a>
+<a name="ln2669"> </a>
+<a name="ln2670">    if (!is_artefact(item))</a>
+<a name="ln2671">        return false;</a>
+<a name="ln2672"> </a>
+<a name="ln2673">    // Check for evokable randart properties.</a>
+<a name="ln2674">    for (int rap = ARTP_INVISIBLE; rap &lt;= ARTP_BERSERK; rap++)</a>
+<a name="ln2675">        if (artefact_property(item, static_cast&lt;artefact_prop_type&gt;(rap)))</a>
+<a name="ln2676">            return true;</a>
+<a name="ln2677"> </a>
+<a name="ln2678">    // Unrands that grant an evokable ability.</a>
+<a name="ln2679">    if (is_unrandom_artefact(item, UNRAND_THIEF)</a>
+<a name="ln2680">        || is_unrandom_artefact(item, UNRAND_RATSKIN_CLOAK)</a>
+<a name="ln2681">        || is_unrandom_artefact(item, UNRAND_RCLOUDS))</a>
+<a name="ln2682">    {</a>
+<a name="ln2683">        return true;</a>
+<a name="ln2684">    }</a>
+<a name="ln2685"> </a>
+<a name="ln2686">    return false;</a>
+<a name="ln2687">}</a>
+<a name="ln2688"> </a>
+<a name="ln2689">// Returns true if the item confers an intrinsic that is shown on the % screen.</a>
+<a name="ln2690">bool gives_resistance(const item_def &amp;item)</a>
+<a name="ln2691">{</a>
+<a name="ln2692">    if (!item_type_known(item))</a>
+<a name="ln2693">        return false;</a>
+<a name="ln2694"> </a>
+<a name="ln2695">    switch (item.base_type)</a>
+<a name="ln2696">    {</a>
+<a name="ln2697">    case OBJ_WEAPONS:</a>
+<a name="ln2698">        break;</a>
+<a name="ln2699">    case OBJ_JEWELLERY:</a>
+<a name="ln2700">        if (!jewellery_is_amulet(item))</a>
+<a name="ln2701">        {</a>
+<a name="ln2702">            if (item.sub_type == RING_PROTECTION_FROM_FIRE</a>
+<a name="ln2703">                || item.sub_type == RING_POISON_RESISTANCE</a>
+<a name="ln2704">                || item.sub_type == RING_PROTECTION_FROM_COLD</a>
+<a name="ln2705">                || item.sub_type == RING_SEE_INVISIBLE</a>
+<a name="ln2706">                || item.sub_type == RING_LIFE_PROTECTION</a>
+<a name="ln2707">                || item.sub_type == RING_PROTECTION_FROM_MAGIC</a>
+<a name="ln2708">                || item.sub_type == RING_FIRE</a>
+<a name="ln2709">                || item.sub_type == RING_ICE)</a>
+<a name="ln2710">            {</a>
+<a name="ln2711">                return true;</a>
+<a name="ln2712">            }</a>
+<a name="ln2713">        }</a>
+<a name="ln2714">        else</a>
+<a name="ln2715">        {</a>
+<a name="ln2716">            if (item.sub_type != AMU_RAGE &amp;&amp; item.sub_type != AMU_INACCURACY)</a>
+<a name="ln2717">                return true;</a>
+<a name="ln2718">        }</a>
+<a name="ln2719">        break;</a>
+<a name="ln2720">    case OBJ_ARMOUR:</a>
+<a name="ln2721">    {</a>
+<a name="ln2722">        const equipment_type eq = get_armour_slot(item);</a>
+<a name="ln2723">        if (eq == EQ_NONE)</a>
+<a name="ln2724">            return false;</a>
+<a name="ln2725"> </a>
+<a name="ln2726">        const int ego = get_armour_ego_type(item);</a>
+<a name="ln2727">        if (ego &gt;= SPARM_FIRE_RESISTANCE &amp;&amp; ego &lt;= SPARM_SEE_INVISIBLE</a>
+<a name="ln2728">            || ego == SPARM_RESISTANCE || ego == SPARM_POSITIVE_ENERGY)</a>
+<a name="ln2729">        {</a>
+<a name="ln2730">            return true;</a>
+<a name="ln2731">        }</a>
+<a name="ln2732">        break;</a>
+<a name="ln2733">    }</a>
+<a name="ln2734">    case OBJ_STAVES:</a>
+<a name="ln2735">        if (item.sub_type &gt;= STAFF_FIRE &amp;&amp; item.sub_type &lt;= STAFF_POISON</a>
+<a name="ln2736">            || item.sub_type == STAFF_AIR</a>
+<a name="ln2737">            || item.sub_type == STAFF_DEATH)</a>
+<a name="ln2738">        {</a>
+<a name="ln2739">            return true;</a>
+<a name="ln2740">        }</a>
+<a name="ln2741">        return false;</a>
+<a name="ln2742">    default:</a>
+<a name="ln2743">        return false;</a>
+<a name="ln2744">    }</a>
+<a name="ln2745"> </a>
+<a name="ln2746">    if (!is_artefact(item))</a>
+<a name="ln2747">        return false;</a>
+<a name="ln2748"> </a>
+<a name="ln2749">    // Check for randart resistances.</a>
+<a name="ln2750">    for (int rap = ARTP_FIRE; rap &lt;= ARTP_BERSERK; rap++)</a>
+<a name="ln2751">    {</a>
+<a name="ln2752">        if (rap == ARTP_MAGIC_RESISTANCE || rap &gt;= ARTP_INVISIBLE)</a>
+<a name="ln2753">            continue;</a>
+<a name="ln2754"> </a>
+<a name="ln2755">        if (artefact_property(item, static_cast&lt;artefact_prop_type&gt;(rap)))</a>
+<a name="ln2756">            return true;</a>
+<a name="ln2757">    }</a>
+<a name="ln2758"> </a>
+<a name="ln2759">    return false;</a>
+<a name="ln2760">}</a>
+<a name="ln2761"> </a>
+<a name="ln2762">bool item_is_jelly_edible(const item_def &amp;item)</a>
+<a name="ln2763">{</a>
+<a name="ln2764">    if (item_is_stationary_net(item))</a>
+<a name="ln2765">        return false;</a>
+<a name="ln2766"> </a>
+<a name="ln2767">    // Don't eat artefacts or the horn of Geryon.</a>
+<a name="ln2768">    if (is_artefact(item) || item_is_horn_of_geryon(item))</a>
+<a name="ln2769">        return false;</a>
+<a name="ln2770"> </a>
+<a name="ln2771">    // Don't eat zigfigs. (They're artefact-like, and Jiyvaites shouldn't worry</a>
+<a name="ln2772">    // about losing them.)</a>
+<a name="ln2773">    if (item.base_type == OBJ_MISCELLANY &amp;&amp; item.sub_type == MISC_ZIGGURAT)</a>
+<a name="ln2774">        return false;</a>
+<a name="ln2775"> </a>
+<a name="ln2776">    // Don't eat mimics.</a>
+<a name="ln2777">    if (item.flags &amp; ISFLAG_MIMIC)</a>
+<a name="ln2778">        return false;</a>
+<a name="ln2779"> </a>
+<a name="ln2780">    // Don't eat special game items.</a>
+<a name="ln2781">    if (item_is_orb(item) || item.base_type == OBJ_RUNES)</a>
+<a name="ln2782">        return false;</a>
+<a name="ln2783"> </a>
+<a name="ln2784">    return true;</a>
+<a name="ln2785">}</a>
+<a name="ln2786"> </a>
+<a name="ln2787">equipment_type get_item_slot(const item_def&amp; item)</a>
+<a name="ln2788">{</a>
+<a name="ln2789">    return get_item_slot(item.base_type, item.sub_type);</a>
+<a name="ln2790">}</a>
+<a name="ln2791"> </a>
+<a name="ln2792">equipment_type get_item_slot(object_class_type type, int sub_type)</a>
+<a name="ln2793">{</a>
+<a name="ln2794">    switch (type)</a>
+<a name="ln2795">    {</a>
+<a name="ln2796">    case OBJ_WEAPONS:</a>
+<a name="ln2797">    case OBJ_STAVES:</a>
+<a name="ln2798">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2799">    case OBJ_RODS:</a>
+<a name="ln2800">#endif</a>
+<a name="ln2801">    case OBJ_MISCELLANY:</a>
+<a name="ln2802">        return EQ_WEAPON;</a>
+<a name="ln2803"> </a>
+<a name="ln2804">    case OBJ_ARMOUR:</a>
+<a name="ln2805">        return get_armour_slot(static_cast&lt;armour_type&gt;(sub_type));</a>
+<a name="ln2806"> </a>
+<a name="ln2807">    case OBJ_JEWELLERY:</a>
+<a name="ln2808">        return jewellery_is_amulet(sub_type) ? EQ_AMULET : EQ_RINGS;</a>
+<a name="ln2809"> </a>
+<a name="ln2810">    default:</a>
+<a name="ln2811">        break;</a>
+<a name="ln2812">    }</a>
+<a name="ln2813"> </a>
+<a name="ln2814">    return EQ_NONE;</a>
+<a name="ln2815">}</a>
+<a name="ln2816"> </a>
+<a name="ln2817">bool is_shield(const item_def &amp;item)</a>
+<a name="ln2818">{</a>
+<a name="ln2819">    return item.base_type == OBJ_ARMOUR</a>
+<a name="ln2820">           &amp;&amp; get_armour_slot(item) == EQ_SHIELD;</a>
+<a name="ln2821">}</a>
+<a name="ln2822"> </a>
+<a name="ln2823">// Returns true if the given item cannot be wielded _by you_ with the given shield.</a>
+<a name="ln2824">// The currently equipped shield is used if no shield is passed in.</a>
+<a name="ln2825">bool is_shield_incompatible(const item_def &amp;weapon, const item_def *shield)</a>
+<a name="ln2826">{</a>
+<a name="ln2827">    // If there's no shield, there's no problem.</a>
+<a name="ln2828">    if (!shield &amp;&amp; !(shield = you.shield()))</a>
+<a name="ln2829">        return false;</a>
+<a name="ln2830"> </a>
+<a name="ln2831">    hands_reqd_type hand = you.hands_reqd(weapon);</a>
+<a name="ln2832">    return hand == HANDS_TWO;</a>
+<a name="ln2833">}</a>
+<a name="ln2834"> </a>
+<a name="ln2835">bool shield_reflects(const item_def &amp;shield)</a>
+<a name="ln2836">{</a>
+<a name="ln2837">    ASSERT(is_shield(shield));</a>
+<a name="ln2838"> </a>
+<a name="ln2839">    return get_armour_ego_type(shield) == SPARM_REFLECTION;</a>
+<a name="ln2840">}</a>
+<a name="ln2841"> </a>
+<a name="ln2842">void ident_reflector(item_def *item)</a>
+<a name="ln2843">{</a>
+<a name="ln2844">    if (!is_artefact(*item))</a>
+<a name="ln2845">        set_ident_flags(*item, ISFLAG_KNOW_TYPE);</a>
+<a name="ln2846">}</a>
+<a name="ln2847"> </a>
+<a name="ln2848">string item_base_name(const item_def &amp;item)</a>
+<a name="ln2849">{</a>
+<a name="ln2850">    return item_base_name(item.base_type, item.sub_type);</a>
+<a name="ln2851">}</a>
+<a name="ln2852"> </a>
+<a name="ln2853">string item_base_name(object_class_type type, int sub_type)</a>
+<a name="ln2854">{</a>
+<a name="ln2855">    switch (type)</a>
+<a name="ln2856">    {</a>
+<a name="ln2857">    case OBJ_WEAPONS:</a>
+<a name="ln2858">        return Weapon_prop[Weapon_index[sub_type]].name;</a>
+<a name="ln2859">    case OBJ_MISSILES:</a>
+<a name="ln2860">        return Missile_prop[Missile_index[sub_type]].name;</a>
+<a name="ln2861">    case OBJ_ARMOUR:</a>
+<a name="ln2862">        return Armour_prop[Armour_index[sub_type]].name;</a>
+<a name="ln2863">    case OBJ_JEWELLERY:</a>
+<a name="ln2864">        return jewellery_is_amulet(sub_type) ? &quot;amulet&quot; : &quot;ring&quot;;</a>
+<a name="ln2865">    default:</a>
+<a name="ln2866">        return &quot;&quot;;</a>
+<a name="ln2867">    }</a>
+<a name="ln2868">}</a>
+<a name="ln2869"> </a>
+<a name="ln2870">string food_type_name(int sub_type)</a>
+<a name="ln2871">{</a>
+<a name="ln2872">    return Food_prop[Food_index[sub_type]].name;</a>
+<a name="ln2873">}</a>
+<a name="ln2874"> </a>
+<a name="ln2875">const char* weapon_base_name(weapon_type subtype)</a>
+<a name="ln2876">{</a>
+<a name="ln2877">    return Weapon_prop[Weapon_index[subtype]].name;</a>
+<a name="ln2878">}</a>
+<a name="ln2879"> </a>
+<a name="ln2880">void remove_whitespace(string &amp;str)</a>
+<a name="ln2881">{</a>
+<a name="ln2882">    str.erase(remove_if(str.begin(), str.end(),</a>
+<a name="ln2883">        static_cast&lt;int(*)(int)&gt;(isspace)), str.end());</a>
+<a name="ln2884">}</a>
+<a name="ln2885"> </a>
+<a name="ln2886">/**</a>
+<a name="ln2887"> * Try to find a weapon, given the weapon's name without whitespace.</a>
+<a name="ln2888"> *</a>
+<a name="ln2889"> * @param name_nospace  The weapon's base name, with all whitespace removed.</a>
+<a name="ln2890"> * @return              The id of the weapon, or WPN_UNKNOWN if nothing matches.</a>
+<a name="ln2891"> */</a>
+<a name="ln2892">weapon_type name_nospace_to_weapon(string name_nospace)</a>
+<a name="ln2893">{</a>
+<a name="ln2894">    for (const weapon_def &amp;wpn : Weapon_prop)</a>
+<a name="ln2895">    {</a>
+<a name="ln2896">        string weap_nospace = wpn.name;</a>
+<a name="ln2897">        remove_whitespace(weap_nospace);</a>
+<a name="ln2898"> </a>
+<a name="ln2899">        if (name_nospace == weap_nospace)</a>
+<a name="ln2900">            return (weapon_type) wpn.id;</a>
+<a name="ln2901">    }</a>
+<a name="ln2902"> </a>
+<a name="ln2903">    // No match found</a>
+<a name="ln2904">    return WPN_UNKNOWN;</a>
+<a name="ln2905">}</a>
+<a name="ln2906"> </a>
+<a name="ln2907">void seen_item(const item_def &amp;item)</a>
+<a name="ln2908">{</a>
+<a name="ln2909">    if (!is_artefact(item) &amp;&amp; _is_affordable(item))</a>
+<a name="ln2910">    {</a>
+<a name="ln2911">        // Known brands will be set in set_item_flags().</a>
+<a name="ln2912">        if (item.base_type == OBJ_WEAPONS)</a>
+<a name="ln2913">            you.seen_weapon[item.sub_type] |= 1U &lt;&lt; SP_UNKNOWN_BRAND;</a>
+<a name="ln2914">        if (item.base_type == OBJ_ARMOUR)</a>
+<a name="ln2915">            you.seen_armour[item.sub_type] |= 1U &lt;&lt; SP_UNKNOWN_BRAND;</a>
+<a name="ln2916">        if (item.base_type == OBJ_MISCELLANY)</a>
+<a name="ln2917">            you.seen_misc.set(item.sub_type);</a>
+<a name="ln2918">    }</a>
+<a name="ln2919"> </a>
+<a name="ln2920">    _maybe_note_found_unrand(item);</a>
+<a name="ln2921"> </a>
+<a name="ln2922">    // major hack. Deconstify should be safe here, but it's still repulsive.</a>
+<a name="ln2923">    item_def&amp; malleable_item = const_cast&lt;item_def &amp;&gt;(item);</a>
+<a name="ln2924"> </a>
+<a name="ln2925">    malleable_item.flags |= ISFLAG_SEEN;</a>
+<a name="ln2926">    if (have_passive(passive_t::identify_items))</a>
+<a name="ln2927">        malleable_item.flags |= ISFLAG_KNOW_CURSE;</a>
+<a name="ln2928">    if (item.base_type == OBJ_GOLD &amp;&amp; !item.tithe_state)</a>
+<a name="ln2929">    {</a>
+<a name="ln2930">        malleable_item.plus = (you_worship(GOD_ZIN)) ? TS_FULL_TITHE</a>
+<a name="ln2931">                                                     : TS_NO_PIETY;</a>
+<a name="ln2932">    }</a>
+<a name="ln2933"> </a>
+<a name="ln2934">    if (item_type_has_ids(item.base_type) &amp;&amp; !is_artefact(item)</a>
+<a name="ln2935">        &amp;&amp; item_ident(item, ISFLAG_KNOW_TYPE)</a>
+<a name="ln2936">        &amp;&amp; !you.type_ids[item.base_type][item.sub_type])</a>
+<a name="ln2937">    {</a>
+<a name="ln2938">        // Can't cull shop items here -- when called from view, we shouldn't</a>
+<a name="ln2939">        // access the UI. Old ziggurat prompts are a very minor case of what</a>
+<a name="ln2940">        // could go wrong.</a>
+<a name="ln2941">        set_ident_type(item.base_type, item.sub_type, true);</a>
+<a name="ln2942">    }</a>
+<a name="ln2943">}</a>
+<a name="ln2944"> </a>
+<a name="ln2945">/// Map of xp evokers to you.props[] xp debt keys.</a>
+<a name="ln2946">static const map&lt;int, const char*&gt; debt_map = {</a>
+<a name="ln2947">    { MISC_PHIAL_OF_FLOODS,     &quot;phial_debt&quot; },</a>
+<a name="ln2948">    { MISC_HORN_OF_GERYON,      &quot;horn_debt&quot; },</a>
+<a name="ln2949">    { MISC_LIGHTNING_ROD,       &quot;rod_debt&quot; },</a>
+<a name="ln2950">};</a>
+<a name="ln2951"> </a>
+<a name="ln2952">/**</a>
+<a name="ln2953"> * Is the given item an xp-charged evocable? (That is, one that recharges as</a>
+<a name="ln2954"> * the player gains xp.)</a>
+<a name="ln2955"> *</a>
+<a name="ln2956"> * @param item      The item in question.</a>
+<a name="ln2957"> * @return          Whether the given item is an xp evocable. (One of the</a>
+<a name="ln2958"> *                  elemental evocables or the Horn of Geryon.)</a>
+<a name="ln2959"> */</a>
+<a name="ln2960">bool is_xp_evoker(const item_def &amp;item)</a>
+<a name="ln2961">{</a>
+<a name="ln2962">    return item.base_type == OBJ_MISCELLANY</a>
+<a name="ln2963">           &amp;&amp; map_find(debt_map, item.sub_type);</a>
+<a name="ln2964">}</a>
+<a name="ln2965"> </a>
+<a name="ln2966">/**</a>
+<a name="ln2967"> * Return the xp debt corresponding to the given type of evoker.</a>
+<a name="ln2968"> * Asserts that the given evoker type actually corresponds to an xp evoker.</a>
+<a name="ln2969"> *</a>
+<a name="ln2970"> * @param evoker_type       The misc_item_type of the evoker in question.</a>
+<a name="ln2971"> * @return                  The level of xp debt the given evoker type has</a>
+<a name="ln2972"> *                          before it can be used again.</a>
+<a name="ln2973"> */</a>
+<a name="ln2974">int &amp;evoker_debt(int evoker_type)</a>
+<a name="ln2975">{</a>
+<a name="ln2976">    const char* const *prop_name = map_find(debt_map, evoker_type);</a>
+<a name="ln2977">    ASSERT(prop_name);</a>
+<a name="ln2978">    return you.props[*prop_name].get_int();</a>
+<a name="ln2979">}</a>
+<a name="ln2980"> </a>
+<a name="ln2981">/**</a>
+<a name="ln2982"> * How many max charges can the given XP evoker have?</a>
+<a name="ln2983"> *</a>
+<a name="ln2984"> * @param evoker_type The type of evoker.</a>
+<a name="ln2985"> * @returns The max number of charges.</a>
+<a name="ln2986"> */</a>
+<a name="ln2987">int evoker_max_charges(int evoker_type)</a>
+<a name="ln2988">{</a>
+<a name="ln2989">    return evoker_type == MISC_LIGHTNING_ROD ? LIGHTNING_MAX_CHARGE : 1;</a>
+<a name="ln2990">}</a>
+<a name="ln2991"> </a>
+<a name="ln2992">/**</a>
+<a name="ln2993"> * What is the XP debt of using one charge of the given XP evoker type? This</a>
+<a name="ln2994"> * debt represents a cost after scaling by a level-based XP factor.</a>
+<a name="ln2995"> *</a>
+<a name="ln2996"> * @params evoker_type The item sub type of the evoker</a>
+<a name="ln2997"> * @returns The debt of using a charge.</a>
+<a name="ln2998"> */</a>
+<a name="ln2999">int evoker_charge_xp_debt(int evoker_type)</a>
+<a name="ln3000">{</a>
+<a name="ln3001">    return evoker_type == MISC_LIGHTNING_ROD</a>
+<a name="ln3002">        ? XP_EVOKE_LIGHTNING_ROD_DEBT</a>
+<a name="ln3003">        : XP_EVOKE_DEBT;</a>
+<a name="ln3004">}</a>
+<a name="ln3005"> </a>
+<a name="ln3006">/**</a>
+<a name="ln3007"> * How many remaining charges does the given XP evoker have?</a>
+<a name="ln3008"> *</a>
+<a name="ln3009"> * @param evoker_type The item subtype of the evoker.</a>
+<a name="ln3010"> * @returns The number of remaining charges.</a>
+<a name="ln3011"> */</a>
+<a name="ln3012">int evoker_charges(int evoker_type)</a>
+<a name="ln3013">{</a>
+<a name="ln3014">    const int max_charges = evoker_max_charges(evoker_type);</a>
+<a name="ln3015">    const int charge_xp_debt = evoker_charge_xp_debt(evoker_type);</a>
+<a name="ln3016">    const int debt = evoker_debt(evoker_type);</a>
+<a name="ln3017">    return min(max_charges,</a>
+<a name="ln3018">            max_charges - debt / charge_xp_debt - (debt % charge_xp_debt &gt; 0));</a>
+<a name="ln3019">}</a>
+<a name="ln3020"> </a>
+<a name="ln3021">void expend_xp_evoker(int evoker_type)</a>
+<a name="ln3022">{</a>
+<a name="ln3023">    evoker_debt(evoker_type) += evoker_charge_xp_debt(evoker_type);</a>
+<a name="ln3024">}</a>
+<a name="ln3025"> </a>
+<a name="ln3026">/// witchcraft. copied from mon-util.h's get_resist</a>
+<a name="ln3027">static inline int _get_armour_flag(armflags_t all, armour_flag res)</a>
+<a name="ln3028">{</a>
+<a name="ln3029">    if (res &gt; ARMF_LAST_MULTI)</a>
+<a name="ln3030">        return all &amp; res ? 1 : 0;</a>
+<a name="ln3031">    int v = (all / res) &amp; 7;</a>
+<a name="ln3032">    if (v &gt; 4)</a>
+<a name="ln3033">        return v - 8;</a>
+<a name="ln3034">    return v;</a>
+<a name="ln3035">}</a>
+<a name="ln3036"> </a>
+<a name="ln3037">/**</a>
+<a name="ln3038"> * What inherent special properties does the given armour type have?</a>
+<a name="ln3039"> *</a>
+<a name="ln3040"> * @param arm   The given armour type.</a>
+<a name="ln3041"> * @return      A bitfield of special properties.</a>
+<a name="ln3042"> */</a>
+<a name="ln3043">static armflags_t _armour_type_flags(const uint8_t arm)</a>
+<a name="ln3044">{</a>
+<a name="ln3045">    return Armour_prop[ Armour_index[arm] ].flags;</a>
+<a name="ln3046">}</a>
+<a name="ln3047"> </a>
+<a name="ln3048">/**</a>
+<a name="ln3049"> * What value does the given armour type have for the innate special property?</a>
+<a name="ln3050"> *</a>
+<a name="ln3051"> * @param arm   The given armour type.</a>
+<a name="ln3052"> * @param prop  The property in question.</a>
+<a name="ln3053"> * @return      A value for that property; ranges -3 to 4.</a>
+<a name="ln3054"> */</a>
+<a name="ln3055">int armour_type_prop(const uint8_t arm, const armour_flag prop)</a>
+<a name="ln3056">{</a>
+<a name="ln3057">    return _get_armour_flag(_armour_type_flags(arm), prop);</a>
+<a name="ln3058">}</a>
+<a name="ln3059"> </a>
+<a name="ln3060">/**</a>
+<a name="ln3061"> * For store pricing purposes, how much is the given type of weapon worth,</a>
+<a name="ln3062"> * before curses, egos, etc are taken into account?</a>
+<a name="ln3063"> *</a>
+<a name="ln3064"> * @param type      The type of weapon in question; e.g. WPN_DAGGER.</a>
+<a name="ln3065"> * @return          A value in gold; e.g. 20.</a>
+<a name="ln3066"> */</a>
+<a name="ln3067">int weapon_base_price(weapon_type type)</a>
+<a name="ln3068">{</a>
+<a name="ln3069">    return Weapon_prop[ Weapon_index[type] ].price;</a>
+<a name="ln3070">}</a>
+<a name="ln3071"> </a>
+<a name="ln3072">/**</a>
+<a name="ln3073"> * For store pricing purposes, how much is the given type of missile worth?</a>
+<a name="ln3074"> *</a>
+<a name="ln3075"> * @param type      The type of missile in question; e.g. MI_ARROW.</a>
+<a name="ln3076"> * @return          A value in gold for each missile; e.g. 20.</a>
+<a name="ln3077"> */</a>
+<a name="ln3078">int missile_base_price(missile_type type)</a>
+<a name="ln3079">{</a>
+<a name="ln3080">    return Missile_prop[ Missile_index[type] ].price;</a>
+<a name="ln3081">}</a>
+<a name="ln3082"> </a>
+<a name="ln3083">/**</a>
+<a name="ln3084"> * For store pricing purposes, how much is the given type of armour worth,</a>
+<a name="ln3085"> * before curses, egos, etc are taken into account?</a>
+<a name="ln3086"> *</a>
+<a name="ln3087"> * @param type      The type of weapon in question; e.g. ARM_RING_MAIL, or</a>
+<a name="ln3088"> *                  ARM_BUCKLER.</a>
+<a name="ln3089"> * @return          A value in gold; e.g. 45.</a>
+<a name="ln3090"> */</a>
+<a name="ln3091">int armour_base_price(armour_type type)</a>
+<a name="ln3092">{</a>
+<a name="ln3093">    return Armour_prop[ Armour_index[type] ].price;</a>
+<a name="ln3094">}</a>
+
+</code></pre>
+<div class="balloon" rel="1949"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1971"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="2017"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1016/" target="_blank">V1016</a> Expression 'ammo < 0' is always false.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,715 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-poly.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Misc monster poly/mimic functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;mon-poly.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;artefact.h&quot;</a>
+<a name="ln11">#include &quot;attitude-change.h&quot;</a>
+<a name="ln12">#include &quot;delay.h&quot;</a>
+<a name="ln13">#include &quot;describe.h&quot;</a>
+<a name="ln14">#include &quot;dgn-overview.h&quot;</a>
+<a name="ln15">#include &quot;dungeon.h&quot;</a>
+<a name="ln16">#include &quot;fineff.h&quot;</a>
+<a name="ln17">#include &quot;god-conduct.h&quot;</a>
+<a name="ln18">#include &quot;hints.h&quot;</a>
+<a name="ln19">#include &quot;item-prop.h&quot;</a>
+<a name="ln20">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln21">#include &quot;items.h&quot;</a>
+<a name="ln22">#include &quot;level-state-type.h&quot;</a>
+<a name="ln23">#include &quot;libutil.h&quot;</a>
+<a name="ln24">#include &quot;message.h&quot;</a>
+<a name="ln25">#include &quot;mon-death.h&quot;</a>
+<a name="ln26">#include &quot;mon-gear.h&quot;</a>
+<a name="ln27">#include &quot;mon-place.h&quot;</a>
+<a name="ln28">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln29">#include &quot;notes.h&quot;</a>
+<a name="ln30">#include &quot;religion.h&quot;</a>
+<a name="ln31">#include &quot;state.h&quot;</a>
+<a name="ln32">#include &quot;stringutil.h&quot;</a>
+<a name="ln33">#include &quot;terrain.h&quot;</a>
+<a name="ln34">#include &quot;traps.h&quot;</a>
+<a name="ln35">#include &quot;xom.h&quot;</a>
+<a name="ln36"> </a>
+<a name="ln37">bool feature_mimic_at(const coord_def &amp;c)</a>
+<a name="ln38">{</a>
+<a name="ln39">    return map_masked(c, MMT_MIMIC);</a>
+<a name="ln40">}</a>
+<a name="ln41"> </a>
+<a name="ln42">item_def* item_mimic_at(const coord_def &amp;c)</a>
+<a name="ln43">{</a>
+<a name="ln44">    for (stack_iterator si(c); si; ++si)</a>
+<a name="ln45">        if (si-&gt;flags &amp; ISFLAG_MIMIC)</a>
+<a name="ln46">            return &amp;*si;</a>
+<a name="ln47">    return nullptr;</a>
+<a name="ln48">}</a>
+<a name="ln49"> </a>
+<a name="ln50">bool mimic_at(const coord_def &amp;c)</a>
+<a name="ln51">{</a>
+<a name="ln52">    return feature_mimic_at(c) || item_mimic_at(c);</a>
+<a name="ln53">}</a>
+<a name="ln54"> </a>
+<a name="ln55">void monster_drop_things(monster* mons,</a>
+<a name="ln56">                          bool mark_item_origins,</a>
+<a name="ln57">                          bool (*suitable)(const item_def&amp; item))</a>
+<a name="ln58">{</a>
+<a name="ln59">    // Drop weapons and missiles last (i.e., on top), so others pick up.</a>
+<a name="ln60">    for (int i = NUM_MONSTER_SLOTS - 1; i &gt;= 0; --i)</a>
+<a name="ln61">    {</a>
+<a name="ln62">        int item = mons-&gt;inv[i];</a>
+<a name="ln63"> </a>
+<a name="ln64">        if (item != NON_ITEM &amp;&amp; suitable(mitm[item]))</a>
+<a name="ln65">        {</a>
+<a name="ln66">            const bool summoned_item =</a>
+<a name="ln67">                testbits(mitm[item].flags, ISFLAG_SUMMONED);</a>
+<a name="ln68">            if (summoned_item)</a>
+<a name="ln69">            {</a>
+<a name="ln70">                item_was_destroyed(mitm[item]);</a>
+<a name="ln71">                destroy_item(item);</a>
+<a name="ln72">            }</a>
+<a name="ln73">            else</a>
+<a name="ln74">            {</a>
+<a name="ln75">                if (mark_item_origins &amp;&amp; mitm[item].defined())</a>
+<a name="ln76">                    origin_set_monster(mitm[item], mons);</a>
+<a name="ln77"> </a>
+<a name="ln78">                mitm[item].props[DROPPER_MID_KEY].get_int() = mons-&gt;mid;</a>
+<a name="ln79"> </a>
+<a name="ln80">                if (mitm[item].props.exists(&quot;autoinscribe&quot;))</a>
+<a name="ln81">                {</a>
+<a name="ln82">                    add_inscription(mitm[item],</a>
+<a name="ln83">                        mitm[item].props[&quot;autoinscribe&quot;].get_string());</a>
+<a name="ln84">                    mitm[item].props.erase(&quot;autoinscribe&quot;);</a>
+<a name="ln85">                }</a>
+<a name="ln86"> </a>
+<a name="ln87">                // Unrands held by fixed monsters would give awfully redundant</a>
+<a name="ln88">                // messages (&quot;Cerebov hits you with the Sword of Cerebov.&quot;),</a>
+<a name="ln89">                // thus delay identification until drop/death.</a>
+<a name="ln90">                autoid_unrand(mitm[item]);</a>
+<a name="ln91"> </a>
+<a name="ln92">                // If a monster is swimming, the items are ALREADY</a>
+<a name="ln93">                // underwater.</a>
+<a name="ln94">                move_item_to_grid(&amp;item, mons-&gt;pos(), mons-&gt;swimming());</a>
+<a name="ln95">            }</a>
+<a name="ln96"> </a>
+<a name="ln97">            mons-&gt;inv[i] = NON_ITEM;</a>
+<a name="ln98">        }</a>
+<a name="ln99">    }</a>
+<a name="ln100">}</a>
+<a name="ln101"> </a>
+<a name="ln102">static bool _valid_morph(monster* mons, monster_type new_mclass)</a>
+<a name="ln103">{</a>
+<a name="ln104">    // Shapeshifters cannot polymorph into glowing shapeshifters or</a>
+<a name="ln105">    // vice versa.</a>
+<a name="ln106">    if ((new_mclass == MONS_GLOWING_SHAPESHIFTER</a>
+<a name="ln107">             &amp;&amp; mons-&gt;has_ench(ENCH_SHAPESHIFTER))</a>
+<a name="ln108">         || (new_mclass == MONS_SHAPESHIFTER</a>
+<a name="ln109">             &amp;&amp; mons-&gt;has_ench(ENCH_GLOWING_SHAPESHIFTER)))</a>
+<a name="ln110">    {</a>
+<a name="ln111">        return false;</a>
+<a name="ln112">    }</a>
+<a name="ln113"> </a>
+<a name="ln114">    // [hm] Lower base draconian chances since there are nine of them,</a>
+<a name="ln115">    // and they shouldn't each count for a full chance.</a>
+<a name="ln116">    if (mons_genus(new_mclass) == MONS_DRACONIAN</a>
+<a name="ln117">        &amp;&amp; new_mclass != MONS_DRACONIAN</a>
+<a name="ln118">        &amp;&amp; !one_chance_in(9))</a>
+<a name="ln119">    {</a>
+<a name="ln120">        return false;</a>
+<a name="ln121">    }</a>
+<a name="ln122"> </a>
+<a name="ln123">    // Various inappropriate polymorph targets.</a>
+<a name="ln124">    if ( !(mons_class_holiness(new_mclass) &amp; mons_class_holiness(mons-&gt;type))</a>
+<a name="ln125">        // normally holiness just needs to overlap, but we don't want</a>
+<a name="ln126">        // shapeshifters to become demons</a>
+<a name="ln127">        || mons-&gt;is_shapeshifter() &amp;&amp; !(mons_class_holiness(new_mclass) &amp; MH_NATURAL)</a>
+<a name="ln128">        || mons_class_flag(new_mclass, M_UNFINISHED)  // no unfinished monsters</a>
+<a name="ln129">        || mons_class_flag(new_mclass, M_CANT_SPAWN)  // no dummy monsters</a>
+<a name="ln130">        || mons_class_flag(new_mclass, M_NO_POLY_TO)  // explicitly disallowed</a>
+<a name="ln131">        || mons_class_flag(new_mclass, M_UNIQUE)      // no uniques</a>
+<a name="ln132">        || !mons_class_gives_xp(new_mclass)           // no tentacle parts or</a>
+<a name="ln133">                                                      // harmless things</a>
+<a name="ln134">        || !mons_class_is_threatening(new_mclass)</a>
+<a name="ln135">        || new_mclass == MONS_PROGRAM_BUG</a>
+<a name="ln136"> </a>
+<a name="ln137">        // 'morph targets are _always_ &quot;base&quot; classes, not derived ones.</a>
+<a name="ln138">        || new_mclass != mons_species(new_mclass)</a>
+<a name="ln139">        || new_mclass == mons_species(mons-&gt;type)</a>
+<a name="ln140">        // They act as separate polymorph classes on their own.</a>
+<a name="ln141">        || mons_class_is_zombified(new_mclass)</a>
+<a name="ln142"> </a>
+<a name="ln143">        // These require manual setting of the ghost demon struct to</a>
+<a name="ln144">        // indicate their characteristics, which we currently aren't</a>
+<a name="ln145">        // smart enough to handle.</a>
+<a name="ln146">        || mons_is_ghost_demon(new_mclass)</a>
+<a name="ln147"> </a>
+<a name="ln148">        // Other poly-unsuitable things.</a>
+<a name="ln149">        || mons_is_statue(new_mclass)</a>
+<a name="ln150">        || mons_is_projectile(new_mclass)</a>
+<a name="ln151"> </a>
+<a name="ln152">        // The spell on Prince Ribbit can't be broken so easily.</a>
+<a name="ln153">        || (new_mclass == MONS_HUMAN</a>
+<a name="ln154">            &amp;&amp; (mons-&gt;type == MONS_PRINCE_RIBBIT</a>
+<a name="ln155">                || mons-&gt;mname == &quot;Prince Ribbit&quot;)))</a>
+<a name="ln156">    {</a>
+<a name="ln157">        return false;</a>
+<a name="ln158">    }</a>
+<a name="ln159"> </a>
+<a name="ln160">    // Determine if the monster is happy on current tile.</a>
+<a name="ln161">    return monster_habitable_grid(new_mclass, grd(mons-&gt;pos()));</a>
+<a name="ln162">}</a>
+<a name="ln163"> </a>
+<a name="ln164">static bool _is_poly_power_unsuitable(poly_power_type power,</a>
+<a name="ln165">                                       int src_pow, int tgt_pow, int relax)</a>
+<a name="ln166">{</a>
+<a name="ln167">    switch (power)</a>
+<a name="ln168">    {</a>
+<a name="ln169">    case PPT_LESS:</a>
+<a name="ln170">        return tgt_pow &gt; src_pow - 3 + relax * 3 / 2</a>
+<a name="ln171">                || (power == PPT_LESS &amp;&amp; tgt_pow &lt; src_pow - relax / 2);</a>
+<a name="ln172">    case PPT_MORE:</a>
+<a name="ln173">        return tgt_pow &lt; src_pow + 2 - relax</a>
+<a name="ln174">                || (power == PPT_MORE &amp;&amp; tgt_pow &gt; src_pow + relax);</a>
+<a name="ln175">    default:</a>
+<a name="ln176">    case PPT_SAME:</a>
+<a name="ln177">        return tgt_pow &lt; src_pow - relax</a>
+<a name="ln178">                || tgt_pow &gt; src_pow + relax * 3 / 2;</a>
+<a name="ln179">    }</a>
+<a name="ln180">}</a>
+<a name="ln181"> </a>
+<a name="ln182">static bool _jiyva_slime_target(monster_type targetc)</a>
+<a name="ln183">{</a>
+<a name="ln184">    return you_worship(GOD_JIYVA)</a>
+<a name="ln185">           &amp;&amp; (targetc == MONS_DEATH_OOZE</a>
+<a name="ln186">              || targetc == MONS_OOZE</a>
+<a name="ln187">              || targetc == MONS_JELLY</a>
+<a name="ln188">              || targetc == MONS_SLIME_CREATURE</a>
+<a name="ln189">              || targetc == MONS_ACID_BLOB</a>
+<a name="ln190">              || targetc == MONS_AZURE_JELLY);</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">void change_monster_type(monster* mons, monster_type targetc)</a>
+<a name="ln194">{</a>
+<a name="ln195">    ASSERT(mons); // XXX: change to monster &amp;mons</a>
+<a name="ln196">    bool could_see     = you.can_see(*mons);</a>
+<a name="ln197">    bool slimified = _jiyva_slime_target(targetc);</a>
+<a name="ln198"> </a>
+<a name="ln199">    // Quietly remove the old monster's invisibility before transforming</a>
+<a name="ln200">    // it. If we don't do this, it'll stay invisible even after losing</a>
+<a name="ln201">    // the invisibility enchantment below.</a>
+<a name="ln202">    mons-&gt;del_ench(ENCH_INVIS, false, false);</a>
+<a name="ln203"> </a>
+<a name="ln204">    // Remove replacement tile, since it probably doesn't work for the</a>
+<a name="ln205">    // new monster.</a>
+<a name="ln206">    mons-&gt;props.erase(&quot;monster_tile_name&quot;);</a>
+<a name="ln207">    mons-&gt;props.erase(&quot;monster_tile&quot;);</a>
+<a name="ln208"> </a>
+<a name="ln209">    // Even if the monster transforms from one type that can behold the</a>
+<a name="ln210">    // player into a different type which can also behold the player,</a>
+<a name="ln211">    // the polymorph disrupts the beholding process. Do this before</a>
+<a name="ln212">    // changing mons-&gt;type, since unbeholding can only happen while</a>
+<a name="ln213">    // the monster is still a siren/merfolk avatar.</a>
+<a name="ln214">    you.remove_beholder(*mons);</a>
+<a name="ln215">    you.remove_fearmonger(mons);</a>
+<a name="ln216"> </a>
+<a name="ln217">    if (mons_is_tentacle_head(mons_base_type(*mons)))</a>
+<a name="ln218">        destroy_tentacles(mons);</a>
+<a name="ln219"> </a>
+<a name="ln220">    // trj spills out jellies when polied, as if he'd been hit for mhp.</a>
+<a name="ln221">    if (mons-&gt;type == MONS_ROYAL_JELLY)</a>
+<a name="ln222">    {</a>
+<a name="ln223">        simple_monster_message(*mons, &quot;'s form twists and warps, and jellies &quot;</a>
+<a name="ln224">                               &quot;spill out!&quot;);</a>
+<a name="ln225">        trj_spawn_fineff::schedule(nullptr, mons, mons-&gt;pos(),</a>
+<a name="ln226">                                   mons-&gt;hit_points);</a>
+<a name="ln227">    }</a>
+<a name="ln228"> </a>
+<a name="ln229">    // Inform listeners that the original monster is gone.</a>
+<a name="ln230">    fire_monster_death_event(mons, KILL_MISC, true);</a>
+<a name="ln231"> </a>
+<a name="ln232">    // the actual polymorphing:</a>
+<a name="ln233">    auto flags =</a>
+<a name="ln234">        mons-&gt;flags &amp; ~(MF_SEEN | MF_ATT_CHANGE_ATTEMPT</a>
+<a name="ln235">                           | MF_WAS_IN_VIEW | MF_BAND_MEMBER | MF_KNOWN_SHIFTER</a>
+<a name="ln236">                           | MF_MELEE_MASK);</a>
+<a name="ln237">    flags |= MF_POLYMORPHED;</a>
+<a name="ln238">    string name;</a>
+<a name="ln239"> </a>
+<a name="ln240">    // Preserve the names of uniques and named monsters.</a>
+<a name="ln241">    if (mons-&gt;type == MONS_ROYAL_JELLY</a>
+<a name="ln242">        || mons-&gt;mname == &quot;shaped Royal Jelly&quot;)</a>
+<a name="ln243">    {</a>
+<a name="ln244">        name   = &quot;shaped Royal Jelly&quot;;</a>
+<a name="ln245">        flags |= MF_NAME_SUFFIX;</a>
+<a name="ln246">    }</a>
+<a name="ln247">    else if (mons-&gt;type == MONS_LERNAEAN_HYDRA</a>
+<a name="ln248">             || mons-&gt;mname == &quot;shaped Lernaean hydra&quot;)</a>
+<a name="ln249">    {</a>
+<a name="ln250">        name   = &quot;shaped Lernaean hydra&quot;;</a>
+<a name="ln251">        flags |= MF_NAME_SUFFIX;</a>
+<a name="ln252">    }</a>
+<a name="ln253">    else if (mons-&gt;mons_species() == MONS_SERPENT_OF_HELL</a>
+<a name="ln254">             || mons-&gt;mname == &quot;shaped Serpent of Hell&quot;)</a>
+<a name="ln255">    {</a>
+<a name="ln256">        name   = &quot;shaped Serpent of Hell&quot;;</a>
+<a name="ln257">        flags |= MF_NAME_SUFFIX;</a>
+<a name="ln258">    }</a>
+<a name="ln259">    else if (!mons-&gt;mname.empty())</a>
+<a name="ln260">    {</a>
+<a name="ln261">        if (flags &amp; MF_NAME_MASK)</a>
+<a name="ln262">        {</a>
+<a name="ln263">            // Remove the replacement name from the new monster</a>
+<a name="ln264">            flags = flags &amp; ~(MF_NAME_MASK | MF_NAME_DESCRIPTOR</a>
+<a name="ln265">                              | MF_NAME_DEFINITE | MF_NAME_SPECIES</a>
+<a name="ln266">                              | MF_NAME_ZOMBIE | MF_NAME_NOCORPSE);</a>
+<a name="ln267">        }</a>
+<a name="ln268">        else</a>
+<a name="ln269">            name = mons-&gt;mname;</a>
+<a name="ln270">    }</a>
+<a name="ln271">    else if (mons_is_unique(mons-&gt;type))</a>
+<a name="ln272">    {</a>
+<a name="ln273">        name = mons-&gt;name(DESC_PLAIN, true);</a>
+<a name="ln274"> </a>
+<a name="ln275">        // &quot;Blork the orc&quot; and similar.</a>
+<a name="ln276">        const size_t the_pos = name.find(&quot; the &quot;);</a>
+<a name="ln277">        if (the_pos != string::npos)</a>
+<a name="ln278">            name = name.substr(0, the_pos);</a>
+<a name="ln279">    }</a>
+<a name="ln280"> </a>
+<a name="ln281">    const monster_type real_targetc =</a>
+<a name="ln282">        (mons-&gt;has_ench(ENCH_GLOWING_SHAPESHIFTER)) ? MONS_GLOWING_SHAPESHIFTER :</a>
+<a name="ln283">        (mons-&gt;has_ench(ENCH_SHAPESHIFTER))         ? MONS_SHAPESHIFTER</a>
+<a name="ln284">                                                    : targetc;</a>
+<a name="ln285"> </a>
+<a name="ln286">    const god_type god =</a>
+<a name="ln287">        player_will_anger_monster(real_targetc) ? GOD_NO_GOD : mons-&gt;god;</a>
+<a name="ln288"> </a>
+<a name="ln289">    if (god == GOD_NO_GOD)</a>
+<a name="ln290">        flags &amp;= ~MF_GOD_GIFT;</a>
+<a name="ln291"> </a>
+<a name="ln292">    const int  old_hp             = mons-&gt;hit_points;</a>
+<a name="ln293">    const int  old_hp_max         = mons-&gt;max_hit_points;</a>
+<a name="ln294">    const bool old_mon_caught     = mons-&gt;caught();</a>
+<a name="ln295">    const char old_ench_countdown = mons-&gt;ench_countdown;</a>
+<a name="ln296"> </a>
+<a name="ln297">    const bool old_mon_unique = mons_is_or_was_unique(*mons);</a>
+<a name="ln298"> </a>
+<a name="ln299">    if (!mons-&gt;props.exists(ORIGINAL_TYPE_KEY))</a>
+<a name="ln300">    {</a>
+<a name="ln301">        const monster_type type = mons_is_job(mons-&gt;type)</a>
+<a name="ln302">                                ? draco_or_demonspawn_subspecies(*mons)</a>
+<a name="ln303">                                : mons-&gt;type;</a>
+<a name="ln304">        mons-&gt;props[ORIGINAL_TYPE_KEY].get_int() = type;</a>
+<a name="ln305">        if (mons-&gt;mons_species() == MONS_HYDRA)</a>
+<a name="ln306">            mons-&gt;props[&quot;old_heads&quot;].get_int() = mons-&gt;num_heads;</a>
+<a name="ln307">    }</a>
+<a name="ln308"> </a>
+<a name="ln309">    mon_enchant abj       = mons-&gt;get_ench(ENCH_ABJ);</a>
+<a name="ln310">    mon_enchant fabj      = mons-&gt;get_ench(ENCH_FAKE_ABJURATION);</a>
+<a name="ln311">    mon_enchant charm     = mons-&gt;get_ench(ENCH_CHARM);</a>
+<a name="ln312">    mon_enchant shifter   = mons-&gt;get_ench(ENCH_GLOWING_SHAPESHIFTER,</a>
+<a name="ln313">                                           ENCH_SHAPESHIFTER);</a>
+<a name="ln314">    mon_enchant sub       = mons-&gt;get_ench(ENCH_SUBMERGED);</a>
+<a name="ln315">    mon_enchant summon    = mons-&gt;get_ench(ENCH_SUMMON);</a>
+<a name="ln316">    mon_enchant tp        = mons-&gt;get_ench(ENCH_TP);</a>
+<a name="ln317">    mon_enchant vines     = mons-&gt;get_ench(ENCH_AWAKEN_VINES);</a>
+<a name="ln318">    mon_enchant forest    = mons-&gt;get_ench(ENCH_AWAKEN_FOREST);</a>
+<a name="ln319">    mon_enchant hexed     = mons-&gt;get_ench(ENCH_HEXED);</a>
+<a name="ln320">    mon_enchant insanity  = mons-&gt;get_ench(ENCH_INSANE);</a>
+<a name="ln321"> </a>
+<a name="ln322">    mons-&gt;number       = 0;</a>
+<a name="ln323"> </a>
+<a name="ln324">    // Note: define_monster(*) will clear out all enchantments! - bwr</a>
+<a name="ln325">    if (!slimified &amp;&amp; mons_is_zombified(*mons))</a>
+<a name="ln326">        define_zombie(mons, targetc, mons-&gt;type);</a>
+<a name="ln327">    else</a>
+<a name="ln328">    {</a>
+<a name="ln329">        mons-&gt;type         = targetc;</a>
+<a name="ln330">        mons-&gt;base_monster = MONS_NO_MONSTER;</a>
+<a name="ln331">        define_monster(*mons);</a>
+<a name="ln332">    }</a>
+<a name="ln333"> </a>
+<a name="ln334">    mons-&gt;mname = name;</a>
+<a name="ln335">    mons-&gt;props[&quot;no_annotate&quot;] = slimified &amp;&amp; old_mon_unique;</a>
+<a name="ln336">    mons-&gt;props.erase(&quot;dbname&quot;);</a>
+<a name="ln337"> </a>
+<a name="ln338">    // Forget seen spells, since they are likely to have changed.</a>
+<a name="ln339">    mons-&gt;props.erase(SEEN_SPELLS_KEY);</a>
+<a name="ln340"> </a>
+<a name="ln341">    mons-&gt;flags = flags;</a>
+<a name="ln342">    // Line above might clear melee and/or spell flags; restore.</a>
+<a name="ln343">    mons-&gt;bind_melee_flags();</a>
+<a name="ln344">    mons-&gt;bind_spell_flags();</a>
+<a name="ln345"> </a>
+<a name="ln346">    // Forget various speech/shout Lua functions.</a>
+<a name="ln347">    mons-&gt;props.erase(&quot;speech_prefix&quot;);</a>
+<a name="ln348"> </a>
+<a name="ln349">    // Make sure we have a god if we've been polymorphed into a priest.</a>
+<a name="ln350">    mons-&gt;god = (mons-&gt;is_priest() &amp;&amp; god == GOD_NO_GOD) ? GOD_NAMELESS : god;</a>
+<a name="ln351"> </a>
+<a name="ln352">    mons-&gt;add_ench(abj);</a>
+<a name="ln353">    mons-&gt;add_ench(fabj);</a>
+<a name="ln354">    mons-&gt;add_ench(charm);</a>
+<a name="ln355">    mons-&gt;add_ench(shifter);</a>
+<a name="ln356">    mons-&gt;add_ench(sub);</a>
+<a name="ln357">    mons-&gt;add_ench(summon);</a>
+<a name="ln358">    mons-&gt;add_ench(tp);</a>
+<a name="ln359">    mons-&gt;add_ench(vines);</a>
+<a name="ln360">    mons-&gt;add_ench(forest);</a>
+<a name="ln361">    mons-&gt;add_ench(hexed);</a>
+<a name="ln362">    mons-&gt;add_ench(insanity);</a>
+<a name="ln363"> </a>
+<a name="ln364">    // Allows for handling of submerged monsters which polymorph into</a>
+<a name="ln365">    // monsters that can't submerge on this square.</a>
+<a name="ln366">    if (mons-&gt;has_ench(ENCH_SUBMERGED)</a>
+<a name="ln367">        &amp;&amp; !monster_can_submerge(mons, grd(mons-&gt;pos())))</a>
+<a name="ln368">    {</a>
+<a name="ln369">        mons-&gt;del_ench(ENCH_SUBMERGED);</a>
+<a name="ln370">    }</a>
+<a name="ln371"> </a>
+<a name="ln372">    mons-&gt;ench_countdown = old_ench_countdown;</a>
+<a name="ln373"> </a>
+<a name="ln374">    if (mons_class_flag(mons-&gt;type, M_INVIS))</a>
+<a name="ln375">        mons-&gt;add_ench(ENCH_INVIS);</a>
+<a name="ln376"> </a>
+<a name="ln377">    mons-&gt;hit_points = mons-&gt;max_hit_points * old_hp / old_hp_max</a>
+<a name="ln378">                       + random2(mons-&gt;max_hit_points);</a>
+<a name="ln379"> </a>
+<a name="ln380">    mons-&gt;hit_points = min(mons-&gt;max_hit_points, mons-&gt;hit_points);</a>
+<a name="ln381"> </a>
+<a name="ln382">    // Don't kill it.</a>
+<a name="ln383">    mons-&gt;hit_points = max(mons-&gt;hit_points, 1);</a>
+<a name="ln384"> </a>
+<a name="ln385">    mons-&gt;speed_increment = 67 + random2(6);</a>
+<a name="ln386"> </a>
+<a name="ln387">    monster_drop_things(mons);</a>
+<a name="ln388"> </a>
+<a name="ln389">    // If new monster is visible to player, then we've seen it.</a>
+<a name="ln390">    if (you.can_see(*mons))</a>
+<a name="ln391">    {</a>
+<a name="ln392">        seen_monster(mons);</a>
+<a name="ln393">        // If the player saw both the beginning and end results of a</a>
+<a name="ln394">        // shifter changing, then s/he knows it must be a shifter.</a>
+<a name="ln395">        if (could_see &amp;&amp; shifter.ench != ENCH_NONE)</a>
+<a name="ln396">            discover_shifter(*mons);</a>
+<a name="ln397">    }</a>
+<a name="ln398"> </a>
+<a name="ln399">    if (old_mon_caught)</a>
+<a name="ln400">        check_net_will_hold_monster(mons);</a>
+<a name="ln401"> </a>
+<a name="ln402">    // Even if the new form can constrict, it might be with a different</a>
+<a name="ln403">    // body part. Likewise, the new form might be too large for its</a>
+<a name="ln404">    // current constrictor. Rather than trying to handle these as special</a>
+<a name="ln405">    // cases, just stop the constriction entirely. The usual message about</a>
+<a name="ln406">    // evaporating and reforming justifies this behaviour.</a>
+<a name="ln407">    mons-&gt;stop_constricting_all();</a>
+<a name="ln408">    mons-&gt;stop_being_constricted();</a>
+<a name="ln409">}</a>
+<a name="ln410"> </a>
+<a name="ln411">// If targetc == RANDOM_MONSTER, then relpower indicates the desired</a>
+<a name="ln412">// power of the new monster, relative to the current monster.</a>
+<a name="ln413">// Relaxation still takes effect when needed, no matter what relpower</a>
+<a name="ln414">// says.</a>
+<a name="ln415">bool monster_polymorph(monster* mons, monster_type targetc,</a>
+<a name="ln416">                       poly_power_type power,</a>
+<a name="ln417">                       bool force_beh)</a>
+<a name="ln418">{</a>
+<a name="ln419">    // Don't attempt to polymorph a monster that is busy using the stairs.</a>
+<a name="ln420">    if (mons-&gt;flags &amp; MF_TAKING_STAIRS)</a>
+<a name="ln421">        return false;</a>
+<a name="ln422">    ASSERT(!(mons-&gt;flags &amp; MF_BANISHED) || player_in_branch(BRANCH_ABYSS));</a>
+<a name="ln423"> </a>
+<a name="ln424">    int source_power, target_power, relax;</a>
+<a name="ln425">    int source_tier, target_tier;</a>
+<a name="ln426">    int tries = 1000;</a>
+<a name="ln427"> </a>
+<a name="ln428">    // Used to be mons_power, but that just returns hit_dice</a>
+<a name="ln429">    // for the monster class. By using the current hit dice</a>
+<a name="ln430">    // the player gets the opportunity to use draining more</a>
+<a name="ln431">    // effectively against shapeshifters. - bwr</a>
+<a name="ln432">    source_power = mons-&gt;get_hit_dice();</a>
+<a name="ln433">    source_tier = mons_demon_tier(mons-&gt;type);</a>
+<a name="ln434"> </a>
+<a name="ln435">    // There's not a single valid target on the '&amp;' demon tier, so unless we</a>
+<a name="ln436">    // make one, let's ban this outright.</a>
+<a name="ln437">    if (source_tier == -1)</a>
+<a name="ln438">    {</a>
+<a name="ln439">        return simple_monster_message(*mons,</a>
+<a name="ln440">            &quot;'s appearance momentarily alters.&quot;);</a>
+<a name="ln441">    }</a>
+<a name="ln442">    relax = 1;</a>
+<a name="ln443"> </a>
+<a name="ln444">    if (targetc == RANDOM_MONSTER)</a>
+<a name="ln445">    {</a>
+<a name="ln446">        do</a>
+<a name="ln447">        {</a>
+<a name="ln448">            // Pick a monster species that's guaranteed happy at this grid.</a>
+<a name="ln449">            targetc = random_monster_at_grid(mons-&gt;pos(), true);</a>
+<a name="ln450"> </a>
+<a name="ln451">            target_power = mons_power(targetc);</a>
+<a name="ln452">            // Can't compare tiers in valid_morph, since we want to affect only</a>
+<a name="ln453">            // random polymorphs, and not absolutely, too.</a>
+<a name="ln454">            target_tier = mons_demon_tier(targetc);</a>
+<a name="ln455"> </a>
+<a name="ln456">            if (one_chance_in(200))</a>
+<a name="ln457">                relax++;</a>
+<a name="ln458"> </a>
+<a name="ln459">            if (relax &gt; 50)</a>
+<a name="ln460">                return simple_monster_message(*mons, &quot; shudders.&quot;);</a>
+<a name="ln461">        }</a>
+<a name="ln462">        while (tries-- &amp;&amp; (!_valid_morph(mons, targetc)</a>
+<a name="ln463">                           || source_tier != target_tier &amp;&amp; !x_chance_in_y(relax, 200)</a>
+<a name="ln464">                           || _is_poly_power_unsuitable(power, source_power,</a>
+<a name="ln465">                                                        target_power, relax)));</a>
+<a name="ln466">    }</a>
+<a name="ln467"> </a>
+<a name="ln468">    bool could_see = you.can_see(*mons);</a>
+<a name="ln469">    bool need_note = could_see &amp;&amp; mons_is_notable(*mons);</a>
+<a name="ln470">    string old_name_a = mons-&gt;full_name(DESC_A);</a>
+<a name="ln471">    string old_name_the = mons-&gt;full_name(DESC_THE);</a>
+<a name="ln472">    monster_type oldc = mons-&gt;type;</a>
+<a name="ln473"> </a>
+<a name="ln474">    if (targetc == RANDOM_TOUGHER_MONSTER)</a>
+<a name="ln475">    {</a>
+<a name="ln476">        vector&lt;monster_type&gt; target_types;</a>
+<a name="ln477">        for (monster_type mc = MONS_0; mc &lt; NUM_MONSTERS; ++mc)</a>
+<a name="ln478">        {</a>
+<a name="ln479">            const monsterentry *me = get_monster_data(mc);</a>
+<a name="ln480">            const int delta = me-&gt;HD - mons-&gt;get_hit_dice();</a>
+<a name="ln481">            if (delta != 1)</a>
+<a name="ln482">                continue;</a>
+<a name="ln483">            if (!_valid_morph(mons, mc))</a>
+<a name="ln484">                continue;</a>
+<a name="ln485">            target_types.push_back(mc);</a>
+<a name="ln486">        }</a>
+<a name="ln487">        if (target_types.empty())</a>
+<a name="ln488">            return false;</a>
+<a name="ln489"> </a>
+<a name="ln490">        targetc = target_types[random2(target_types.size())];</a>
+<a name="ln491">    }</a>
+<a name="ln492"> </a>
+<a name="ln493">    if (!_valid_morph(mons, targetc))</a>
+<a name="ln494">        return simple_monster_message(*mons, &quot; looks momentarily different.&quot;);</a>
+<a name="ln495"> </a>
+<a name="ln496">    change_monster_type(mons, targetc);</a>
+<a name="ln497"> </a>
+<a name="ln498">    bool can_see = you.can_see(*mons);</a>
+<a name="ln499"> </a>
+<a name="ln500">    // Messaging</a>
+<a name="ln501">    bool player_messaged = true;</a>
+<a name="ln502">    if (could_see)</a>
+<a name="ln503">    {</a>
+<a name="ln504">        string verb = &quot;&quot;;</a>
+<a name="ln505">        string obj = can_see ? mons_type_name(targetc, DESC_A)</a>
+<a name="ln506">                             : &quot;something you cannot see&quot;;</a>
+<a name="ln507"> </a>
+<a name="ln508">        if (oldc == MONS_OGRE &amp;&amp; targetc == MONS_TWO_HEADED_OGRE)</a>
+<a name="ln509">        {</a>
+<a name="ln510">            verb = &quot;grows a second head&quot;;</a>
+<a name="ln511">            obj = &quot;&quot;;</a>
+<a name="ln512">        }</a>
+<a name="ln513">        else if (mons-&gt;is_shapeshifter())</a>
+<a name="ln514">            verb = &quot;changes into &quot;;</a>
+<a name="ln515">        else if (_jiyva_slime_target(targetc))</a>
+<a name="ln516">            verb = &quot;quivers uncontrollably and liquefies into &quot;;</a>
+<a name="ln517">        else</a>
+<a name="ln518">            verb = &quot;evaporates and reforms as &quot;;</a>
+<a name="ln519"> </a>
+<a name="ln520">        mprf(&quot;%s %s%s!&quot;, old_name_the.c_str(), verb.c_str(), obj.c_str());</a>
+<a name="ln521">    }</a>
+<a name="ln522">    else if (can_see)</a>
+<a name="ln523">    {</a>
+<a name="ln524">        mprf(&quot;%s appears out of thin air!&quot;, mons-&gt;name(DESC_A).c_str());</a>
+<a name="ln525">        autotoggle_autopickup(false);</a>
+<a name="ln526">    }</a>
+<a name="ln527">    else</a>
+<a name="ln528">        player_messaged = false;</a>
+<a name="ln529"> </a>
+<a name="ln530">    if (need_note || could_see &amp;&amp; can_see &amp;&amp; mons_is_notable(*mons))</a>
+<a name="ln531">    {</a>
+<a name="ln532">        string new_name = can_see ? mons-&gt;full_name(DESC_A)</a>
+<a name="ln533">                                  : &quot;something unseen&quot;;</a>
+<a name="ln534"> </a>
+<a name="ln535">        take_note(Note(NOTE_POLY_MONSTER, 0, 0, old_name_a, new_name));</a>
+<a name="ln536"> </a>
+<a name="ln537">        if (can_see)</a>
+<a name="ln538">            mons-&gt;flags |= MF_SEEN;</a>
+<a name="ln539">    }</a>
+<a name="ln540"> </a>
+<a name="ln541">    if (!force_beh)</a>
+<a name="ln542">        player_angers_monster(mons);</a>
+<a name="ln543"> </a>
+<a name="ln544">    // Xom likes watching monsters being polymorphed.</a>
+<a name="ln545">    if (can_see)</a>
+<a name="ln546">    {</a>
+<a name="ln547">        xom_is_stimulated(mons-&gt;is_shapeshifter()               ? 12 :</a>
+<a name="ln548">                          power == PPT_LESS || mons-&gt;friendly() ? 25 :</a>
+<a name="ln549">                          power == PPT_SAME                     ? 50</a>
+<a name="ln550">                                                                : 100);</a>
+<a name="ln551">    }</a>
+<a name="ln552"> </a>
+<a name="ln553">    return player_messaged;</a>
+<a name="ln554">}</a>
+<a name="ln555"> </a>
+<a name="ln556">bool mon_can_be_slimified(const monster* mons)</a>
+<a name="ln557">{</a>
+<a name="ln558">    const mon_holy_type holi = mons-&gt;holiness();</a>
+<a name="ln559"> </a>
+<a name="ln560">    return !mons-&gt;is_insubstantial()</a>
+<a name="ln561">           &amp;&amp; !mons_is_tentacle_or_tentacle_segment(mons-&gt;type)</a>
+<a name="ln562">           &amp;&amp; (holi &amp; (MH_UNDEAD | MH_NATURAL) &amp;&amp; !mons_is_slime(*mons));</a>
+<a name="ln563">}</a>
+<a name="ln564"> </a>
+<a name="ln565">void slimify_monster(monster* mon)</a>
+<a name="ln566">{</a>
+<a name="ln567">    monster_type target = MONS_JELLY;</a>
+<a name="ln568"> </a>
+<a name="ln569">    const int x = mon-&gt;get_hit_dice() + random_choose(1, -1) * random2(5);</a>
+<a name="ln570"> </a>
+<a name="ln571">    if (x &lt; 3)</a>
+<a name="ln572">        target = MONS_OOZE;</a>
+<a name="ln573">    else if (x &gt;= 3 &amp;&amp; x &lt; 5)</a>
+<a name="ln574">        target = MONS_JELLY;</a>
+<a name="ln575">    else if (x &gt;= 5 &amp;&amp; x &lt;= 11)</a>
+<a name="ln576">        target = MONS_SLIME_CREATURE;</a>
+<a name="ln577">    else</a>
+<a name="ln578">    {</a>
+<a name="ln579">        if (coinflip())</a>
+<a name="ln580">            target = MONS_ACID_BLOB;</a>
+<a name="ln581">        else</a>
+<a name="ln582">            target = MONS_AZURE_JELLY;</a>
+<a name="ln583">    }</a>
+<a name="ln584"> </a>
+<a name="ln585">    if (feat_is_water(grd(mon-&gt;pos()))) // Pick something amphibious.</a>
+<a name="ln586">        target = (x &lt; 7) ? MONS_JELLY : MONS_SLIME_CREATURE;</a>
+<a name="ln587"> </a>
+<a name="ln588">    if (mon-&gt;holiness() &amp; MH_UNDEAD)</a>
+<a name="ln589">        target = MONS_DEATH_OOZE;</a>
+<a name="ln590"> </a>
+<a name="ln591">    // Bail out if jellies can't live here.</a>
+<a name="ln592">    if (!monster_habitable_grid(target, grd(mon-&gt;pos())))</a>
+<a name="ln593">    {</a>
+<a name="ln594">        simple_monster_message(*mon, &quot; quivers momentarily.&quot;);</a>
+<a name="ln595">        return;</a>
+<a name="ln596">    }</a>
+<a name="ln597"> </a>
+<a name="ln598">    record_monster_defeat(mon, KILL_SLIMIFIED);</a>
+<a name="ln599">    remove_unique_annotation(mon);</a>
+<a name="ln600"> </a>
+<a name="ln601">    monster_polymorph(mon, target);</a>
+<a name="ln602"> </a>
+<a name="ln603">    mon-&gt;attitude = ATT_STRICT_NEUTRAL;</a>
+<a name="ln604"> </a>
+<a name="ln605">    mons_make_god_gift(*mon, GOD_JIYVA);</a>
+<a name="ln606"> </a>
+<a name="ln607">    // Don't want shape-shifters to shift into non-slimes.</a>
+<a name="ln608">    mon-&gt;del_ench(ENCH_GLOWING_SHAPESHIFTER);</a>
+<a name="ln609">    mon-&gt;del_ench(ENCH_SHAPESHIFTER);</a>
+<a name="ln610"> </a>
+<a name="ln611">    mons_att_changed(mon);</a>
+<a name="ln612">}</a>
+<a name="ln613"> </a>
+<a name="ln614">void seen_monster(monster* mons)</a>
+<a name="ln615">{</a>
+<a name="ln616">    set_unique_annotation(mons);</a>
+<a name="ln617"> </a>
+<a name="ln618">    // id equipment (do this every time we see them, it may have changed)</a>
+<a name="ln619">    view_monster_equipment(mons);</a>
+<a name="ln620"> </a>
+<a name="ln621">    item_def* weapon = mons-&gt;weapon();</a>
+<a name="ln622">    if (weapon &amp;&amp; is_range_weapon(*weapon))</a>
+<a name="ln623">        mons-&gt;flags |= MF_SEEN_RANGED;</a>
+<a name="ln624"> </a>
+<a name="ln625">    // Monster was viewed this turn</a>
+<a name="ln626">    mons-&gt;flags |= MF_WAS_IN_VIEW;</a>
+<a name="ln627"> </a>
+<a name="ln628">    if (mons-&gt;flags &amp; MF_SEEN)</a>
+<a name="ln629">        return;</a>
+<a name="ln630"> </a>
+<a name="ln631">    // First time we've seen this particular monster.</a>
+<a name="ln632">    mons-&gt;flags |= MF_SEEN;</a>
+<a name="ln633"> </a>
+<a name="ln634">    if (crawl_state.game_is_hints())</a>
+<a name="ln635">        hints_monster_seen(*mons);</a>
+<a name="ln636"> </a>
+<a name="ln637">    if (mons_is_notable(*mons))</a>
+<a name="ln638">    {</a>
+<a name="ln639">        string name = mons-&gt;name(DESC_A, true);</a>
+<a name="ln640">        if (mons-&gt;type == MONS_PLAYER_GHOST)</a>
+<a name="ln641">        {</a>
+<a name="ln642">            name += make_stringf(&quot; (%s)&quot;,</a>
+<a name="ln643">                                 short_ghost_description(mons, true).c_str());</a>
+<a name="ln644">        }</a>
+<a name="ln645">        take_note(Note(NOTE_SEEN_MONSTER, mons-&gt;type, 0, name));</a>
+<a name="ln646">    }</a>
+<a name="ln647"> </a>
+<a name="ln648">    // attempt any god conversions on first sight</a>
+<a name="ln649">    do_conversions(mons);</a>
+<a name="ln650"> </a>
+<a name="ln651">    if (!(mons-&gt;flags &amp; MF_TSO_SEEN))</a>
+<a name="ln652">    {</a>
+<a name="ln653">        if (mons_gives_xp(*mons, you) &amp;&amp; !crawl_state.game_is_arena())</a>
+<a name="ln654">        {</a>
+<a name="ln655">            did_god_conduct(DID_SEE_MONSTER, mons-&gt;get_experience_level(),</a>
+<a name="ln656">                            true, mons);</a>
+<a name="ln657">        }</a>
+<a name="ln658">        mons-&gt;flags |= MF_TSO_SEEN;</a>
+<a name="ln659">    }</a>
+<a name="ln660"> </a>
+<a name="ln661">    if (mons_allows_beogh(*mons))</a>
+<a name="ln662">        env.level_state |= LSTATE_BEOGH;</a>
+<a name="ln663">}</a>
+
+</code></pre>
+<div class="balloon" rel="127"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="171"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: power == PPT_LESS.</p></div>
+<div class="balloon" rel="174"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: power == PPT_MORE.</p></div>
+<div class="balloon" rel="287"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v768/" target="_blank">V768</a> The expression 'player_will_anger_monster(real_targetc)' is of enum type. It is odd that it is used as an expression of a Boolean-type.</p></div>
+<div class="balloon" rel="463"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="573"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: x >= 3.</p></div>
+<div class="balloon" rel="575"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: x >= 5.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

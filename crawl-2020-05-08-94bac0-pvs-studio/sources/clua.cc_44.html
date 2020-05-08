@@ -1,0 +1,1443 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>clua.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#include &quot;clua.h&quot;</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &lt;algorithm&gt;</a>
+<a name="ln6"> </a>
+<a name="ln7">#include &quot;cluautil.h&quot;</a>
+<a name="ln8">#include &quot;dlua.h&quot;</a>
+<a name="ln9">#include &quot;end.h&quot;</a>
+<a name="ln10">#include &quot;files.h&quot;</a>
+<a name="ln11">#include &quot;libutil.h&quot;</a>
+<a name="ln12">#include &quot;l-libs.h&quot;</a>
+<a name="ln13">#include &quot;maybe-bool.h&quot;</a>
+<a name="ln14">#include &quot;misc.h&quot; // erase_val</a>
+<a name="ln15">#include &quot;options.h&quot;</a>
+<a name="ln16">#include &quot;state.h&quot;</a>
+<a name="ln17">#include &quot;stringutil.h&quot;</a>
+<a name="ln18">#include &quot;syscalls.h&quot;</a>
+<a name="ln19">#include &quot;unicode.h&quot;</a>
+<a name="ln20">#include &quot;version.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">#define BUGGY_PCALL_ERROR  &quot;667: Malformed response to guarded pcall.&quot;</a>
+<a name="ln23">#define BUGGY_SCRIPT_ERROR &quot;666: Killing badly-behaved Lua script.&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">// 64-bit luajit does not support custom allocators. Only checking</a>
+<a name="ln26">// TARGET_CPU_X64 because luajit doesn't support other 64-bit archs.</a>
+<a name="ln27">#if defined(USE_LUAJIT) &amp;&amp; defined(TARGET_CPU_X64)</a>
+<a name="ln28">#define NO_CUSTOM_ALLOCATOR</a>
+<a name="ln29">#endif</a>
+<a name="ln30"> </a>
+<a name="ln31">static int  _clua_panic(lua_State *);</a>
+<a name="ln32">static void _clua_throttle_hook(lua_State *, lua_Debug *);</a>
+<a name="ln33">#ifndef NO_CUSTOM_ALLOCATOR</a>
+<a name="ln34">static void *_clua_allocator(void *ud, void *ptr, size_t osize, size_t nsize);</a>
+<a name="ln35">#endif</a>
+<a name="ln36">static int  _clua_guarded_pcall(lua_State *);</a>
+<a name="ln37">static int  _clua_require(lua_State *);</a>
+<a name="ln38">static int  _clua_dofile(lua_State *);</a>
+<a name="ln39">static int  _clua_loadfile(lua_State *);</a>
+<a name="ln40">static string _get_persist_file();</a>
+<a name="ln41"> </a>
+<a name="ln42">CLua::CLua(bool managed)</a>
+<a name="ln43">    : error(), managed_vm(managed), shutting_down(false),</a>
+<a name="ln44">      throttle_unit_lines(50000),</a>
+<a name="ln45">      throttle_sleep_ms(0), throttle_sleep_start(2),</a>
+<a name="ln46">      throttle_sleep_end(800), n_throttle_sleeps(0), mixed_call_depth(0),</a>
+<a name="ln47">      lua_call_depth(0), max_mixed_call_depth(8),</a>
+<a name="ln48">      max_lua_call_depth(100), memory_used(0),</a>
+<a name="ln49">      _state(nullptr), sourced_files(), uniqindex(0)</a>
+<a name="ln50">{</a>
+<a name="ln51">}</a>
+<a name="ln52"> </a>
+<a name="ln53">CLua::~CLua()</a>
+<a name="ln54">{</a>
+<a name="ln55">    // Copy the listener vector, because listeners may remove</a>
+<a name="ln56">    // themselves from the listener list when we notify them of a</a>
+<a name="ln57">    // shutdown.</a>
+<a name="ln58">    const vector&lt;lua_shutdown_listener*&gt; slisteners = shutdown_listeners;</a>
+<a name="ln59">    for (lua_shutdown_listener *listener : slisteners)</a>
+<a name="ln60">        listener-&gt;shutdown(*this);</a>
+<a name="ln61">    shutting_down = true;</a>
+<a name="ln62">    if (_state)</a>
+<a name="ln63">        lua_close(_state);</a>
+<a name="ln64">}</a>
+<a name="ln65"> </a>
+<a name="ln66">lua_State *CLua::state()</a>
+<a name="ln67">{</a>
+<a name="ln68">    if (!_state)</a>
+<a name="ln69">        init_lua();</a>
+<a name="ln70">    return _state;</a>
+<a name="ln71">}</a>
+<a name="ln72"> </a>
+<a name="ln73">void CLua::setglobal(const char *name)</a>
+<a name="ln74">{</a>
+<a name="ln75">    lua_setglobal(state(), name);</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">void CLua::getglobal(const char *name)</a>
+<a name="ln79">{</a>
+<a name="ln80">    lua_getglobal(state(), name);</a>
+<a name="ln81">}</a>
+<a name="ln82"> </a>
+<a name="ln83">string CLua::setuniqregistry()</a>
+<a name="ln84">{</a>
+<a name="ln85">    char name[100];</a>
+<a name="ln86">    snprintf(name, sizeof name, &quot;__cru%u&quot;, uniqindex++);</a>
+<a name="ln87">    lua_pushstring(state(), name);</a>
+<a name="ln88">    lua_insert(state(), -2);</a>
+<a name="ln89">    lua_settable(state(), LUA_REGISTRYINDEX);</a>
+<a name="ln90"> </a>
+<a name="ln91">    return name;</a>
+<a name="ln92">}</a>
+<a name="ln93"> </a>
+<a name="ln94">void CLua::setregistry(const char *name)</a>
+<a name="ln95">{</a>
+<a name="ln96">    lua_pushstring(state(), name);</a>
+<a name="ln97">    // Slide name round before the value</a>
+<a name="ln98">    lua_insert(state(), -2);</a>
+<a name="ln99">    lua_settable(state(), LUA_REGISTRYINDEX);</a>
+<a name="ln100">}</a>
+<a name="ln101"> </a>
+<a name="ln102">void CLua::_getregistry(lua_State *ls, const char *name)</a>
+<a name="ln103">{</a>
+<a name="ln104">    lua_pushstring(ls, name);</a>
+<a name="ln105">    lua_gettable(ls, LUA_REGISTRYINDEX);</a>
+<a name="ln106">}</a>
+<a name="ln107"> </a>
+<a name="ln108">void CLua::getregistry(const char *name)</a>
+<a name="ln109">{</a>
+<a name="ln110">    _getregistry(state(), name);</a>
+<a name="ln111">}</a>
+<a name="ln112"> </a>
+<a name="ln113">void CLua::gc()</a>
+<a name="ln114">{</a>
+<a name="ln115">    lua_gc(state(), LUA_GCCOLLECT, 0);</a>
+<a name="ln116">}</a>
+<a name="ln117"> </a>
+<a name="ln118">void CLua::save(writer &amp;outf)</a>
+<a name="ln119">{</a>
+<a name="ln120">    if (!_state)</a>
+<a name="ln121">        return;</a>
+<a name="ln122"> </a>
+<a name="ln123">    string res;</a>
+<a name="ln124">    callfn(&quot;c_save&quot;, &quot;&gt;s&quot;, &amp;res);</a>
+<a name="ln125">    outf.write(res.c_str(), res.size());</a>
+<a name="ln126">}</a>
+<a name="ln127"> </a>
+<a name="ln128">void CLua::save_persist()</a>
+<a name="ln129">{</a>
+<a name="ln130">    string persist;</a>
+<a name="ln131">    // We load persist.lua immediately before calling c_save_persist so</a>
+<a name="ln132">    // that we know that it hasn't been overwritten by a player version.</a>
+<a name="ln133">    execfile(&quot;dlua/persist.lua&quot;, true, true);</a>
+<a name="ln134">    callfn(&quot;c_save_persist&quot;, &quot;&gt;s&quot;, &amp;persist);</a>
+<a name="ln135">    if (Options.no_save)</a>
+<a name="ln136">        return;</a>
+<a name="ln137"> </a>
+<a name="ln138">    FILE *f;</a>
+<a name="ln139">    const string persistfile = _get_persist_file();</a>
+<a name="ln140"> </a>
+<a name="ln141">    // Don't create the file if there's no need to do so.</a>
+<a name="ln142">    if (persist.empty() &amp;&amp; !file_exists(persistfile))</a>
+<a name="ln143">        return;</a>
+<a name="ln144"> </a>
+<a name="ln145">    f = fopen_u(persistfile.c_str(), &quot;w&quot;);</a>
+<a name="ln146">    if (!f)</a>
+<a name="ln147">    {</a>
+<a name="ln148">        mprf(MSGCH_ERROR, &quot;Couldn't open %s for writing!&quot;, persistfile.c_str());</a>
+<a name="ln149">        return;</a>
+<a name="ln150">    }</a>
+<a name="ln151"> </a>
+<a name="ln152">    fprintf(f, &quot;-- %s %s persistent clua file\n&quot;</a>
+<a name="ln153">               &quot;-- WARNING: This file is entirely auto-generated.\n&quot;</a>
+<a name="ln154">            &quot;\n&quot;,</a>
+<a name="ln155">            OUTS(CRAWL), // ok, localizing the game name is not likely</a>
+<a name="ln156">            OUTS(Version::Long)); // nor the version string</a>
+<a name="ln157">    fprintf(f, &quot;%s&quot;, persist.c_str());</a>
+<a name="ln158">    fclose(f);</a>
+<a name="ln159">}</a>
+<a name="ln160"> </a>
+<a name="ln161">void CLua::load_persist()</a>
+<a name="ln162">{</a>
+<a name="ln163">    if (Options.no_save)</a>
+<a name="ln164">        return;</a>
+<a name="ln165">    string persistfile = _get_persist_file();</a>
+<a name="ln166">    if (!file_exists(persistfile))</a>
+<a name="ln167">        return;</a>
+<a name="ln168">    FileLineInput f(persistfile.c_str());</a>
+<a name="ln169">    string script;</a>
+<a name="ln170">    while (!f.eof())</a>
+<a name="ln171">        script += f.get_line() + &quot;\n&quot;;</a>
+<a name="ln172">    execstring(script.c_str());</a>
+<a name="ln173">}</a>
+<a name="ln174"> </a>
+<a name="ln175">int CLua::file_write(lua_State *ls)</a>
+<a name="ln176">{</a>
+<a name="ln177">    if (!lua_islightuserdata(ls, 1))</a>
+<a name="ln178">    {</a>
+<a name="ln179">        luaL_argerror(ls, 1, &quot;Expected filehandle at arg 1&quot;);</a>
+<a name="ln180">        return 0;</a>
+<a name="ln181">    }</a>
+<a name="ln182">    CLuaSave *sf = static_cast&lt;CLuaSave *&gt;(lua_touserdata(ls, 1));</a>
+<a name="ln183">    if (!sf)</a>
+<a name="ln184">        return 0;</a>
+<a name="ln185"> </a>
+<a name="ln186">    FILE *f = sf-&gt;get_file();</a>
+<a name="ln187">    if (!f)</a>
+<a name="ln188">        return 0;</a>
+<a name="ln189"> </a>
+<a name="ln190">    const char *text = luaL_checkstring(ls, 2);</a>
+<a name="ln191">    if (text)</a>
+<a name="ln192">        fprintf(f, &quot;%s&quot;, text);</a>
+<a name="ln193">    return 0;</a>
+<a name="ln194">}</a>
+<a name="ln195"> </a>
+<a name="ln196">FILE *CLua::CLuaSave::get_file()</a>
+<a name="ln197">{</a>
+<a name="ln198">    if (!handle)</a>
+<a name="ln199">        handle = fopen_u(filename, &quot;w&quot;);</a>
+<a name="ln200"> </a>
+<a name="ln201">    return handle;</a>
+<a name="ln202">}</a>
+<a name="ln203"> </a>
+<a name="ln204">void CLua::set_error(int err, lua_State *ls)</a>
+<a name="ln205">{</a>
+<a name="ln206">    if (!err)</a>
+<a name="ln207">    {</a>
+<a name="ln208">        error.clear();</a>
+<a name="ln209">        return;</a>
+<a name="ln210">    }</a>
+<a name="ln211">    if (!ls &amp;&amp; !(ls = _state))</a>
+<a name="ln212">    {</a>
+<a name="ln213">        error = &quot;&lt;LUA not initialised&gt;&quot;;</a>
+<a name="ln214">        return;</a>
+<a name="ln215">    }</a>
+<a name="ln216">    const char *serr = lua_tostring(ls, -1);</a>
+<a name="ln217">    lua_pop(ls, 1);</a>
+<a name="ln218">    error = serr? serr : &quot;&lt;Unknown error&gt;&quot;;</a>
+<a name="ln219">}</a>
+<a name="ln220"> </a>
+<a name="ln221">void CLua::init_throttle()</a>
+<a name="ln222">{</a>
+<a name="ln223">    if (!managed_vm)</a>
+<a name="ln224">        return;</a>
+<a name="ln225"> </a>
+<a name="ln226">    if (!crawl_state.throttle)</a>
+<a name="ln227">        return;</a>
+<a name="ln228"> </a>
+<a name="ln229">    if (throttle_unit_lines &lt;= 0)</a>
+<a name="ln230">        throttle_unit_lines = 500;</a>
+<a name="ln231"> </a>
+<a name="ln232">    if (throttle_sleep_start &lt; 1)</a>
+<a name="ln233">        throttle_sleep_start = 1;</a>
+<a name="ln234"> </a>
+<a name="ln235">    if (throttle_sleep_end &lt; throttle_sleep_start)</a>
+<a name="ln236">        throttle_sleep_end = throttle_sleep_start;</a>
+<a name="ln237"> </a>
+<a name="ln238">    if (!mixed_call_depth)</a>
+<a name="ln239">    {</a>
+<a name="ln240">        lua_sethook(_state, _clua_throttle_hook,</a>
+<a name="ln241">                    LUA_MASKCOUNT, throttle_unit_lines);</a>
+<a name="ln242">        throttle_sleep_ms = 0;</a>
+<a name="ln243">        n_throttle_sleeps = 0;</a>
+<a name="ln244">    }</a>
+<a name="ln245">}</a>
+<a name="ln246"> </a>
+<a name="ln247">int CLua::loadbuffer(const char *buf, size_t size, const char *context)</a>
+<a name="ln248">{</a>
+<a name="ln249">    const int err = luaL_loadbuffer(state(), buf, size, context);</a>
+<a name="ln250">    set_error(err, state());</a>
+<a name="ln251">    return err;</a>
+<a name="ln252">}</a>
+<a name="ln253"> </a>
+<a name="ln254">int CLua::loadstring(const char *s, const char *context)</a>
+<a name="ln255">{</a>
+<a name="ln256">    return loadbuffer(s, strlen(s), context);</a>
+<a name="ln257">}</a>
+<a name="ln258"> </a>
+<a name="ln259">int CLua::execstring(const char *s, const char *context, int nresults)</a>
+<a name="ln260">{</a>
+<a name="ln261">    int err = 0;</a>
+<a name="ln262">    if ((err = loadstring(s, context)))</a>
+<a name="ln263">        return err;</a>
+<a name="ln264"> </a>
+<a name="ln265">    lua_State *ls = state();</a>
+<a name="ln266">    lua_call_throttle strangler(this);</a>
+<a name="ln267">    err = lua_pcall(ls, 0, nresults, 0);</a>
+<a name="ln268">    set_error(err, ls);</a>
+<a name="ln269">    return err;</a>
+<a name="ln270">}</a>
+<a name="ln271"> </a>
+<a name="ln272">bool CLua::is_path_safe(string s, bool trusted)</a>
+<a name="ln273">{</a>
+<a name="ln274">    lowercase(s);</a>
+<a name="ln275">    return s.find(&quot;..&quot;) == string::npos &amp;&amp; shell_safe(s.c_str())</a>
+<a name="ln276">           // loading dlua stuff would spew tons of error messages</a>
+<a name="ln277">           &amp;&amp; (trusted || s.find(&quot;dlua&quot;) != 0);</a>
+<a name="ln278">}</a>
+<a name="ln279"> </a>
+<a name="ln280">int CLua::loadfile(lua_State *ls, const char *filename, bool trusted,</a>
+<a name="ln281">                   bool die_on_fail)</a>
+<a name="ln282">{</a>
+<a name="ln283">    if (!ls)</a>
+<a name="ln284">        return -1;</a>
+<a name="ln285"> </a>
+<a name="ln286">    if (!is_path_safe(filename, trusted))</a>
+<a name="ln287">    {</a>
+<a name="ln288">        lua_pushstring(</a>
+<a name="ln289">            ls,</a>
+<a name="ln290">            make_stringf(&quot;invalid filename: %s&quot;, filename).c_str());</a>
+<a name="ln291">        return -1;</a>
+<a name="ln292">    }</a>
+<a name="ln293"> </a>
+<a name="ln294">    string file = datafile_path(filename, die_on_fail);</a>
+<a name="ln295">    if (file.empty())</a>
+<a name="ln296">    {</a>
+<a name="ln297">        lua_pushstring(ls,</a>
+<a name="ln298">                       make_stringf(&quot;Can't find \&quot;%s\&quot;&quot;, filename).c_str());</a>
+<a name="ln299">        return -1;</a>
+<a name="ln300">    }</a>
+<a name="ln301"> </a>
+<a name="ln302">    FileLineInput f(file.c_str());</a>
+<a name="ln303">    string script;</a>
+<a name="ln304">    while (!f.eof())</a>
+<a name="ln305">        script += f.get_line() + &quot;\n&quot;;</a>
+<a name="ln306"> </a>
+<a name="ln307">    if (script[0] == 0x1b)</a>
+<a name="ln308">        abort();</a>
+<a name="ln309"> </a>
+<a name="ln310">    // prefixing with @ stops lua from adding [string &quot;%s&quot;]</a>
+<a name="ln311">    return luaL_loadbuffer(ls, &amp;script[0], script.length(),</a>
+<a name="ln312">                           (&quot;@&quot; + file).c_str());</a>
+<a name="ln313">}</a>
+<a name="ln314"> </a>
+<a name="ln315">int CLua::execfile(const char *filename, bool trusted, bool die_on_fail,</a>
+<a name="ln316">                   bool force)</a>
+<a name="ln317">{</a>
+<a name="ln318">    if (!force &amp;&amp; sourced_files.count(filename))</a>
+<a name="ln319">        return 0;</a>
+<a name="ln320"> </a>
+<a name="ln321">    lua_State *ls = state();</a>
+<a name="ln322">    int err = loadfile(ls, filename, trusted || !managed_vm, die_on_fail);</a>
+<a name="ln323">    lua_call_throttle strangler(this);</a>
+<a name="ln324">    if (!err)</a>
+<a name="ln325">        err = lua_pcall(ls, 0, 0, 0);</a>
+<a name="ln326">    if (!err)</a>
+<a name="ln327">        sourced_files.insert(filename);</a>
+<a name="ln328">    set_error(err);</a>
+<a name="ln329">    if (die_on_fail &amp;&amp; !error.empty())</a>
+<a name="ln330">    {</a>
+<a name="ln331">        end(1, false, &quot;Lua execfile error (%s): %s&quot;,</a>
+<a name="ln332">            filename, error.c_str());</a>
+<a name="ln333">    }</a>
+<a name="ln334">    return err;</a>
+<a name="ln335">}</a>
+<a name="ln336"> </a>
+<a name="ln337">bool CLua::runhook(const char *hook, const char *params, ...)</a>
+<a name="ln338">{</a>
+<a name="ln339">    error.clear();</a>
+<a name="ln340"> </a>
+<a name="ln341">    lua_State *ls = state();</a>
+<a name="ln342">    if (!ls)</a>
+<a name="ln343">        return false;</a>
+<a name="ln344"> </a>
+<a name="ln345">    lua_stack_cleaner clean(ls);</a>
+<a name="ln346"> </a>
+<a name="ln347">    pushglobal(hook);</a>
+<a name="ln348">    if (!lua_istable(ls, -1))</a>
+<a name="ln349">        return false;</a>
+<a name="ln350">    for (int i = 1; ; ++i)</a>
+<a name="ln351">    {</a>
+<a name="ln352">        lua_stack_cleaner clean2(ls);</a>
+<a name="ln353"> </a>
+<a name="ln354">        lua_rawgeti(ls, -1, i);</a>
+<a name="ln355">        if (!lua_isfunction(ls, -1))</a>
+<a name="ln356">        {</a>
+<a name="ln357">            lua_pop(ls, 1);</a>
+<a name="ln358">            break;</a>
+<a name="ln359">        }</a>
+<a name="ln360"> </a>
+<a name="ln361">        // So what's on top *is* a function. Call it with the args we have.</a>
+<a name="ln362">        va_list args;</a>
+<a name="ln363">        va_start(args, params);</a>
+<a name="ln364">        calltopfn(ls, params, args);</a>
+<a name="ln365">        va_end(args);</a>
+<a name="ln366">    }</a>
+<a name="ln367">    return true;</a>
+<a name="ln368">}</a>
+<a name="ln369"> </a>
+<a name="ln370">void CLua::fnreturns(const char *format, ...)</a>
+<a name="ln371">{</a>
+<a name="ln372">    lua_State *ls = _state;</a>
+<a name="ln373"> </a>
+<a name="ln374">    if (!format || !ls)</a>
+<a name="ln375">        return;</a>
+<a name="ln376"> </a>
+<a name="ln377">    va_list args;</a>
+<a name="ln378">    va_start(args, format);</a>
+<a name="ln379">    vfnreturns(format, args);</a>
+<a name="ln380">    va_end(args);</a>
+<a name="ln381">}</a>
+<a name="ln382"> </a>
+<a name="ln383">void CLua::vfnreturns(const char *format, va_list args)</a>
+<a name="ln384">{</a>
+<a name="ln385">    lua_State *ls = _state;</a>
+<a name="ln386">    int nrets = return_count(ls, format);</a>
+<a name="ln387">    int sp = -nrets - 1;</a>
+<a name="ln388"> </a>
+<a name="ln389">    const char *gs = strchr(format, '&gt;');</a>
+<a name="ln390">    if (gs)</a>
+<a name="ln391">        format = gs + 1;</a>
+<a name="ln392">    else if ((gs = strchr(format, ':')))</a>
+<a name="ln393">        format = gs + 1;</a>
+<a name="ln394"> </a>
+<a name="ln395">    for (const char *run = format; *run; ++run)</a>
+<a name="ln396">    {</a>
+<a name="ln397">        char argtype = *run;</a>
+<a name="ln398">        ++sp;</a>
+<a name="ln399">        switch (argtype)</a>
+<a name="ln400">        {</a>
+<a name="ln401">        case 'u':</a>
+<a name="ln402">            if (lua_islightuserdata(ls, sp))</a>
+<a name="ln403">                *(va_arg(args, void**)) = lua_touserdata(ls, sp);</a>
+<a name="ln404">            break;</a>
+<a name="ln405">        case 'd':</a>
+<a name="ln406">            if (lua_isnumber(ls, sp))</a>
+<a name="ln407">                *(va_arg(args, int*)) = luaL_safe_checkint(ls, sp);</a>
+<a name="ln408">            break;</a>
+<a name="ln409">        case 'b':</a>
+<a name="ln410">            *(va_arg(args, bool *)) = lua_toboolean(ls, sp);</a>
+<a name="ln411">            break;</a>
+<a name="ln412">        case 's':</a>
+<a name="ln413">            {</a>
+<a name="ln414">                const char *s = lua_tostring(ls, sp);</a>
+<a name="ln415">                if (s)</a>
+<a name="ln416">                    *(va_arg(args, string *)) = s;</a>
+<a name="ln417">                break;</a>
+<a name="ln418">            }</a>
+<a name="ln419">        default:</a>
+<a name="ln420">            break;</a>
+<a name="ln421">        }</a>
+<a name="ln422"> </a>
+<a name="ln423">    }</a>
+<a name="ln424">    // Pop args off the stack</a>
+<a name="ln425">    lua_pop(ls, nrets);</a>
+<a name="ln426">}</a>
+<a name="ln427"> </a>
+<a name="ln428">int CLua::push_args(lua_State *ls, const char *format, va_list args,</a>
+<a name="ln429">                    va_list *targ)</a>
+<a name="ln430">{</a>
+<a name="ln431">    if (!format)</a>
+<a name="ln432">    {</a>
+<a name="ln433">        if (targ)</a>
+<a name="ln434">            va_copy(*targ, args);</a>
+<a name="ln435">        return 0;</a>
+<a name="ln436">    }</a>
+<a name="ln437"> </a>
+<a name="ln438">    const char *cs = strchr(format, ':');</a>
+<a name="ln439">    if (cs)</a>
+<a name="ln440">        format = cs + 1;</a>
+<a name="ln441"> </a>
+<a name="ln442">    int argc = 0;</a>
+<a name="ln443">    for (const char *run = format; *run; run++)</a>
+<a name="ln444">    {</a>
+<a name="ln445">        if (*run == '&gt;')</a>
+<a name="ln446">            break;</a>
+<a name="ln447"> </a>
+<a name="ln448">        char argtype = *run;</a>
+<a name="ln449">        ++argc;</a>
+<a name="ln450">        switch (argtype)</a>
+<a name="ln451">        {</a>
+<a name="ln452">        case 'u':       // Light userdata</a>
+<a name="ln453">            lua_pushlightuserdata(ls, va_arg(args, void*));</a>
+<a name="ln454">            break;</a>
+<a name="ln455">        case 'i':</a>
+<a name="ln456">            clua_push_item(ls, va_arg(args, item_def*));</a>
+<a name="ln457">            break;</a>
+<a name="ln458">        case 's':       // String</a>
+<a name="ln459">        {</a>
+<a name="ln460">            const char *s = va_arg(args, const char *);</a>
+<a name="ln461">            if (s)</a>
+<a name="ln462">                lua_pushstring(ls, s);</a>
+<a name="ln463">            else</a>
+<a name="ln464">                lua_pushnil(ls);</a>
+<a name="ln465">            break;</a>
+<a name="ln466">        }</a>
+<a name="ln467">        case 'd':       // Integer</a>
+<a name="ln468">            lua_pushnumber(ls, va_arg(args, int));</a>
+<a name="ln469">            break;</a>
+<a name="ln470">        case 'L':</a>
+<a name="ln471">            die(&quot;ambiguous long in Lua push_args&quot;);</a>
+<a name="ln472">            lua_pushnumber(ls, va_arg(args, long));</a>
+<a name="ln473">            break;</a>
+<a name="ln474">        case 'b':</a>
+<a name="ln475">            lua_pushboolean(ls, va_arg(args, int));</a>
+<a name="ln476">            break;</a>
+<a name="ln477">        case 'D':</a>
+<a name="ln478">            clua_push_dgn_event(ls, va_arg(args, const dgn_event *));</a>
+<a name="ln479">            break;</a>
+<a name="ln480">        case 'm':</a>
+<a name="ln481">            clua_push_map(ls, va_arg(args, map_def *));</a>
+<a name="ln482">            break;</a>
+<a name="ln483">        case 'M':</a>
+<a name="ln484">            push_monster(ls, va_arg(args, monster*));</a>
+<a name="ln485">            break;</a>
+<a name="ln486">        case 'I':</a>
+<a name="ln487">            lua_push_moninf(ls, va_arg(args, monster_info *));</a>
+<a name="ln488">            break;</a>
+<a name="ln489">        case 'A':</a>
+<a name="ln490">            argc += push_activity_interrupt(</a>
+<a name="ln491">                        ls, va_arg(args, activity_interrupt_data *));</a>
+<a name="ln492">            break;</a>
+<a name="ln493">        default:</a>
+<a name="ln494">            --argc;</a>
+<a name="ln495">            break;</a>
+<a name="ln496">        }</a>
+<a name="ln497">    }</a>
+<a name="ln498">    if (targ)</a>
+<a name="ln499">        va_copy(*targ, args);</a>
+<a name="ln500">    return argc;</a>
+<a name="ln501">}</a>
+<a name="ln502"> </a>
+<a name="ln503">int CLua::return_count(lua_State *ls, const char *format)</a>
+<a name="ln504">{</a>
+<a name="ln505">    UNUSED(ls);</a>
+<a name="ln506"> </a>
+<a name="ln507">    if (!format)</a>
+<a name="ln508">        return 0;</a>
+<a name="ln509"> </a>
+<a name="ln510">    const char *gs = strchr(format, '&gt;');</a>
+<a name="ln511">    if (gs)</a>
+<a name="ln512">        return strlen(gs + 1);</a>
+<a name="ln513"> </a>
+<a name="ln514">    const char *cs = strchr(format, ':');</a>
+<a name="ln515">    if (cs &amp;&amp; isdigit(*format))</a>
+<a name="ln516">    {</a>
+<a name="ln517">        char *es = nullptr;</a>
+<a name="ln518">        int ci = strtol(format, &amp;es, 10);</a>
+<a name="ln519">        // We're capping return at 10 here, which is arbitrary, but avoids</a>
+<a name="ln520">        // blowing the stack.</a>
+<a name="ln521">        if (ci &lt; 0)</a>
+<a name="ln522">            ci = 0;</a>
+<a name="ln523">        else if (ci &gt; 10)</a>
+<a name="ln524">            ci = 10;</a>
+<a name="ln525">        return ci;</a>
+<a name="ln526">    }</a>
+<a name="ln527">    return 0;</a>
+<a name="ln528">}</a>
+<a name="ln529"> </a>
+<a name="ln530">bool CLua::calltopfn(lua_State *ls, const char *params, va_list args,</a>
+<a name="ln531">                     int retc, va_list *copyto)</a>
+<a name="ln532">{</a>
+<a name="ln533">    // We guarantee to remove the function from the stack</a>
+<a name="ln534">    int argc = push_args(ls, params, args, copyto);</a>
+<a name="ln535">    if (retc == -1)</a>
+<a name="ln536">        retc = return_count(ls, params);</a>
+<a name="ln537">    lua_call_throttle strangler(this);</a>
+<a name="ln538">    int err = lua_pcall(ls, argc, retc, 0);</a>
+<a name="ln539">    set_error(err, ls);</a>
+<a name="ln540">    return !err;</a>
+<a name="ln541">}</a>
+<a name="ln542"> </a>
+<a name="ln543">maybe_bool CLua::callmbooleanfn(const char *fn, const char *params,</a>
+<a name="ln544">                                va_list args)</a>
+<a name="ln545">{</a>
+<a name="ln546">    error.clear();</a>
+<a name="ln547">    lua_State *ls = state();</a>
+<a name="ln548">    if (!ls)</a>
+<a name="ln549">        return MB_MAYBE;</a>
+<a name="ln550"> </a>
+<a name="ln551">    lua_stack_cleaner clean(ls);</a>
+<a name="ln552"> </a>
+<a name="ln553">    pushglobal(fn);</a>
+<a name="ln554">    if (!lua_isfunction(ls, -1))</a>
+<a name="ln555">        return MB_MAYBE;</a>
+<a name="ln556"> </a>
+<a name="ln557">    bool ret = calltopfn(ls, params, args, 1);</a>
+<a name="ln558">    if (!ret)</a>
+<a name="ln559">        return MB_MAYBE;</a>
+<a name="ln560"> </a>
+<a name="ln561">    return frombool(lua_toboolean(ls, -1));</a>
+<a name="ln562">}</a>
+<a name="ln563"> </a>
+<a name="ln564">maybe_bool CLua::callmbooleanfn(const char *fn, const char *params, ...)</a>
+<a name="ln565">{</a>
+<a name="ln566">    va_list args;</a>
+<a name="ln567">    va_start(args, params);</a>
+<a name="ln568">    maybe_bool r = callmbooleanfn(fn, params, args);</a>
+<a name="ln569">    va_end(args);</a>
+<a name="ln570">    return r;</a>
+<a name="ln571">}</a>
+<a name="ln572"> </a>
+<a name="ln573">maybe_bool CLua::callmaybefn(const char *fn, const char *params, va_list args)</a>
+<a name="ln574">{</a>
+<a name="ln575">    error.clear();</a>
+<a name="ln576">    lua_State *ls = state();</a>
+<a name="ln577">    if (!ls)</a>
+<a name="ln578">        return MB_MAYBE;</a>
+<a name="ln579"> </a>
+<a name="ln580">    lua_stack_cleaner clean(ls);</a>
+<a name="ln581"> </a>
+<a name="ln582">    pushglobal(fn);</a>
+<a name="ln583">    if (!lua_isfunction(ls, -1))</a>
+<a name="ln584">        return MB_MAYBE;</a>
+<a name="ln585"> </a>
+<a name="ln586">    bool ret = calltopfn(ls, params, args, 1);</a>
+<a name="ln587">    if (!ret)</a>
+<a name="ln588">        return MB_MAYBE;</a>
+<a name="ln589"> </a>
+<a name="ln590">    return lua_isboolean(ls, -1) ? frombool(lua_toboolean(ls, -1)) : MB_MAYBE;</a>
+<a name="ln591">}</a>
+<a name="ln592"> </a>
+<a name="ln593">maybe_bool CLua::callmaybefn(const char *fn, const char *params, ...)</a>
+<a name="ln594">{</a>
+<a name="ln595">    va_list args;</a>
+<a name="ln596">    va_start(args, params);</a>
+<a name="ln597">    maybe_bool r = callmaybefn(fn, params, args);</a>
+<a name="ln598">    va_end(args);</a>
+<a name="ln599">    return r;</a>
+<a name="ln600">}</a>
+<a name="ln601"> </a>
+<a name="ln602">bool CLua::callbooleanfn(bool def, const char *fn, const char *params, ...)</a>
+<a name="ln603">{</a>
+<a name="ln604">    va_list args;</a>
+<a name="ln605">    va_start(args, params);</a>
+<a name="ln606">    maybe_bool r = callmbooleanfn(fn, params, args);</a>
+<a name="ln607">    va_end(args);</a>
+<a name="ln608">    return tobool(r, def);</a>
+<a name="ln609">}</a>
+<a name="ln610"> </a>
+<a name="ln611">bool CLua::proc_returns(const char *par) const</a>
+<a name="ln612">{</a>
+<a name="ln613">    return strchr(par, '&gt;') != nullptr;</a>
+<a name="ln614">}</a>
+<a name="ln615"> </a>
+<a name="ln616">// Identical to lua_getglobal for simple names, but will look up</a>
+<a name="ln617">// &quot;a.b.c&quot; names in tables, so you can pushglobal(&quot;dgn.point&quot;) and get</a>
+<a name="ln618">// _G['dgn']['point'], as expected.</a>
+<a name="ln619">//</a>
+<a name="ln620">// Guarantees to push exactly one value onto the stack.</a>
+<a name="ln621">//</a>
+<a name="ln622">void CLua::pushglobal(const string &amp;name)</a>
+<a name="ln623">{</a>
+<a name="ln624">    vector&lt;string&gt; pieces = split_string(&quot;.&quot;, name);</a>
+<a name="ln625">    lua_State *ls(state());</a>
+<a name="ln626"> </a>
+<a name="ln627">    if (pieces.empty())</a>
+<a name="ln628">        lua_pushnil(ls);</a>
+<a name="ln629"> </a>
+<a name="ln630">    for (unsigned i = 0, size = pieces.size(); i &lt; size; ++i)</a>
+<a name="ln631">    {</a>
+<a name="ln632">        if (!i)</a>
+<a name="ln633">            lua_getglobal(ls, pieces[i].c_str());</a>
+<a name="ln634">        else</a>
+<a name="ln635">        {</a>
+<a name="ln636">            if (lua_istable(ls, -1))</a>
+<a name="ln637">            {</a>
+<a name="ln638">                lua_pushstring(ls, pieces[i].c_str());</a>
+<a name="ln639">                lua_gettable(ls, -2);</a>
+<a name="ln640">                // Swap the value we just found with the table itself.</a>
+<a name="ln641">                lua_insert(ls, -2);</a>
+<a name="ln642">                // And remove the table.</a>
+<a name="ln643">                lua_pop(ls, 1);</a>
+<a name="ln644">            }</a>
+<a name="ln645">            else</a>
+<a name="ln646">            {</a>
+<a name="ln647">                // We expected a table here, but got something else. Fail.</a>
+<a name="ln648">                lua_pop(ls, 1);</a>
+<a name="ln649">                lua_pushnil(ls);</a>
+<a name="ln650">                break;</a>
+<a name="ln651">            }</a>
+<a name="ln652">        }</a>
+<a name="ln653">    }</a>
+<a name="ln654">}</a>
+<a name="ln655"> </a>
+<a name="ln656">bool CLua::callfn(const char *fn, const char *params, ...)</a>
+<a name="ln657">{</a>
+<a name="ln658">    error.clear();</a>
+<a name="ln659">    lua_State *ls = state();</a>
+<a name="ln660">    if (!ls)</a>
+<a name="ln661">        return false;</a>
+<a name="ln662"> </a>
+<a name="ln663">    pushglobal(fn);</a>
+<a name="ln664">    if (!lua_isfunction(ls, -1))</a>
+<a name="ln665">    {</a>
+<a name="ln666">        lua_pop(ls, 1);</a>
+<a name="ln667">        return false;</a>
+<a name="ln668">    }</a>
+<a name="ln669"> </a>
+<a name="ln670">    va_list args;</a>
+<a name="ln671">    va_list fnret;</a>
+<a name="ln672">    va_start(args, params);</a>
+<a name="ln673">    bool ret = calltopfn(ls, params, args, -1, &amp;fnret);</a>
+<a name="ln674">    if (ret)</a>
+<a name="ln675">    {</a>
+<a name="ln676">        // If we have a &gt; in format, gather return params now.</a>
+<a name="ln677">        if (proc_returns(params))</a>
+<a name="ln678">            vfnreturns(params, fnret);</a>
+<a name="ln679">    }</a>
+<a name="ln680">    va_end(args);</a>
+<a name="ln681">    va_end(fnret);</a>
+<a name="ln682">    return ret;</a>
+<a name="ln683">}</a>
+<a name="ln684"> </a>
+<a name="ln685">bool CLua::callfn(const char *fn, int nargs, int nret)</a>
+<a name="ln686">{</a>
+<a name="ln687">    error.clear();</a>
+<a name="ln688">    lua_State *ls = state();</a>
+<a name="ln689">    if (!ls)</a>
+<a name="ln690">        return false;</a>
+<a name="ln691"> </a>
+<a name="ln692">    // If a function is not provided on the stack, get the named function.</a>
+<a name="ln693">    if (fn)</a>
+<a name="ln694">    {</a>
+<a name="ln695">        pushglobal(fn);</a>
+<a name="ln696">        if (!lua_isfunction(ls, -1))</a>
+<a name="ln697">        {</a>
+<a name="ln698">            lua_settop(ls, -nargs - 2);</a>
+<a name="ln699">            return false;</a>
+<a name="ln700">        }</a>
+<a name="ln701"> </a>
+<a name="ln702">        // Slide the function in front of its args and call it.</a>
+<a name="ln703">        if (nargs)</a>
+<a name="ln704">            lua_insert(ls, -nargs - 1);</a>
+<a name="ln705">    }</a>
+<a name="ln706"> </a>
+<a name="ln707">    lua_call_throttle strangler(this);</a>
+<a name="ln708">    int err = lua_pcall(ls, nargs, nret, 0);</a>
+<a name="ln709">    set_error(err, ls);</a>
+<a name="ln710">    return !err;</a>
+<a name="ln711">}</a>
+<a name="ln712"> </a>
+<a name="ln713">void CLua::init_lua()</a>
+<a name="ln714">{</a>
+<a name="ln715">    if (_state)</a>
+<a name="ln716">        return;</a>
+<a name="ln717"> </a>
+<a name="ln718">#ifdef NO_CUSTOM_ALLOCATOR</a>
+<a name="ln719">    // If this is likely to be used as a server, warn the builder.</a>
+<a name="ln720">    // NOTE: #warning doesn't work on MSVC, so this will be fatal there</a>
+<a name="ln721">    // (not that webtiles or dgamelaunch are supported on Windows anyway).</a>
+<a name="ln722"># if defined(USE_TILE_WEB) || defined(DGAMELAUNCH)</a>
+<a name="ln723">#   warning Detected 64-bit Luajit, disabling CLua memory throttling.</a>
+<a name="ln724"># endif</a>
+<a name="ln725">    _state = luaL_newstate();</a>
+<a name="ln726">#else</a>
+<a name="ln727">    // Throttle memory usage in managed (clua) VMs</a>
+<a name="ln728">    _state = managed_vm? lua_newstate(_clua_allocator, this) : luaL_newstate();</a>
+<a name="ln729">#endif</a>
+<a name="ln730">    if (!_state)</a>
+<a name="ln731">        end(1, false, &quot;Unable to create Lua state.&quot;);</a>
+<a name="ln732"> </a>
+<a name="ln733">    lua_stack_cleaner clean(_state);</a>
+<a name="ln734"> </a>
+<a name="ln735">    lua_atpanic(_state, _clua_panic);</a>
+<a name="ln736"> </a>
+<a name="ln737">#ifdef CLUA_UNRESTRICTED_LIBS</a>
+<a name="ln738">    // open all libs -- this is not safe for public servers or releases!</a>
+<a name="ln739">    // Intended for people writing bots and the like.</a>
+<a name="ln740">    luaL_openlibs(_state);</a>
+<a name="ln741">#else</a>
+<a name="ln742">    // Selectively load some, but not all Lua core libraries.</a>
+<a name="ln743">    //</a>
+<a name="ln744">    // In Lua 5.1, these library setup calls are not supposed to be called</a>
+<a name="ln745">    // directly from C. If the lua version changes, this may need to be changed:</a>
+<a name="ln746">    // recommended practice is (apparently) checking the lua version's linit.cc</a>
+<a name="ln747">    // and seeing how that does the full library setup.</a>
+<a name="ln748">    //</a>
+<a name="ln749">    // This doesn't seem to *obviously* impact the libraries we use by default,</a>
+<a name="ln750">    // but some of the libraries we don't use will panic if not called</a>
+<a name="ln751">    // correctly; since someone writing a bot (for example) might want to</a>
+<a name="ln752">    // expand this, do things &quot;correctly&quot;. The core lua libraries in 5.1 we are</a>
+<a name="ln753">    // not loading are:</a>
+<a name="ln754">    //</a>
+<a name="ln755">    // {LUA_LOADLIBNAME, luaopen_package},    // (require etc)</a>
+<a name="ln756">    // {LUA_IOLIBNAME, luaopen_io},           //</a>
+<a name="ln757">    // {LUA_OSLIBNAME, luaopen_os},</a>
+<a name="ln758">    // {LUA_DBLIBNAME, luaopen_debug},</a>
+<a name="ln759">    const vector&lt;pair&lt;string, lua_CFunction&gt;&gt; lua_core_libs =</a>
+<a name="ln760">    {</a>
+<a name="ln761">        {&quot;&quot;, luaopen_base}, // XX: why no name? but this is how linit.cc does it</a>
+<a name="ln762">        {LUA_TABLIBNAME, luaopen_table},</a>
+<a name="ln763">        {LUA_STRLIBNAME, luaopen_string},</a>
+<a name="ln764">        {LUA_MATHLIBNAME, luaopen_math},</a>
+<a name="ln765">    };</a>
+<a name="ln766"> </a>
+<a name="ln767">    for (auto l : lua_core_libs)</a>
+<a name="ln768">    {</a>
+<a name="ln769">        lua_pushcfunction(_state, l.second);</a>
+<a name="ln770">        lua_pushstring(_state, l.first.c_str());</a>
+<a name="ln771">        lua_call(_state, 1, 0);</a>
+<a name="ln772">    }</a>
+<a name="ln773">#endif</a>
+<a name="ln774"> </a>
+<a name="ln775">    lua_pushboolean(_state, managed_vm);</a>
+<a name="ln776">    setregistry(&quot;lua_vm_is_managed&quot;);</a>
+<a name="ln777"> </a>
+<a name="ln778">    lua_pushlightuserdata(_state, this);</a>
+<a name="ln779">    setregistry(&quot;__clua&quot;);</a>
+<a name="ln780">}</a>
+<a name="ln781"> </a>
+<a name="ln782">static int lua_loadstring(lua_State *ls)</a>
+<a name="ln783">{</a>
+<a name="ln784">    const auto lua = luaL_checkstring(ls, 1);</a>
+<a name="ln785">    if (lua[0] == 0x1b)</a>
+<a name="ln786">        abort();</a>
+<a name="ln787">    lua_settop(ls, 0);</a>
+<a name="ln788">    if (luaL_loadstring(ls, lua))</a>
+<a name="ln789">    {</a>
+<a name="ln790">        lua_pushnil(ls);</a>
+<a name="ln791">        lua_insert(ls, 1);</a>
+<a name="ln792">    }</a>
+<a name="ln793">    return lua_gettop(ls);</a>
+<a name="ln794">}</a>
+<a name="ln795"> </a>
+<a name="ln796">void CLua::init_libraries()</a>
+<a name="ln797">{</a>
+<a name="ln798">    lua_stack_cleaner clean(state());</a>
+<a name="ln799"> </a>
+<a name="ln800">    lua_pushcfunction(_state, lua_loadstring);</a>
+<a name="ln801">    lua_setglobal(_state, &quot;loadstring&quot;);</a>
+<a name="ln802">    lua_pushnil(_state);</a>
+<a name="ln803">    lua_setglobal(_state, &quot;load&quot;);</a>
+<a name="ln804"> </a>
+<a name="ln805">    // Open Crawl bindings</a>
+<a name="ln806">    cluaopen_kills(_state);</a>
+<a name="ln807">    cluaopen_you(_state);</a>
+<a name="ln808">    cluaopen_item(_state);</a>
+<a name="ln809">    cluaopen_food(_state);</a>
+<a name="ln810">    cluaopen_crawl(_state);</a>
+<a name="ln811">    cluaopen_file(_state);</a>
+<a name="ln812">    cluaopen_moninf(_state);</a>
+<a name="ln813">    cluaopen_options(_state);</a>
+<a name="ln814">    cluaopen_travel(_state);</a>
+<a name="ln815">    cluaopen_view(_state);</a>
+<a name="ln816">    cluaopen_spells(_state);</a>
+<a name="ln817"> </a>
+<a name="ln818">    cluaopen_globals(_state);</a>
+<a name="ln819"> </a>
+<a name="ln820">    execfile(&quot;dlua/macro.lua&quot;, true, true);</a>
+<a name="ln821"> </a>
+<a name="ln822">    // All hook names must be chk_????</a>
+<a name="ln823">    execstring(&quot;chk_startgame = { }&quot;, &quot;base&quot;);</a>
+<a name="ln824"> </a>
+<a name="ln825">    lua_register(_state, &quot;loadfile&quot;, _clua_loadfile);</a>
+<a name="ln826">    lua_register(_state, &quot;dofile&quot;, _clua_dofile);</a>
+<a name="ln827"> </a>
+<a name="ln828">    lua_register(_state, &quot;crawl_require&quot;, _clua_require);</a>
+<a name="ln829"> </a>
+<a name="ln830">    execfile(&quot;dlua/util.lua&quot;, true, true);</a>
+<a name="ln831">    execfile(&quot;dlua/iter.lua&quot;, true, true);</a>
+<a name="ln832">    execfile(&quot;dlua/tags.lua&quot;, true, true);</a>
+<a name="ln833">    execfile(&quot;dlua/init.lua&quot;, true, true);</a>
+<a name="ln834"> </a>
+<a name="ln835">    if (managed_vm)</a>
+<a name="ln836">    {</a>
+<a name="ln837">        lua_register(_state, &quot;pcall&quot;, _clua_guarded_pcall);</a>
+<a name="ln838">        execfile(&quot;dlua/userbase.lua&quot;, true, true);</a>
+<a name="ln839">        execfile(&quot;dlua/persist.lua&quot;, true, true);</a>
+<a name="ln840">    }</a>
+<a name="ln841">}</a>
+<a name="ln842"> </a>
+<a name="ln843">CLua &amp;CLua::get_vm(lua_State *ls)</a>
+<a name="ln844">{</a>
+<a name="ln845">    lua_stack_cleaner clean(ls);</a>
+<a name="ln846">    _getregistry(ls, &quot;__clua&quot;);</a>
+<a name="ln847">    CLua *vm = clua_get_lightuserdata&lt;CLua&gt;(ls, -1);</a>
+<a name="ln848">    if (!vm)</a>
+<a name="ln849">        luaL_error(ls, &quot;Could not find matching clua for lua state&quot;);</a>
+<a name="ln850">    return *vm;</a>
+<a name="ln851">}</a>
+<a name="ln852"> </a>
+<a name="ln853">bool CLua::is_managed_vm(lua_State *ls)</a>
+<a name="ln854">{</a>
+<a name="ln855">    lua_stack_cleaner clean(ls);</a>
+<a name="ln856">    lua_pushstring(ls, &quot;lua_vm_is_managed&quot;);</a>
+<a name="ln857">    lua_gettable(ls, LUA_REGISTRYINDEX);</a>
+<a name="ln858">    return lua_toboolean(ls, -1);</a>
+<a name="ln859">}</a>
+<a name="ln860"> </a>
+<a name="ln861">void CLua::add_shutdown_listener(lua_shutdown_listener *listener)</a>
+<a name="ln862">{</a>
+<a name="ln863">    if (find(shutdown_listeners.begin(), shutdown_listeners.end(), listener)</a>
+<a name="ln864">        == shutdown_listeners.end())</a>
+<a name="ln865">    {</a>
+<a name="ln866">        shutdown_listeners.push_back(listener);</a>
+<a name="ln867">    }</a>
+<a name="ln868">}</a>
+<a name="ln869"> </a>
+<a name="ln870">void CLua::remove_shutdown_listener(lua_shutdown_listener *listener)</a>
+<a name="ln871">{</a>
+<a name="ln872">    erase_val(shutdown_listeners, listener);</a>
+<a name="ln873">}</a>
+<a name="ln874"> </a>
+<a name="ln875">// Can be called from within a debugger to look at the current Lua</a>
+<a name="ln876">// call stack. (Borrowed from ToME 3)</a>
+<a name="ln877">void CLua::print_stack()</a>
+<a name="ln878">{</a>
+<a name="ln879">    struct lua_Debug dbg;</a>
+<a name="ln880">    int              i = 0;</a>
+<a name="ln881">    lua_State       *L = state();</a>
+<a name="ln882"> </a>
+<a name="ln883">    fprintf(stderr, &quot;\n&quot;);</a>
+<a name="ln884">    while (lua_getstack(L, i++, &amp;dbg) == 1)</a>
+<a name="ln885">    {</a>
+<a name="ln886">        lua_getinfo(L, &quot;lnuS&quot;, &amp;dbg);</a>
+<a name="ln887"> </a>
+<a name="ln888">        char* file = strrchr(dbg.short_src, '/');</a>
+<a name="ln889">        if (file == nullptr)</a>
+<a name="ln890">            file = dbg.short_src;</a>
+<a name="ln891">        else</a>
+<a name="ln892">            file++;</a>
+<a name="ln893"> </a>
+<a name="ln894">        fprintf(stderr, &quot;%s, function %s, line %d\n&quot;, file,</a>
+<a name="ln895">                dbg.name, dbg.currentline);</a>
+<a name="ln896">    }</a>
+<a name="ln897"> </a>
+<a name="ln898">    fprintf(stderr, &quot;\n&quot;);</a>
+<a name="ln899">}</a>
+<a name="ln900"> </a>
+<a name="ln901">// //////////////////////////////////////////////////////////////////////</a>
+<a name="ln902">// lua_text_pattern</a>
+<a name="ln903"> </a>
+<a name="ln904">// We could simplify this a great deal by just using lex and yacc, but I</a>
+<a name="ln905">// don't know if we want to introduce them.</a>
+<a name="ln906"> </a>
+<a name="ln907">struct lua_pat_op</a>
+<a name="ln908">{</a>
+<a name="ln909">    const char *token;</a>
+<a name="ln910">    const char *luatok;</a>
+<a name="ln911"> </a>
+<a name="ln912">    bool pretext;       // Does this follow a pattern?</a>
+<a name="ln913">    bool posttext;      // Is this followed by a pattern?</a>
+<a name="ln914">};</a>
+<a name="ln915"> </a>
+<a name="ln916">static lua_pat_op pat_ops[] =</a>
+<a name="ln917">{</a>
+<a name="ln918">    { &quot;&lt;&lt;&quot;, &quot; ( &quot;,   false, true },</a>
+<a name="ln919">    { &quot;&gt;&gt;&quot;, &quot; ) &quot;,   true,  false },</a>
+<a name="ln920">    { &quot;!!&quot;, &quot; not &quot;, false, true },</a>
+<a name="ln921">    { &quot;==&quot;, &quot; == &quot;,  true,  true },</a>
+<a name="ln922">    { &quot;^^&quot;, &quot; ~= &quot;,  true,  true },</a>
+<a name="ln923">    { &quot;&amp;&amp;&quot;, &quot; and &quot;, true,  true },</a>
+<a name="ln924">    { &quot;||&quot;, &quot; or &quot;,  true,  true },</a>
+<a name="ln925">};</a>
+<a name="ln926"> </a>
+<a name="ln927">unsigned int lua_text_pattern::lfndx = 0;</a>
+<a name="ln928"> </a>
+<a name="ln929">bool lua_text_pattern::is_lua_pattern(const string &amp;s)</a>
+<a name="ln930">{</a>
+<a name="ln931">    return any_of(begin(pat_ops), end(pat_ops),</a>
+<a name="ln932">            [&amp;s] (const lua_pat_op &amp;op)</a>
+<a name="ln933">            { return s.find(op.token) != string::npos; });</a>
+<a name="ln934">}</a>
+<a name="ln935"> </a>
+<a name="ln936">lua_text_pattern::lua_text_pattern(const string &amp;_pattern)</a>
+<a name="ln937">    : translated(false), isvalid(true), pattern(_pattern),</a>
+<a name="ln938">      lua_fn_name(new_fn_name())</a>
+<a name="ln939">{</a>
+<a name="ln940">}</a>
+<a name="ln941"> </a>
+<a name="ln942">lua_text_pattern::~lua_text_pattern()</a>
+<a name="ln943">{</a>
+<a name="ln944">    if (translated &amp;&amp; !lua_fn_name.empty())</a>
+<a name="ln945">    {</a>
+<a name="ln946">        lua_State *ls = clua;</a>
+<a name="ln947">        if (ls)</a>
+<a name="ln948">        {</a>
+<a name="ln949">            lua_pushnil(ls);</a>
+<a name="ln950">            clua.setglobal(lua_fn_name.c_str());</a>
+<a name="ln951">        }</a>
+<a name="ln952">    }</a>
+<a name="ln953">}</a>
+<a name="ln954"> </a>
+<a name="ln955">bool lua_text_pattern::valid() const</a>
+<a name="ln956">{</a>
+<a name="ln957">    return translated? isvalid : translate();</a>
+<a name="ln958">}</a>
+<a name="ln959"> </a>
+<a name="ln960">bool lua_text_pattern::matches(const string &amp;s) const</a>
+<a name="ln961">{</a>
+<a name="ln962">    if (isvalid &amp;&amp; !translated)</a>
+<a name="ln963">        translate();</a>
+<a name="ln964"> </a>
+<a name="ln965">    if (!isvalid)</a>
+<a name="ln966">        return false;</a>
+<a name="ln967"> </a>
+<a name="ln968">    return clua.callbooleanfn(false, lua_fn_name.c_str(), &quot;s&quot;, s.c_str());</a>
+<a name="ln969">}</a>
+<a name="ln970"> </a>
+<a name="ln971">pattern_match lua_text_pattern::match_location(const string &amp;s) const</a>
+<a name="ln972">{</a>
+<a name="ln973">    // lua_text_pattern is only used if a special non-regex op is detected (^F</a>
+<a name="ln974">    // for &quot;armour &amp;&amp; ego&quot;, for instance), and in those situations, it's</a>
+<a name="ln975">    // unclear what exactly to use for the matched text here (especially in</a>
+<a name="ln976">    // more complicated expressions that include things like &lt;&lt;&gt;&gt;, !!, etc).</a>
+<a name="ln977">    return matches(s)</a>
+<a name="ln978">        ? pattern_match::succeeded(s)</a>
+<a name="ln979">        : pattern_match::failed(s);</a>
+<a name="ln980">}</a>
+<a name="ln981"> </a>
+<a name="ln982">void lua_text_pattern::pre_pattern(string &amp;pat, string &amp;fn) const</a>
+<a name="ln983">{</a>
+<a name="ln984">    // Trim trailing spaces</a>
+<a name="ln985">    pat.erase(pat.find_last_not_of(&quot; \t\n\r&quot;) + 1);</a>
+<a name="ln986"> </a>
+<a name="ln987">    fn += &quot; pmatch([[&quot;;</a>
+<a name="ln988">    fn += pat;</a>
+<a name="ln989">    fn += &quot;]], text, false) &quot;;</a>
+<a name="ln990"> </a>
+<a name="ln991">    pat.clear();</a>
+<a name="ln992">}</a>
+<a name="ln993"> </a>
+<a name="ln994">void lua_text_pattern::post_pattern(string &amp;pat, string &amp;fn) const</a>
+<a name="ln995">{</a>
+<a name="ln996">    pat.erase(0, pat.find_first_not_of(&quot; \t\n\r&quot;));</a>
+<a name="ln997"> </a>
+<a name="ln998">    fn += &quot; pmatch([[&quot;;</a>
+<a name="ln999">    fn += pat;</a>
+<a name="ln1000">    fn += &quot;]], text, false) &quot;;</a>
+<a name="ln1001"> </a>
+<a name="ln1002">    pat.clear();</a>
+<a name="ln1003">}</a>
+<a name="ln1004"> </a>
+<a name="ln1005">string lua_text_pattern::new_fn_name()</a>
+<a name="ln1006">{</a>
+<a name="ln1007">    return make_stringf(&quot;__ch_stash_search_%u&quot;, lfndx++);</a>
+<a name="ln1008">}</a>
+<a name="ln1009"> </a>
+<a name="ln1010">bool lua_text_pattern::translate() const</a>
+<a name="ln1011">{</a>
+<a name="ln1012">    if (translated || !isvalid)</a>
+<a name="ln1013">        return false;</a>
+<a name="ln1014"> </a>
+<a name="ln1015">    if (pattern.find(&quot;]]&quot;) != string::npos || pattern.find(&quot;[[&quot;) != string::npos)</a>
+<a name="ln1016">        return false;</a>
+<a name="ln1017"> </a>
+<a name="ln1018">    string textp;</a>
+<a name="ln1019">    string luafn;</a>
+<a name="ln1020">    const lua_pat_op *currop = nullptr;</a>
+<a name="ln1021">    for (string::size_type i = 0; i &lt; pattern.length(); ++i)</a>
+<a name="ln1022">    {</a>
+<a name="ln1023">        bool match = false;</a>
+<a name="ln1024">        for (unsigned p = 0; p &lt; ARRAYSZ(pat_ops); ++p)</a>
+<a name="ln1025">        {</a>
+<a name="ln1026">            const lua_pat_op &amp;lop = pat_ops[p];</a>
+<a name="ln1027">            if (pattern.find(lop.token, i) == i)</a>
+<a name="ln1028">            {</a>
+<a name="ln1029">                match = true;</a>
+<a name="ln1030">                if (lop.pretext &amp;&amp; (!currop || currop-&gt;posttext))</a>
+<a name="ln1031">                {</a>
+<a name="ln1032">                    if (currop)</a>
+<a name="ln1033">                        textp.erase(0, textp.find_first_not_of(&quot; \r\n\t&quot;));</a>
+<a name="ln1034">                    pre_pattern(textp, luafn);</a>
+<a name="ln1035">                }</a>
+<a name="ln1036"> </a>
+<a name="ln1037">                currop = &amp;lop;</a>
+<a name="ln1038">                luafn += lop.luatok;</a>
+<a name="ln1039"> </a>
+<a name="ln1040">                i += strlen(lop.token) - 1;</a>
+<a name="ln1041"> </a>
+<a name="ln1042">                break;</a>
+<a name="ln1043">            }</a>
+<a name="ln1044">        }</a>
+<a name="ln1045"> </a>
+<a name="ln1046">        if (match)</a>
+<a name="ln1047">            continue;</a>
+<a name="ln1048"> </a>
+<a name="ln1049">        textp += pattern[i];</a>
+<a name="ln1050">    }</a>
+<a name="ln1051"> </a>
+<a name="ln1052">    if (currop &amp;&amp; currop-&gt;posttext)</a>
+<a name="ln1053">        post_pattern(textp, luafn);</a>
+<a name="ln1054"> </a>
+<a name="ln1055">    luafn = &quot;function &quot; + lua_fn_name + &quot;(text) return &quot; + luafn + &quot; end&quot;;</a>
+<a name="ln1056"> </a>
+<a name="ln1057">    const_cast&lt;lua_text_pattern *&gt;(this)-&gt;translated = true;</a>
+<a name="ln1058"> </a>
+<a name="ln1059">    int err = clua.execstring(luafn.c_str(), &quot;stash-search&quot;);</a>
+<a name="ln1060">    if (err)</a>
+<a name="ln1061">    {</a>
+<a name="ln1062">        lua_text_pattern *self = const_cast&lt;lua_text_pattern *&gt;(this);</a>
+<a name="ln1063">        self-&gt;isvalid = self-&gt;translated = false;</a>
+<a name="ln1064">    }</a>
+<a name="ln1065"> </a>
+<a name="ln1066">    return translated;</a>
+<a name="ln1067">}</a>
+<a name="ln1068"> </a>
+<a name="ln1069">// ////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1070"> </a>
+<a name="ln1071">lua_call_throttle::lua_clua_map lua_call_throttle::lua_map;</a>
+<a name="ln1072"> </a>
+<a name="ln1073">// A panic function for the Lua interpreter, usually called when it</a>
+<a name="ln1074">// runs out of memory when trying to load a file or a chunk of Lua from</a>
+<a name="ln1075">// an unprotected Lua op. The only cases of unprotected Lua loads are</a>
+<a name="ln1076">// loads of Lua code from .crawlrc, which is read at start of game.</a>
+<a name="ln1077">//</a>
+<a name="ln1078">// If there's an inordinately large .crawlrc (we're talking seriously</a>
+<a name="ln1079">// massive here) that wants more memory than we're willing to give</a>
+<a name="ln1080">// Lua, then the game will save and exit until the .crawlrc is fixed.</a>
+<a name="ln1081">//</a>
+<a name="ln1082">// Lua can also run out of memory during protected script execution,</a>
+<a name="ln1083">// such as when running a macro or some other game hook, but in such</a>
+<a name="ln1084">// cases the Lua interpreter will throw an exception instead of</a>
+<a name="ln1085">// panicking.</a>
+<a name="ln1086">//</a>
+<a name="ln1087">static int _clua_panic(lua_State *ls)</a>
+<a name="ln1088">{</a>
+<a name="ln1089">    UNUSED(ls);</a>
+<a name="ln1090">    if (crawl_state.need_save &amp;&amp; !crawl_state.saving_game</a>
+<a name="ln1091">        &amp;&amp; !crawl_state.updating_scores)</a>
+<a name="ln1092">    {</a>
+<a name="ln1093">        save_game(true);</a>
+<a name="ln1094">    }</a>
+<a name="ln1095">    return 0;</a>
+<a name="ln1096">}</a>
+<a name="ln1097"> </a>
+<a name="ln1098">#ifndef NO_CUSTOM_ALLOCATOR</a>
+<a name="ln1099">static void *_clua_allocator(void *ud, void *ptr, size_t osize, size_t nsize)</a>
+<a name="ln1100">{</a>
+<a name="ln1101">    CLua *cl = static_cast&lt;CLua *&gt;(ud);</a>
+<a name="ln1102">    cl-&gt;memory_used += nsize - osize;</a>
+<a name="ln1103"> </a>
+<a name="ln1104">    if (nsize &gt; osize &amp;&amp; cl-&gt;memory_used &gt;= CLUA_MAX_MEMORY_USE * 1024</a>
+<a name="ln1105">        &amp;&amp; cl-&gt;mixed_call_depth)</a>
+<a name="ln1106">    {</a>
+<a name="ln1107">        return nullptr;</a>
+<a name="ln1108">    }</a>
+<a name="ln1109"> </a>
+<a name="ln1110">    if (!nsize)</a>
+<a name="ln1111">    {</a>
+<a name="ln1112">        free(ptr);</a>
+<a name="ln1113">        return nullptr;</a>
+<a name="ln1114">    }</a>
+<a name="ln1115">    else</a>
+<a name="ln1116">        return realloc(ptr, nsize);</a>
+<a name="ln1117">}</a>
+<a name="ln1118">#endif</a>
+<a name="ln1119"> </a>
+<a name="ln1120">static void _clua_throttle_hook(lua_State *ls, lua_Debug *dbg)</a>
+<a name="ln1121">{</a>
+<a name="ln1122">    UNUSED(dbg);</a>
+<a name="ln1123"> </a>
+<a name="ln1124">    CLua *lua = lua_call_throttle::find_clua(ls);</a>
+<a name="ln1125"> </a>
+<a name="ln1126">    // Co-routines can create a new Lua state; in such cases, we must</a>
+<a name="ln1127">    // fudge it.</a>
+<a name="ln1128">    if (!lua)</a>
+<a name="ln1129">        lua = &amp;clua;</a>
+<a name="ln1130"> </a>
+<a name="ln1131">    if (lua)</a>
+<a name="ln1132">    {</a>
+<a name="ln1133">        if (!lua-&gt;throttle_sleep_ms)</a>
+<a name="ln1134">            lua-&gt;throttle_sleep_ms = lua-&gt;throttle_sleep_start;</a>
+<a name="ln1135">        else if (lua-&gt;throttle_sleep_ms &lt; lua-&gt;throttle_sleep_end)</a>
+<a name="ln1136">            lua-&gt;throttle_sleep_ms *= 2;</a>
+<a name="ln1137"> </a>
+<a name="ln1138">        ++lua-&gt;n_throttle_sleeps;</a>
+<a name="ln1139"> </a>
+<a name="ln1140">        delay(lua-&gt;throttle_sleep_ms);</a>
+<a name="ln1141"> </a>
+<a name="ln1142">        // Try to kill the annoying script.</a>
+<a name="ln1143">        if (lua-&gt;n_throttle_sleeps &gt; CLua::MAX_THROTTLE_SLEEPS)</a>
+<a name="ln1144">        {</a>
+<a name="ln1145">            lua-&gt;n_throttle_sleeps = CLua::MAX_THROTTLE_SLEEPS;</a>
+<a name="ln1146">            luaL_error(ls, BUGGY_SCRIPT_ERROR);</a>
+<a name="ln1147">        }</a>
+<a name="ln1148">    }</a>
+<a name="ln1149">}</a>
+<a name="ln1150"> </a>
+<a name="ln1151">lua_call_throttle::lua_call_throttle(CLua *_lua)</a>
+<a name="ln1152">    : lua(_lua)</a>
+<a name="ln1153">{</a>
+<a name="ln1154">    lua-&gt;init_throttle();</a>
+<a name="ln1155">    if (!lua-&gt;mixed_call_depth++)</a>
+<a name="ln1156">        lua_map[lua-&gt;state()] = lua;</a>
+<a name="ln1157">}</a>
+<a name="ln1158"> </a>
+<a name="ln1159">lua_call_throttle::~lua_call_throttle()</a>
+<a name="ln1160">{</a>
+<a name="ln1161">    if (!--lua-&gt;mixed_call_depth)</a>
+<a name="ln1162">        lua_map.erase(lua-&gt;state());</a>
+<a name="ln1163">}</a>
+<a name="ln1164"> </a>
+<a name="ln1165">CLua *lua_call_throttle::find_clua(lua_State *ls)</a>
+<a name="ln1166">{</a>
+<a name="ln1167">    return lookup(lua_map, ls, nullptr);</a>
+<a name="ln1168">}</a>
+<a name="ln1169"> </a>
+<a name="ln1170">// This function is a replacement for Lua's in-built pcall function. It behaves</a>
+<a name="ln1171">// like pcall in all respects (as documented in the Lua 5.1 reference manual),</a>
+<a name="ln1172">// but does not allow the Lua chunk/script to catch errors thrown by the</a>
+<a name="ln1173">// Lua-throttling code. This is necessary so that we can interrupt scripts that</a>
+<a name="ln1174">// are hogging CPU.</a>
+<a name="ln1175">//</a>
+<a name="ln1176">// If we did not intercept pcall, the script could do the equivalent</a>
+<a name="ln1177">// of this:</a>
+<a name="ln1178">//</a>
+<a name="ln1179">//    while true do</a>
+<a name="ln1180">//      pcall(function () while true do end end)</a>
+<a name="ln1181">//    end</a>
+<a name="ln1182">//</a>
+<a name="ln1183">// And there's a good chance we wouldn't be able to interrupt the</a>
+<a name="ln1184">// deadloop because our errors would get caught by the pcall (more</a>
+<a name="ln1185">// levels of nesting would just increase the chance of the script</a>
+<a name="ln1186">// beating our throttling).</a>
+<a name="ln1187">//</a>
+<a name="ln1188">static int _clua_guarded_pcall(lua_State *ls)</a>
+<a name="ln1189">{</a>
+<a name="ln1190">    const int nargs = lua_gettop(ls);</a>
+<a name="ln1191">    const int err = lua_pcall(ls, nargs - 1, LUA_MULTRET, 0);</a>
+<a name="ln1192"> </a>
+<a name="ln1193">    if (err)</a>
+<a name="ln1194">    {</a>
+<a name="ln1195">        const char *errs = lua_tostring(ls, 1);</a>
+<a name="ln1196">        if (!errs || strstr(errs, BUGGY_SCRIPT_ERROR))</a>
+<a name="ln1197">            luaL_error(ls, errs? errs : BUGGY_PCALL_ERROR);</a>
+<a name="ln1198">    }</a>
+<a name="ln1199"> </a>
+<a name="ln1200">    lua_pushboolean(ls, !err);</a>
+<a name="ln1201">    lua_insert(ls, 1);</a>
+<a name="ln1202"> </a>
+<a name="ln1203">    return lua_gettop(ls);</a>
+<a name="ln1204">}</a>
+<a name="ln1205"> </a>
+<a name="ln1206">// Document clua globals here, as they're bound by the interpreter object</a>
+<a name="ln1207"> </a>
+<a name="ln1208">/*** Pre-defined globals.</a>
+<a name="ln1209"> *</a>
+<a name="ln1210"> * *Note:* this is not a real module. All names described here are defined in</a>
+<a name="ln1211"> * the global clua namespace.</a>
+<a name="ln1212"> * @module Globals</a>
+<a name="ln1213"> */</a>
+<a name="ln1214"> </a>
+<a name="ln1215">/*** Load the named lua file as a chunk.</a>
+<a name="ln1216"> * @tparam string filename</a>
+<a name="ln1217"> * @return function chunk or nil,error</a>
+<a name="ln1218"> * @function loadfile</a>
+<a name="ln1219"> */</a>
+<a name="ln1220">static int _clua_loadfile(lua_State *ls)</a>
+<a name="ln1221">{</a>
+<a name="ln1222">    const char *file = luaL_checkstring(ls, 1);</a>
+<a name="ln1223">    if (!file)</a>
+<a name="ln1224">        return 0;</a>
+<a name="ln1225"> </a>
+<a name="ln1226">    const int err = CLua::loadfile(ls, file, !CLua::is_managed_vm(ls));</a>
+<a name="ln1227">    if (err)</a>
+<a name="ln1228">    {</a>
+<a name="ln1229">        const int place = lua_gettop(ls);</a>
+<a name="ln1230">        lua_pushnil(ls);</a>
+<a name="ln1231">        lua_insert(ls, place);</a>
+<a name="ln1232">        return 2;</a>
+<a name="ln1233">    }</a>
+<a name="ln1234">    return 1;</a>
+<a name="ln1235">}</a>
+<a name="ln1236"> </a>
+<a name="ln1237">/*** Load and execute the named lua file.</a>
+<a name="ln1238"> * Differs from @{dofile} in that the file is run for its side effects.</a>
+<a name="ln1239"> * If the execution has an error we raise that error and exit.</a>
+<a name="ln1240"> * @tparam string filename</a>
+<a name="ln1241"> * @treturn boolean|nil</a>
+<a name="ln1242"> * @function require</a>
+<a name="ln1243"> */</a>
+<a name="ln1244">static int _clua_require(lua_State *ls)</a>
+<a name="ln1245">{</a>
+<a name="ln1246">    const char *file = luaL_checkstring(ls, 1);</a>
+<a name="ln1247">    if (!file)</a>
+<a name="ln1248">        return 0;</a>
+<a name="ln1249"> </a>
+<a name="ln1250">    CLua &amp;vm(CLua::get_vm(ls));</a>
+<a name="ln1251">    if (vm.execfile(file, false, false) != 0)</a>
+<a name="ln1252">        luaL_error(ls, vm.error.c_str());</a>
+<a name="ln1253"> </a>
+<a name="ln1254">    lua_pushboolean(ls, true);</a>
+<a name="ln1255">    return 1;</a>
+<a name="ln1256">}</a>
+<a name="ln1257"> </a>
+<a name="ln1258">/*** Load and execute the named luafile, returning the result.</a>
+<a name="ln1259"> * Differs from @{require} in that the file is run for a result. Errors</a>
+<a name="ln1260"> * come back on the lua stack and can be handled by the caller.</a>
+<a name="ln1261"> * @tparam string filename</a>
+<a name="ln1262"> * @return whatever is left on the lua stack by filename</a>
+<a name="ln1263"> * @function dofile</a>
+<a name="ln1264"> */</a>
+<a name="ln1265">static int _clua_dofile(lua_State *ls)</a>
+<a name="ln1266">{</a>
+<a name="ln1267">    const char *file = luaL_checkstring(ls, 1);</a>
+<a name="ln1268">    if (!file)</a>
+<a name="ln1269">        return 0;</a>
+<a name="ln1270"> </a>
+<a name="ln1271">    const int err = CLua::loadfile(ls, file, !CLua::is_managed_vm(ls));</a>
+<a name="ln1272">    if (err)</a>
+<a name="ln1273">        return lua_error(ls);</a>
+<a name="ln1274"> </a>
+<a name="ln1275">    lua_call(ls, 0, LUA_MULTRET);</a>
+<a name="ln1276">    return lua_gettop(ls);</a>
+<a name="ln1277">}</a>
+<a name="ln1278"> </a>
+<a name="ln1279">string quote_lua_string(const string &amp;s)</a>
+<a name="ln1280">{</a>
+<a name="ln1281">    return replace_all_of(replace_all_of(s, &quot;\\&quot;, &quot;\\\\&quot;), &quot;\&quot;&quot;, &quot;\\\&quot;&quot;);</a>
+<a name="ln1282">}</a>
+<a name="ln1283"> </a>
+<a name="ln1284">static string _get_persist_file()</a>
+<a name="ln1285">{</a>
+<a name="ln1286">    return Options.filename + &quot;.persist&quot;;</a>
+<a name="ln1287">}</a>
+<a name="ln1288"> </a>
+<a name="ln1289">// ///////////////////////////////////////////////////////////////////</a>
+<a name="ln1290"> </a>
+<a name="ln1291">lua_shutdown_listener::~lua_shutdown_listener()</a>
+<a name="ln1292">{</a>
+<a name="ln1293">}</a>
+<a name="ln1294"> </a>
+<a name="ln1295">lua_datum::lua_datum(CLua &amp;_lua, int stackpos, bool pop)</a>
+<a name="ln1296">    : lua(_lua), need_cleanup(true)</a>
+<a name="ln1297">{</a>
+<a name="ln1298">    // Store the datum in the registry indexed by &quot;this&quot;.</a>
+<a name="ln1299">    lua_pushvalue(lua, stackpos);</a>
+<a name="ln1300">    lua_pushlightuserdata(lua, this);</a>
+<a name="ln1301">    // Move the key (this) before the value.</a>
+<a name="ln1302">    lua_insert(lua, -2);</a>
+<a name="ln1303">    lua_settable(lua, LUA_REGISTRYINDEX);</a>
+<a name="ln1304"> </a>
+<a name="ln1305">    if (pop &amp;&amp; stackpos &lt; 0)</a>
+<a name="ln1306">        lua_pop(lua, -stackpos);</a>
+<a name="ln1307"> </a>
+<a name="ln1308">    lua.add_shutdown_listener(this);</a>
+<a name="ln1309">}</a>
+<a name="ln1310"> </a>
+<a name="ln1311">lua_datum::lua_datum(const lua_datum &amp;o)</a>
+<a name="ln1312">    : lua(o.lua), need_cleanup(true)</a>
+<a name="ln1313">{</a>
+<a name="ln1314">    set_from(o);</a>
+<a name="ln1315">}</a>
+<a name="ln1316"> </a>
+<a name="ln1317">void lua_datum::set_from(const lua_datum &amp;o)</a>
+<a name="ln1318">{</a>
+<a name="ln1319">    lua_pushlightuserdata(lua, this);</a>
+<a name="ln1320">    o.push();</a>
+<a name="ln1321">    lua_settable(lua, LUA_REGISTRYINDEX);</a>
+<a name="ln1322">    lua.add_shutdown_listener(this);</a>
+<a name="ln1323">    need_cleanup = true;</a>
+<a name="ln1324">}</a>
+<a name="ln1325"> </a>
+<a name="ln1326">const lua_datum &amp;lua_datum::operator = (const lua_datum &amp;o)</a>
+<a name="ln1327">{</a>
+<a name="ln1328">    if (this != &amp;o)</a>
+<a name="ln1329">    {</a>
+<a name="ln1330">        cleanup();</a>
+<a name="ln1331">        set_from(o);</a>
+<a name="ln1332">    }</a>
+<a name="ln1333">    return *this;</a>
+<a name="ln1334">}</a>
+<a name="ln1335"> </a>
+<a name="ln1336">void lua_datum::push() const</a>
+<a name="ln1337">{</a>
+<a name="ln1338">    lua_pushlightuserdata(lua, const_cast&lt;lua_datum*&gt;(this));</a>
+<a name="ln1339">    lua_gettable(lua, LUA_REGISTRYINDEX);</a>
+<a name="ln1340"> </a>
+<a name="ln1341">    // The value we saved is now on top of the Lua stack.</a>
+<a name="ln1342">}</a>
+<a name="ln1343"> </a>
+<a name="ln1344">lua_datum::~lua_datum()</a>
+<a name="ln1345">{</a>
+<a name="ln1346">    cleanup();</a>
+<a name="ln1347">}</a>
+<a name="ln1348"> </a>
+<a name="ln1349">void lua_datum::shutdown(CLua &amp;)</a>
+<a name="ln1350">{</a>
+<a name="ln1351">    cleanup();</a>
+<a name="ln1352">}</a>
+<a name="ln1353"> </a>
+<a name="ln1354">void lua_datum::cleanup()</a>
+<a name="ln1355">{</a>
+<a name="ln1356">    if (need_cleanup)</a>
+<a name="ln1357">    {</a>
+<a name="ln1358">        need_cleanup = false;</a>
+<a name="ln1359">        lua.remove_shutdown_listener(this);</a>
+<a name="ln1360"> </a>
+<a name="ln1361">        lua_pushlightuserdata(lua, this);</a>
+<a name="ln1362">        lua_pushnil(lua);</a>
+<a name="ln1363">        lua_settable(lua, LUA_REGISTRYINDEX);</a>
+<a name="ln1364">    }</a>
+<a name="ln1365">}</a>
+<a name="ln1366"> </a>
+<a name="ln1367">#define LUA_CHECK_TYPE(check) \</a>
+<a name="ln1368">    lua_stack_cleaner clean(lua);                               \</a>
+<a name="ln1369">    push();                                                     \</a>
+<a name="ln1370">    return check(lua, -1)</a>
+<a name="ln1371"> </a>
+<a name="ln1372">bool lua_datum::is_table() const</a>
+<a name="ln1373">{</a>
+<a name="ln1374">    LUA_CHECK_TYPE(lua_istable);</a>
+<a name="ln1375">}</a>
+<a name="ln1376"> </a>
+<a name="ln1377">bool lua_datum::is_function() const</a>
+<a name="ln1378">{</a>
+<a name="ln1379">    LUA_CHECK_TYPE(lua_isfunction);</a>
+<a name="ln1380">}</a>
+<a name="ln1381"> </a>
+<a name="ln1382">bool lua_datum::is_number() const</a>
+<a name="ln1383">{</a>
+<a name="ln1384">    LUA_CHECK_TYPE(lua_isnumber);</a>
+<a name="ln1385">}</a>
+<a name="ln1386"> </a>
+<a name="ln1387">bool lua_datum::is_string() const</a>
+<a name="ln1388">{</a>
+<a name="ln1389">    LUA_CHECK_TYPE(lua_isstring);</a>
+<a name="ln1390">}</a>
+<a name="ln1391"> </a>
+<a name="ln1392">bool lua_datum::is_udata() const</a>
+<a name="ln1393">{</a>
+<a name="ln1394">    LUA_CHECK_TYPE(lua_isuserdata);</a>
+<a name="ln1395">}</a>
+
+</code></pre>
+<div class="balloon" rel="472"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v779/" target="_blank">V779</a> Unreachable code detected. It is possible that an error is present.</p></div>
+<div class="balloon" rel="850"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1004/" target="_blank">V1004</a> The 'vm' pointer was used unsafely after it was verified against nullptr. Check lines: 848, 850.</p></div>
+<div class="balloon" rel="1131"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'lua' is always true.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

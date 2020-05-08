@@ -1,0 +1,3636 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ui.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Hierarchical layout system.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &lt;numeric&gt;</a>
+<a name="ln9">#include &lt;stack&gt;</a>
+<a name="ln10">#include &lt;chrono&gt;</a>
+<a name="ln11">#include &lt;cwctype&gt;</a>
+<a name="ln12"> </a>
+<a name="ln13">#include &quot;ui.h&quot;</a>
+<a name="ln14">#include &quot;cio.h&quot;</a>
+<a name="ln15">#include &quot;macro.h&quot;</a>
+<a name="ln16">#include &quot;state.h&quot;</a>
+<a name="ln17">#include &quot;tileweb.h&quot;</a>
+<a name="ln18">#include &quot;unicode.h&quot;</a>
+<a name="ln19">#include &quot;libutil.h&quot;</a>
+<a name="ln20">#include &quot;windowmanager.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">#ifdef USE_TILE_LOCAL</a>
+<a name="ln23"># include &quot;glwrapper.h&quot;</a>
+<a name="ln24"># include &quot;tilebuf.h&quot;</a>
+<a name="ln25"># include &quot;tilepick-p.h&quot;</a>
+<a name="ln26"># include &quot;tile-player-flag-cut.h&quot;</a>
+<a name="ln27">#else</a>
+<a name="ln28"># include &lt;unistd.h&gt;</a>
+<a name="ln29"># include &quot;output.h&quot;</a>
+<a name="ln30"># include &quot;stringutil.h&quot;</a>
+<a name="ln31"># include &quot;view.h&quot;</a>
+<a name="ln32">#endif</a>
+<a name="ln33"> </a>
+<a name="ln34">#ifdef USE_TILE_WEB</a>
+<a name="ln35"># include &lt;unordered_map&gt;</a>
+<a name="ln36">#endif</a>
+<a name="ln37"> </a>
+<a name="ln38">namespace ui {</a>
+<a name="ln39"> </a>
+<a name="ln40">static Region aabb_intersect(Region a, Region b)</a>
+<a name="ln41">{</a>
+<a name="ln42">    Region i = { max(a.x, b.x), max(a.y, b.y), min(a.ex(), b.ex()), min(a.ey(), b.ey()) };</a>
+<a name="ln43">    i.width -= i.x; i.height -= i.y;</a>
+<a name="ln44">    return i;</a>
+<a name="ln45">}</a>
+<a name="ln46"> </a>
+<a name="ln47">static Region aabb_union(Region a, Region b)</a>
+<a name="ln48">{</a>
+<a name="ln49">    Region i = { min(a.x, b.x), min(a.y, b.y), max(a.ex(), b.ex()), max(a.ey(), b.ey()) };</a>
+<a name="ln50">    i.width -= i.x; i.height -= i.y;</a>
+<a name="ln51">    return i;</a>
+<a name="ln52">}</a>
+<a name="ln53"> </a>
+<a name="ln54">#ifndef USE_TILE_LOCAL</a>
+<a name="ln55">static void clear_text_region(Region region, COLOURS bg);</a>
+<a name="ln56">#endif</a>
+<a name="ln57"> </a>
+<a name="ln58">static struct UIRoot</a>
+<a name="ln59">{</a>
+<a name="ln60">public:</a>
+<a name="ln61">    void push_child(shared_ptr&lt;Widget&gt; child, KeymapContext km);</a>
+<a name="ln62">    void pop_child();</a>
+<a name="ln63"> </a>
+<a name="ln64">    shared_ptr&lt;Widget&gt; top_child()</a>
+<a name="ln65">    {</a>
+<a name="ln66">        const auto sz = m_root.num_children();</a>
+<a name="ln67">        return sz &gt; 0 ? m_root.get_child(sz-1) : nullptr;</a>
+<a name="ln68">    }</a>
+<a name="ln69"> </a>
+<a name="ln70">    size_t num_children() const</a>
+<a name="ln71">    {</a>
+<a name="ln72">        return m_root.num_children();</a>
+<a name="ln73">    };</a>
+<a name="ln74"> </a>
+<a name="ln75">    bool widget_is_in_layout(const Widget* w)</a>
+<a name="ln76">    {</a>
+<a name="ln77">        for (; w; w = w-&gt;_get_parent())</a>
+<a name="ln78">            if (w == &amp;m_root)</a>
+<a name="ln79">                return true;</a>
+<a name="ln80">        return false;</a>
+<a name="ln81">    }</a>
+<a name="ln82"> </a>
+<a name="ln83">    void resize(int w, int h);</a>
+<a name="ln84">    void layout();</a>
+<a name="ln85">    void render();</a>
+<a name="ln86"> </a>
+<a name="ln87">    bool on_event(wm_event&amp; event);</a>
+<a name="ln88">    bool deliver_event(Event&amp; event);</a>
+<a name="ln89"> </a>
+<a name="ln90">    void queue_layout()</a>
+<a name="ln91">    {</a>
+<a name="ln92">        m_needs_layout = true;</a>
+<a name="ln93">    }</a>
+<a name="ln94"> </a>
+<a name="ln95">    void expose_region(Region r)</a>
+<a name="ln96">    {</a>
+<a name="ln97">        if (r.empty())</a>
+<a name="ln98">            return;</a>
+<a name="ln99">        if (m_dirty_region.empty())</a>
+<a name="ln100">            m_dirty_region = r;</a>
+<a name="ln101">        else</a>
+<a name="ln102">            m_dirty_region = aabb_union(m_dirty_region, r);</a>
+<a name="ln103">        needs_paint = true;</a>
+<a name="ln104">    }</a>
+<a name="ln105"> </a>
+<a name="ln106">    bool needs_paint;</a>
+<a name="ln107"> </a>
+<a name="ln108">#ifdef DEBUG</a>
+<a name="ln109">    bool debug_draw = false;</a>
+<a name="ln110">    bool debug_on_event(const wm_event&amp; event);</a>
+<a name="ln111">    void debug_render();</a>
+<a name="ln112">#endif</a>
+<a name="ln113"> </a>
+<a name="ln114">    struct LayoutInfo</a>
+<a name="ln115">    {</a>
+<a name="ln116">        KeymapContext keymap = KMC_NONE;</a>
+<a name="ln117">        Widget* current_focus = nullptr;</a>
+<a name="ln118">        Widget* default_focus = nullptr;</a>
+<a name="ln119">        int generation_id = 0;</a>
+<a name="ln120">    };</a>
+<a name="ln121"> </a>
+<a name="ln122">    LayoutInfo state;  // current keymap and focus info</a>
+<a name="ln123">    int next_generation_id = 1;</a>
+<a name="ln124"> </a>
+<a name="ln125">    vector&lt;int&gt; cutoff_stack;</a>
+<a name="ln126">    vector&lt;Widget*&gt; default_focus_stack;</a>
+<a name="ln127">    vector&lt;Widget*&gt; focus_order;</a>
+<a name="ln128"> </a>
+<a name="ln129">    void update_focus_order();</a>
+<a name="ln130">    void focus_next();</a>
+<a name="ln131">    void focus_prev();</a>
+<a name="ln132"> </a>
+<a name="ln133">    struct RestartAllocation {};</a>
+<a name="ln134"> </a>
+<a name="ln135">#ifdef USE_TILE_LOCAL</a>
+<a name="ln136">    vector&lt;Widget*&gt; hover_path;</a>
+<a name="ln137"> </a>
+<a name="ln138">    void update_hover_path();</a>
+<a name="ln139">    void update_hover_path_for_widget(Widget* widget);</a>
+<a name="ln140">    void send_mouse_enter_leave_events(</a>
+<a name="ln141">            const vector&lt;Widget*&gt;&amp; old_hover_path,</a>
+<a name="ln142">            const vector&lt;Widget*&gt;&amp; new_hover_path);</a>
+<a name="ln143">#endif</a>
+<a name="ln144"> </a>
+<a name="ln145">#ifdef USE_TILE_WEB</a>
+<a name="ln146">    void update_synced_widgets();</a>
+<a name="ln147">    unordered_map&lt;string, Widget*&gt; synced_widgets;</a>
+<a name="ln148">    bool receiving_ui_state = false;</a>
+<a name="ln149">    void sync_state();</a>
+<a name="ln150">    void recv_ui_state_change(const JsonNode *state);</a>
+<a name="ln151">#endif</a>
+<a name="ln152"> </a>
+<a name="ln153">    coord_def cursor_pos;</a>
+<a name="ln154"> </a>
+<a name="ln155">protected:</a>
+<a name="ln156">    int m_w, m_h;</a>
+<a name="ln157">    Region m_region;</a>
+<a name="ln158">    Region m_dirty_region;</a>
+<a name="ln159">    Stack m_root;</a>
+<a name="ln160">    bool m_needs_layout{false};</a>
+<a name="ln161">    bool m_changed_layout_since_click = false;</a>
+<a name="ln162">    vector&lt;LayoutInfo&gt; saved_layout_info;</a>
+<a name="ln163">} ui_root;</a>
+<a name="ln164"> </a>
+<a name="ln165">static stack&lt;Region&gt; scissor_stack;</a>
+<a name="ln166"> </a>
+<a name="ln167">struct Widget::slots Widget::slots = {};</a>
+<a name="ln168"> </a>
+<a name="ln169">Event::Event(Event::Type type) : m_type(type)</a>
+<a name="ln170">{</a>
+<a name="ln171">}</a>
+<a name="ln172"> </a>
+<a name="ln173">KeyEvent::KeyEvent(Event::Type type, const wm_keyboard_event&amp; wm_ev) : Event(type)</a>
+<a name="ln174">{</a>
+<a name="ln175">    m_key = wm_ev.keysym.sym;</a>
+<a name="ln176">}</a>
+<a name="ln177"> </a>
+<a name="ln178">#ifdef USE_TILE_LOCAL</a>
+<a name="ln179">MouseEvent::MouseEvent(Event::Type type, const wm_mouse_event&amp; wm_ev) : Event(type)</a>
+<a name="ln180">{</a>
+<a name="ln181">    m_button = static_cast&lt;MouseEvent::Button&gt;(wm_ev.button);</a>
+<a name="ln182">    // XXX: is it possible that the cursor has moved since the SDL event fired?</a>
+<a name="ln183">    wm-&gt;get_mouse_state(&amp;m_x, &amp;m_y);</a>
+<a name="ln184">    m_wheel_dx = type == MouseWheel ? wm_ev.px : 0;</a>
+<a name="ln185">    m_wheel_dy = type == MouseWheel ? wm_ev.py : 0;</a>
+<a name="ln186">}</a>
+<a name="ln187">#endif</a>
+<a name="ln188"> </a>
+<a name="ln189">FocusEvent::FocusEvent(Event::Type type) : Event(type)</a>
+<a name="ln190">{</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">ActivateEvent::ActivateEvent() : Event(Event::Type::Activate)</a>
+<a name="ln194">{</a>
+<a name="ln195">}</a>
+<a name="ln196"> </a>
+<a name="ln197">Widget::~Widget()</a>
+<a name="ln198">{</a>
+<a name="ln199">    Widget::slots.event.remove_by_target(this);</a>
+<a name="ln200">    Widget::slots.hotkey.remove_by_target(this);</a>
+<a name="ln201">    if (m_parent &amp;&amp; get_focused_widget() == this)</a>
+<a name="ln202">        set_focused_widget(nullptr);</a>
+<a name="ln203">    _set_parent(nullptr);</a>
+<a name="ln204">    erase_val(ui_root.focus_order, this);</a>
+<a name="ln205">#ifdef USE_TILE_WEB</a>
+<a name="ln206">    if (!m_sync_id.empty())</a>
+<a name="ln207">        ui_root.synced_widgets.erase(m_sync_id);</a>
+<a name="ln208">#endif</a>
+<a name="ln209">}</a>
+<a name="ln210"> </a>
+<a name="ln211">void Widget::_emit_layout_pop()</a>
+<a name="ln212">{</a>
+<a name="ln213">    Widget::slots.layout_pop.emit(this);</a>
+<a name="ln214">    Widget::slots.layout_pop.remove_by_target(this);</a>
+<a name="ln215">}</a>
+<a name="ln216"> </a>
+<a name="ln217">bool Widget::on_event(const Event&amp; event)</a>
+<a name="ln218">{</a>
+<a name="ln219">    return Widget::slots.event.emit(this, event);</a>
+<a name="ln220">}</a>
+<a name="ln221"> </a>
+<a name="ln222">shared_ptr&lt;Widget&gt; ContainerVec::get_child_at_offset(int x, int y)</a>
+<a name="ln223">{</a>
+<a name="ln224">    for (shared_ptr&lt;Widget&gt;&amp; child : m_children)</a>
+<a name="ln225">        if (child-&gt;get_region().contains_point(x, y))</a>
+<a name="ln226">            return child;</a>
+<a name="ln227">    return nullptr;</a>
+<a name="ln228">}</a>
+<a name="ln229"> </a>
+<a name="ln230">shared_ptr&lt;Widget&gt; Bin::get_child_at_offset(int x, int y)</a>
+<a name="ln231">{</a>
+<a name="ln232">    if (m_child &amp;&amp; m_child-&gt;get_region().contains_point(x, y))</a>
+<a name="ln233">        return m_child;</a>
+<a name="ln234">    return nullptr;</a>
+<a name="ln235">}</a>
+<a name="ln236"> </a>
+<a name="ln237">void Bin::set_child(shared_ptr&lt;Widget&gt; child)</a>
+<a name="ln238">{</a>
+<a name="ln239">    child-&gt;_set_parent(this);</a>
+<a name="ln240">    m_child = move(child);</a>
+<a name="ln241">    _invalidate_sizereq();</a>
+<a name="ln242">}</a>
+<a name="ln243"> </a>
+<a name="ln244">void Widget::render()</a>
+<a name="ln245">{</a>
+<a name="ln246">    if (m_visible)</a>
+<a name="ln247">        _render();</a>
+<a name="ln248">}</a>
+<a name="ln249"> </a>
+<a name="ln250">SizeReq Widget::get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln251">{</a>
+<a name="ln252">    ASSERT((dim == HORZ) == (prosp_width == -1));</a>
+<a name="ln253"> </a>
+<a name="ln254">    if (!m_visible)</a>
+<a name="ln255">        return { 0, 0 };</a>
+<a name="ln256"> </a>
+<a name="ln257">    if (cached_sr_valid[dim] &amp;&amp; (!dim || cached_sr_pw == prosp_width))</a>
+<a name="ln258">        return cached_sr[dim];</a>
+<a name="ln259"> </a>
+<a name="ln260">    prosp_width = dim ? prosp_width - margin.right - margin.left : prosp_width;</a>
+<a name="ln261">    SizeReq ret = _get_preferred_size(dim, prosp_width);</a>
+<a name="ln262">    ASSERT(ret.min &lt;= ret.nat);</a>
+<a name="ln263"> </a>
+<a name="ln264">    // Order is important: max sizes limit expansion, and don't include margins</a>
+<a name="ln265">    const bool expand = dim ? expand_v : expand_h;</a>
+<a name="ln266">    const bool shrink = dim ? shrink_v : shrink_h;</a>
+<a name="ln267">    ASSERT(!(expand &amp;&amp; shrink));</a>
+<a name="ln268">    constexpr int ui_expand_sz = 0xffffff;</a>
+<a name="ln269"> </a>
+<a name="ln270">    if (expand)</a>
+<a name="ln271">        ret.nat = ui_expand_sz;</a>
+<a name="ln272">    else if (shrink)</a>
+<a name="ln273">        ret.nat = ret.min;</a>
+<a name="ln274"> </a>
+<a name="ln275">    int&amp; min_size = dim ? m_min_size.height : m_min_size.width;</a>
+<a name="ln276">    int&amp; max_size = dim ? m_max_size.height : m_max_size.width;</a>
+<a name="ln277"> </a>
+<a name="ln278">    ASSERT(min_size &lt;= max_size);</a>
+<a name="ln279">    ret.min = max(ret.min, min_size);</a>
+<a name="ln280">    ret.nat = min(ret.nat, max(max_size, ret.min));</a>
+<a name="ln281">    ret.nat = max(ret.nat, ret.min);</a>
+<a name="ln282">    ASSERT(ret.min &lt;= ret.nat);</a>
+<a name="ln283"> </a>
+<a name="ln284">    const int m = dim ? margin.top + margin.bottom : margin.left + margin.right;</a>
+<a name="ln285">    ret.min += m;</a>
+<a name="ln286">    ret.nat += m;</a>
+<a name="ln287"> </a>
+<a name="ln288">    ret.nat = min(ret.nat, ui_expand_sz);</a>
+<a name="ln289"> </a>
+<a name="ln290">    cached_sr_valid[dim] = true;</a>
+<a name="ln291">    cached_sr[dim] = ret;</a>
+<a name="ln292">    if (dim)</a>
+<a name="ln293">        cached_sr_pw = prosp_width;</a>
+<a name="ln294"> </a>
+<a name="ln295">    return ret;</a>
+<a name="ln296">}</a>
+<a name="ln297"> </a>
+<a name="ln298">void Widget::allocate_region(Region region)</a>
+<a name="ln299">{</a>
+<a name="ln300">    if (!m_visible)</a>
+<a name="ln301">        return;</a>
+<a name="ln302"> </a>
+<a name="ln303">    Region new_region = {</a>
+<a name="ln304">        region.x + margin.left,</a>
+<a name="ln305">        region.y + margin.top,</a>
+<a name="ln306">        region.width - margin.left - margin.right,</a>
+<a name="ln307">        region.height - margin.top - margin.bottom,</a>
+<a name="ln308">    };</a>
+<a name="ln309"> </a>
+<a name="ln310">    if (m_region == new_region &amp;&amp; !alloc_queued)</a>
+<a name="ln311">        return;</a>
+<a name="ln312">    ui_root.expose_region(m_region);</a>
+<a name="ln313">    ui_root.expose_region(new_region);</a>
+<a name="ln314">    m_region = new_region;</a>
+<a name="ln315">    alloc_queued = false;</a>
+<a name="ln316"> </a>
+<a name="ln317">    ASSERT(m_region.width &gt;= 0);</a>
+<a name="ln318">    ASSERT(m_region.height &gt;= 0);</a>
+<a name="ln319">    _allocate_region();</a>
+<a name="ln320">}</a>
+<a name="ln321"> </a>
+<a name="ln322">SizeReq Widget::_get_preferred_size(Direction, int)</a>
+<a name="ln323">{</a>
+<a name="ln324">    return { 0, 0 };</a>
+<a name="ln325">}</a>
+<a name="ln326"> </a>
+<a name="ln327">void Widget::_allocate_region()</a>
+<a name="ln328">{</a>
+<a name="ln329">}</a>
+<a name="ln330"> </a>
+<a name="ln331">/**</a>
+<a name="ln332"> * Determine whether a widget contains the given widget.</a>
+<a name="ln333"> *</a>
+<a name="ln334"> * @param child   The other widget.</a>
+<a name="ln335"> * @return        True if the other widget is a descendant of this widget.</a>
+<a name="ln336"> */</a>
+<a name="ln337">bool Widget::is_ancestor_of(const shared_ptr&lt;Widget&gt;&amp; other)</a>
+<a name="ln338">{</a>
+<a name="ln339">    for (Widget* w = other.get(); w; w = w-&gt;_get_parent())</a>
+<a name="ln340">        if (w == this)</a>
+<a name="ln341">            return true;</a>
+<a name="ln342">    return false;</a>
+<a name="ln343">}</a>
+<a name="ln344"> </a>
+<a name="ln345">void Widget::_set_parent(Widget* p)</a>
+<a name="ln346">{</a>
+<a name="ln347">    m_parent = p;</a>
+<a name="ln348">#ifdef USE_TILE_LOCAL</a>
+<a name="ln349">    ui_root.update_hover_path_for_widget(this);</a>
+<a name="ln350">#endif</a>
+<a name="ln351">}</a>
+<a name="ln352"> </a>
+<a name="ln353">/**</a>
+<a name="ln354"> * Unparent a widget.</a>
+<a name="ln355"> *</a>
+<a name="ln356"> * This function verifies that a widget has the correct parent before orphaning.</a>
+<a name="ln357"> * Intended for use in container widget destructors.</a>
+<a name="ln358"> *</a>
+<a name="ln359"> * @param child   The child widget to unparent.</a>
+<a name="ln360"> */</a>
+<a name="ln361">void Widget::_unparent(shared_ptr&lt;Widget&gt;&amp; child)</a>
+<a name="ln362">{</a>
+<a name="ln363">    if (child-&gt;m_parent == this)</a>
+<a name="ln364">        child-&gt;_set_parent(nullptr);</a>
+<a name="ln365">}</a>
+<a name="ln366"> </a>
+<a name="ln367">void Widget::_invalidate_sizereq(bool immediate)</a>
+<a name="ln368">{</a>
+<a name="ln369">    for (auto w = this; w; w = w-&gt;m_parent)</a>
+<a name="ln370">        fill(begin(w-&gt;cached_sr_valid), end(w-&gt;cached_sr_valid), false);</a>
+<a name="ln371">    if (immediate)</a>
+<a name="ln372">        ui_root.queue_layout();</a>
+<a name="ln373">}</a>
+<a name="ln374"> </a>
+<a name="ln375">void Widget::_queue_allocation(bool immediate)</a>
+<a name="ln376">{</a>
+<a name="ln377">    for (auto w = this; w &amp;&amp; !w-&gt;alloc_queued; w = w-&gt;m_parent)</a>
+<a name="ln378">        w-&gt;alloc_queued = true;</a>
+<a name="ln379">    if (immediate)</a>
+<a name="ln380">        ui_root.queue_layout();</a>
+<a name="ln381">}</a>
+<a name="ln382"> </a>
+<a name="ln383">void Widget::_expose()</a>
+<a name="ln384">{</a>
+<a name="ln385">    ui_root.expose_region(m_region);</a>
+<a name="ln386">}</a>
+<a name="ln387"> </a>
+<a name="ln388">void Widget::set_visible(bool visible)</a>
+<a name="ln389">{</a>
+<a name="ln390">    if (m_visible == visible)</a>
+<a name="ln391">        return;</a>
+<a name="ln392">    m_visible = visible;</a>
+<a name="ln393">    _invalidate_sizereq();</a>
+<a name="ln394">}</a>
+<a name="ln395"> </a>
+<a name="ln396">void Widget::add_internal_child(shared_ptr&lt;Widget&gt; child)</a>
+<a name="ln397">{</a>
+<a name="ln398">    child-&gt;_set_parent(this);</a>
+<a name="ln399">    m_internal_children.emplace_back(move(child));</a>
+<a name="ln400">}</a>
+<a name="ln401"> </a>
+<a name="ln402">void Widget::set_sync_id(string id)</a>
+<a name="ln403">{</a>
+<a name="ln404">    ASSERT(!_get_parent()); // synced widgets are collected on layout push/pop</a>
+<a name="ln405">    m_sync_id = id;</a>
+<a name="ln406">}</a>
+<a name="ln407"> </a>
+<a name="ln408">#ifdef USE_TILE_WEB</a>
+<a name="ln409">void Widget::sync_save_state()</a>
+<a name="ln410">{</a>
+<a name="ln411">}</a>
+<a name="ln412"> </a>
+<a name="ln413">void Widget::sync_load_state(const JsonNode *)</a>
+<a name="ln414">{</a>
+<a name="ln415">}</a>
+<a name="ln416"> </a>
+<a name="ln417">void Widget::sync_state_changed()</a>
+<a name="ln418">{</a>
+<a name="ln419">    if (m_sync_id.empty())</a>
+<a name="ln420">        return;</a>
+<a name="ln421">    const auto&amp; top = ui_root.top_child();</a>
+<a name="ln422">    if (!top || !top-&gt;is_ancestor_of(get_shared()))</a>
+<a name="ln423">        return;</a>
+<a name="ln424">    tiles.json_open_object();</a>
+<a name="ln425">    sync_save_state();</a>
+<a name="ln426">    tiles.json_write_string(&quot;msg&quot;, &quot;ui-state-sync&quot;);</a>
+<a name="ln427">    tiles.json_write_string(&quot;widget_id&quot;, m_sync_id);</a>
+<a name="ln428">    tiles.json_write_bool(&quot;from_webtiles&quot;, ui_root.receiving_ui_state);</a>
+<a name="ln429">    tiles.json_write_int(&quot;generation_id&quot;, ui_root.state.generation_id);</a>
+<a name="ln430">    tiles.json_close_object();</a>
+<a name="ln431">    tiles.finish_message();</a>
+<a name="ln432">}</a>
+<a name="ln433">#endif</a>
+<a name="ln434"> </a>
+<a name="ln435">void Box::add_child(shared_ptr&lt;Widget&gt; child)</a>
+<a name="ln436">{</a>
+<a name="ln437">    child-&gt;_set_parent(this);</a>
+<a name="ln438">    m_children.push_back(move(child));</a>
+<a name="ln439">    _invalidate_sizereq();</a>
+<a name="ln440">}</a>
+<a name="ln441"> </a>
+<a name="ln442">void Box::_render()</a>
+<a name="ln443">{</a>
+<a name="ln444">    for (auto const&amp; child : m_children)</a>
+<a name="ln445">        child-&gt;render();</a>
+<a name="ln446">}</a>
+<a name="ln447"> </a>
+<a name="ln448">vector&lt;int&gt; Box::layout_main_axis(vector&lt;SizeReq&gt;&amp; ch_psz, int main_sz)</a>
+<a name="ln449">{</a>
+<a name="ln450">    // find the child sizes on the main axis</a>
+<a name="ln451">    vector&lt;int&gt; ch_sz(m_children.size());</a>
+<a name="ln452"> </a>
+<a name="ln453">    int extra = main_sz;</a>
+<a name="ln454">    for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln455">    {</a>
+<a name="ln456">        ch_sz[i] = ch_psz[i].min;</a>
+<a name="ln457">        extra -= ch_psz[i].min;</a>
+<a name="ln458">        if (align_main == Align::STRETCH)</a>
+<a name="ln459">            ch_psz[i].nat = INT_MAX;</a>
+<a name="ln460">    }</a>
+<a name="ln461">    ASSERT(extra &gt;= 0);</a>
+<a name="ln462"> </a>
+<a name="ln463">    while (extra &gt; 0)</a>
+<a name="ln464">    {</a>
+<a name="ln465">        int sum_flex_grow = 0, remainder = 0;</a>
+<a name="ln466">        for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln467">            sum_flex_grow += ch_sz[i] &lt; ch_psz[i].nat ? m_children[i]-&gt;flex_grow : 0;</a>
+<a name="ln468">        if (!sum_flex_grow)</a>
+<a name="ln469">            break;</a>
+<a name="ln470"> </a>
+<a name="ln471">        // distribute space to children, based on flex_grow</a>
+<a name="ln472">        for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln473">        {</a>
+<a name="ln474">            float efg = ch_sz[i] &lt; ch_psz[i].nat ? m_children[i]-&gt;flex_grow : 0;</a>
+<a name="ln475">            int ch_extra = extra * efg / sum_flex_grow;</a>
+<a name="ln476">            ASSERT(ch_sz[i] &lt;= ch_psz[i].nat);</a>
+<a name="ln477">            int taken = min(ch_extra, ch_psz[i].nat - ch_sz[i]);</a>
+<a name="ln478">            ch_sz[i] += taken;</a>
+<a name="ln479">            remainder += ch_extra - taken;</a>
+<a name="ln480">        }</a>
+<a name="ln481">        extra = remainder;</a>
+<a name="ln482">    }</a>
+<a name="ln483"> </a>
+<a name="ln484">    return ch_sz;</a>
+<a name="ln485">}</a>
+<a name="ln486"> </a>
+<a name="ln487">vector&lt;int&gt; Box::layout_cross_axis(vector&lt;SizeReq&gt;&amp; ch_psz, int cross_sz)</a>
+<a name="ln488">{</a>
+<a name="ln489">    vector&lt;int&gt; ch_sz(m_children.size());</a>
+<a name="ln490"> </a>
+<a name="ln491">    for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln492">    {</a>
+<a name="ln493">        const bool stretch = align_cross == STRETCH;</a>
+<a name="ln494">        ch_sz[i] = stretch ? cross_sz : min(max(ch_psz[i].min, cross_sz), ch_psz[i].nat);</a>
+<a name="ln495">    }</a>
+<a name="ln496"> </a>
+<a name="ln497">    return ch_sz;</a>
+<a name="ln498">}</a>
+<a name="ln499"> </a>
+<a name="ln500">SizeReq Box::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln501">{</a>
+<a name="ln502">    vector&lt;SizeReq&gt; sr(m_children.size());</a>
+<a name="ln503"> </a>
+<a name="ln504">    // Get preferred widths</a>
+<a name="ln505">    for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln506">        sr[i] = m_children[i]-&gt;get_preferred_size(Widget::HORZ, -1);</a>
+<a name="ln507"> </a>
+<a name="ln508">    if (dim)</a>
+<a name="ln509">    {</a>
+<a name="ln510">        // Get actual widths</a>
+<a name="ln511">        vector&lt;int&gt; cw = horz ? layout_main_axis(sr, prosp_width) : layout_cross_axis(sr, prosp_width);</a>
+<a name="ln512"> </a>
+<a name="ln513">        // Get preferred heights</a>
+<a name="ln514">        for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln515">            sr[i] = m_children[i]-&gt;get_preferred_size(Widget::VERT, cw[i]);</a>
+<a name="ln516">    }</a>
+<a name="ln517"> </a>
+<a name="ln518">    // find sum/max of preferred sizes, as appropriate</a>
+<a name="ln519">    bool main_axis = dim == !horz;</a>
+<a name="ln520">    SizeReq r = { 0, 0 };</a>
+<a name="ln521">    for (auto const&amp; c : sr)</a>
+<a name="ln522">    {</a>
+<a name="ln523">        r.min = main_axis ? r.min + c.min : max(r.min, c.min);</a>
+<a name="ln524">        r.nat = main_axis ? r.nat + c.nat : max(r.nat, c.nat);</a>
+<a name="ln525">    }</a>
+<a name="ln526">    return r;</a>
+<a name="ln527">}</a>
+<a name="ln528"> </a>
+<a name="ln529">void Box::_allocate_region()</a>
+<a name="ln530">{</a>
+<a name="ln531">    vector&lt;SizeReq&gt; sr(m_children.size());</a>
+<a name="ln532"> </a>
+<a name="ln533">    // Get preferred widths</a>
+<a name="ln534">    for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln535">        sr[i] = m_children[i]-&gt;get_preferred_size(Widget::HORZ, -1);</a>
+<a name="ln536"> </a>
+<a name="ln537">    // Get actual widths</a>
+<a name="ln538">    vector&lt;int&gt; cw = horz ? layout_main_axis(sr, m_region.width) : layout_cross_axis(sr, m_region.width);</a>
+<a name="ln539"> </a>
+<a name="ln540">    // Get preferred heights</a>
+<a name="ln541">    for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln542">        sr[i] = m_children[i]-&gt;get_preferred_size(Widget::VERT, cw[i]);</a>
+<a name="ln543"> </a>
+<a name="ln544">    // Get actual heights</a>
+<a name="ln545">    vector&lt;int&gt; ch = horz ? layout_cross_axis(sr, m_region.height) : layout_main_axis(sr, m_region.height);</a>
+<a name="ln546"> </a>
+<a name="ln547">    auto const &amp;m = horz ? cw : ch;</a>
+<a name="ln548">    int extra_main_space = (horz ? m_region.width : m_region.height) - accumulate(m.begin(), m.end(), 0);</a>
+<a name="ln549">    ASSERT(extra_main_space &gt;= 0);</a>
+<a name="ln550"> </a>
+<a name="ln551">    // main axis offset</a>
+<a name="ln552">    int mo;</a>
+<a name="ln553">    switch (align_main)</a>
+<a name="ln554">    {</a>
+<a name="ln555">        case Widget::START:   mo = 0; break;</a>
+<a name="ln556">        case Widget::CENTER:  mo = extra_main_space/2; break;</a>
+<a name="ln557">        case Widget::END:     mo = extra_main_space; break;</a>
+<a name="ln558">        case Widget::STRETCH: mo = 0; break;</a>
+<a name="ln559">        default: ASSERT(0);</a>
+<a name="ln560">    }</a>
+<a name="ln561">    int ho = m_region.x + (horz ? mo : 0);</a>
+<a name="ln562">    int vo = m_region.y + (!horz ? mo : 0);</a>
+<a name="ln563"> </a>
+<a name="ln564">    Region cr = {ho, vo, 0, 0};</a>
+<a name="ln565">    for (size_t i = 0; i &lt; m_children.size(); i++)</a>
+<a name="ln566">    {</a>
+<a name="ln567">        // cross axis offset</a>
+<a name="ln568">        int extra_cross_space = horz ? m_region.height - ch[i] : m_region.width - cw[i];</a>
+<a name="ln569"> </a>
+<a name="ln570">        const Align child_align = align_cross;</a>
+<a name="ln571">        int xo;</a>
+<a name="ln572">        switch (child_align)</a>
+<a name="ln573">        {</a>
+<a name="ln574">            case Widget::START:   xo = 0; break;</a>
+<a name="ln575">            case Widget::CENTER:  xo = extra_cross_space/2; break;</a>
+<a name="ln576">            case Widget::END:     xo = extra_cross_space; break;</a>
+<a name="ln577">            case Widget::STRETCH: xo = 0; break;</a>
+<a name="ln578">            default: ASSERT(0);</a>
+<a name="ln579">        }</a>
+<a name="ln580"> </a>
+<a name="ln581">        int&amp; cr_cross_offset = horz ? cr.y : cr.x;</a>
+<a name="ln582">        int&amp; cr_cross_size = horz ? cr.height : cr.width;</a>
+<a name="ln583"> </a>
+<a name="ln584">        cr_cross_offset = (horz ? vo : ho) + xo;</a>
+<a name="ln585">        cr.width = cw[i];</a>
+<a name="ln586">        cr.height = ch[i];</a>
+<a name="ln587">        if (child_align == STRETCH)</a>
+<a name="ln588">            cr_cross_size = (horz ? ch : cw)[i];</a>
+<a name="ln589">        m_children[i]-&gt;allocate_region(cr);</a>
+<a name="ln590"> </a>
+<a name="ln591">        int&amp; cr_main_offset = horz ? cr.x : cr.y;</a>
+<a name="ln592">        int&amp; cr_main_size = horz ? cr.width : cr.height;</a>
+<a name="ln593">        cr_main_offset += cr_main_size;</a>
+<a name="ln594">    }</a>
+<a name="ln595">}</a>
+<a name="ln596"> </a>
+<a name="ln597">Text::Text()</a>
+<a name="ln598">{</a>
+<a name="ln599">#ifdef USE_TILE_LOCAL</a>
+<a name="ln600">    set_font(tiles.get_crt_font());</a>
+<a name="ln601">#endif</a>
+<a name="ln602">}</a>
+<a name="ln603"> </a>
+<a name="ln604">void Text::set_text(const formatted_string &amp;fs)</a>
+<a name="ln605">{</a>
+<a name="ln606">    if (fs == m_text)</a>
+<a name="ln607">        return;</a>
+<a name="ln608">    m_text.clear();</a>
+<a name="ln609">    m_text += fs;</a>
+<a name="ln610">    _invalidate_sizereq();</a>
+<a name="ln611">    _expose();</a>
+<a name="ln612">    m_wrapped_size = Size(-1);</a>
+<a name="ln613">    _queue_allocation();</a>
+<a name="ln614">}</a>
+<a name="ln615"> </a>
+<a name="ln616">#ifdef USE_TILE_LOCAL</a>
+<a name="ln617">void Text::set_font(FontWrapper *font)</a>
+<a name="ln618">{</a>
+<a name="ln619">    ASSERT(font);</a>
+<a name="ln620">    m_font = font;</a>
+<a name="ln621">    _queue_allocation();</a>
+<a name="ln622">}</a>
+<a name="ln623">#endif</a>
+<a name="ln624"> </a>
+<a name="ln625">void Text::set_highlight_pattern(string pattern, bool line)</a>
+<a name="ln626">{</a>
+<a name="ln627">    hl_pat = pattern;</a>
+<a name="ln628">    hl_line = line;</a>
+<a name="ln629">    _expose();</a>
+<a name="ln630">}</a>
+<a name="ln631"> </a>
+<a name="ln632">void Text::wrap_text_to_size(int width, int height)</a>
+<a name="ln633">{</a>
+<a name="ln634">    Size wrapped_size = { width, height };</a>
+<a name="ln635">    if (m_wrapped_size == wrapped_size)</a>
+<a name="ln636">        return;</a>
+<a name="ln637">    m_wrapped_size = wrapped_size;</a>
+<a name="ln638"> </a>
+<a name="ln639">    height = height ? height : 0xfffffff;</a>
+<a name="ln640"> </a>
+<a name="ln641">#ifdef USE_TILE_LOCAL</a>
+<a name="ln642">    if (wrap_text || ellipsize)</a>
+<a name="ln643">        m_text_wrapped = m_font-&gt;split(m_text, width, height);</a>
+<a name="ln644">    else</a>
+<a name="ln645">        m_text_wrapped = m_text;</a>
+<a name="ln646"> </a>
+<a name="ln647">    m_brkpts.clear();</a>
+<a name="ln648">    m_brkpts.emplace_back(brkpt({0, 0}));</a>
+<a name="ln649">    unsigned tally = 0, acc = 0;</a>
+<a name="ln650">    for (unsigned i = 0; i &lt; m_text_wrapped.ops.size(); i++)</a>
+<a name="ln651">    {</a>
+<a name="ln652">        formatted_string::fs_op &amp;op = m_text_wrapped.ops[i];</a>
+<a name="ln653">        if (op.type != FSOP_TEXT)</a>
+<a name="ln654">            continue;</a>
+<a name="ln655">        if (acc &gt; 0)</a>
+<a name="ln656">        {</a>
+<a name="ln657">            m_brkpts.emplace_back(brkpt({i, tally}));</a>
+<a name="ln658">            acc = 0;</a>
+<a name="ln659">        }</a>
+<a name="ln660">        unsigned n = count(op.text.begin(), op.text.end(), '\n');</a>
+<a name="ln661">        acc += n;</a>
+<a name="ln662">        tally += n;</a>
+<a name="ln663">    }</a>
+<a name="ln664">#else</a>
+<a name="ln665">    m_wrapped_lines.clear();</a>
+<a name="ln666">    formatted_string::parse_string_to_multiple(m_text.to_colour_string(), m_wrapped_lines, width);</a>
+<a name="ln667">    // add ellipsis to last line of text if necessary</a>
+<a name="ln668">    if (height &lt; (int)m_wrapped_lines.size())</a>
+<a name="ln669">    {</a>
+<a name="ln670">        auto&amp; last_line = m_wrapped_lines[height-1], next_line = m_wrapped_lines[height];</a>
+<a name="ln671">        last_line += &quot; &quot;;</a>
+<a name="ln672">        last_line += next_line;</a>
+<a name="ln673">        last_line = last_line.chop(width-2);</a>
+<a name="ln674">        last_line += &quot;..&quot;;</a>
+<a name="ln675">        m_wrapped_lines.resize(height);</a>
+<a name="ln676">    }</a>
+<a name="ln677">    if (m_wrapped_lines.empty())</a>
+<a name="ln678">        m_wrapped_lines.emplace_back(&quot;&quot;);</a>
+<a name="ln679">#endif</a>
+<a name="ln680">}</a>
+<a name="ln681"> </a>
+<a name="ln682">static vector&lt;size_t&gt; _find_highlights(const string&amp; haystack, const string&amp; needle, int a, int b)</a>
+<a name="ln683">{</a>
+<a name="ln684">    vector&lt;size_t&gt; highlights;</a>
+<a name="ln685">    size_t pos = haystack.find(needle, max(a-(int)needle.size()+1, 0));</a>
+<a name="ln686">    while (pos != string::npos &amp;&amp; pos &lt; b+needle.size()-1)</a>
+<a name="ln687">    {</a>
+<a name="ln688">        highlights.push_back(pos);</a>
+<a name="ln689">        pos = haystack.find(needle, pos+1);</a>
+<a name="ln690">    }</a>
+<a name="ln691">    return highlights;</a>
+<a name="ln692">}</a>
+<a name="ln693"> </a>
+<a name="ln694">void Text::_render()</a>
+<a name="ln695">{</a>
+<a name="ln696">    Region region = m_region;</a>
+<a name="ln697">    if (scissor_stack.size() &gt; 0)</a>
+<a name="ln698">        region = aabb_intersect(region, scissor_stack.top());</a>
+<a name="ln699">    if (region.width &lt;= 0 || region.height &lt;= 0)</a>
+<a name="ln700">        return;</a>
+<a name="ln701"> </a>
+<a name="ln702">    wrap_text_to_size(m_region.width, m_region.height);</a>
+<a name="ln703"> </a>
+<a name="ln704">#ifdef USE_TILE_LOCAL</a>
+<a name="ln705">    const int dev_line_height = m_font-&gt;char_height(false);</a>
+<a name="ln706">    const int line_min_pos = display_density.logical_to_device(</a>
+<a name="ln707">                                                    region.y - m_region.y);</a>
+<a name="ln708">    const int line_max_pos = display_density.logical_to_device(</a>
+<a name="ln709">                                        region.y + region.height - m_region.y);</a>
+<a name="ln710">    const int line_min = line_min_pos / dev_line_height;</a>
+<a name="ln711">    const int line_max = line_max_pos / dev_line_height;</a>
+<a name="ln712"> </a>
+<a name="ln713">    // find the earliest and latest ops in the string that could be displayed</a>
+<a name="ln714">    // in the currently visible region, as well as the line offset of the</a>
+<a name="ln715">    // earliest.</a>
+<a name="ln716">    int line_off = 0;</a>
+<a name="ln717">    int ops_min = 0, ops_max = m_text_wrapped.ops.size();</a>
+<a name="ln718">    {</a>
+<a name="ln719">        int i = 1;</a>
+<a name="ln720">        for (; i &lt; (int) m_brkpts.size(); i++)</a>
+<a name="ln721">            if (static_cast&lt;int&gt;(m_brkpts[i].line) &gt;= line_min)</a>
+<a name="ln722">            {</a>
+<a name="ln723">                ops_min = m_brkpts[i - 1].op;</a>
+<a name="ln724">                line_off = m_brkpts[i - 1].line;</a>
+<a name="ln725">                break;</a>
+<a name="ln726">            }</a>
+<a name="ln727">        for (; i &lt; (int)m_brkpts.size(); i++)</a>
+<a name="ln728">            if (static_cast&lt;int&gt;(m_brkpts[i].line) &gt; line_max)</a>
+<a name="ln729">            {</a>
+<a name="ln730">                ops_max = m_brkpts[i].op;</a>
+<a name="ln731">                break;</a>
+<a name="ln732">            }</a>
+<a name="ln733">    }</a>
+<a name="ln734"> </a>
+<a name="ln735">    // the slice of the contained string that will be displayed</a>
+<a name="ln736">    formatted_string slice;</a>
+<a name="ln737">    slice.ops = vector&lt;formatted_string::fs_op&gt;(</a>
+<a name="ln738">        m_text_wrapped.ops.begin() + ops_min,</a>
+<a name="ln739">        m_text_wrapped.ops.begin() + ops_max);</a>
+<a name="ln740"> </a>
+<a name="ln741">    // TODO: this is really complicated, can it be refactored? Does it</a>
+<a name="ln742">    // really need to iterate over the formatted_text slices? I'm not sure</a>
+<a name="ln743">    // the formatting ever matters for highlighting locations.</a>
+<a name="ln744">    if (!hl_pat.empty())</a>
+<a name="ln745">    {</a>
+<a name="ln746">        const auto&amp; full_text = m_text.tostring();</a>
+<a name="ln747"> </a>
+<a name="ln748">        // need to find the byte ranges in full_text that our slice corresponds to</a>
+<a name="ln749">        // note that the indexes are the same in both m_text and m_text_wrapped</a>
+<a name="ln750">        // only because wordwrapping only replaces ' ' with '\n': in other words,</a>
+<a name="ln751">        // this is fairly brittle</a>
+<a name="ln752">        ASSERT(full_text.size() == m_text_wrapped.tostring().size());</a>
+<a name="ln753">        // index of the first and last ops that are being displayed</a>
+<a name="ln754">        int begin_idx = ops_min == 0 ?</a>
+<a name="ln755">                        0 :</a>
+<a name="ln756">                        m_text_wrapped.tostring(0, ops_min - 1).size();</a>
+<a name="ln757">        int end_idx = begin_idx</a>
+<a name="ln758">                        + m_text_wrapped.tostring(ops_min, ops_max-1).size();</a>
+<a name="ln759"> </a>
+<a name="ln760">        vector&lt;size_t&gt; highlights = _find_highlights(full_text, hl_pat,</a>
+<a name="ln761">                                                     begin_idx, end_idx);</a>
+<a name="ln762"> </a>
+<a name="ln763">        int ox = m_region.x;</a>
+<a name="ln764">        const int oy = display_density.logical_to_device(m_region.y) +</a>
+<a name="ln765">                                                dev_line_height * line_off;</a>
+<a name="ln766">        size_t lacc = 0; // the start char of the current op relative to region</a>
+<a name="ln767">        size_t line = 0; // the line we are at relative to the region</a>
+<a name="ln768"> </a>
+<a name="ln769">        bool inside = false;</a>
+<a name="ln770">        // Iterate over formatted_string op slices, looking for highlight</a>
+<a name="ln771">        // sequences. Highlight sequences may span multiple op slices, hence</a>
+<a name="ln772">        // some of the complexity here.</a>
+<a name="ln773">        // All the y math in this section needs to be done in device pixels,</a>
+<a name="ln774">        // in order to handle fractional advances.</a>
+<a name="ln775">        set&lt;size_t&gt; block_lines;</a>
+<a name="ln776">        for (unsigned i = 0; i &lt; slice.ops.size() &amp;&amp; !highlights.empty(); i++)</a>
+<a name="ln777">        {</a>
+<a name="ln778">            const auto&amp; op = slice.ops[i];</a>
+<a name="ln779">            if (op.type != FSOP_TEXT)</a>
+<a name="ln780">                continue;</a>
+<a name="ln781">            size_t oplen = op.text.size();</a>
+<a name="ln782"> </a>
+<a name="ln783">            // dimensions in chars of the pattern relative to current op</a>
+<a name="ln784">            size_t start = highlights[0] - begin_idx - lacc;</a>
+<a name="ln785">            size_t end = highlights[0] - begin_idx - lacc + hl_pat.size();</a>
+<a name="ln786"> </a>
+<a name="ln787">            size_t op_line_start = begin_idx + lacc &gt; 0</a>
+<a name="ln788">                        ? full_text.rfind('\n', begin_idx + lacc - 1)</a>
+<a name="ln789">                        : string::npos;</a>
+<a name="ln790">            op_line_start = op_line_start == string::npos</a>
+<a name="ln791">                        ? 0</a>
+<a name="ln792">                        : op_line_start + 1;</a>
+<a name="ln793">            string line_before_op = full_text.substr(op_line_start,</a>
+<a name="ln794">                                            begin_idx + lacc - op_line_start);</a>
+<a name="ln795">            // pixel positions for the current op</a>
+<a name="ln796">            size_t op_x = m_font-&gt;string_width(line_before_op.c_str());</a>
+<a name="ln797">            const size_t op_y =</a>
+<a name="ln798">                            m_font-&gt;string_height(line_before_op.c_str(), false)</a>
+<a name="ln799">                            - dev_line_height;</a>
+<a name="ln800"> </a>
+<a name="ln801">            // positions in device pixels to highlight relative to current op</a>
+<a name="ln802">            size_t sx = 0, ex = m_font-&gt;string_width(op.text.c_str());</a>
+<a name="ln803">            size_t sy = 0, ey = dev_line_height;</a>
+<a name="ln804"> </a>
+<a name="ln805">            bool started = false; // does the highlight start in the current op?</a>
+<a name="ln806">            bool ended = false;   // does the highlight end in the current op?</a>
+<a name="ln807"> </a>
+<a name="ln808">            if (start &lt; oplen) // assume start is unsigned and so &gt;=0</a>
+<a name="ln809">            {</a>
+<a name="ln810">                // hacky: reset op x to 0 if we've hit a linebreak in the op</a>
+<a name="ln811">                // before start. This is to handle cases where the op starts</a>
+<a name="ln812">                // midline, but the pattern is after a linebreak in the op.</a>
+<a name="ln813">                const size_t linebreak_in_op = op.text.find(&quot;\n&quot;);</a>
+<a name="ln814">                if (start &gt; linebreak_in_op)</a>
+<a name="ln815">                    op_x = 0;</a>
+<a name="ln816">                // start position is somewhere in the current op</a>
+<a name="ln817">                const string before = full_text.substr(begin_idx + lacc, start);</a>
+<a name="ln818">                sx = m_font-&gt;string_width(before.c_str());</a>
+<a name="ln819">                sy = m_font-&gt;string_height(before.c_str(), false)</a>
+<a name="ln820">                                                            - dev_line_height;</a>
+<a name="ln821">                started = true;</a>
+<a name="ln822">            }</a>
+<a name="ln823">            if (end &lt;= oplen) // assume end is unsigned and so &gt;=0</a>
+<a name="ln824">            {</a>
+<a name="ln825">                const string to_end = full_text.substr(begin_idx + lacc, end);</a>
+<a name="ln826">                ex = m_font-&gt;string_width(to_end.c_str());</a>
+<a name="ln827">                ey = m_font-&gt;string_height(to_end.c_str(), false);</a>
+<a name="ln828">                ended = true;</a>
+<a name="ln829">            }</a>
+<a name="ln830"> </a>
+<a name="ln831">            if (started || ended || inside)</a>
+<a name="ln832">            {</a>
+<a name="ln833">                m_hl_buf.clear();</a>
+<a name="ln834">                // TODO: as far as I can tell, the above code never produces</a>
+<a name="ln835">                // multi-line spans for this to iterate over...</a>
+<a name="ln836">                for (size_t y = oy + op_y + line + sy;</a>
+<a name="ln837">                            y &lt; oy + op_y + line + ey;</a>
+<a name="ln838">                            y += dev_line_height)</a>
+<a name="ln839">                {</a>
+<a name="ln840">                    if (block_lines.count(y)) // kind of brittle...</a>
+<a name="ln841">                        continue;</a>
+<a name="ln842">                    if (hl_line)</a>
+<a name="ln843">                    {</a>
+<a name="ln844">                        block_lines.insert(y);</a>
+<a name="ln845">                        m_hl_buf.add(region.x,</a>
+<a name="ln846">                            display_density.device_to_logical(y),</a>
+<a name="ln847">                            region.x + region.width,</a>
+<a name="ln848">                            display_density.device_to_logical(y</a>
+<a name="ln849">                                                            + dev_line_height),</a>
+<a name="ln850">                            VColour(255, 255, 0, 50));</a>
+<a name="ln851">                    }</a>
+<a name="ln852">                    else</a>
+<a name="ln853">                    {</a>
+<a name="ln854">                        m_hl_buf.add(ox + op_x + sx,</a>
+<a name="ln855">                            display_density.device_to_logical(y),</a>
+<a name="ln856">                            ox + op_x + ex,</a>
+<a name="ln857">                            display_density.device_to_logical(y</a>
+<a name="ln858">                                                            + dev_line_height),</a>
+<a name="ln859">                            VColour(255, 255, 0, 50));</a>
+<a name="ln860">                    }</a>
+<a name="ln861">                }</a>
+<a name="ln862">                m_hl_buf.draw();</a>
+<a name="ln863">            }</a>
+<a name="ln864">            inside = !ended &amp;&amp; (inside || started);</a>
+<a name="ln865"> </a>
+<a name="ln866">            if (ended)</a>
+<a name="ln867">            {</a>
+<a name="ln868">                highlights.erase(highlights.begin() + 0);</a>
+<a name="ln869">                i--;</a>
+<a name="ln870">            }</a>
+<a name="ln871">            else</a>
+<a name="ln872">            {</a>
+<a name="ln873">                lacc += oplen;</a>
+<a name="ln874">                line += m_font-&gt;string_height(op.text.c_str(), false)</a>
+<a name="ln875">                                                            - dev_line_height;</a>
+<a name="ln876">            }</a>
+<a name="ln877">        }</a>
+<a name="ln878">    }</a>
+<a name="ln879"> </a>
+<a name="ln880">    // XXX: should be moved into a new function render_formatted_string()</a>
+<a name="ln881">    // in FTFontWrapper, that, like render_textblock(), would automatically</a>
+<a name="ln882">    // handle swapping atlas glyphs as necessary.</a>
+<a name="ln883">    FontBuffer m_font_buf(m_font);</a>
+<a name="ln884">    m_font_buf.add(slice, m_region.x, m_region.y +</a>
+<a name="ln885">            display_density.device_to_logical(dev_line_height * line_off));</a>
+<a name="ln886">    m_font_buf.draw();</a>
+<a name="ln887">#else</a>
+<a name="ln888">    const auto&amp; lines = m_wrapped_lines;</a>
+<a name="ln889">    vector&lt;size_t&gt; highlights;</a>
+<a name="ln890">    int begin_idx = 0;</a>
+<a name="ln891"> </a>
+<a name="ln892">    clear_text_region(m_region, m_bg_colour);</a>
+<a name="ln893"> </a>
+<a name="ln894">    if (!hl_pat.empty())</a>
+<a name="ln895">    {</a>
+<a name="ln896">        for (int i = 0; i &lt; region.y-m_region.y; i++)</a>
+<a name="ln897">            begin_idx += m_wrapped_lines[i].tostring().size()+1;</a>
+<a name="ln898">        int end_idx = begin_idx;</a>
+<a name="ln899">        for (int i = region.y-m_region.y; i &lt; region.y-m_region.y+region.height; i++)</a>
+<a name="ln900">            end_idx += m_wrapped_lines[i].tostring().size()+1;</a>
+<a name="ln901">        highlights = _find_highlights(m_text.tostring(), hl_pat, begin_idx, end_idx);</a>
+<a name="ln902">    }</a>
+<a name="ln903"> </a>
+<a name="ln904">    unsigned int hl_idx = 0;</a>
+<a name="ln905">    for (size_t i = 0; i &lt; min(lines.size(), (size_t)region.height); i++)</a>
+<a name="ln906">    {</a>
+<a name="ln907">        cgotoxy(region.x+1, region.y+1+i);</a>
+<a name="ln908">        formatted_string line = lines[i+region.y-m_region.y];</a>
+<a name="ln909">        int end_idx = begin_idx + line.tostring().size();</a>
+<a name="ln910"> </a>
+<a name="ln911">        // convert highlights on this line to a list of line cuts</a>
+<a name="ln912">        vector&lt;size_t&gt; cuts = {0};</a>
+<a name="ln913">        for (; hl_idx &lt; highlights.size() &amp;&amp; (int)highlights[hl_idx] &lt; end_idx; hl_idx++)</a>
+<a name="ln914">        {</a>
+<a name="ln915">            ASSERT(highlights[hl_idx]+hl_pat.size() &gt;= (size_t)begin_idx);</a>
+<a name="ln916">            int la = max((int)highlights[hl_idx] - begin_idx, 0);</a>
+<a name="ln917">            int lb = min(highlights[hl_idx]+hl_pat.size() - begin_idx, (size_t)end_idx - begin_idx);</a>
+<a name="ln918">            ASSERT(la &lt; lb);</a>
+<a name="ln919">            cuts.push_back(la);</a>
+<a name="ln920">            cuts.push_back(lb);</a>
+<a name="ln921">        }</a>
+<a name="ln922">        cuts.push_back(end_idx - begin_idx);</a>
+<a name="ln923"> </a>
+<a name="ln924">        // keep the last highlight if it extend into the next line</a>
+<a name="ln925">        if (hl_idx &amp;&amp; highlights[hl_idx-1]+hl_pat.size() &gt; (size_t)end_idx)</a>
+<a name="ln926">            hl_idx--;</a>
+<a name="ln927"> </a>
+<a name="ln928">        // cut the line, and highlight alternate segments</a>
+<a name="ln929">        formatted_string out;</a>
+<a name="ln930">        for (size_t j = 0; j+1 &lt; cuts.size(); j++)</a>
+<a name="ln931">        {</a>
+<a name="ln932">            formatted_string slice = line.substr_bytes(cuts[j], cuts[j+1]-cuts[j]);</a>
+<a name="ln933">            if (j%2)</a>
+<a name="ln934">            {</a>
+<a name="ln935">                out.textcolour(WHITE);</a>
+<a name="ln936">                out.cprintf(&quot;%s&quot;, slice.tostring().c_str());</a>
+<a name="ln937">            }</a>
+<a name="ln938">            else</a>
+<a name="ln939">                out += slice;</a>
+<a name="ln940">        }</a>
+<a name="ln941">        out.chop(region.width).display(0);</a>
+<a name="ln942"> </a>
+<a name="ln943">        begin_idx = end_idx + 1; // +1 is for the newline</a>
+<a name="ln944">    }</a>
+<a name="ln945">#endif</a>
+<a name="ln946">}</a>
+<a name="ln947"> </a>
+<a name="ln948">SizeReq Text::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln949">{</a>
+<a name="ln950">#ifdef USE_TILE_LOCAL</a>
+<a name="ln951">    if (!dim)</a>
+<a name="ln952">    {</a>
+<a name="ln953">        int w = m_font-&gt;string_width(m_text);</a>
+<a name="ln954">        // XXX: should be width of '..', unless string itself is shorter than '..'</a>
+<a name="ln955">        static constexpr int min_ellipsized_width = 0;</a>
+<a name="ln956">        static constexpr int min_wrapped_width = 0; // XXX: should be width of longest word</a>
+<a name="ln957">        return { ellipsize ? min_ellipsized_width : wrap_text ? min_wrapped_width : w, w };</a>
+<a name="ln958">    }</a>
+<a name="ln959">    else</a>
+<a name="ln960">    {</a>
+<a name="ln961">        wrap_text_to_size(prosp_width, 0);</a>
+<a name="ln962">        int height = m_font-&gt;string_height(m_text_wrapped);</a>
+<a name="ln963">        return { ellipsize ? (int)m_font-&gt;char_height() : height, height };</a>
+<a name="ln964">    }</a>
+<a name="ln965">#else</a>
+<a name="ln966">    if (!dim)</a>
+<a name="ln967">    {</a>
+<a name="ln968">        int w = 0, line_w = 0;</a>
+<a name="ln969">        for (auto const&amp; ch : m_text.tostring())</a>
+<a name="ln970">        {</a>
+<a name="ln971">            w = ch == '\n' ? max(w, line_w) : w;</a>
+<a name="ln972">            line_w = ch == '\n' ? 0 : line_w+1;</a>
+<a name="ln973">        }</a>
+<a name="ln974">        w = max(w, line_w);</a>
+<a name="ln975"> </a>
+<a name="ln976">        // XXX: should be width of '..', unless string itself is shorter than '..'</a>
+<a name="ln977">        static constexpr int min_ellipsized_width = 0;</a>
+<a name="ln978">        static constexpr int min_wrapped_width = 0; // XXX: should be char width of longest word in text</a>
+<a name="ln979">        return { ellipsize ? min_ellipsized_width : wrap_text ? min_wrapped_width : w, w };</a>
+<a name="ln980">    }</a>
+<a name="ln981">    else</a>
+<a name="ln982">    {</a>
+<a name="ln983">        wrap_text_to_size(prosp_width, 0);</a>
+<a name="ln984">        int height = m_wrapped_lines.size();</a>
+<a name="ln985">        return { ellipsize ? 1 : height, height };</a>
+<a name="ln986">    }</a>
+<a name="ln987">#endif</a>
+<a name="ln988">}</a>
+<a name="ln989"> </a>
+<a name="ln990">void Text::_allocate_region()</a>
+<a name="ln991">{</a>
+<a name="ln992">    wrap_text_to_size(m_region.width, m_region.height);</a>
+<a name="ln993">}</a>
+<a name="ln994"> </a>
+<a name="ln995">#ifndef USE_TILE_LOCAL</a>
+<a name="ln996">void Text::set_bg_colour(COLOURS colour)</a>
+<a name="ln997">{</a>
+<a name="ln998">    m_bg_colour = colour;</a>
+<a name="ln999">    _expose();</a>
+<a name="ln1000">}</a>
+<a name="ln1001">#endif</a>
+<a name="ln1002"> </a>
+<a name="ln1003">void Image::set_tile(tile_def tile)</a>
+<a name="ln1004">{</a>
+<a name="ln1005">#ifdef USE_TILE</a>
+<a name="ln1006">    m_tile = tile;</a>
+<a name="ln1007">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1008">    const tile_info &amp;ti = tiles.get_image_manager()-&gt;tile_def_info(m_tile);</a>
+<a name="ln1009">    m_tw = ti.width;</a>
+<a name="ln1010">    m_th = ti.height;</a>
+<a name="ln1011">    _invalidate_sizereq();</a>
+<a name="ln1012">#endif</a>
+<a name="ln1013">#else</a>
+<a name="ln1014">    UNUSED(tile);</a>
+<a name="ln1015">#endif</a>
+<a name="ln1016">}</a>
+<a name="ln1017"> </a>
+<a name="ln1018">void Image::_render()</a>
+<a name="ln1019">{</a>
+<a name="ln1020">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1021">    push_scissor(m_region);</a>
+<a name="ln1022">    TileBuffer tb;</a>
+<a name="ln1023">    tb.set_tex(&amp;tiles.get_image_manager()-&gt;m_textures[m_tile.tex]);</a>
+<a name="ln1024"> </a>
+<a name="ln1025">    for (int y = m_region.y; y &lt; m_region.y+m_region.height; y+=m_th)</a>
+<a name="ln1026">        for (int x = m_region.x; x &lt; m_region.x+m_region.width; x+=m_tw)</a>
+<a name="ln1027">            tb.add(m_tile.tile, x, y, 0, 0, false, m_th, 1.0, 1.0);</a>
+<a name="ln1028"> </a>
+<a name="ln1029">    tb.draw();</a>
+<a name="ln1030">    tb.clear();</a>
+<a name="ln1031">    pop_scissor();</a>
+<a name="ln1032">#endif</a>
+<a name="ln1033">}</a>
+<a name="ln1034"> </a>
+<a name="ln1035">SizeReq Image::_get_preferred_size(Direction dim, int /*prosp_width*/)</a>
+<a name="ln1036">{</a>
+<a name="ln1037">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1038">    return {</a>
+<a name="ln1039">        // expand takes precedence over shrink for historical reasons</a>
+<a name="ln1040">        dim ? (shrink_v ? 0 : m_th) : (shrink_h ? 0 : m_tw),</a>
+<a name="ln1041">        dim ? (shrink_v ? 0 : m_th) : (shrink_h ? 0 : m_tw)</a>
+<a name="ln1042">    };</a>
+<a name="ln1043">#else</a>
+<a name="ln1044">    UNUSED(dim);</a>
+<a name="ln1045">    return { 0, 0 };</a>
+<a name="ln1046">#endif</a>
+<a name="ln1047">}</a>
+<a name="ln1048"> </a>
+<a name="ln1049">void Stack::add_child(shared_ptr&lt;Widget&gt; child)</a>
+<a name="ln1050">{</a>
+<a name="ln1051">    child-&gt;_set_parent(this);</a>
+<a name="ln1052">    m_children.push_back(move(child));</a>
+<a name="ln1053">    _invalidate_sizereq();</a>
+<a name="ln1054">    _queue_allocation();</a>
+<a name="ln1055">}</a>
+<a name="ln1056"> </a>
+<a name="ln1057">void Stack::pop_child()</a>
+<a name="ln1058">{</a>
+<a name="ln1059">    if (!m_children.size())</a>
+<a name="ln1060">        return;</a>
+<a name="ln1061">    m_children.pop_back();</a>
+<a name="ln1062">    _invalidate_sizereq();</a>
+<a name="ln1063">    _queue_allocation();</a>
+<a name="ln1064">}</a>
+<a name="ln1065"> </a>
+<a name="ln1066">shared_ptr&lt;Widget&gt; Stack::get_child_at_offset(int x, int y)</a>
+<a name="ln1067">{</a>
+<a name="ln1068">    if (m_children.size() == 0)</a>
+<a name="ln1069">        return nullptr;</a>
+<a name="ln1070">    bool inside = m_children.back()-&gt;get_region().contains_point(x, y);</a>
+<a name="ln1071">    return inside ? m_children.back() : nullptr;</a>
+<a name="ln1072">}</a>
+<a name="ln1073"> </a>
+<a name="ln1074">void Stack::_render()</a>
+<a name="ln1075">{</a>
+<a name="ln1076">    for (auto const&amp; child : m_children)</a>
+<a name="ln1077">        child-&gt;render();</a>
+<a name="ln1078">}</a>
+<a name="ln1079"> </a>
+<a name="ln1080">SizeReq Stack::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln1081">{</a>
+<a name="ln1082">    SizeReq r = { 0, 0 };</a>
+<a name="ln1083">    for (auto const&amp; child : m_children)</a>
+<a name="ln1084">    {</a>
+<a name="ln1085">        SizeReq c = child-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln1086">        r.min = max(r.min, c.min);</a>
+<a name="ln1087">        r.nat = max(r.nat, c.nat);</a>
+<a name="ln1088">    }</a>
+<a name="ln1089">    return r;</a>
+<a name="ln1090">}</a>
+<a name="ln1091"> </a>
+<a name="ln1092">void Stack::_allocate_region()</a>
+<a name="ln1093">{</a>
+<a name="ln1094">    for (auto const&amp; child : m_children)</a>
+<a name="ln1095">    {</a>
+<a name="ln1096">        Region cr = m_region;</a>
+<a name="ln1097">        SizeReq pw = child-&gt;get_preferred_size(Widget::HORZ, -1);</a>
+<a name="ln1098">        cr.width = min(max(pw.min, m_region.width), pw.nat);</a>
+<a name="ln1099">        SizeReq ph = child-&gt;get_preferred_size(Widget::VERT, cr.width);</a>
+<a name="ln1100">        cr.height = min(max(ph.min, m_region.height), ph.nat);</a>
+<a name="ln1101">        child-&gt;allocate_region(cr);</a>
+<a name="ln1102">    }</a>
+<a name="ln1103">}</a>
+<a name="ln1104"> </a>
+<a name="ln1105">void Switcher::add_child(shared_ptr&lt;Widget&gt; child)</a>
+<a name="ln1106">{</a>
+<a name="ln1107">    // TODO XXX: if there's a focused widget</a>
+<a name="ln1108">    // - it must be in the current top child</a>
+<a name="ln1109">    // - unfocus it before we</a>
+<a name="ln1110">    child-&gt;_set_parent(this);</a>
+<a name="ln1111">    m_children.push_back(move(child));</a>
+<a name="ln1112">    _invalidate_sizereq();</a>
+<a name="ln1113">    _queue_allocation();</a>
+<a name="ln1114">}</a>
+<a name="ln1115"> </a>
+<a name="ln1116">int&amp; Switcher::current()</a>
+<a name="ln1117">{</a>
+<a name="ln1118">    // TODO XXX: we need to update the focused widget</a>
+<a name="ln1119">    // so we need an API change</a>
+<a name="ln1120">    _expose();</a>
+<a name="ln1121">    return m_current;</a>
+<a name="ln1122">}</a>
+<a name="ln1123"> </a>
+<a name="ln1124">shared_ptr&lt;Widget&gt; Switcher::current_widget()</a>
+<a name="ln1125">{</a>
+<a name="ln1126">    if (m_children.size() == 0)</a>
+<a name="ln1127">        return nullptr;</a>
+<a name="ln1128">    m_current = max(0, min(m_current, (int)m_children.size()-1));</a>
+<a name="ln1129">    return m_children[m_current];</a>
+<a name="ln1130">}</a>
+<a name="ln1131"> </a>
+<a name="ln1132">void Switcher::_render()</a>
+<a name="ln1133">{</a>
+<a name="ln1134">    if (m_children.size() == 0)</a>
+<a name="ln1135">        return;</a>
+<a name="ln1136">    m_current = max(0, min(m_current, (int)m_children.size()-1));</a>
+<a name="ln1137">    m_children[m_current]-&gt;render();</a>
+<a name="ln1138">}</a>
+<a name="ln1139"> </a>
+<a name="ln1140">SizeReq Switcher::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln1141">{</a>
+<a name="ln1142">    SizeReq r = { 0, 0 };</a>
+<a name="ln1143">    for (auto const&amp; child : m_children)</a>
+<a name="ln1144">    {</a>
+<a name="ln1145">        SizeReq c = child-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln1146">        r.min = max(r.min, c.min);</a>
+<a name="ln1147">        r.nat = max(r.nat, c.nat);</a>
+<a name="ln1148">    }</a>
+<a name="ln1149">    return r;</a>
+<a name="ln1150">}</a>
+<a name="ln1151"> </a>
+<a name="ln1152">void Switcher::_allocate_region()</a>
+<a name="ln1153">{</a>
+<a name="ln1154">    for (auto const&amp; child : m_children)</a>
+<a name="ln1155">    {</a>
+<a name="ln1156">        Region cr = m_region;</a>
+<a name="ln1157">        SizeReq pw = child-&gt;get_preferred_size(Widget::HORZ, -1);</a>
+<a name="ln1158">        cr.width = min(max(pw.min, m_region.width), pw.nat);</a>
+<a name="ln1159">        SizeReq ph = child-&gt;get_preferred_size(Widget::VERT, cr.width);</a>
+<a name="ln1160">        cr.height = min(max(ph.min, m_region.height), ph.nat);</a>
+<a name="ln1161">        int xo, yo;</a>
+<a name="ln1162">        switch (align_x)</a>
+<a name="ln1163">        {</a>
+<a name="ln1164">            case Widget::START:   xo = 0; break;</a>
+<a name="ln1165">            case Widget::CENTER:  xo = (m_region.width - cr.width)/2; break;</a>
+<a name="ln1166">            case Widget::END:     xo = m_region.width - cr.width; break;</a>
+<a name="ln1167">            case Widget::STRETCH: xo = 0; break;</a>
+<a name="ln1168">            default: ASSERT(0);</a>
+<a name="ln1169">        }</a>
+<a name="ln1170">        switch (align_y)</a>
+<a name="ln1171">        {</a>
+<a name="ln1172">            case Widget::START:   yo = 0; break;</a>
+<a name="ln1173">            case Widget::CENTER:  yo = (m_region.height - cr.height)/2; break;</a>
+<a name="ln1174">            case Widget::END:     yo = m_region.height - cr.height; break;</a>
+<a name="ln1175">            case Widget::STRETCH: yo = 0; break;</a>
+<a name="ln1176">            default: ASSERT(0);</a>
+<a name="ln1177">        }</a>
+<a name="ln1178">        cr.width += xo;</a>
+<a name="ln1179">        cr.height += yo;</a>
+<a name="ln1180">        if (align_x == Widget::STRETCH)</a>
+<a name="ln1181">            cr.width = m_region.width;</a>
+<a name="ln1182">        if (align_y == Widget::STRETCH)</a>
+<a name="ln1183">            cr.height = m_region.height;</a>
+<a name="ln1184">        child-&gt;allocate_region(cr);</a>
+<a name="ln1185">    }</a>
+<a name="ln1186">}</a>
+<a name="ln1187"> </a>
+<a name="ln1188">shared_ptr&lt;Widget&gt; Switcher::get_child_at_offset(int x, int y)</a>
+<a name="ln1189">{</a>
+<a name="ln1190">    if (m_children.size() == 0)</a>
+<a name="ln1191">        return nullptr;</a>
+<a name="ln1192"> </a>
+<a name="ln1193">    int c = max(0, min(m_current, (int)m_children.size()));</a>
+<a name="ln1194">    bool inside = m_children[c]-&gt;get_region().contains_point(x, y);</a>
+<a name="ln1195">    return inside ? m_children[c] : nullptr;</a>
+<a name="ln1196">}</a>
+<a name="ln1197"> </a>
+<a name="ln1198">shared_ptr&lt;Widget&gt; Grid::get_child_at_offset(int x, int y)</a>
+<a name="ln1199">{</a>
+<a name="ln1200">    int lx = x - m_region.x;</a>
+<a name="ln1201">    int ly = y - m_region.y;</a>
+<a name="ln1202">    int row = -1, col = -1;</a>
+<a name="ln1203">    for (int i = 0; i &lt; (int)m_col_info.size(); i++)</a>
+<a name="ln1204">    {</a>
+<a name="ln1205">        const auto&amp; tr = m_col_info[i];</a>
+<a name="ln1206">        if (lx &gt;= tr.offset &amp;&amp; lx &lt; tr.offset + tr.size)</a>
+<a name="ln1207">        {</a>
+<a name="ln1208">            col = i;</a>
+<a name="ln1209">            break;</a>
+<a name="ln1210">        }</a>
+<a name="ln1211">    }</a>
+<a name="ln1212">    for (int i = 0; i &lt; (int)m_row_info.size(); i++)</a>
+<a name="ln1213">    {</a>
+<a name="ln1214">        const auto&amp; tr = m_row_info[i];</a>
+<a name="ln1215">        if (ly &gt;= tr.offset &amp;&amp; ly &lt; tr.offset + tr.size)</a>
+<a name="ln1216">        {</a>
+<a name="ln1217">            row = i;</a>
+<a name="ln1218">            break;</a>
+<a name="ln1219">        }</a>
+<a name="ln1220">    }</a>
+<a name="ln1221">    if (row == -1 || col == -1)</a>
+<a name="ln1222">        return nullptr;</a>
+<a name="ln1223">    for (auto&amp; child : m_child_info)</a>
+<a name="ln1224">    {</a>
+<a name="ln1225">        if (child.pos.x &lt;= col &amp;&amp; col &lt; child.pos.x + child.span.width)</a>
+<a name="ln1226">        if (child.pos.y &lt;= row &amp;&amp; row &lt; child.pos.y + child.span.height)</a>
+<a name="ln1227">        if (child.widget-&gt;get_region().contains_point(x, y))</a>
+<a name="ln1228">            return child.widget;</a>
+<a name="ln1229">    }</a>
+<a name="ln1230">    return nullptr;</a>
+<a name="ln1231">}</a>
+<a name="ln1232"> </a>
+<a name="ln1233">void Grid::add_child(shared_ptr&lt;Widget&gt; child, int x, int y, int w, int h)</a>
+<a name="ln1234">{</a>
+<a name="ln1235">    child-&gt;_set_parent(this);</a>
+<a name="ln1236">    child_info ch = { {x, y}, {w, h}, move(child) };</a>
+<a name="ln1237">    m_child_info.push_back(ch);</a>
+<a name="ln1238">    m_track_info_dirty = true;</a>
+<a name="ln1239">    _invalidate_sizereq();</a>
+<a name="ln1240">}</a>
+<a name="ln1241"> </a>
+<a name="ln1242">void Grid::init_track_info()</a>
+<a name="ln1243">{</a>
+<a name="ln1244">    if (!m_track_info_dirty)</a>
+<a name="ln1245">        return;</a>
+<a name="ln1246">    m_track_info_dirty = false;</a>
+<a name="ln1247"> </a>
+<a name="ln1248">    // calculate the number of rows and columns</a>
+<a name="ln1249">    int n_rows = 0, n_cols = 0;</a>
+<a name="ln1250">    for (auto info : m_child_info)</a>
+<a name="ln1251">    {</a>
+<a name="ln1252">        n_rows = max(n_rows, info.pos.y+info.span.height);</a>
+<a name="ln1253">        n_cols = max(n_cols, info.pos.x+info.span.width);</a>
+<a name="ln1254">    }</a>
+<a name="ln1255">    m_row_info.resize(n_rows);</a>
+<a name="ln1256">    m_col_info.resize(n_cols);</a>
+<a name="ln1257"> </a>
+<a name="ln1258">    sort(m_child_info.begin(), m_child_info.end(),</a>
+<a name="ln1259">            [](const child_info&amp; a, const child_info&amp; b) {</a>
+<a name="ln1260">        return a.pos.y &lt; b.pos.y;</a>
+<a name="ln1261">    });</a>
+<a name="ln1262">}</a>
+<a name="ln1263"> </a>
+<a name="ln1264">void Grid::_render()</a>
+<a name="ln1265">{</a>
+<a name="ln1266">    // Find the visible rows</a>
+<a name="ln1267">    const auto scissor = get_scissor();</a>
+<a name="ln1268">    int row_min = 0, row_max = m_row_info.size()-1, i = 0;</a>
+<a name="ln1269">    for (; i &lt; (int)m_row_info.size(); i++)</a>
+<a name="ln1270">        if (m_row_info[i].offset+m_row_info[i].size+m_region.y &gt;= scissor.y)</a>
+<a name="ln1271">        {</a>
+<a name="ln1272">            row_min = i;</a>
+<a name="ln1273">            break;</a>
+<a name="ln1274">        }</a>
+<a name="ln1275">    for (; i &lt; (int)m_row_info.size(); i++)</a>
+<a name="ln1276">        if (m_row_info[i].offset+m_region.y &gt;= scissor.ey())</a>
+<a name="ln1277">        {</a>
+<a name="ln1278">            row_max = i-1;</a>
+<a name="ln1279">            break;</a>
+<a name="ln1280">        }</a>
+<a name="ln1281"> </a>
+<a name="ln1282">    for (auto const&amp; child : m_child_info)</a>
+<a name="ln1283">    {</a>
+<a name="ln1284">        if (child.pos.y &lt; row_min) continue;</a>
+<a name="ln1285">        if (child.pos.y &gt; row_max) break;</a>
+<a name="ln1286">        child.widget-&gt;render();</a>
+<a name="ln1287">    }</a>
+<a name="ln1288">}</a>
+<a name="ln1289"> </a>
+<a name="ln1290">void Grid::compute_track_sizereqs(Direction dim)</a>
+<a name="ln1291">{</a>
+<a name="ln1292">    auto&amp; track = dim ? m_row_info : m_col_info;</a>
+<a name="ln1293">#define DIV_ROUND_UP(n, d) (((n)+(d)-1)/(d))</a>
+<a name="ln1294"> </a>
+<a name="ln1295">    for (auto&amp; t : track)</a>
+<a name="ln1296">        t.sr = {0, 0};</a>
+<a name="ln1297">    for (size_t i = 0; i &lt; m_child_info.size(); i++)</a>
+<a name="ln1298">    {</a>
+<a name="ln1299">        auto&amp; cp = m_child_info[i].pos;</a>
+<a name="ln1300">        auto&amp; cs = m_child_info[i].span;</a>
+<a name="ln1301">        // if merging horizontally, need to find (possibly multi-col) width</a>
+<a name="ln1302">        int prosp_width = dim ? get_tracks_region(cp.x, cp.y, cs.width, cs.height).width : -1;</a>
+<a name="ln1303"> </a>
+<a name="ln1304">        const SizeReq c = m_child_info[i].widget-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln1305">        // NOTE: items spanning multiple rows/cols don't contribute!</a>
+<a name="ln1306">        if (cs.width == 1 &amp;&amp; cs.height == 1)</a>
+<a name="ln1307">        {</a>
+<a name="ln1308">            auto&amp; s = track[dim ? cp.y : cp.x].sr;</a>
+<a name="ln1309">            s.min = max(s.min, c.min);</a>
+<a name="ln1310">            s.nat = max(s.nat, c.nat);</a>
+<a name="ln1311">        }</a>
+<a name="ln1312">    }</a>
+<a name="ln1313">}</a>
+<a name="ln1314"> </a>
+<a name="ln1315">void Grid::set_track_offsets(vector&lt;track_info&gt;&amp; tracks)</a>
+<a name="ln1316">{</a>
+<a name="ln1317">    int acc = 0;</a>
+<a name="ln1318">    for (auto&amp; track : tracks)</a>
+<a name="ln1319">    {</a>
+<a name="ln1320">        track.offset = acc;</a>
+<a name="ln1321">        acc += track.size;</a>
+<a name="ln1322">    }</a>
+<a name="ln1323">}</a>
+<a name="ln1324"> </a>
+<a name="ln1325">SizeReq Grid::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln1326">{</a>
+<a name="ln1327">    init_track_info();</a>
+<a name="ln1328"> </a>
+<a name="ln1329">    // get preferred column widths</a>
+<a name="ln1330">    compute_track_sizereqs(Widget::HORZ);</a>
+<a name="ln1331"> </a>
+<a name="ln1332">    // total width min and nat</a>
+<a name="ln1333">    SizeReq w_sr = { 0, 0 };</a>
+<a name="ln1334">    for (auto const&amp; col : m_col_info)</a>
+<a name="ln1335">    {</a>
+<a name="ln1336">        w_sr.min += col.sr.min;</a>
+<a name="ln1337">        w_sr.nat += col.sr.nat;</a>
+<a name="ln1338">    }</a>
+<a name="ln1339"> </a>
+<a name="ln1340">    if (!dim)</a>
+<a name="ln1341">        return w_sr;</a>
+<a name="ln1342"> </a>
+<a name="ln1343">    layout_track(Widget::HORZ, w_sr, prosp_width);</a>
+<a name="ln1344">    set_track_offsets(m_col_info);</a>
+<a name="ln1345"> </a>
+<a name="ln1346">    // get preferred row heights for those widths</a>
+<a name="ln1347">    compute_track_sizereqs(Widget::VERT);</a>
+<a name="ln1348"> </a>
+<a name="ln1349">    // total height min and nat</a>
+<a name="ln1350">    SizeReq h_sr = { 0, 0 };</a>
+<a name="ln1351">    for (auto const&amp; row : m_row_info)</a>
+<a name="ln1352">    {</a>
+<a name="ln1353">        h_sr.min += row.sr.min;</a>
+<a name="ln1354">        h_sr.nat += row.sr.nat;</a>
+<a name="ln1355">    }</a>
+<a name="ln1356"> </a>
+<a name="ln1357">    return h_sr;</a>
+<a name="ln1358">}</a>
+<a name="ln1359"> </a>
+<a name="ln1360">void Grid::layout_track(Direction dim, SizeReq sr, int size)</a>
+<a name="ln1361">{</a>
+<a name="ln1362">    auto&amp; infos = dim ? m_row_info : m_col_info;</a>
+<a name="ln1363"> </a>
+<a name="ln1364">    int extra = size - sr.min;</a>
+<a name="ln1365">    ASSERT(extra &gt;= 0);</a>
+<a name="ln1366"> </a>
+<a name="ln1367">    for (size_t i = 0; i &lt; infos.size(); ++i)</a>
+<a name="ln1368">        infos[i].size = infos[i].sr.min;</a>
+<a name="ln1369"> </a>
+<a name="ln1370">    const bool stretch = dim ? stretch_v : stretch_h;</a>
+<a name="ln1371">    bool stretching = false;</a>
+<a name="ln1372"> </a>
+<a name="ln1373">    while (true)</a>
+<a name="ln1374">    {</a>
+<a name="ln1375">        int sum_flex_grow = 0, sum_taken = 0;</a>
+<a name="ln1376">        for (const auto&amp; info : infos)</a>
+<a name="ln1377">            sum_flex_grow += info.size &lt; info.sr.nat ? info.flex_grow : 0;</a>
+<a name="ln1378">        if (!sum_flex_grow)</a>
+<a name="ln1379">        {</a>
+<a name="ln1380">            if (!stretch)</a>
+<a name="ln1381">                break;</a>
+<a name="ln1382">            stretching = true;</a>
+<a name="ln1383">            for (const auto&amp; info : infos)</a>
+<a name="ln1384">                sum_flex_grow += info.flex_grow;</a>
+<a name="ln1385">            if (!sum_flex_grow)</a>
+<a name="ln1386">                break;</a>
+<a name="ln1387">        }</a>
+<a name="ln1388"> </a>
+<a name="ln1389">        for (size_t i = 0; i &lt; infos.size(); ++i)</a>
+<a name="ln1390">        {</a>
+<a name="ln1391">            float efg = (infos[i].size &lt; infos[i].sr.nat || stretching)</a>
+<a name="ln1392">                ? infos[i].flex_grow : 0;</a>
+<a name="ln1393">            int tr_extra = extra * efg / sum_flex_grow;</a>
+<a name="ln1394">            ASSERT(stretching || infos[i].size &lt;= infos[i].sr.nat);</a>
+<a name="ln1395">            int taken = stretching ? tr_extra</a>
+<a name="ln1396">                : min(tr_extra, infos[i].sr.nat - infos[i].size);</a>
+<a name="ln1397">            infos[i].size += taken;</a>
+<a name="ln1398">            sum_taken += taken;</a>
+<a name="ln1399">        }</a>
+<a name="ln1400">        if (!sum_taken)</a>
+<a name="ln1401">            break;</a>
+<a name="ln1402">        extra = extra - sum_taken;</a>
+<a name="ln1403">    }</a>
+<a name="ln1404">}</a>
+<a name="ln1405"> </a>
+<a name="ln1406">void Grid::_allocate_region()</a>
+<a name="ln1407">{</a>
+<a name="ln1408">    // Use of _-prefixed member function is necessary here</a>
+<a name="ln1409">    SizeReq h_sr = _get_preferred_size(Widget::VERT, m_region.width);</a>
+<a name="ln1410"> </a>
+<a name="ln1411">    layout_track(Widget::VERT, h_sr, m_region.height);</a>
+<a name="ln1412">    set_track_offsets(m_row_info);</a>
+<a name="ln1413"> </a>
+<a name="ln1414">    for (size_t i = 0; i &lt; m_child_info.size(); i++)</a>
+<a name="ln1415">    {</a>
+<a name="ln1416">        auto&amp; cp = m_child_info[i].pos;</a>
+<a name="ln1417">        auto&amp; cs = m_child_info[i].span;</a>
+<a name="ln1418">        Region cell_reg = get_tracks_region(cp.x, cp.y, cs.width, cs.height);</a>
+<a name="ln1419">        cell_reg.x += m_region.x;</a>
+<a name="ln1420">        cell_reg.y += m_region.y;</a>
+<a name="ln1421">        m_child_info[i].widget-&gt;allocate_region(cell_reg);</a>
+<a name="ln1422">    }</a>
+<a name="ln1423">}</a>
+<a name="ln1424"> </a>
+<a name="ln1425">void Scroller::set_scroll(int y)</a>
+<a name="ln1426">{</a>
+<a name="ln1427">    if (m_scroll == y)</a>
+<a name="ln1428">        return;</a>
+<a name="ln1429">    m_scroll = y;</a>
+<a name="ln1430">    _queue_allocation();</a>
+<a name="ln1431">#ifdef USE_TILE_WEB</a>
+<a name="ln1432">    tiles.json_open_object();</a>
+<a name="ln1433">    tiles.json_write_string(&quot;msg&quot;, &quot;ui-scroller-scroll&quot;);</a>
+<a name="ln1434">    // XXX: always false, since we do not yet synchronize</a>
+<a name="ln1435">    // webtiles client-side scrolls</a>
+<a name="ln1436">    tiles.json_write_bool(&quot;from_webtiles&quot;, false);</a>
+<a name="ln1437">    tiles.json_write_int(&quot;scroll&quot;, y);</a>
+<a name="ln1438">    tiles.json_close_object();</a>
+<a name="ln1439">    tiles.finish_message();</a>
+<a name="ln1440">#endif</a>
+<a name="ln1441">}</a>
+<a name="ln1442"> </a>
+<a name="ln1443">void Scroller::_render()</a>
+<a name="ln1444">{</a>
+<a name="ln1445">    if (m_child)</a>
+<a name="ln1446">    {</a>
+<a name="ln1447">        push_scissor(m_region);</a>
+<a name="ln1448">        m_child-&gt;render();</a>
+<a name="ln1449">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1450">        m_shade_buf.draw();</a>
+<a name="ln1451">#endif</a>
+<a name="ln1452">        pop_scissor();</a>
+<a name="ln1453">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1454">        m_scrollbar_buf.draw();</a>
+<a name="ln1455">#endif</a>
+<a name="ln1456">    }</a>
+<a name="ln1457">}</a>
+<a name="ln1458"> </a>
+<a name="ln1459">SizeReq Scroller::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln1460">{</a>
+<a name="ln1461">    if (!m_child)</a>
+<a name="ln1462">        return { 0, 0 };</a>
+<a name="ln1463"> </a>
+<a name="ln1464">    SizeReq sr = m_child-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln1465">    if (dim) sr.min = 0; // can shrink to zero height</a>
+<a name="ln1466">    return sr;</a>
+<a name="ln1467">}</a>
+<a name="ln1468"> </a>
+<a name="ln1469">void Scroller::_allocate_region()</a>
+<a name="ln1470">{</a>
+<a name="ln1471">    SizeReq sr = m_child-&gt;get_preferred_size(Widget::VERT, m_region.width);</a>
+<a name="ln1472">    m_scroll = max(0, min(m_scroll, sr.nat-m_region.height));</a>
+<a name="ln1473">    Region ch_reg = {m_region.x, m_region.y-m_scroll, m_region.width, sr.nat};</a>
+<a name="ln1474">    m_child-&gt;allocate_region(ch_reg);</a>
+<a name="ln1475"> </a>
+<a name="ln1476">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1477">    int shade_height = 12, ds = 4;</a>
+<a name="ln1478">    int shade_top = min({m_scroll/ds, shade_height, m_region.height/2});</a>
+<a name="ln1479">    int shade_bot = min({(sr.nat-m_region.height-m_scroll)/ds, shade_height, m_region.height/2});</a>
+<a name="ln1480">    const VColour col_a(4, 2, 4, 0), col_b(4, 2, 4, 200);</a>
+<a name="ln1481"> </a>
+<a name="ln1482">    m_shade_buf.clear();</a>
+<a name="ln1483">    m_scrollbar_buf.clear();</a>
+<a name="ln1484">    {</a>
+<a name="ln1485">        GLWPrim rect(m_region.x, m_region.y+shade_top-shade_height,</a>
+<a name="ln1486">                m_region.x+m_region.width, m_region.y+shade_top);</a>
+<a name="ln1487">        rect.set_col(col_b, col_a);</a>
+<a name="ln1488">        m_shade_buf.add_primitive(rect);</a>
+<a name="ln1489">    }</a>
+<a name="ln1490">    {</a>
+<a name="ln1491">        GLWPrim rect(m_region.x, m_region.y+m_region.height-shade_bot,</a>
+<a name="ln1492">                m_region.x+m_region.width, m_region.y+m_region.height-shade_bot+shade_height);</a>
+<a name="ln1493">        rect.set_col(col_a, col_b);</a>
+<a name="ln1494">        m_shade_buf.add_primitive(rect);</a>
+<a name="ln1495">    }</a>
+<a name="ln1496">    if (ch_reg.height &gt; m_region.height &amp;&amp; m_scrolbar_visible) {</a>
+<a name="ln1497">        const int x = m_region.x+m_region.width;</a>
+<a name="ln1498">        const float h_percent = m_region.height / (float)ch_reg.height;</a>
+<a name="ln1499">        const int h = m_region.height*min(max(0.05f, h_percent), 1.0f);</a>
+<a name="ln1500">        const float scroll_percent = m_scroll/(float)(ch_reg.height-m_region.height);</a>
+<a name="ln1501">        const int y = m_region.y + (m_region.height-h)*scroll_percent;</a>
+<a name="ln1502">        GLWPrim bg_rect(x+10, m_region.y, x+12, m_region.y+m_region.height);</a>
+<a name="ln1503">        bg_rect.set_col(VColour(41, 41, 41));</a>
+<a name="ln1504">        m_scrollbar_buf.add_primitive(bg_rect);</a>
+<a name="ln1505">        GLWPrim fg_rect(x+10, y, x+12, y+h);</a>
+<a name="ln1506">        fg_rect.set_col(VColour(125, 98, 60));</a>
+<a name="ln1507">        m_scrollbar_buf.add_primitive(fg_rect);</a>
+<a name="ln1508">    }</a>
+<a name="ln1509">#endif</a>
+<a name="ln1510">}</a>
+<a name="ln1511"> </a>
+<a name="ln1512">bool Scroller::on_event(const Event&amp; event)</a>
+<a name="ln1513">{</a>
+<a name="ln1514">    if (Bin::on_event(event))</a>
+<a name="ln1515">        return true;</a>
+<a name="ln1516">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1517">    const int line_delta = 20;</a>
+<a name="ln1518">#else</a>
+<a name="ln1519">    const int line_delta = 1;</a>
+<a name="ln1520">#endif</a>
+<a name="ln1521">    int delta = 0;</a>
+<a name="ln1522">    if (event.type() == Event::Type::KeyDown)</a>
+<a name="ln1523">    {</a>
+<a name="ln1524">        const auto key = static_cast&lt;const KeyEvent&amp;&gt;(event).key();</a>
+<a name="ln1525">        switch (key)</a>
+<a name="ln1526">        {</a>
+<a name="ln1527">            case ' ': case '+': case CK_PGDN: case '&gt;': case '\'':</a>
+<a name="ln1528">                delta = m_region.height;</a>
+<a name="ln1529">                break;</a>
+<a name="ln1530"> </a>
+<a name="ln1531">            case '-': case CK_PGUP: case '&lt;': case ';':</a>
+<a name="ln1532">                delta = -m_region.height;</a>
+<a name="ln1533">                break;</a>
+<a name="ln1534"> </a>
+<a name="ln1535">            case CK_UP:</a>
+<a name="ln1536">                delta = -line_delta;</a>
+<a name="ln1537">                break;</a>
+<a name="ln1538"> </a>
+<a name="ln1539">            case CK_DOWN:</a>
+<a name="ln1540">            case CK_ENTER:</a>
+<a name="ln1541">                delta = line_delta;</a>
+<a name="ln1542">                break;</a>
+<a name="ln1543"> </a>
+<a name="ln1544">            case CK_HOME:</a>
+<a name="ln1545">                set_scroll(0);</a>
+<a name="ln1546">                return true;</a>
+<a name="ln1547"> </a>
+<a name="ln1548">            case CK_END:</a>
+<a name="ln1549">                set_scroll(INT_MAX);</a>
+<a name="ln1550">                return true;</a>
+<a name="ln1551">        }</a>
+<a name="ln1552">    }</a>
+<a name="ln1553">    else if (event.type() == Event::Type::MouseWheel)</a>
+<a name="ln1554">    {</a>
+<a name="ln1555">        auto mouse_event = static_cast&lt;const MouseEvent&amp;&gt;(event);</a>
+<a name="ln1556">        delta = -1 * mouse_event.wheel_dy() * line_delta;</a>
+<a name="ln1557">    }</a>
+<a name="ln1558">    else if (event.type() == Event::Type::MouseDown</a>
+<a name="ln1559">             &amp;&amp; static_cast&lt;const MouseEvent&amp;&gt;(event).button() == MouseEvent::Button::Left)</a>
+<a name="ln1560">        delta = line_delta;</a>
+<a name="ln1561">    if (delta != 0)</a>
+<a name="ln1562">    {</a>
+<a name="ln1563">        set_scroll(m_scroll+delta);</a>
+<a name="ln1564">        return true;</a>
+<a name="ln1565">    }</a>
+<a name="ln1566">    return false;</a>
+<a name="ln1567">}</a>
+<a name="ln1568"> </a>
+<a name="ln1569">Layout::Layout(shared_ptr&lt;Widget&gt; child)</a>
+<a name="ln1570">{</a>
+<a name="ln1571">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1572">    m_depth = ui_root.num_children();</a>
+<a name="ln1573">#endif</a>
+<a name="ln1574">    child-&gt;_set_parent(this);</a>
+<a name="ln1575">    m_child = move(child);</a>
+<a name="ln1576">    expand_h = expand_v = true;</a>
+<a name="ln1577">}</a>
+<a name="ln1578"> </a>
+<a name="ln1579">void Layout::_render()</a>
+<a name="ln1580">{</a>
+<a name="ln1581">    m_child-&gt;render();</a>
+<a name="ln1582">}</a>
+<a name="ln1583"> </a>
+<a name="ln1584">SizeReq Layout::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln1585">{</a>
+<a name="ln1586">    return m_child-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln1587">}</a>
+<a name="ln1588"> </a>
+<a name="ln1589">void Layout::_allocate_region()</a>
+<a name="ln1590">{</a>
+<a name="ln1591">    m_child-&gt;allocate_region(m_region);</a>
+<a name="ln1592">}</a>
+<a name="ln1593"> </a>
+<a name="ln1594">void Popup::_render()</a>
+<a name="ln1595">{</a>
+<a name="ln1596">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1597">    m_buf.draw();</a>
+<a name="ln1598">#endif</a>
+<a name="ln1599">    m_child-&gt;render();</a>
+<a name="ln1600">}</a>
+<a name="ln1601"> </a>
+<a name="ln1602">SizeReq Popup::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln1603">{</a>
+<a name="ln1604">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1605">    // can be called with a prosp_width that is narrower than the child's</a>
+<a name="ln1606">    // minimum width, since our returned SizeReq has a minimum of 0</a>
+<a name="ln1607">    if (dim == VERT)</a>
+<a name="ln1608">    {</a>
+<a name="ln1609">        SizeReq hsr = m_child-&gt;get_preferred_size(HORZ, -1);</a>
+<a name="ln1610">        prosp_width = max(prosp_width, hsr.min);</a>
+<a name="ln1611">    }</a>
+<a name="ln1612">#endif</a>
+<a name="ln1613">    SizeReq sr = m_child-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln1614">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1615">    const int pad = base_margin() + m_padding;</a>
+<a name="ln1616">    return {</a>
+<a name="ln1617">        0, sr.nat + 2*pad + (dim ? m_depth*m_depth_indent*(!m_centred) : 0)</a>
+<a name="ln1618">    };</a>
+<a name="ln1619">#else</a>
+<a name="ln1620">    return { sr.min, sr.nat };</a>
+<a name="ln1621">#endif</a>
+<a name="ln1622">}</a>
+<a name="ln1623"> </a>
+<a name="ln1624">void Popup::_allocate_region()</a>
+<a name="ln1625">{</a>
+<a name="ln1626">    Region region = m_region;</a>
+<a name="ln1627">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1628">    m_buf.clear();</a>
+<a name="ln1629">    m_buf.add(m_region.x, m_region.y,</a>
+<a name="ln1630">            m_region.x + m_region.width, m_region.y + m_region.height,</a>
+<a name="ln1631">            VColour(0, 0, 0, 150));</a>
+<a name="ln1632">    const int pad = base_margin() + m_padding;</a>
+<a name="ln1633">    region.width -= 2*pad;</a>
+<a name="ln1634">    region.height -= 2*pad + m_depth*m_depth_indent*(!m_centred);</a>
+<a name="ln1635"> </a>
+<a name="ln1636">    SizeReq hsr = m_child-&gt;get_preferred_size(HORZ, -1);</a>
+<a name="ln1637">    region.width = max(hsr.min, min(region.width, hsr.nat));</a>
+<a name="ln1638">    SizeReq vsr = m_child-&gt;get_preferred_size(VERT, region.width);</a>
+<a name="ln1639">    region.height = max(vsr.min, min(region.height, vsr.nat));</a>
+<a name="ln1640"> </a>
+<a name="ln1641">    region.x += pad + (m_region.width-2*pad-region.width)/2;</a>
+<a name="ln1642">    region.y += pad + (m_centred ? (m_region.height-2*pad-region.height)/2</a>
+<a name="ln1643">            : m_depth*m_depth_indent);</a>
+<a name="ln1644"> </a>
+<a name="ln1645">    m_buf.add(region.x - m_padding, region.y - m_padding,</a>
+<a name="ln1646">            region.x + region.width + m_padding,</a>
+<a name="ln1647">            region.y + region.height + m_padding,</a>
+<a name="ln1648">            VColour(125, 98, 60));</a>
+<a name="ln1649">    m_buf.add(region.x - m_padding + 2, region.y - m_padding + 2,</a>
+<a name="ln1650">            region.x + region.width + m_padding - 2,</a>
+<a name="ln1651">            region.y + region.height + m_padding - 2,</a>
+<a name="ln1652">            VColour(0, 0, 0));</a>
+<a name="ln1653">    m_buf.add(region.x - m_padding + 3, region.y - m_padding + 3,</a>
+<a name="ln1654">            region.x + region.width + m_padding - 3,</a>
+<a name="ln1655">            region.y + region.height + m_padding - 3,</a>
+<a name="ln1656">            VColour(4, 2, 4));</a>
+<a name="ln1657">#else</a>
+<a name="ln1658">    SizeReq hsr = m_child-&gt;get_preferred_size(HORZ, -1);</a>
+<a name="ln1659">    region.width = max(hsr.min, min(region.width, hsr.nat));</a>
+<a name="ln1660">    SizeReq vsr = m_child-&gt;get_preferred_size(VERT, region.width);</a>
+<a name="ln1661">    region.height = max(vsr.min, min(region.height, vsr.nat));</a>
+<a name="ln1662">#endif</a>
+<a name="ln1663">    m_child-&gt;allocate_region(region);</a>
+<a name="ln1664">}</a>
+<a name="ln1665"> </a>
+<a name="ln1666">Size Popup::get_max_child_size()</a>
+<a name="ln1667">{</a>
+<a name="ln1668">    Size max_child_size = Size(m_region.width, m_region.height);</a>
+<a name="ln1669">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1670">    const int pad = base_margin() + m_padding;</a>
+<a name="ln1671">    max_child_size.width = (max_child_size.width - 2*pad) &amp; ~0x1;</a>
+<a name="ln1672">    max_child_size.height = (max_child_size.height - 2*pad - m_depth*m_depth_indent) &amp; ~0x1;</a>
+<a name="ln1673">#endif</a>
+<a name="ln1674">    return max_child_size;</a>
+<a name="ln1675">}</a>
+<a name="ln1676"> </a>
+<a name="ln1677">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1678">int Popup::base_margin()</a>
+<a name="ln1679">{</a>
+<a name="ln1680">    const int screen_small = 800, screen_large = 1000;</a>
+<a name="ln1681">    const int margin_small = 10, margin_large = 50;</a>
+<a name="ln1682">    const int clipped = max(screen_small, min(screen_large, m_region.height));</a>
+<a name="ln1683">    return margin_small + (clipped-screen_small)</a>
+<a name="ln1684">            *(margin_large-margin_small)/(screen_large-screen_small);</a>
+<a name="ln1685">}</a>
+<a name="ln1686">#endif</a>
+<a name="ln1687"> </a>
+<a name="ln1688">void Checkbox::_render()</a>
+<a name="ln1689">{</a>
+<a name="ln1690">    if (m_child)</a>
+<a name="ln1691">        m_child-&gt;render();</a>
+<a name="ln1692"> </a>
+<a name="ln1693">    const bool has_focus = ui::get_focused_widget() == this;</a>
+<a name="ln1694"> </a>
+<a name="ln1695">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1696">    tileidx_t tile = TILEG_CHECKBOX;</a>
+<a name="ln1697">    if (m_checked)</a>
+<a name="ln1698">        tile += 1;</a>
+<a name="ln1699">    if (m_hovered || has_focus)</a>
+<a name="ln1700">        tile += 2;</a>
+<a name="ln1701"> </a>
+<a name="ln1702">    const int x = m_region.x, y = m_region.y;</a>
+<a name="ln1703">    TileBuffer tb;</a>
+<a name="ln1704">    tb.set_tex(&amp;tiles.get_image_manager()-&gt;m_textures[TEX_GUI]);</a>
+<a name="ln1705">    tb.add(tile, x, y, 0, 0, false, check_h, 1.0, 1.0);</a>
+<a name="ln1706">    tb.draw();</a>
+<a name="ln1707">#else</a>
+<a name="ln1708">    cgotoxy(m_region.x+1, m_region.y+1, GOTO_CRT);</a>
+<a name="ln1709">    textbackground(has_focus ? LIGHTGREY : BLACK);</a>
+<a name="ln1710">    cprintf(&quot;[ ]&quot;);</a>
+<a name="ln1711">    if (m_checked)</a>
+<a name="ln1712">    {</a>
+<a name="ln1713">        cgotoxy(m_region.x+2, m_region.y+1, GOTO_CRT);</a>
+<a name="ln1714">        textcolour(has_focus ? BLACK : WHITE);</a>
+<a name="ln1715">        cprintf(&quot;X&quot;);</a>
+<a name="ln1716">    }</a>
+<a name="ln1717">#endif</a>
+<a name="ln1718">}</a>
+<a name="ln1719"> </a>
+<a name="ln1720">const int Checkbox::check_w;</a>
+<a name="ln1721">const int Checkbox::check_h;</a>
+<a name="ln1722"> </a>
+<a name="ln1723">SizeReq Checkbox::_get_preferred_size(Direction dim, int prosp_width)</a>
+<a name="ln1724">{</a>
+<a name="ln1725">    SizeReq child_sr = { 0, 0 };</a>
+<a name="ln1726">    if (m_child)</a>
+<a name="ln1727">        child_sr = m_child-&gt;get_preferred_size(dim, prosp_width);</a>
+<a name="ln1728"> </a>
+<a name="ln1729">    if (dim == HORZ)</a>
+<a name="ln1730">        return { child_sr.min + check_w, child_sr.nat + check_w };</a>
+<a name="ln1731">    else</a>
+<a name="ln1732">        return { max(child_sr.min, check_h), max(child_sr.nat, check_h) };</a>
+<a name="ln1733">}</a>
+<a name="ln1734"> </a>
+<a name="ln1735">void Checkbox::_allocate_region()</a>
+<a name="ln1736">{</a>
+<a name="ln1737">    if (m_child)</a>
+<a name="ln1738">    {</a>
+<a name="ln1739">        auto child_region = m_region;</a>
+<a name="ln1740">        child_region.x += check_w;</a>
+<a name="ln1741">        child_region.width -= check_w;</a>
+<a name="ln1742">        auto child_sr = m_child-&gt;get_preferred_size(VERT, child_region.width);</a>
+<a name="ln1743">        child_region.height = min(max(child_sr.min, m_region.height), child_sr.nat);</a>
+<a name="ln1744">        child_region.y += (m_region.height - child_region.height)/2;</a>
+<a name="ln1745">        m_child-&gt;allocate_region(child_region);</a>
+<a name="ln1746">    }</a>
+<a name="ln1747">}</a>
+<a name="ln1748"> </a>
+<a name="ln1749">bool Checkbox::on_event(const Event&amp; event)</a>
+<a name="ln1750">{</a>
+<a name="ln1751">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1752">    if (event.type() == Event::Type::MouseEnter || event.type() == Event::Type::MouseLeave)</a>
+<a name="ln1753">    {</a>
+<a name="ln1754">        bool new_hovered = event.type() == Event::Type::MouseEnter;</a>
+<a name="ln1755">        if (new_hovered != m_hovered)</a>
+<a name="ln1756">            _expose();</a>
+<a name="ln1757">        m_hovered = new_hovered;</a>
+<a name="ln1758">    }</a>
+<a name="ln1759">    if (event.type() == Event::Type::MouseDown)</a>
+<a name="ln1760">    {</a>
+<a name="ln1761">        set_checked(!checked());</a>
+<a name="ln1762">        set_focused_widget(this);</a>
+<a name="ln1763">        _expose();</a>
+<a name="ln1764">        return true;</a>
+<a name="ln1765">    }</a>
+<a name="ln1766">#endif</a>
+<a name="ln1767">    if (event.type() == Event::Type::FocusIn || event.type() == Event::Type::FocusOut)</a>
+<a name="ln1768">    {</a>
+<a name="ln1769">        _expose();</a>
+<a name="ln1770">        return true;</a>
+<a name="ln1771">    }</a>
+<a name="ln1772">    if (event.type() == Event::Type::KeyDown)</a>
+<a name="ln1773">    {</a>
+<a name="ln1774">        const auto key = static_cast&lt;const KeyEvent&amp;&gt;(event).key();</a>
+<a name="ln1775">        if (key == CK_ENTER || key == ' ')</a>
+<a name="ln1776">        {</a>
+<a name="ln1777">            set_checked(!checked());</a>
+<a name="ln1778">            _expose();</a>
+<a name="ln1779">            return true;</a>
+<a name="ln1780">        }</a>
+<a name="ln1781">    }</a>
+<a name="ln1782">    return false;</a>
+<a name="ln1783">}</a>
+<a name="ln1784"> </a>
+<a name="ln1785">#ifdef USE_TILE_WEB</a>
+<a name="ln1786">void Checkbox::sync_save_state()</a>
+<a name="ln1787">{</a>
+<a name="ln1788">    tiles.json_write_bool(&quot;checked&quot;, m_checked);</a>
+<a name="ln1789">}</a>
+<a name="ln1790"> </a>
+<a name="ln1791">void Checkbox::sync_load_state(const JsonNode *json)</a>
+<a name="ln1792">{</a>
+<a name="ln1793">    if (auto checked = json_find_member(json, &quot;checked&quot;))</a>
+<a name="ln1794">        if (checked-&gt;tag == JSON_BOOL)</a>
+<a name="ln1795">            set_checked(checked-&gt;bool_);</a>
+<a name="ln1796">}</a>
+<a name="ln1797">#endif</a>
+<a name="ln1798"> </a>
+<a name="ln1799">TextEntry::TextEntry() : m_line_reader(m_buffer, sizeof(m_buffer))</a>
+<a name="ln1800">{</a>
+<a name="ln1801">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1802">    set_font(tiles.get_crt_font());</a>
+<a name="ln1803">#endif</a>
+<a name="ln1804">}</a>
+<a name="ln1805"> </a>
+<a name="ln1806">void TextEntry::_render()</a>
+<a name="ln1807">{</a>
+<a name="ln1808">    const bool has_focus = ui::get_focused_widget() == this;</a>
+<a name="ln1809"> </a>
+<a name="ln1810">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1811">    const int line_height = m_font-&gt;char_height();</a>
+<a name="ln1812">    const int text_y = m_region.y + (m_region.height - line_height)/2;</a>
+<a name="ln1813"> </a>
+<a name="ln1814">    const auto bg = has_focus ? VColour(30, 30, 30, 255)</a>
+<a name="ln1815">                              : VColour(29, 27, 21, 255);</a>
+<a name="ln1816"> </a>
+<a name="ln1817">    m_buf.clear();</a>
+<a name="ln1818">    m_buf.add(m_region.x, m_region.y, m_region.ex(), m_region.ey(), bg);</a>
+<a name="ln1819">    m_buf.draw();</a>
+<a name="ln1820"> </a>
+<a name="ln1821">    const auto border_bg = has_focus ? VColour(184, 141, 25)</a>
+<a name="ln1822">                                     : VColour(125, 98, 60);</a>
+<a name="ln1823"> </a>
+<a name="ln1824">    LineBuffer bbuf;</a>
+<a name="ln1825">    bbuf.add_square(m_region.x+1, m_region.y+1,</a>
+<a name="ln1826">                    m_region.ex(), m_region.ey(), border_bg);</a>
+<a name="ln1827">    bbuf.draw();</a>
+<a name="ln1828"> </a>
+<a name="ln1829">    const int content_width = m_font-&gt;string_width(m_text.c_str());</a>
+<a name="ln1830">    const int cursor_x = m_font-&gt;string_width(</a>
+<a name="ln1831">            m_text.substr(0, m_cursor).c_str());</a>
+<a name="ln1832">    constexpr int x_pad = 3;</a>
+<a name="ln1833">#else</a>
+<a name="ln1834">    const int content_width = strwidth(m_text);</a>
+<a name="ln1835">    const int cursor_x = strwidth(m_text.substr(0, m_cursor));</a>
+<a name="ln1836">    constexpr int x_pad = 0;</a>
+<a name="ln1837">#endif</a>
+<a name="ln1838"> </a>
+<a name="ln1839">    const int viewport_width = m_region.width - 2*x_pad;</a>
+<a name="ln1840"> </a>
+<a name="ln1841">    // Scroll to keep the cursor in view</a>
+<a name="ln1842">    if (cursor_x &lt; m_hscroll)</a>
+<a name="ln1843">        m_hscroll = cursor_x;</a>
+<a name="ln1844">    else if (cursor_x &gt;= m_hscroll + viewport_width)</a>
+<a name="ln1845">        m_hscroll = cursor_x - viewport_width + 1;</a>
+<a name="ln1846"> </a>
+<a name="ln1847">    // scroll to keep the textbox full of text, if possible</a>
+<a name="ln1848">    m_hscroll = min(m_hscroll, max(0, content_width - viewport_width + 1));</a>
+<a name="ln1849"> </a>
+<a name="ln1850">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1851">    // XXX: we need to transform the scissor because the skill menu is rendered</a>
+<a name="ln1852">    // using the CRT, with an appropriate transform that positions it into the</a>
+<a name="ln1853">    // centre of the screen</a>
+<a name="ln1854">    GLW_3VF translate;</a>
+<a name="ln1855">    glmanager-&gt;get_transform(&amp;translate, nullptr);</a>
+<a name="ln1856">    const Region scissor_region = {</a>
+<a name="ln1857">        m_region.x - static_cast&lt;int&gt;(translate.x),</a>
+<a name="ln1858">        m_region.y - static_cast&lt;int&gt;(translate.y),</a>
+<a name="ln1859">        m_region.width, m_region.height,</a>
+<a name="ln1860">    };</a>
+<a name="ln1861">    push_scissor(scissor_region);</a>
+<a name="ln1862"> </a>
+<a name="ln1863">    const int text_x = m_region.x - m_hscroll + x_pad;</a>
+<a name="ln1864"> </a>
+<a name="ln1865">    FontBuffer m_font_buf(m_font);</a>
+<a name="ln1866">    m_font_buf.add(formatted_string(m_text), text_x, text_y);</a>
+<a name="ln1867">    m_font_buf.draw();</a>
+<a name="ln1868"> </a>
+<a name="ln1869">    pop_scissor();</a>
+<a name="ln1870"> </a>
+<a name="ln1871">    if (has_focus)</a>
+<a name="ln1872">    {</a>
+<a name="ln1873">        m_buf.clear();</a>
+<a name="ln1874">        m_buf.add(text_x + cursor_x, text_y,</a>
+<a name="ln1875">                  text_x + cursor_x + 1, text_y + line_height,</a>
+<a name="ln1876">                  VColour(255, 255, 255, 255));</a>
+<a name="ln1877">        m_buf.draw();</a>
+<a name="ln1878">    }</a>
+<a name="ln1879">#else</a>
+<a name="ln1880">    auto prefix_size = chop_string(m_text, m_hscroll, false).size();</a>
+<a name="ln1881">    auto remain = chop_string(m_text.substr(prefix_size), m_region.width, true);</a>
+<a name="ln1882"> </a>
+<a name="ln1883">    const auto fg_colour = has_focus ? BLACK : WHITE;</a>
+<a name="ln1884">    const auto bg_colour = has_focus ? LIGHTGREY : DARKGREY;</a>
+<a name="ln1885"> </a>
+<a name="ln1886">    draw_colour draw(fg_colour, bg_colour);</a>
+<a name="ln1887">    cgotoxy(m_region.x+1, m_region.y+1, GOTO_CRT);</a>
+<a name="ln1888">    cprintf(&quot;%s&quot;, remain.c_str());</a>
+<a name="ln1889"> </a>
+<a name="ln1890">    if (has_focus)</a>
+<a name="ln1891">    {</a>
+<a name="ln1892">        cgotoxy(m_region.x+cursor_x-m_hscroll+1, m_region.y+1, GOTO_CRT);</a>
+<a name="ln1893">        textcolour(DARKGREY);</a>
+<a name="ln1894">        cprintf(&quot; &quot;);</a>
+<a name="ln1895">        show_cursor_at(m_region.x+cursor_x-m_hscroll+1, m_region.y+1);</a>
+<a name="ln1896">    }</a>
+<a name="ln1897">#endif</a>
+<a name="ln1898">}</a>
+<a name="ln1899"> </a>
+<a name="ln1900">SizeReq TextEntry::_get_preferred_size(Direction dim, int /*prosp_width*/)</a>
+<a name="ln1901">{</a>
+<a name="ln1902">    if (!dim)</a>
+<a name="ln1903">        return { 0, 300 };</a>
+<a name="ln1904">    else</a>
+<a name="ln1905">    {</a>
+<a name="ln1906">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1907">        const int line_height = m_font-&gt;char_height(false);</a>
+<a name="ln1908">        const int height = line_height + 2*padding_size();</a>
+<a name="ln1909">        return { height, height };</a>
+<a name="ln1910">#else</a>
+<a name="ln1911">        return { 1, 1 };</a>
+<a name="ln1912">#endif</a>
+<a name="ln1913">    }</a>
+<a name="ln1914">}</a>
+<a name="ln1915"> </a>
+<a name="ln1916">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1917">int TextEntry::padding_size()</a>
+<a name="ln1918">{</a>
+<a name="ln1919">    const int line_height = m_font-&gt;char_height(false);</a>
+<a name="ln1920">    const float pad_amount = 0.2;</a>
+<a name="ln1921">    return (static_cast&lt;int&gt;(line_height*pad_amount) + 1)/2;</a>
+<a name="ln1922">}</a>
+<a name="ln1923">#endif</a>
+<a name="ln1924"> </a>
+<a name="ln1925">void TextEntry::_allocate_region()</a>
+<a name="ln1926">{</a>
+<a name="ln1927">}</a>
+<a name="ln1928"> </a>
+<a name="ln1929">bool TextEntry::on_event(const Event&amp; event)</a>
+<a name="ln1930">{</a>
+<a name="ln1931">    switch (event.type())</a>
+<a name="ln1932">    {</a>
+<a name="ln1933">    case Event::Type::FocusIn:</a>
+<a name="ln1934">    case Event::Type::FocusOut:</a>
+<a name="ln1935">        set_cursor_enabled(event.type() == Event::Type::FocusIn);</a>
+<a name="ln1936">        _expose();</a>
+<a name="ln1937">        return true;</a>
+<a name="ln1938">    case Event::Type::MouseDown:</a>
+<a name="ln1939">        // TODO: unfocus if the mouse is clicked outside</a>
+<a name="ln1940">        // TODO: move the cursor to the clicked position</a>
+<a name="ln1941">        if (static_cast&lt;const MouseEvent&amp;&gt;(event).button() == MouseEvent::Button::Left)</a>
+<a name="ln1942">            ui::set_focused_widget(this);</a>
+<a name="ln1943">        return true;</a>
+<a name="ln1944">    case Event::Type::KeyDown:</a>
+<a name="ln1945">        {</a>
+<a name="ln1946">            const auto key = static_cast&lt;const KeyEvent&amp;&gt;(event).key();</a>
+<a name="ln1947">            int ret = m_line_reader.process_key_core(key);</a>
+<a name="ln1948">            if (ret == CK_ESCAPE || ret == 0)</a>
+<a name="ln1949">                ui::set_focused_widget(nullptr);</a>
+<a name="ln1950">            m_text = m_line_reader.get_text();</a>
+<a name="ln1951">            m_cursor = m_line_reader.get_cursor_position();</a>
+<a name="ln1952">            _expose();</a>
+<a name="ln1953">            return key != '\t' &amp;&amp; key != CK_SHIFT_TAB;</a>
+<a name="ln1954">        }</a>
+<a name="ln1955">    default:</a>
+<a name="ln1956">        return false;</a>
+<a name="ln1957">    }</a>
+<a name="ln1958">}</a>
+<a name="ln1959"> </a>
+<a name="ln1960">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1961">void TextEntry::set_font(FontWrapper *font)</a>
+<a name="ln1962">{</a>
+<a name="ln1963">    ASSERT(font);</a>
+<a name="ln1964">    m_font = font;</a>
+<a name="ln1965">    _invalidate_sizereq();</a>
+<a name="ln1966">}</a>
+<a name="ln1967">#endif</a>
+<a name="ln1968"> </a>
+<a name="ln1969">TextEntry::LineReader::LineReader(char *buf, size_t sz)</a>
+<a name="ln1970">    : buffer(buf), bufsz(sz), history(nullptr), keyfn(nullptr),</a>
+<a name="ln1971">      mode(EDIT_MODE_INSERT),</a>
+<a name="ln1972">      cur(nullptr), length(0)</a>
+<a name="ln1973">{</a>
+<a name="ln1974">    *buffer = 0;</a>
+<a name="ln1975">    length = 0;</a>
+<a name="ln1976">    cur = buffer;</a>
+<a name="ln1977"> </a>
+<a name="ln1978">    if (history)</a>
+<a name="ln1979">        history-&gt;go_end();</a>
+<a name="ln1980">}</a>
+<a name="ln1981"> </a>
+<a name="ln1982">TextEntry::LineReader::~LineReader()</a>
+<a name="ln1983">{</a>
+<a name="ln1984">}</a>
+<a name="ln1985"> </a>
+<a name="ln1986">string TextEntry::LineReader::get_text() const</a>
+<a name="ln1987">{</a>
+<a name="ln1988">    return buffer;</a>
+<a name="ln1989">}</a>
+<a name="ln1990"> </a>
+<a name="ln1991">void TextEntry::LineReader::set_text(string text)</a>
+<a name="ln1992">{</a>
+<a name="ln1993">    snprintf(buffer, bufsz, &quot;%s&quot;, text.c_str());</a>
+<a name="ln1994">    length = min(text.size(), bufsz - 1);</a>
+<a name="ln1995">    buffer[length] = 0;</a>
+<a name="ln1996">    cur = buffer + length;</a>
+<a name="ln1997">}</a>
+<a name="ln1998"> </a>
+<a name="ln1999">void TextEntry::LineReader::set_input_history(input_history *i)</a>
+<a name="ln2000">{</a>
+<a name="ln2001">    history = i;</a>
+<a name="ln2002">}</a>
+<a name="ln2003"> </a>
+<a name="ln2004">void TextEntry::LineReader::set_keyproc(keyproc fn)</a>
+<a name="ln2005">{</a>
+<a name="ln2006">    keyfn = fn;</a>
+<a name="ln2007">}</a>
+<a name="ln2008"> </a>
+<a name="ln2009">void TextEntry::LineReader::set_edit_mode(edit_mode m)</a>
+<a name="ln2010">{</a>
+<a name="ln2011">    mode = m;</a>
+<a name="ln2012">}</a>
+<a name="ln2013"> </a>
+<a name="ln2014">void TextEntry::LineReader::set_prompt(string p)</a>
+<a name="ln2015">{</a>
+<a name="ln2016">    prompt = p;</a>
+<a name="ln2017">}</a>
+<a name="ln2018"> </a>
+<a name="ln2019">edit_mode TextEntry::LineReader::get_edit_mode()</a>
+<a name="ln2020">{</a>
+<a name="ln2021">    return mode;</a>
+<a name="ln2022">}</a>
+<a name="ln2023"> </a>
+<a name="ln2024">#ifdef USE_TILE_WEB</a>
+<a name="ln2025">void TextEntry::LineReader::set_tag(const string &amp;id)</a>
+<a name="ln2026">{</a>
+<a name="ln2027">    tag = id;</a>
+<a name="ln2028">}</a>
+<a name="ln2029">#endif</a>
+<a name="ln2030"> </a>
+<a name="ln2031">int TextEntry::LineReader::process_key_core(int ch)</a>
+<a name="ln2032">{</a>
+<a name="ln2033">    if (keyfn)</a>
+<a name="ln2034">    {</a>
+<a name="ln2035">        // if you intercept esc, don't forget to provide another way to</a>
+<a name="ln2036">        // exit. Processing esc will safely cancel.</a>
+<a name="ln2037">        keyfun_action whattodo = (*keyfn)(ch);</a>
+<a name="ln2038">        if (whattodo == KEYFUN_CLEAR)</a>
+<a name="ln2039">        {</a>
+<a name="ln2040">            buffer[length] = 0;</a>
+<a name="ln2041">            if (history &amp;&amp; length)</a>
+<a name="ln2042">                history-&gt;new_input(buffer);</a>
+<a name="ln2043">            return 0;</a>
+<a name="ln2044">        }</a>
+<a name="ln2045">        else if (whattodo == KEYFUN_BREAK)</a>
+<a name="ln2046">        {</a>
+<a name="ln2047">            buffer[length] = 0;</a>
+<a name="ln2048">            return ch;</a>
+<a name="ln2049">        }</a>
+<a name="ln2050">        else if (whattodo == KEYFUN_IGNORE)</a>
+<a name="ln2051">            return -1;</a>
+<a name="ln2052">        // else case: KEYFUN_PROCESS</a>
+<a name="ln2053">    }</a>
+<a name="ln2054"> </a>
+<a name="ln2055">    return process_key(ch);</a>
+<a name="ln2056">}</a>
+<a name="ln2057"> </a>
+<a name="ln2058">void TextEntry::LineReader::backspace()</a>
+<a name="ln2059">{</a>
+<a name="ln2060">    char *np = prev_glyph(cur, buffer);</a>
+<a name="ln2061">    if (!np)</a>
+<a name="ln2062">        return;</a>
+<a name="ln2063">    char32_t ch;</a>
+<a name="ln2064">    utf8towc(&amp;ch, np);</a>
+<a name="ln2065">    buffer[length] = 0;</a>
+<a name="ln2066">    length -= cur - np;</a>
+<a name="ln2067">    char *c = cur;</a>
+<a name="ln2068">    cur = np;</a>
+<a name="ln2069">    while (*c)</a>
+<a name="ln2070">        *np++ = *c++;</a>
+<a name="ln2071">    buffer[length] = 0;</a>
+<a name="ln2072">}</a>
+<a name="ln2073"> </a>
+<a name="ln2074">void TextEntry::LineReader::delete_char()</a>
+<a name="ln2075">{</a>
+<a name="ln2076">    // TODO: unify with backspace</a>
+<a name="ln2077">    if (*cur)</a>
+<a name="ln2078">    {</a>
+<a name="ln2079">        const char *np = next_glyph(cur);</a>
+<a name="ln2080">        ASSERT(np);</a>
+<a name="ln2081">        char32_t ch_at_point;</a>
+<a name="ln2082">        utf8towc(&amp;ch_at_point, cur);</a>
+<a name="ln2083">        const size_t del_bytes = np - cur;</a>
+<a name="ln2084">        const size_t follow_bytes = (buffer + length) - np;</a>
+<a name="ln2085">        // Copy the NUL too.</a>
+<a name="ln2086">        memmove(cur, np, follow_bytes + 1);</a>
+<a name="ln2087">        length -= del_bytes;</a>
+<a name="ln2088">    }</a>
+<a name="ln2089">}</a>
+<a name="ln2090"> </a>
+<a name="ln2091">bool TextEntry::LineReader::is_wordchar(char32_t c)</a>
+<a name="ln2092">{</a>
+<a name="ln2093">    return iswalnum(c) || c == '_' || c == '-';</a>
+<a name="ln2094">}</a>
+<a name="ln2095"> </a>
+<a name="ln2096">void TextEntry::LineReader::kill_to_begin()</a>
+<a name="ln2097">{</a>
+<a name="ln2098">    if (cur == buffer)</a>
+<a name="ln2099">        return;</a>
+<a name="ln2100"> </a>
+<a name="ln2101">    const int rest = length - (cur - buffer);</a>
+<a name="ln2102">    memmove(buffer, cur, rest);</a>
+<a name="ln2103">    length = rest;</a>
+<a name="ln2104">    buffer[length] = 0;</a>
+<a name="ln2105">    cur = buffer;</a>
+<a name="ln2106">}</a>
+<a name="ln2107"> </a>
+<a name="ln2108">void TextEntry::LineReader::kill_to_end()</a>
+<a name="ln2109">{</a>
+<a name="ln2110">    if (*cur)</a>
+<a name="ln2111">    {</a>
+<a name="ln2112">        length = cur - buffer;</a>
+<a name="ln2113">        *cur = 0;</a>
+<a name="ln2114">    }</a>
+<a name="ln2115">}</a>
+<a name="ln2116"> </a>
+<a name="ln2117">void TextEntry::LineReader::killword()</a>
+<a name="ln2118">{</a>
+<a name="ln2119">    if (cur == buffer)</a>
+<a name="ln2120">        return;</a>
+<a name="ln2121"> </a>
+<a name="ln2122">    bool foundwc = false;</a>
+<a name="ln2123">    char *word = cur;</a>
+<a name="ln2124">    int ew = 0;</a>
+<a name="ln2125">    while (1)</a>
+<a name="ln2126">    {</a>
+<a name="ln2127">        char *np = prev_glyph(word, buffer);</a>
+<a name="ln2128">        if (!np)</a>
+<a name="ln2129">            break;</a>
+<a name="ln2130"> </a>
+<a name="ln2131">        char32_t c;</a>
+<a name="ln2132">        utf8towc(&amp;c, np);</a>
+<a name="ln2133">        if (is_wordchar(c))</a>
+<a name="ln2134">            foundwc = true;</a>
+<a name="ln2135">        else if (foundwc)</a>
+<a name="ln2136">            break;</a>
+<a name="ln2137"> </a>
+<a name="ln2138">        word = np;</a>
+<a name="ln2139">        ew += wcwidth(c);</a>
+<a name="ln2140">    }</a>
+<a name="ln2141">    memmove(word, cur, strlen(cur) + 1);</a>
+<a name="ln2142">    length -= cur - word;</a>
+<a name="ln2143">    cur = word;</a>
+<a name="ln2144">}</a>
+<a name="ln2145"> </a>
+<a name="ln2146">void TextEntry::LineReader::overwrite_char_at_cursor(int ch)</a>
+<a name="ln2147">{</a>
+<a name="ln2148">    int len = wclen(ch);</a>
+<a name="ln2149">    int w = wcwidth(ch);</a>
+<a name="ln2150"> </a>
+<a name="ln2151">    if (w &gt;= 0 &amp;&amp; cur - buffer + len &lt; static_cast&lt;int&gt;(bufsz))</a>
+<a name="ln2152">    {</a>
+<a name="ln2153">        bool empty = !*cur;</a>
+<a name="ln2154"> </a>
+<a name="ln2155">        wctoutf8(cur, ch);</a>
+<a name="ln2156">        cur += len;</a>
+<a name="ln2157">        if (empty)</a>
+<a name="ln2158">            length += len;</a>
+<a name="ln2159">        buffer[length] = 0;</a>
+<a name="ln2160">    }</a>
+<a name="ln2161">}</a>
+<a name="ln2162"> </a>
+<a name="ln2163">void TextEntry::LineReader::insert_char_at_cursor(int ch)</a>
+<a name="ln2164">{</a>
+<a name="ln2165">    if (wcwidth(ch) &gt;= 0 &amp;&amp; length + wclen(ch) &lt; static_cast&lt;int&gt;(bufsz))</a>
+<a name="ln2166">    {</a>
+<a name="ln2167">        int len = wclen(ch);</a>
+<a name="ln2168">        if (*cur)</a>
+<a name="ln2169">        {</a>
+<a name="ln2170">            char *c = buffer + length - 1;</a>
+<a name="ln2171">            while (c &gt;= cur)</a>
+<a name="ln2172">            {</a>
+<a name="ln2173">                c[len] = *c;</a>
+<a name="ln2174">                c--;</a>
+<a name="ln2175">            }</a>
+<a name="ln2176">        }</a>
+<a name="ln2177">        wctoutf8(cur, ch);</a>
+<a name="ln2178">        cur += len;</a>
+<a name="ln2179">        length += len;</a>
+<a name="ln2180">        buffer[length] = 0;</a>
+<a name="ln2181">    }</a>
+<a name="ln2182">}</a>
+<a name="ln2183"> </a>
+<a name="ln2184">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2185">void TextEntry::LineReader::clipboard_paste()</a>
+<a name="ln2186">{</a>
+<a name="ln2187">    if (wm-&gt;has_clipboard())</a>
+<a name="ln2188">        for (char ch : wm-&gt;get_clipboard())</a>
+<a name="ln2189">            process_key(ch);</a>
+<a name="ln2190">}</a>
+<a name="ln2191">#endif</a>
+<a name="ln2192"> </a>
+<a name="ln2193">int TextEntry::LineReader::process_key(int ch)</a>
+<a name="ln2194">{</a>
+<a name="ln2195">    switch (ch)</a>
+<a name="ln2196">    {</a>
+<a name="ln2197">    CASE_ESCAPE</a>
+<a name="ln2198">        return CK_ESCAPE;</a>
+<a name="ln2199">    case CK_UP:</a>
+<a name="ln2200">    case CONTROL('P'):</a>
+<a name="ln2201">    case CK_DOWN:</a>
+<a name="ln2202">    case CONTROL('N'):</a>
+<a name="ln2203">    {</a>
+<a name="ln2204">        if (!history)</a>
+<a name="ln2205">            break;</a>
+<a name="ln2206"> </a>
+<a name="ln2207">        const string *text = (ch == CK_UP || ch == CONTROL('P'))</a>
+<a name="ln2208">                             ? history-&gt;prev()</a>
+<a name="ln2209">                             : history-&gt;next();</a>
+<a name="ln2210"> </a>
+<a name="ln2211">        if (text)</a>
+<a name="ln2212">            set_text(*text);</a>
+<a name="ln2213">        break;</a>
+<a name="ln2214">    }</a>
+<a name="ln2215">    case CK_ENTER:</a>
+<a name="ln2216">        buffer[length] = 0;</a>
+<a name="ln2217">        if (history &amp;&amp; length)</a>
+<a name="ln2218">            history-&gt;new_input(buffer);</a>
+<a name="ln2219">        return 0;</a>
+<a name="ln2220"> </a>
+<a name="ln2221">    case CONTROL('K'):</a>
+<a name="ln2222">        kill_to_end();</a>
+<a name="ln2223">        break;</a>
+<a name="ln2224"> </a>
+<a name="ln2225">    case CK_DELETE:</a>
+<a name="ln2226">    case CONTROL('D'):</a>
+<a name="ln2227">        delete_char();</a>
+<a name="ln2228">        break;</a>
+<a name="ln2229"> </a>
+<a name="ln2230">    case CK_BKSP:</a>
+<a name="ln2231">        backspace();</a>
+<a name="ln2232">        break;</a>
+<a name="ln2233"> </a>
+<a name="ln2234">    case CONTROL('W'):</a>
+<a name="ln2235">        killword();</a>
+<a name="ln2236">        break;</a>
+<a name="ln2237"> </a>
+<a name="ln2238">    case CONTROL('U'):</a>
+<a name="ln2239">        kill_to_begin();</a>
+<a name="ln2240">        break;</a>
+<a name="ln2241"> </a>
+<a name="ln2242">    case CK_LEFT:</a>
+<a name="ln2243">    case CONTROL('B'):</a>
+<a name="ln2244">        if (char *np = prev_glyph(cur, buffer))</a>
+<a name="ln2245">            cur = np;</a>
+<a name="ln2246">        break;</a>
+<a name="ln2247">    case CK_RIGHT:</a>
+<a name="ln2248">    case CONTROL('F'):</a>
+<a name="ln2249">        if (char *np = next_glyph(cur))</a>
+<a name="ln2250">            cur = np;</a>
+<a name="ln2251">        break;</a>
+<a name="ln2252">    case CK_HOME:</a>
+<a name="ln2253">    case CONTROL('A'):</a>
+<a name="ln2254">        cur = buffer;</a>
+<a name="ln2255">        break;</a>
+<a name="ln2256">    case CK_END:</a>
+<a name="ln2257">    case CONTROL('E'):</a>
+<a name="ln2258">        cur = buffer + length;</a>
+<a name="ln2259">        break;</a>
+<a name="ln2260">    case CONTROL('V'):</a>
+<a name="ln2261">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2262">        clipboard_paste();</a>
+<a name="ln2263">#endif</a>
+<a name="ln2264">        break;</a>
+<a name="ln2265">    case CK_REDRAW:</a>
+<a name="ln2266">        //redraw_screen();</a>
+<a name="ln2267">        return -1;</a>
+<a name="ln2268">    default:</a>
+<a name="ln2269">        if (mode == EDIT_MODE_OVERWRITE)</a>
+<a name="ln2270">            overwrite_char_at_cursor(ch);</a>
+<a name="ln2271">        else // mode == EDIT_MODE_INSERT</a>
+<a name="ln2272">            insert_char_at_cursor(ch);</a>
+<a name="ln2273"> </a>
+<a name="ln2274">        break;</a>
+<a name="ln2275">    }</a>
+<a name="ln2276"> </a>
+<a name="ln2277">    return -1;</a>
+<a name="ln2278">}</a>
+<a name="ln2279"> </a>
+<a name="ln2280">#ifdef USE_TILE_WEB</a>
+<a name="ln2281">void TextEntry::sync_save_state()</a>
+<a name="ln2282">{</a>
+<a name="ln2283">    tiles.json_write_string(&quot;text&quot;, m_text);</a>
+<a name="ln2284">    tiles.json_write_int(&quot;cursor&quot;, m_cursor);</a>
+<a name="ln2285">}</a>
+<a name="ln2286"> </a>
+<a name="ln2287">void TextEntry::sync_load_state(const JsonNode *json)</a>
+<a name="ln2288">{</a>
+<a name="ln2289">    if (auto text = json_find_member(json, &quot;text&quot;))</a>
+<a name="ln2290">        if (text-&gt;tag == JSON_STRING)</a>
+<a name="ln2291">            set_text(text-&gt;string_);</a>
+<a name="ln2292"> </a>
+<a name="ln2293">    // TODO: sync cursor state</a>
+<a name="ln2294">}</a>
+<a name="ln2295">#endif</a>
+<a name="ln2296"> </a>
+<a name="ln2297">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2298">void Dungeon::_render()</a>
+<a name="ln2299">{</a>
+<a name="ln2300">    GLW_3VF t = {(float)m_region.x, (float)m_region.y, 0}, s = {32, 32, 1};</a>
+<a name="ln2301">    glmanager-&gt;set_transform(t, s);</a>
+<a name="ln2302">    m_buf.draw();</a>
+<a name="ln2303">    glmanager-&gt;reset_transform();</a>
+<a name="ln2304">}</a>
+<a name="ln2305"> </a>
+<a name="ln2306">SizeReq Dungeon::_get_preferred_size(Direction dim, int /*prosp_width*/)</a>
+<a name="ln2307">{</a>
+<a name="ln2308">    const int sz = (dim ? height : width)*32;</a>
+<a name="ln2309">    return { sz, sz };</a>
+<a name="ln2310">}</a>
+<a name="ln2311"> </a>
+<a name="ln2312">PlayerDoll::PlayerDoll(dolls_data doll)</a>
+<a name="ln2313">{</a>
+<a name="ln2314">    m_save_doll = doll;</a>
+<a name="ln2315">    for (int i = 0; i &lt; TEX_MAX; i++)</a>
+<a name="ln2316">        m_tile_buf[i].set_tex(&amp;tiles.get_image_manager()-&gt;m_textures[i]);</a>
+<a name="ln2317">    _pack_doll();</a>
+<a name="ln2318">}</a>
+<a name="ln2319"> </a>
+<a name="ln2320">PlayerDoll::~PlayerDoll()</a>
+<a name="ln2321">{</a>
+<a name="ln2322">    for (int t = 0; t &lt; TEX_MAX; t++)</a>
+<a name="ln2323">        m_tile_buf[t].clear();</a>
+<a name="ln2324">}</a>
+<a name="ln2325"> </a>
+<a name="ln2326">void PlayerDoll::_pack_doll()</a>
+<a name="ln2327">{</a>
+<a name="ln2328">    m_tiles.clear();</a>
+<a name="ln2329">    // FIXME: Implement this logic in one place in e.g. pack_doll_buf().</a>
+<a name="ln2330">    int p_order[TILEP_PART_MAX] =</a>
+<a name="ln2331">    {</a>
+<a name="ln2332">        TILEP_PART_SHADOW,  //  0</a>
+<a name="ln2333">        TILEP_PART_HALO,</a>
+<a name="ln2334">        TILEP_PART_ENCH,</a>
+<a name="ln2335">        TILEP_PART_DRCWING,</a>
+<a name="ln2336">        TILEP_PART_CLOAK,</a>
+<a name="ln2337">        TILEP_PART_BASE,    //  5</a>
+<a name="ln2338">        TILEP_PART_BOOTS,</a>
+<a name="ln2339">        TILEP_PART_LEG,</a>
+<a name="ln2340">        TILEP_PART_BODY,</a>
+<a name="ln2341">        TILEP_PART_ARM,</a>
+<a name="ln2342">        TILEP_PART_HAIR,</a>
+<a name="ln2343">        TILEP_PART_BEARD,</a>
+<a name="ln2344">        TILEP_PART_DRCHEAD,  // 15</a>
+<a name="ln2345">        TILEP_PART_HELM,</a>
+<a name="ln2346">        TILEP_PART_HAND1,   // 10</a>
+<a name="ln2347">        TILEP_PART_HAND2,</a>
+<a name="ln2348">    };</a>
+<a name="ln2349"> </a>
+<a name="ln2350">    int flags[TILEP_PART_MAX];</a>
+<a name="ln2351">    tilep_calc_flags(m_save_doll, flags);</a>
+<a name="ln2352"> </a>
+<a name="ln2353">    // For skirts, boots go under the leg armour. For pants, they go over.</a>
+<a name="ln2354">    if (m_save_doll.parts[TILEP_PART_LEG] &lt; TILEP_LEG_SKIRT_OFS)</a>
+<a name="ln2355">    {</a>
+<a name="ln2356">        p_order[6] = TILEP_PART_BOOTS;</a>
+<a name="ln2357">        p_order[7] = TILEP_PART_LEG;</a>
+<a name="ln2358">    }</a>
+<a name="ln2359"> </a>
+<a name="ln2360">    // Special case bardings from being cut off.</a>
+<a name="ln2361">    bool is_naga = (m_save_doll.parts[TILEP_PART_BASE] == TILEP_BASE_NAGA</a>
+<a name="ln2362">                    || m_save_doll.parts[TILEP_PART_BASE] == TILEP_BASE_NAGA + 1);</a>
+<a name="ln2363">    if (m_save_doll.parts[TILEP_PART_BOOTS] &gt;= TILEP_BOOTS_NAGA_BARDING</a>
+<a name="ln2364">        &amp;&amp; m_save_doll.parts[TILEP_PART_BOOTS] &lt;= TILEP_BOOTS_NAGA_BARDING_RED)</a>
+<a name="ln2365">    {</a>
+<a name="ln2366">        flags[TILEP_PART_BOOTS] = is_naga ? TILEP_FLAG_NORMAL : TILEP_FLAG_HIDE;</a>
+<a name="ln2367">    }</a>
+<a name="ln2368"> </a>
+<a name="ln2369">    bool is_cent = (m_save_doll.parts[TILEP_PART_BASE] == TILEP_BASE_CENTAUR</a>
+<a name="ln2370">                    || m_save_doll.parts[TILEP_PART_BASE] == TILEP_BASE_CENTAUR + 1);</a>
+<a name="ln2371">    if (m_save_doll.parts[TILEP_PART_BOOTS] &gt;= TILEP_BOOTS_CENTAUR_BARDING</a>
+<a name="ln2372">        &amp;&amp; m_save_doll.parts[TILEP_PART_BOOTS] &lt;= TILEP_BOOTS_CENTAUR_BARDING_RED)</a>
+<a name="ln2373">    {</a>
+<a name="ln2374">        flags[TILEP_PART_BOOTS] = is_cent ? TILEP_FLAG_NORMAL : TILEP_FLAG_HIDE;</a>
+<a name="ln2375">    }</a>
+<a name="ln2376"> </a>
+<a name="ln2377">    for (int i = 0; i &lt; TILEP_PART_MAX; ++i)</a>
+<a name="ln2378">    {</a>
+<a name="ln2379">        const int p   = p_order[i];</a>
+<a name="ln2380">        const tileidx_t idx = m_save_doll.parts[p];</a>
+<a name="ln2381">        if (idx == 0 || idx == TILEP_SHOW_EQUIP || flags[p] == TILEP_FLAG_HIDE)</a>
+<a name="ln2382">            continue;</a>
+<a name="ln2383"> </a>
+<a name="ln2384">        ASSERT_RANGE(idx, TILE_MAIN_MAX, TILEP_PLAYER_MAX);</a>
+<a name="ln2385"> </a>
+<a name="ln2386">        int ymax = TILE_Y;</a>
+<a name="ln2387"> </a>
+<a name="ln2388">        if (flags[p] == TILEP_FLAG_CUT_CENTAUR</a>
+<a name="ln2389">            || flags[p] == TILEP_FLAG_CUT_NAGA)</a>
+<a name="ln2390">        {</a>
+<a name="ln2391">            ymax = 18;</a>
+<a name="ln2392">        }</a>
+<a name="ln2393"> </a>
+<a name="ln2394">        m_tiles.emplace_back(idx, TEX_PLAYER, ymax);</a>
+<a name="ln2395">    }</a>
+<a name="ln2396">}</a>
+<a name="ln2397"> </a>
+<a name="ln2398">void PlayerDoll::_render()</a>
+<a name="ln2399">{</a>
+<a name="ln2400">    for (int i = 0; i &lt; TEX_MAX; i++)</a>
+<a name="ln2401">        m_tile_buf[i].draw();</a>
+<a name="ln2402">}</a>
+<a name="ln2403"> </a>
+<a name="ln2404">SizeReq PlayerDoll::_get_preferred_size(Direction /*dim*/, int /*prosp_width*/)</a>
+<a name="ln2405">{</a>
+<a name="ln2406">    return { TILE_Y, TILE_Y };</a>
+<a name="ln2407">}</a>
+<a name="ln2408"> </a>
+<a name="ln2409">void PlayerDoll::_allocate_region()</a>
+<a name="ln2410">{</a>
+<a name="ln2411">    for (int t = 0; t &lt; TEX_MAX; t++)</a>
+<a name="ln2412">        m_tile_buf[t].clear();</a>
+<a name="ln2413">    for (const tile_def &amp;tdef : m_tiles)</a>
+<a name="ln2414">    {</a>
+<a name="ln2415">        int tile      = tdef.tile;</a>
+<a name="ln2416">        TextureID tex = tdef.tex;</a>
+<a name="ln2417">        m_tile_buf[tex].add_unscaled(tile, m_region.x, m_region.y, tdef.ymax);</a>
+<a name="ln2418">    }</a>
+<a name="ln2419">}</a>
+<a name="ln2420">#endif</a>
+<a name="ln2421"> </a>
+<a name="ln2422">void UIRoot::push_child(shared_ptr&lt;Widget&gt; ch, KeymapContext km)</a>
+<a name="ln2423">{</a>
+<a name="ln2424">    Widget* focus;</a>
+<a name="ln2425">    if (auto popup = dynamic_cast&lt;Popup*&gt;(ch.get()))</a>
+<a name="ln2426">        focus = popup-&gt;get_child().get();</a>
+<a name="ln2427">    else</a>
+<a name="ln2428">        focus = ch.get();</a>
+<a name="ln2429"> </a>
+<a name="ln2430">    saved_layout_info.push_back(state);</a>
+<a name="ln2431">    state.keymap = km;</a>
+<a name="ln2432">    state.default_focus = state.current_focus = focus;</a>
+<a name="ln2433">    state.generation_id = next_generation_id++;</a>
+<a name="ln2434"> </a>
+<a name="ln2435">    m_root.add_child(move(ch));</a>
+<a name="ln2436">    m_needs_layout = true;</a>
+<a name="ln2437">    m_changed_layout_since_click = true;</a>
+<a name="ln2438">    update_focus_order();</a>
+<a name="ln2439">#ifdef USE_TILE_WEB</a>
+<a name="ln2440">    update_synced_widgets();</a>
+<a name="ln2441">#endif</a>
+<a name="ln2442">#ifndef USE_TILE_LOCAL</a>
+<a name="ln2443">    if (m_root.num_children() == 1)</a>
+<a name="ln2444">    {</a>
+<a name="ln2445">        clrscr();</a>
+<a name="ln2446">        ui_root.resize(get_number_of_cols(), get_number_of_lines());</a>
+<a name="ln2447">    }</a>
+<a name="ln2448">#endif</a>
+<a name="ln2449">}</a>
+<a name="ln2450"> </a>
+<a name="ln2451">void UIRoot::pop_child()</a>
+<a name="ln2452">{</a>
+<a name="ln2453">    top_child()-&gt;_emit_layout_pop();</a>
+<a name="ln2454">    m_root.pop_child();</a>
+<a name="ln2455">    m_needs_layout = true;</a>
+<a name="ln2456">    state = saved_layout_info.back();</a>
+<a name="ln2457">    saved_layout_info.pop_back();</a>
+<a name="ln2458">    m_changed_layout_since_click = true;</a>
+<a name="ln2459">    update_focus_order();</a>
+<a name="ln2460">#ifdef USE_TILE_WEB</a>
+<a name="ln2461">    update_synced_widgets();</a>
+<a name="ln2462">#endif</a>
+<a name="ln2463">#ifndef USE_TILE_LOCAL</a>
+<a name="ln2464">    if (m_root.num_children() == 0)</a>
+<a name="ln2465">        clrscr();</a>
+<a name="ln2466">#endif</a>
+<a name="ln2467">}</a>
+<a name="ln2468"> </a>
+<a name="ln2469">void UIRoot::resize(int w, int h)</a>
+<a name="ln2470">{</a>
+<a name="ln2471">    if (w == m_w &amp;&amp; h == m_h)</a>
+<a name="ln2472">        return;</a>
+<a name="ln2473"> </a>
+<a name="ln2474">    m_w = w;</a>
+<a name="ln2475">    m_h = h;</a>
+<a name="ln2476">    m_needs_layout = true;</a>
+<a name="ln2477"> </a>
+<a name="ln2478">    // On console with the window size smaller than the minimum layout,</a>
+<a name="ln2479">    // enlarging the window will not cause any size reallocations, and the</a>
+<a name="ln2480">    // newly visible region of the terminal will not be filled.</a>
+<a name="ln2481">    // Fix: explicitly mark the entire screen as dirty on resize: it won't</a>
+<a name="ln2482">    // be strictly necessary for most resizes, but won't hurt.</a>
+<a name="ln2483">#ifndef USE_TILE_LOCAL</a>
+<a name="ln2484">    expose_region({0, 0, w, h});</a>
+<a name="ln2485">#endif</a>
+<a name="ln2486">}</a>
+<a name="ln2487"> </a>
+<a name="ln2488">void UIRoot::layout()</a>
+<a name="ln2489">{</a>
+<a name="ln2490">    while (m_needs_layout)</a>
+<a name="ln2491">    {</a>
+<a name="ln2492">        m_needs_layout = false;</a>
+<a name="ln2493"> </a>
+<a name="ln2494">        // Find preferred size with height-for-width: we never allocate less than</a>
+<a name="ln2495">        // the minimum size, but may allocate more than the natural size.</a>
+<a name="ln2496">        SizeReq sr_horz = m_root.get_preferred_size(Widget::HORZ, -1);</a>
+<a name="ln2497">        int width = max(sr_horz.min, m_w);</a>
+<a name="ln2498">        SizeReq sr_vert = m_root.get_preferred_size(Widget::VERT, width);</a>
+<a name="ln2499">        int height = max(sr_vert.min, m_h);</a>
+<a name="ln2500"> </a>
+<a name="ln2501">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2502">        m_region = {0, 0, width, height};</a>
+<a name="ln2503">#else</a>
+<a name="ln2504">        m_region = {0, 0, m_w, m_h};</a>
+<a name="ln2505">#endif</a>
+<a name="ln2506">        try</a>
+<a name="ln2507">        {</a>
+<a name="ln2508">            m_root.allocate_region({0, 0, width, height});</a>
+<a name="ln2509">        }</a>
+<a name="ln2510">        catch (const RestartAllocation &amp;ex)</a>
+<a name="ln2511">        {</a>
+<a name="ln2512">        }</a>
+<a name="ln2513"> </a>
+<a name="ln2514">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2515">        update_hover_path();</a>
+<a name="ln2516">#endif</a>
+<a name="ln2517">    }</a>
+<a name="ln2518">}</a>
+<a name="ln2519"> </a>
+<a name="ln2520">void UIRoot::render()</a>
+<a name="ln2521">{</a>
+<a name="ln2522">    if (!needs_paint)</a>
+<a name="ln2523">        return;</a>
+<a name="ln2524"> </a>
+<a name="ln2525">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2526">    glmanager-&gt;reset_view_for_redraw();</a>
+<a name="ln2527">    tiles.render_current_regions();</a>
+<a name="ln2528">    glmanager-&gt;reset_transform();</a>
+<a name="ln2529">#else</a>
+<a name="ln2530">    // On console, clear and redraw only the dirty region of the screen</a>
+<a name="ln2531">    m_dirty_region = aabb_intersect(m_dirty_region, m_region);</a>
+<a name="ln2532">    textcolour(LIGHTGREY);</a>
+<a name="ln2533">    textbackground(BLACK);</a>
+<a name="ln2534">    clear_text_region(m_dirty_region, BLACK);</a>
+<a name="ln2535">#endif</a>
+<a name="ln2536"> </a>
+<a name="ln2537">    push_scissor(m_region);</a>
+<a name="ln2538">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2539">    int cutoff = cutoff_stack.empty() ? 0 : cutoff_stack.back();</a>
+<a name="ln2540">    ASSERT(cutoff &lt;= static_cast&lt;int&gt;(m_root.num_children()));</a>
+<a name="ln2541">    for (int i = cutoff; i &lt; static_cast&lt;int&gt;(m_root.num_children()); i++)</a>
+<a name="ln2542">        m_root.get_child(i)-&gt;render();</a>
+<a name="ln2543">#ifdef DEBUG</a>
+<a name="ln2544">    debug_render();</a>
+<a name="ln2545">#endif</a>
+<a name="ln2546">#else</a>
+<a name="ln2547">    // Render only the top of the UI stack on console</a>
+<a name="ln2548">    if (m_root.num_children() &gt; 0)</a>
+<a name="ln2549">        m_root.get_child(m_root.num_children()-1)-&gt;render();</a>
+<a name="ln2550">    else</a>
+<a name="ln2551">        redraw_screen(false);</a>
+<a name="ln2552"> </a>
+<a name="ln2553">    if (is_cursor_enabled() &amp;&amp; !cursor_pos.origin())</a>
+<a name="ln2554">    {</a>
+<a name="ln2555">        cgotoxy(cursor_pos.x, cursor_pos.y, GOTO_CRT);</a>
+<a name="ln2556">        cursor_pos.reset();</a>
+<a name="ln2557">    }</a>
+<a name="ln2558">#endif</a>
+<a name="ln2559">    pop_scissor();</a>
+<a name="ln2560"> </a>
+<a name="ln2561">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2562">    wm-&gt;swap_buffers();</a>
+<a name="ln2563">#else</a>
+<a name="ln2564">    update_screen();</a>
+<a name="ln2565">#endif</a>
+<a name="ln2566"> </a>
+<a name="ln2567">    needs_paint = false;</a>
+<a name="ln2568">    m_dirty_region = {0, 0, 0, 0};</a>
+<a name="ln2569">}</a>
+<a name="ln2570"> </a>
+<a name="ln2571">#ifdef DEBUG</a>
+<a name="ln2572">void UIRoot::debug_render()</a>
+<a name="ln2573">{</a>
+<a name="ln2574">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2575">    if (debug_draw)</a>
+<a name="ln2576">    {</a>
+<a name="ln2577">        LineBuffer lb;</a>
+<a name="ln2578">        ShapeBuffer sb;</a>
+<a name="ln2579">        size_t i = 0;</a>
+<a name="ln2580">        for (const auto&amp; w : hover_path)</a>
+<a name="ln2581">        {</a>
+<a name="ln2582">            const auto r = w-&gt;get_region();</a>
+<a name="ln2583">            i++;</a>
+<a name="ln2584">            VColour lc;</a>
+<a name="ln2585">            lc = i == hover_path.size() ?</a>
+<a name="ln2586">                VColour(255, 100, 0, 100) : VColour(0, 50 + i*40, 0, 100);</a>
+<a name="ln2587">            lb.add_square(r.x+1, r.y+1, r.ex(), r.ey(), lc);</a>
+<a name="ln2588">        }</a>
+<a name="ln2589">        if (!hover_path.empty())</a>
+<a name="ln2590">        {</a>
+<a name="ln2591">            const auto&amp; hovered_widget = hover_path.back();</a>
+<a name="ln2592">            Region r = hovered_widget-&gt;get_region();</a>
+<a name="ln2593">            const Margin m = hovered_widget-&gt;get_margin();</a>
+<a name="ln2594"> </a>
+<a name="ln2595">            VColour lc = VColour(0, 0, 100, 100);</a>
+<a name="ln2596">            sb.add(r.x, r.y-m.top, r.ex(), r.y, lc);</a>
+<a name="ln2597">            sb.add(r.ex(), r.y, r.ex()+m.right, r.ey(), lc);</a>
+<a name="ln2598">            sb.add(r.x, r.ey(), r.ex(), r.ey()+m.bottom, lc);</a>
+<a name="ln2599">            sb.add(r.x-m.left, r.y, r.x, r.ey(), lc);</a>
+<a name="ln2600">        }</a>
+<a name="ln2601">        if (auto w = get_focused_widget()) {</a>
+<a name="ln2602">            Region r = w-&gt;get_region();</a>
+<a name="ln2603">            lb.add_square(r.x+1, r.y+1, r.ex(), r.ey(), VColour(128, 31, 239));</a>
+<a name="ln2604">        }</a>
+<a name="ln2605">        lb.draw();</a>
+<a name="ln2606">        sb.draw();</a>
+<a name="ln2607">    }</a>
+<a name="ln2608">#endif</a>
+<a name="ln2609">}</a>
+<a name="ln2610">#endif</a>
+<a name="ln2611"> </a>
+<a name="ln2612">void UIRoot::update_focus_order()</a>
+<a name="ln2613">{</a>
+<a name="ln2614">    focus_order.clear();</a>
+<a name="ln2615"> </a>
+<a name="ln2616">    function&lt;void(Widget*)&gt; recurse = [&amp;](Widget* widget) {</a>
+<a name="ln2617">        if (widget-&gt;can_take_focus())</a>
+<a name="ln2618">            focus_order.emplace_back(widget);</a>
+<a name="ln2619">        widget-&gt;for_each_child_including_internal([&amp;](shared_ptr&lt;Widget&gt;&amp; ch) {</a>
+<a name="ln2620">            recurse(ch.get());</a>
+<a name="ln2621">        });</a>
+<a name="ln2622">    };</a>
+<a name="ln2623"> </a>
+<a name="ln2624">    int layer_idx = m_root.num_children()-1;</a>
+<a name="ln2625">    if (layer_idx &gt;= 0)</a>
+<a name="ln2626">    {</a>
+<a name="ln2627">        auto layer_root = m_root.get_child(layer_idx).get();</a>
+<a name="ln2628">        recurse(layer_root);</a>
+<a name="ln2629">    }</a>
+<a name="ln2630">}</a>
+<a name="ln2631"> </a>
+<a name="ln2632">void UIRoot::focus_next()</a>
+<a name="ln2633">{</a>
+<a name="ln2634">    if (focus_order.empty())</a>
+<a name="ln2635">        return;</a>
+<a name="ln2636"> </a>
+<a name="ln2637">    const auto default_focus = state.default_focus;</a>
+<a name="ln2638">    const auto current_focus = state.current_focus;</a>
+<a name="ln2639"> </a>
+<a name="ln2640">    if (!current_focus || current_focus == default_focus)</a>
+<a name="ln2641">    {</a>
+<a name="ln2642">        set_focused_widget(focus_order.front());</a>
+<a name="ln2643">        return;</a>
+<a name="ln2644">    }</a>
+<a name="ln2645"> </a>
+<a name="ln2646">    auto it = find(focus_order.begin(), focus_order.end(), current_focus);</a>
+<a name="ln2647">    ASSERT(it != focus_order.end());</a>
+<a name="ln2648"> </a>
+<a name="ln2649">    do {</a>
+<a name="ln2650">        if (*it == focus_order.back())</a>
+<a name="ln2651">            it = focus_order.begin();</a>
+<a name="ln2652">        else</a>
+<a name="ln2653">            ++it;</a>
+<a name="ln2654">    } while (*it != current_focus &amp;&amp; !(*it)-&gt;focusable());</a>
+<a name="ln2655"> </a>
+<a name="ln2656">    set_focused_widget(*it);</a>
+<a name="ln2657">}</a>
+<a name="ln2658"> </a>
+<a name="ln2659">void UIRoot::focus_prev()</a>
+<a name="ln2660">{</a>
+<a name="ln2661">    if (focus_order.empty())</a>
+<a name="ln2662">        return;</a>
+<a name="ln2663"> </a>
+<a name="ln2664">    const auto default_focus = state.default_focus;</a>
+<a name="ln2665">    const auto current_focus = state.current_focus;</a>
+<a name="ln2666"> </a>
+<a name="ln2667">    if (!current_focus || current_focus == default_focus)</a>
+<a name="ln2668">    {</a>
+<a name="ln2669">        set_focused_widget(focus_order.back());</a>
+<a name="ln2670">        return;</a>
+<a name="ln2671">    }</a>
+<a name="ln2672"> </a>
+<a name="ln2673">    auto it = find(focus_order.begin(), focus_order.end(), current_focus);</a>
+<a name="ln2674">    ASSERT(it != focus_order.end());</a>
+<a name="ln2675"> </a>
+<a name="ln2676">    do {</a>
+<a name="ln2677">        if (*it == focus_order.front())</a>
+<a name="ln2678">            it = focus_order.end()-1;</a>
+<a name="ln2679">        else</a>
+<a name="ln2680">            --it;</a>
+<a name="ln2681">    } while (*it != current_focus &amp;&amp; !(*it)-&gt;focusable());</a>
+<a name="ln2682"> </a>
+<a name="ln2683">    set_focused_widget(*it);</a>
+<a name="ln2684">}</a>
+<a name="ln2685"> </a>
+<a name="ln2686">static function&lt;bool(const wm_event&amp;)&gt; event_filter;</a>
+<a name="ln2687"> </a>
+<a name="ln2688">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2689">void UIRoot::update_hover_path()</a>
+<a name="ln2690">{</a>
+<a name="ln2691">    int mx, my;</a>
+<a name="ln2692">    wm-&gt;get_mouse_state(&amp;mx, &amp;my);</a>
+<a name="ln2693"> </a>
+<a name="ln2694">    /* Find current hover path */</a>
+<a name="ln2695">    vector&lt;Widget*&gt; new_hover_path;</a>
+<a name="ln2696">    shared_ptr&lt;Widget&gt; current = m_root.get_child_at_offset(mx, my);</a>
+<a name="ln2697">    while (current)</a>
+<a name="ln2698">    {</a>
+<a name="ln2699">        new_hover_path.emplace_back(current.get());</a>
+<a name="ln2700">        current = current-&gt;get_child_at_offset(mx, my);</a>
+<a name="ln2701">    }</a>
+<a name="ln2702"> </a>
+<a name="ln2703">    size_t new_hover_path_size = new_hover_path.size();</a>
+<a name="ln2704">    size_t sz = max(hover_path.size(), new_hover_path.size());</a>
+<a name="ln2705">    hover_path.resize(sz, nullptr);</a>
+<a name="ln2706">    new_hover_path.resize(sz, nullptr);</a>
+<a name="ln2707"> </a>
+<a name="ln2708">    send_mouse_enter_leave_events(hover_path, new_hover_path);</a>
+<a name="ln2709"> </a>
+<a name="ln2710">    hover_path = move(new_hover_path);</a>
+<a name="ln2711">    hover_path.resize(new_hover_path_size);</a>
+<a name="ln2712">}</a>
+<a name="ln2713"> </a>
+<a name="ln2714">void UIRoot::send_mouse_enter_leave_events(</a>
+<a name="ln2715">        const vector&lt;Widget*&gt;&amp; old_hover_path,</a>
+<a name="ln2716">        const vector&lt;Widget*&gt;&amp; new_hover_path)</a>
+<a name="ln2717">{</a>
+<a name="ln2718">    ASSERT(old_hover_path.size() == new_hover_path.size());</a>
+<a name="ln2719"> </a>
+<a name="ln2720">    // event_filter takes a wm_event, and we don't have one, so don't bother to</a>
+<a name="ln2721">    // call it; this is fine, since this is a private API and it only checks for</a>
+<a name="ln2722">    // keydown events.</a>
+<a name="ln2723">    if (event_filter)</a>
+<a name="ln2724">        return;</a>
+<a name="ln2725"> </a>
+<a name="ln2726">    const size_t size = old_hover_path.size();</a>
+<a name="ln2727"> </a>
+<a name="ln2728">    size_t diff;</a>
+<a name="ln2729">    for (diff = 0; diff &lt; size; diff++)</a>
+<a name="ln2730">        if (new_hover_path[diff] != old_hover_path[diff])</a>
+<a name="ln2731">            break;</a>
+<a name="ln2732"> </a>
+<a name="ln2733">    if (diff == size)</a>
+<a name="ln2734">        return;</a>
+<a name="ln2735"> </a>
+<a name="ln2736">    if (old_hover_path[diff])</a>
+<a name="ln2737">    {</a>
+<a name="ln2738">        const wm_mouse_event dummy = {};</a>
+<a name="ln2739">        MouseEvent ev(Event::Type::MouseLeave, dummy);</a>
+<a name="ln2740">        for (size_t i = size; i &gt; diff; --i)</a>
+<a name="ln2741">            if (old_hover_path[i-1])</a>
+<a name="ln2742">                old_hover_path[i-1]-&gt;on_event(ev);</a>
+<a name="ln2743">    }</a>
+<a name="ln2744"> </a>
+<a name="ln2745">    if (new_hover_path[diff])</a>
+<a name="ln2746">    {</a>
+<a name="ln2747">        const wm_mouse_event dummy = {};</a>
+<a name="ln2748">        MouseEvent ev(Event::Type::MouseEnter, dummy);</a>
+<a name="ln2749">        for (size_t i = diff; i &lt; size; ++i)</a>
+<a name="ln2750">            if (new_hover_path[i])</a>
+<a name="ln2751">                new_hover_path[i]-&gt;on_event(ev);</a>
+<a name="ln2752">    }</a>
+<a name="ln2753">}</a>
+<a name="ln2754"> </a>
+<a name="ln2755">void UIRoot::update_hover_path_for_widget(Widget *widget)</a>
+<a name="ln2756">{</a>
+<a name="ln2757">    // truncate the hover path if the widget was previously hovered,</a>
+<a name="ln2758">    // but don't deliver any mouseleave events.</a>
+<a name="ln2759">    if (!widget-&gt;_get_parent())</a>
+<a name="ln2760">    {</a>
+<a name="ln2761">        for (size_t i = 0; i &lt; hover_path.size(); i++)</a>
+<a name="ln2762">            if (hover_path[i] == widget)</a>
+<a name="ln2763">            {</a>
+<a name="ln2764">                hover_path.resize(i);</a>
+<a name="ln2765">                break;</a>
+<a name="ln2766">            }</a>
+<a name="ln2767">        return;</a>
+<a name="ln2768">    }</a>
+<a name="ln2769"> </a>
+<a name="ln2770">    auto top = top_layout();</a>
+<a name="ln2771">    if (top &amp;&amp; top-&gt;is_ancestor_of(widget-&gt;get_shared()))</a>
+<a name="ln2772">        update_hover_path();</a>
+<a name="ln2773">}</a>
+<a name="ln2774">#endif</a>
+<a name="ln2775"> </a>
+<a name="ln2776">static Event::Type convert_event_type(const wm_event&amp; event)</a>
+<a name="ln2777">{</a>
+<a name="ln2778">    switch (event.type)</a>
+<a name="ln2779">    {</a>
+<a name="ln2780">        case WME_MOUSEBUTTONDOWN: return Event::Type::MouseDown;</a>
+<a name="ln2781">        case WME_MOUSEBUTTONUP: return Event::Type::MouseUp;</a>
+<a name="ln2782">        case WME_MOUSEMOTION: return Event::Type::MouseMove;</a>
+<a name="ln2783">        case WME_MOUSEWHEEL: return Event::Type::MouseWheel;</a>
+<a name="ln2784">        case WME_MOUSEENTER: return Event::Type::MouseEnter;</a>
+<a name="ln2785">        case WME_MOUSELEAVE: return Event::Type::MouseLeave;</a>
+<a name="ln2786">        case WME_KEYDOWN: return Event::Type::KeyDown;</a>
+<a name="ln2787">        case WME_KEYUP: return Event::Type::KeyUp;</a>
+<a name="ln2788">        default: abort();</a>
+<a name="ln2789">    }</a>
+<a name="ln2790">}</a>
+<a name="ln2791"> </a>
+<a name="ln2792">bool UIRoot::on_event(wm_event&amp; event)</a>
+<a name="ln2793">{</a>
+<a name="ln2794">    if (event_filter &amp;&amp; event_filter(event))</a>
+<a name="ln2795">        return true;</a>
+<a name="ln2796"> </a>
+<a name="ln2797">#ifdef DEBUG</a>
+<a name="ln2798">    if (debug_on_event(event))</a>
+<a name="ln2799">        return true;</a>
+<a name="ln2800">#endif</a>
+<a name="ln2801"> </a>
+<a name="ln2802">    switch (event.type)</a>
+<a name="ln2803">    {</a>
+<a name="ln2804">        case WME_MOUSEBUTTONDOWN:</a>
+<a name="ln2805">        case WME_MOUSEBUTTONUP:</a>
+<a name="ln2806">        case WME_MOUSEMOTION:</a>
+<a name="ln2807">        case WME_MOUSEWHEEL:</a>
+<a name="ln2808">        {</a>
+<a name="ln2809">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2810">            auto mouse_event = MouseEvent(convert_event_type(event),</a>
+<a name="ln2811">                    event.mouse_event);</a>
+<a name="ln2812">            return deliver_event(mouse_event);</a>
+<a name="ln2813">#endif</a>
+<a name="ln2814">            break;</a>
+<a name="ln2815">        }</a>
+<a name="ln2816">        case WME_KEYDOWN:</a>
+<a name="ln2817">        case WME_KEYUP:</a>
+<a name="ln2818">        {</a>
+<a name="ln2819">            auto key_event = KeyEvent(convert_event_type(event), event.key);</a>
+<a name="ln2820">            return deliver_event(key_event);</a>
+<a name="ln2821">        }</a>
+<a name="ln2822">        case WME_CUSTOMEVENT:</a>
+<a name="ln2823">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2824">        {</a>
+<a name="ln2825">            auto callback = reinterpret_cast&lt;wm_timer_callback&gt;(event.custom.data1);</a>
+<a name="ln2826">            callback(0, nullptr);</a>
+<a name="ln2827">            break;</a>
+<a name="ln2828">        }</a>
+<a name="ln2829">#else</a>
+<a name="ln2830">            break;</a>
+<a name="ln2831">#endif</a>
+<a name="ln2832">        // TODO: maybe stop windowmanager-sdl from returning these?</a>
+<a name="ln2833">        case WME_NOEVENT:</a>
+<a name="ln2834">            break;</a>
+<a name="ln2835">        default:</a>
+<a name="ln2836">            die(&quot;unreachable, type %d&quot;, event.type);</a>
+<a name="ln2837">    }</a>
+<a name="ln2838"> </a>
+<a name="ln2839">    return false;</a>
+<a name="ln2840">}</a>
+<a name="ln2841"> </a>
+<a name="ln2842">bool UIRoot::deliver_event(Event&amp; event)</a>
+<a name="ln2843">{</a>
+<a name="ln2844">    switch (event.type())</a>
+<a name="ln2845">    {</a>
+<a name="ln2846">    case Event::Type::MouseDown:</a>
+<a name="ln2847">    case Event::Type::MouseUp:</a>
+<a name="ln2848">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2849">        if (event.type() == Event::Type::MouseDown)</a>
+<a name="ln2850">            m_changed_layout_since_click = false;</a>
+<a name="ln2851">        else if (event.type() == Event::Type::MouseUp)</a>
+<a name="ln2852">            if (m_changed_layout_since_click)</a>
+<a name="ln2853">                break;</a>
+<a name="ln2854">#endif</a>
+<a name="ln2855">        // fall through</a>
+<a name="ln2856">    case Event::Type::MouseMove:</a>
+<a name="ln2857">    case Event::Type::MouseWheel:</a>
+<a name="ln2858">    {</a>
+<a name="ln2859">#ifdef USE_TILE_LOCAL</a>
+<a name="ln2860">        if (!hover_path.empty())</a>
+<a name="ln2861">        {</a>
+<a name="ln2862">            event.set_target(hover_path.back()-&gt;get_shared());</a>
+<a name="ln2863">            for (auto w = hover_path.back(); w; w = w-&gt;_get_parent())</a>
+<a name="ln2864">                if (w-&gt;on_event(event))</a>
+<a name="ln2865">                    return true;</a>
+<a name="ln2866">        }</a>
+<a name="ln2867">#endif</a>
+<a name="ln2868">        return false;</a>
+<a name="ln2869">    }</a>
+<a name="ln2870"> </a>
+<a name="ln2871">    case Event::Type::KeyDown:</a>
+<a name="ln2872">    case Event::Type::KeyUp:</a>
+<a name="ln2873">    {</a>
+<a name="ln2874">        const auto top = top_child();</a>
+<a name="ln2875">        if (!top)</a>
+<a name="ln2876">            return false;</a>
+<a name="ln2877"> </a>
+<a name="ln2878">        const auto key = static_cast&lt;const KeyEvent&amp;&gt;(event).key();</a>
+<a name="ln2879">        event.set_target(get_focused_widget()-&gt;get_shared());</a>
+<a name="ln2880"> </a>
+<a name="ln2881">        // give hotkey handlers a chance to intercept this key; they are only</a>
+<a name="ln2882">        // called if on a widget within the layout.</a>
+<a name="ln2883">        if (event.type() == Event::Type::KeyDown)</a>
+<a name="ln2884">        {</a>
+<a name="ln2885">            // TODO: only emit if widget is visible</a>
+<a name="ln2886">            bool hotkey_handled = Widget::slots.hotkey.emit_if([&amp;](Widget* w){</a>
+<a name="ln2887">                return top-&gt;is_ancestor_of(w-&gt;get_shared());</a>
+<a name="ln2888">            }, event);</a>
+<a name="ln2889">            if (hotkey_handled)</a>
+<a name="ln2890">                return true;</a>
+<a name="ln2891">            // TODO: eat the corresponding KeyUp event</a>
+<a name="ln2892">        }</a>
+<a name="ln2893"> </a>
+<a name="ln2894">        if (auto w = get_focused_widget())</a>
+<a name="ln2895">        {</a>
+<a name="ln2896">            if (w-&gt;on_event(event))</a>
+<a name="ln2897">                return true;</a>
+<a name="ln2898"> </a>
+<a name="ln2899">            if (w != state.default_focus &amp;&amp; event.type() == Event::Type::KeyDown)</a>
+<a name="ln2900">            {</a>
+<a name="ln2901">                if (key_is_escape(key))</a>
+<a name="ln2902">                {</a>
+<a name="ln2903">                    set_focused_widget(nullptr);</a>
+<a name="ln2904">                    return true;</a>
+<a name="ln2905">                }</a>
+<a name="ln2906">                if (key == '\t')</a>
+<a name="ln2907">                {</a>
+<a name="ln2908">                    focus_next();</a>
+<a name="ln2909">                    return true;</a>
+<a name="ln2910">                }</a>
+<a name="ln2911">                if (key == CK_SHIFT_TAB)</a>
+<a name="ln2912">                {</a>
+<a name="ln2913">                    focus_prev();</a>
+<a name="ln2914">                    return true;</a>
+<a name="ln2915">                }</a>
+<a name="ln2916">            }</a>
+<a name="ln2917"> </a>
+<a name="ln2918">            for (w = w-&gt;_get_parent(); w; w = w-&gt;_get_parent())</a>
+<a name="ln2919">                if (w-&gt;on_event(event))</a>
+<a name="ln2920">                    return true;</a>
+<a name="ln2921">        }</a>
+<a name="ln2922"> </a>
+<a name="ln2923">        if (event.type() == Event::Type::KeyDown)</a>
+<a name="ln2924">        {</a>
+<a name="ln2925">            if (key == '\t')</a>
+<a name="ln2926">            {</a>
+<a name="ln2927">                focus_next();</a>
+<a name="ln2928">                return true;</a>
+<a name="ln2929">            }</a>
+<a name="ln2930">            if (key == CK_SHIFT_TAB)</a>
+<a name="ln2931">            {</a>
+<a name="ln2932">                focus_prev();</a>
+<a name="ln2933">                return true;</a>
+<a name="ln2934">            }</a>
+<a name="ln2935">        }</a>
+<a name="ln2936">    }</a>
+<a name="ln2937"> </a>
+<a name="ln2938">    case Event::Type::FocusIn:</a>
+<a name="ln2939">    case Event::Type::FocusOut:</a>
+<a name="ln2940">        return event.target()-&gt;on_event(event);</a>
+<a name="ln2941"> </a>
+<a name="ln2942">    default:</a>
+<a name="ln2943">        for (auto w = event.target().get(); w; w = w-&gt;_get_parent())</a>
+<a name="ln2944">            if (w-&gt;on_event(event))</a>
+<a name="ln2945">                return true;</a>
+<a name="ln2946">        return false;</a>
+<a name="ln2947">    }</a>
+<a name="ln2948">    return false;</a>
+<a name="ln2949">}</a>
+<a name="ln2950"> </a>
+<a name="ln2951">#ifdef DEBUG</a>
+<a name="ln2952">bool UIRoot::debug_on_event(const wm_event&amp; event)</a>
+<a name="ln2953">{</a>
+<a name="ln2954">    if (event.type == WME_KEYDOWN &amp;&amp; event.key.keysym.sym == CK_INSERT)</a>
+<a name="ln2955">    {</a>
+<a name="ln2956">        ui_root.debug_draw = !ui_root.debug_draw;</a>
+<a name="ln2957">        ui_root.queue_layout();</a>
+<a name="ln2958">        ui_root.expose_region({0, 0, INT_MAX, INT_MAX});</a>
+<a name="ln2959">        return true;</a>
+<a name="ln2960">    }</a>
+<a name="ln2961"> </a>
+<a name="ln2962">    switch (event.type)</a>
+<a name="ln2963">    {</a>
+<a name="ln2964">        case WME_MOUSEBUTTONDOWN:</a>
+<a name="ln2965">        case WME_MOUSEBUTTONUP:</a>
+<a name="ln2966">        case WME_MOUSEMOTION:</a>
+<a name="ln2967">            if (ui_root.debug_draw)</a>
+<a name="ln2968">            {</a>
+<a name="ln2969">                ui_root.queue_layout();</a>
+<a name="ln2970">                ui_root.expose_region({0, 0, INT_MAX, INT_MAX});</a>
+<a name="ln2971">            }</a>
+<a name="ln2972">        default:</a>
+<a name="ln2973">            break;</a>
+<a name="ln2974">    }</a>
+<a name="ln2975"> </a>
+<a name="ln2976">    return false;</a>
+<a name="ln2977">}</a>
+<a name="ln2978">#endif</a>
+<a name="ln2979"> </a>
+<a name="ln2980">#ifdef USE_TILE_WEB</a>
+<a name="ln2981">void UIRoot::update_synced_widgets()</a>
+<a name="ln2982">{</a>
+<a name="ln2983">    synced_widgets.clear();</a>
+<a name="ln2984"> </a>
+<a name="ln2985">    function&lt;void(Widget*)&gt; recurse = [&amp;](Widget* widget) {</a>
+<a name="ln2986">        const auto id = widget-&gt;sync_id();</a>
+<a name="ln2987">        if (!id.empty())</a>
+<a name="ln2988">        {</a>
+<a name="ln2989">            ASSERT(synced_widgets.count(id) == 0);</a>
+<a name="ln2990">            synced_widgets[id] = widget;</a>
+<a name="ln2991">        }</a>
+<a name="ln2992">        widget-&gt;for_each_child_including_internal([&amp;](shared_ptr&lt;Widget&gt;&amp; ch) {</a>
+<a name="ln2993">            recurse(ch.get());</a>
+<a name="ln2994">        });</a>
+<a name="ln2995">    };</a>
+<a name="ln2996"> </a>
+<a name="ln2997">    if (const auto top = top_child())</a>
+<a name="ln2998">        recurse(top.get());</a>
+<a name="ln2999">}</a>
+<a name="ln3000"> </a>
+<a name="ln3001">void UIRoot::sync_state()</a>
+<a name="ln3002">{</a>
+<a name="ln3003">    for (const auto&amp; it : synced_widgets)</a>
+<a name="ln3004">        it.second-&gt;sync_state_changed();</a>
+<a name="ln3005">}</a>
+<a name="ln3006"> </a>
+<a name="ln3007">void UIRoot::recv_ui_state_change(const JsonNode *json)</a>
+<a name="ln3008">{</a>
+<a name="ln3009">    const auto generation_id = json_find_member(json, &quot;generation_id&quot;);</a>
+<a name="ln3010">    if (!generation_id || generation_id-&gt;tag != JSON_NUMBER</a>
+<a name="ln3011">        || generation_id-&gt;number_ != state.generation_id)</a>
+<a name="ln3012">    {</a>
+<a name="ln3013">        return;</a>
+<a name="ln3014">    }</a>
+<a name="ln3015"> </a>
+<a name="ln3016">    const auto has_focus = json_find_member(json, &quot;has_focus&quot;);</a>
+<a name="ln3017">    if (has_focus &amp;&amp; (has_focus-&gt;tag != JSON_BOOL || !has_focus-&gt;bool_))</a>
+<a name="ln3018">        return;</a>
+<a name="ln3019"> </a>
+<a name="ln3020">    const auto widget_id = json_find_member(json, &quot;widget_id&quot;);</a>
+<a name="ln3021">    if (!widget_id)</a>
+<a name="ln3022">        return;</a>
+<a name="ln3023">    if (!(widget_id-&gt;tag == JSON_STRING || widget_id-&gt;tag == JSON_NULL))</a>
+<a name="ln3024">        return;</a>
+<a name="ln3025">    const auto widget = widget_id-&gt;tag == JSON_STRING ?</a>
+<a name="ln3026">        synced_widgets.at(widget_id-&gt;string_) : nullptr;</a>
+<a name="ln3027"> </a>
+<a name="ln3028">    unwind_bool recv(receiving_ui_state, true);</a>
+<a name="ln3029">    if (has_focus)</a>
+<a name="ln3030">        ui::set_focused_widget(widget);</a>
+<a name="ln3031">    else if (widget)</a>
+<a name="ln3032">        widget-&gt;sync_load_state(json);</a>
+<a name="ln3033">}</a>
+<a name="ln3034">#endif</a>
+<a name="ln3035"> </a>
+<a name="ln3036">void push_scissor(Region scissor)</a>
+<a name="ln3037">{</a>
+<a name="ln3038">    if (scissor_stack.size() &gt; 0)</a>
+<a name="ln3039">        scissor = aabb_intersect(scissor, scissor_stack.top());</a>
+<a name="ln3040">    scissor_stack.push(scissor);</a>
+<a name="ln3041">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3042">    glmanager-&gt;set_scissor(scissor.x, scissor.y, scissor.width, scissor.height);</a>
+<a name="ln3043">#endif</a>
+<a name="ln3044">}</a>
+<a name="ln3045"> </a>
+<a name="ln3046">void pop_scissor()</a>
+<a name="ln3047">{</a>
+<a name="ln3048">    ASSERT(scissor_stack.size() &gt; 0);</a>
+<a name="ln3049">    scissor_stack.pop();</a>
+<a name="ln3050">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3051">    if (scissor_stack.size() &gt; 0)</a>
+<a name="ln3052">    {</a>
+<a name="ln3053">        Region scissor = scissor_stack.top();</a>
+<a name="ln3054">        glmanager-&gt;set_scissor(scissor.x, scissor.y, scissor.width, scissor.height);</a>
+<a name="ln3055">    }</a>
+<a name="ln3056">    else</a>
+<a name="ln3057">        glmanager-&gt;reset_scissor();</a>
+<a name="ln3058">#endif</a>
+<a name="ln3059">}</a>
+<a name="ln3060"> </a>
+<a name="ln3061">Region get_scissor()</a>
+<a name="ln3062">{</a>
+<a name="ln3063">    if (scissor_stack.size() &gt; 0)</a>
+<a name="ln3064">        return scissor_stack.top();</a>
+<a name="ln3065">    return {0, 0, INT_MAX, INT_MAX};</a>
+<a name="ln3066">}</a>
+<a name="ln3067"> </a>
+<a name="ln3068">#ifndef USE_TILE_LOCAL</a>
+<a name="ln3069">static void clear_text_region(Region region, COLOURS bg)</a>
+<a name="ln3070">{</a>
+<a name="ln3071">    if (scissor_stack.size() &gt; 0)</a>
+<a name="ln3072">        region = aabb_intersect(region, scissor_stack.top());</a>
+<a name="ln3073">    if (region.width &lt;= 0 || region.height &lt;= 0)</a>
+<a name="ln3074">        return;</a>
+<a name="ln3075">    textcolour(LIGHTGREY);</a>
+<a name="ln3076">    textbackground(bg);</a>
+<a name="ln3077">    for (int y=region.y; y &lt; region.y+region.height; y++)</a>
+<a name="ln3078">    {</a>
+<a name="ln3079">        cgotoxy(region.x+1, y+1);</a>
+<a name="ln3080">        cprintf(&quot;%*s&quot;, region.width, &quot;&quot;);</a>
+<a name="ln3081">    }</a>
+<a name="ln3082">}</a>
+<a name="ln3083">#endif</a>
+<a name="ln3084"> </a>
+<a name="ln3085">#ifdef USE_TILE</a>
+<a name="ln3086">void push_cutoff()</a>
+<a name="ln3087">{</a>
+<a name="ln3088">    int cutoff = static_cast&lt;int&gt;(ui_root.num_children());</a>
+<a name="ln3089">    ui_root.cutoff_stack.push_back(cutoff);</a>
+<a name="ln3090">#ifdef USE_TILE_WEB</a>
+<a name="ln3091">    tiles.push_ui_cutoff();</a>
+<a name="ln3092">#endif</a>
+<a name="ln3093">}</a>
+<a name="ln3094"> </a>
+<a name="ln3095">void pop_cutoff()</a>
+<a name="ln3096">{</a>
+<a name="ln3097">    ui_root.cutoff_stack.pop_back();</a>
+<a name="ln3098">#ifdef USE_TILE_WEB</a>
+<a name="ln3099">    tiles.pop_ui_cutoff();</a>
+<a name="ln3100">#endif</a>
+<a name="ln3101">}</a>
+<a name="ln3102">#endif</a>
+<a name="ln3103"> </a>
+<a name="ln3104">void push_layout(shared_ptr&lt;Widget&gt; root, KeymapContext km)</a>
+<a name="ln3105">{</a>
+<a name="ln3106">    ui_root.push_child(move(root), km);</a>
+<a name="ln3107">#ifdef USE_TILE_WEB</a>
+<a name="ln3108">    ui_root.sync_state();</a>
+<a name="ln3109">#endif</a>
+<a name="ln3110">}</a>
+<a name="ln3111"> </a>
+<a name="ln3112">void pop_layout()</a>
+<a name="ln3113">{</a>
+<a name="ln3114">    ui_root.pop_child();</a>
+<a name="ln3115">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3116">    ui_root.update_hover_path();</a>
+<a name="ln3117">#else</a>
+<a name="ln3118">    if (!has_layout())</a>
+<a name="ln3119">        redraw_screen(false);</a>
+<a name="ln3120">#endif</a>
+<a name="ln3121">}</a>
+<a name="ln3122"> </a>
+<a name="ln3123">shared_ptr&lt;Widget&gt; top_layout()</a>
+<a name="ln3124">{</a>
+<a name="ln3125">    return ui_root.top_child();</a>
+<a name="ln3126">}</a>
+<a name="ln3127"> </a>
+<a name="ln3128">void resize(int w, int h)</a>
+<a name="ln3129">{</a>
+<a name="ln3130">    ui_root.resize(w, h);</a>
+<a name="ln3131">}</a>
+<a name="ln3132"> </a>
+<a name="ln3133">static void remap_key(wm_event &amp;event)</a>
+<a name="ln3134">{</a>
+<a name="ln3135">    keyseq keys = {event.key.keysym.sym};</a>
+<a name="ln3136">    macro_buf_add_with_keymap(keys, ui_root.state.keymap);</a>
+<a name="ln3137">    event.key.keysym.sym = macro_buf_get();</a>
+<a name="ln3138">    ASSERT(event.key.keysym.sym != -1);</a>
+<a name="ln3139">}</a>
+<a name="ln3140"> </a>
+<a name="ln3141">void force_render()</a>
+<a name="ln3142">{</a>
+<a name="ln3143">    ui_root.layout();</a>
+<a name="ln3144">    ui_root.needs_paint = true;</a>
+<a name="ln3145">    ui_root.render();</a>
+<a name="ln3146">}</a>
+<a name="ln3147"> </a>
+<a name="ln3148">void render()</a>
+<a name="ln3149">{</a>
+<a name="ln3150">    ui_root.layout();</a>
+<a name="ln3151">    ui_root.render();</a>
+<a name="ln3152">}</a>
+<a name="ln3153"> </a>
+<a name="ln3154">void pump_events(int wait_event_timeout)</a>
+<a name="ln3155">{</a>
+<a name="ln3156">    int macro_key = macro_buf_get();</a>
+<a name="ln3157"> </a>
+<a name="ln3158">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3159">    // Don't render while there are unhandled mousewheel events,</a>
+<a name="ln3160">    // since these can come in faster than crawl can redraw.</a>
+<a name="ln3161">    // unlike mousemotion events, we don't drop all but the last event</a>
+<a name="ln3162">    // ...but if there are macro keys, we do need to layout (for menu UI)</a>
+<a name="ln3163">    if (!wm-&gt;next_event_is(WME_MOUSEWHEEL) || macro_key != -1)</a>
+<a name="ln3164">#endif</a>
+<a name="ln3165">    {</a>
+<a name="ln3166">        ui_root.layout();</a>
+<a name="ln3167">#ifndef USE_TILE_WEB</a>
+<a name="ln3168">        // On webtiles, we can't skip rendering while there are macro keys: a</a>
+<a name="ln3169">        // crt screen may be opened and without a render() call, its text won't</a>
+<a name="ln3170">        // won't be sent to the client(s). E.g: macro =&gt; iai</a>
+<a name="ln3171">        if (macro_key == -1)</a>
+<a name="ln3172">#endif</a>
+<a name="ln3173">            ui_root.render();</a>
+<a name="ln3174">    }</a>
+<a name="ln3175"> </a>
+<a name="ln3176">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3177">    wm_event event = {0};</a>
+<a name="ln3178">    while (true)</a>
+<a name="ln3179">    {</a>
+<a name="ln3180">        if (macro_key != -1)</a>
+<a name="ln3181">        {</a>
+<a name="ln3182">            event.type = WME_KEYDOWN;</a>
+<a name="ln3183">            event.key.keysym.sym = macro_key;</a>
+<a name="ln3184">            break;</a>
+<a name="ln3185">        }</a>
+<a name="ln3186"> </a>
+<a name="ln3187">        if (!wm-&gt;wait_event(&amp;event, wait_event_timeout))</a>
+<a name="ln3188">        {</a>
+<a name="ln3189">            if (wait_event_timeout == INT_MAX)</a>
+<a name="ln3190">                continue;</a>
+<a name="ln3191">            else</a>
+<a name="ln3192">                return;</a>
+<a name="ln3193">        }</a>
+<a name="ln3194"> </a>
+<a name="ln3195">        // For consecutive mouse events, ignore all but the last,</a>
+<a name="ln3196">        // since these can come in faster than crawl can redraw.</a>
+<a name="ln3197">        if (event.type == WME_MOUSEMOTION &amp;&amp; wm-&gt;next_event_is(WME_MOUSEMOTION))</a>
+<a name="ln3198">            continue;</a>
+<a name="ln3199">        if (event.type == WME_KEYDOWN &amp;&amp; event.key.keysym.sym == 0)</a>
+<a name="ln3200">            continue;</a>
+<a name="ln3201"> </a>
+<a name="ln3202">        // translate any key events with the current keymap</a>
+<a name="ln3203">        if (event.type == WME_KEYDOWN)</a>
+<a name="ln3204">            remap_key(event);</a>
+<a name="ln3205">        break;</a>
+<a name="ln3206">    }</a>
+<a name="ln3207"> </a>
+<a name="ln3208">    switch (event.type)</a>
+<a name="ln3209">    {</a>
+<a name="ln3210">        case WME_ACTIVEEVENT:</a>
+<a name="ln3211">            // When game gains focus back then set mod state clean</a>
+<a name="ln3212">            // to get rid of stupid Windows/SDL bug with Alt-Tab.</a>
+<a name="ln3213">            if (event.active.gain != 0)</a>
+<a name="ln3214">            {</a>
+<a name="ln3215">                wm-&gt;set_mod_state(TILES_MOD_NONE);</a>
+<a name="ln3216">                ui_root.needs_paint = true;</a>
+<a name="ln3217">            }</a>
+<a name="ln3218">            break;</a>
+<a name="ln3219"> </a>
+<a name="ln3220">        case WME_QUIT:</a>
+<a name="ln3221">            crawl_state.seen_hups++;</a>
+<a name="ln3222">            break;</a>
+<a name="ln3223"> </a>
+<a name="ln3224">        case WME_RESIZE:</a>
+<a name="ln3225">        {</a>
+<a name="ln3226">            ui_root.resize(event.resize.w, event.resize.h);</a>
+<a name="ln3227">            tiles.resize_event(event.resize.w, event.resize.h);</a>
+<a name="ln3228">            break;</a>
+<a name="ln3229">        }</a>
+<a name="ln3230"> </a>
+<a name="ln3231">        case WME_MOVE:</a>
+<a name="ln3232">            if (tiles.update_dpi())</a>
+<a name="ln3233">                ui_root.resize(wm-&gt;screen_width(), wm-&gt;screen_height());</a>
+<a name="ln3234">            ui_root.needs_paint = true;</a>
+<a name="ln3235">            break;</a>
+<a name="ln3236"> </a>
+<a name="ln3237">        case WME_EXPOSE:</a>
+<a name="ln3238">            ui_root.needs_paint = true;</a>
+<a name="ln3239">            break;</a>
+<a name="ln3240"> </a>
+<a name="ln3241">        case WME_MOUSEMOTION:</a>
+<a name="ln3242">            // FIXME: move update_hover_path() into event delivery</a>
+<a name="ln3243">            ui_root.update_hover_path();</a>
+<a name="ln3244">            ui_root.on_event(event);</a>
+<a name="ln3245"> </a>
+<a name="ln3246">        default:</a>
+<a name="ln3247">            if (!ui_root.on_event(event) &amp;&amp; event.type == WME_MOUSEBUTTONDOWN)</a>
+<a name="ln3248">            {</a>
+<a name="ln3249">                // If a mouse event wasn't handled, send it through again as a</a>
+<a name="ln3250">                // fake key event, for compatibility</a>
+<a name="ln3251">                int key;</a>
+<a name="ln3252">                if (event.mouse_event.button == wm_mouse_event::LEFT)</a>
+<a name="ln3253">                    key = CK_MOUSE_CLICK;</a>
+<a name="ln3254">                else if (event.mouse_event.button == wm_mouse_event::RIGHT)</a>
+<a name="ln3255">                    key = CK_MOUSE_CMD;</a>
+<a name="ln3256">                else break;</a>
+<a name="ln3257"> </a>
+<a name="ln3258">                wm_event ev = {0};</a>
+<a name="ln3259">                ev.type = WME_KEYDOWN;</a>
+<a name="ln3260">                ev.key.keysym.sym = key;</a>
+<a name="ln3261">                ui_root.on_event(ev);</a>
+<a name="ln3262">            }</a>
+<a name="ln3263">            break;</a>
+<a name="ln3264">    }</a>
+<a name="ln3265">#else</a>
+<a name="ln3266">    if (wait_event_timeout &lt;= 0) // resizing probably breaks this case</a>
+<a name="ln3267">        return;</a>
+<a name="ln3268">    set_getch_returns_resizes(true);</a>
+<a name="ln3269">    int k = macro_key != -1 ? macro_key : getch_ck();</a>
+<a name="ln3270">    set_getch_returns_resizes(false);</a>
+<a name="ln3271"> </a>
+<a name="ln3272">    if (k == CK_RESIZE)</a>
+<a name="ln3273">    {</a>
+<a name="ln3274">        // This may be superfluous, since the resize handler may have already</a>
+<a name="ln3275">        // resized the screen</a>
+<a name="ln3276">        clrscr();</a>
+<a name="ln3277">        console_shutdown();</a>
+<a name="ln3278">        console_startup();</a>
+<a name="ln3279">        ui_root.resize(get_number_of_cols(), get_number_of_lines());</a>
+<a name="ln3280">    }</a>
+<a name="ln3281">    else</a>
+<a name="ln3282">    {</a>
+<a name="ln3283">        wm_event ev = {0};</a>
+<a name="ln3284">        ev.type = WME_KEYDOWN;</a>
+<a name="ln3285">        ev.key.keysym.sym = k;</a>
+<a name="ln3286">        if (macro_key == -1)</a>
+<a name="ln3287">            remap_key(ev);</a>
+<a name="ln3288">        ui_root.on_event(ev);</a>
+<a name="ln3289">    }</a>
+<a name="ln3290">#endif</a>
+<a name="ln3291">}</a>
+<a name="ln3292"> </a>
+<a name="ln3293">void run_layout(shared_ptr&lt;Widget&gt; root, const bool&amp; done,</a>
+<a name="ln3294">        shared_ptr&lt;Widget&gt; initial_focus)</a>
+<a name="ln3295">{</a>
+<a name="ln3296">    push_layout(root);</a>
+<a name="ln3297">    set_focused_widget(initial_focus.get());</a>
+<a name="ln3298">    while (!done &amp;&amp; !crawl_state.seen_hups)</a>
+<a name="ln3299">        pump_events();</a>
+<a name="ln3300">    pop_layout();</a>
+<a name="ln3301">}</a>
+<a name="ln3302"> </a>
+<a name="ln3303">bool has_layout()</a>
+<a name="ln3304">{</a>
+<a name="ln3305">    return ui_root.num_children() &gt; 0;</a>
+<a name="ln3306">}</a>
+<a name="ln3307"> </a>
+<a name="ln3308">NORETURN void restart_layout()</a>
+<a name="ln3309">{</a>
+<a name="ln3310">    throw UIRoot::RestartAllocation();</a>
+<a name="ln3311">}</a>
+<a name="ln3312"> </a>
+<a name="ln3313">int getch(KeymapContext km)</a>
+<a name="ln3314">{</a>
+<a name="ln3315">    // getch() can be called when there are no widget layouts, i.e.</a>
+<a name="ln3316">    // older layout/rendering code is being used. these parts of code don't</a>
+<a name="ln3317">    // set a dirty region, so we should do that now. One example of this</a>
+<a name="ln3318">    // is mprf() called from yesno()</a>
+<a name="ln3319">    ui_root.needs_paint = true;</a>
+<a name="ln3320"> </a>
+<a name="ln3321">    int key;</a>
+<a name="ln3322">    bool done = false;</a>
+<a name="ln3323">    event_filter = [&amp;](wm_event event) {</a>
+<a name="ln3324">        // swallow all events except key presses here; we don't want any other</a>
+<a name="ln3325">        // parts of the UI to react to anything while we're blocking for a key</a>
+<a name="ln3326">        // press. An example: clicking shopping menu items when asked whether</a>
+<a name="ln3327">        // to purchase already-selected items should not do anything.</a>
+<a name="ln3328">        if (event.type != WME_KEYDOWN)</a>
+<a name="ln3329">            return true;</a>
+<a name="ln3330">        key = event.key.keysym.sym;</a>
+<a name="ln3331">        done = true;</a>
+<a name="ln3332">        return true;</a>
+<a name="ln3333">    };</a>
+<a name="ln3334">    unwind_var&lt;KeymapContext&gt; temp_keymap(ui_root.state.keymap, km);</a>
+<a name="ln3335">    while (!done &amp;&amp; !crawl_state.seen_hups)</a>
+<a name="ln3336">        pump_events();</a>
+<a name="ln3337">    event_filter = nullptr;</a>
+<a name="ln3338">    return key;</a>
+<a name="ln3339">}</a>
+<a name="ln3340"> </a>
+<a name="ln3341">void delay(unsigned int ms)</a>
+<a name="ln3342">{</a>
+<a name="ln3343">    if (crawl_state.disables[DIS_DELAY])</a>
+<a name="ln3344">        ms = 0;</a>
+<a name="ln3345"> </a>
+<a name="ln3346">    auto start = std::chrono::high_resolution_clock::now();</a>
+<a name="ln3347">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3348">    int wait_event_timeout = ms;</a>
+<a name="ln3349">    do</a>
+<a name="ln3350">    {</a>
+<a name="ln3351">        ui_root.expose_region({0, 0, INT_MAX, INT_MAX});</a>
+<a name="ln3352">        pump_events(wait_event_timeout);</a>
+<a name="ln3353">        auto now = std::chrono::high_resolution_clock::now();</a>
+<a name="ln3354">        wait_event_timeout =</a>
+<a name="ln3355">            std::chrono::duration_cast&lt;std::chrono::milliseconds&gt;(now - start)</a>
+<a name="ln3356">            .count();</a>
+<a name="ln3357">    }</a>
+<a name="ln3358">    while ((unsigned)wait_event_timeout &lt; ms &amp;&amp; !crawl_state.seen_hups);</a>
+<a name="ln3359">#else</a>
+<a name="ln3360">    constexpr int poll_interval = 10;</a>
+<a name="ln3361">    while (!crawl_state.seen_hups)</a>
+<a name="ln3362">    {</a>
+<a name="ln3363">        auto now = std::chrono::high_resolution_clock::now();</a>
+<a name="ln3364">        const int remaining = ms -</a>
+<a name="ln3365">            std::chrono::duration_cast&lt;std::chrono::milliseconds&gt;(now - start)</a>
+<a name="ln3366">            .count();</a>
+<a name="ln3367">        if (remaining &lt; 0)</a>
+<a name="ln3368">            break;</a>
+<a name="ln3369">        usleep(max(0, min(poll_interval, remaining)));</a>
+<a name="ln3370">        if (kbhit())</a>
+<a name="ln3371">            pump_events();</a>
+<a name="ln3372">    }</a>
+<a name="ln3373">#endif</a>
+<a name="ln3374">}</a>
+<a name="ln3375"> </a>
+<a name="ln3376">/**</a>
+<a name="ln3377"> * Is it possible to use UI calls, e.g. push_layout? The answer can be different</a>
+<a name="ln3378"> * on different build targets; it is earlier on console than on local tiles.</a>
+<a name="ln3379"> */</a>
+<a name="ln3380">bool is_available()</a>
+<a name="ln3381">{</a>
+<a name="ln3382">#ifdef USE_TILE_LOCAL</a>
+<a name="ln3383">    // basically whether TilesFramework::initialise() has been called. This</a>
+<a name="ln3384">    // isn't precisely right, so (TODO) some more work needs to be</a>
+<a name="ln3385">    // done to figure out exactly what is needed to use the UI api minimally</a>
+<a name="ln3386">    // without crashing.</a>
+<a name="ln3387">    return wm &amp;&amp; tiles.fonts_initialized();</a>
+<a name="ln3388">#else</a>
+<a name="ln3389">    return crawl_state.io_inited;</a>
+<a name="ln3390">#endif</a>
+<a name="ln3391">}</a>
+<a name="ln3392"> </a>
+<a name="ln3393">/**</a>
+<a name="ln3394"> * Show the terminal cursor at the given position on the next redraw.</a>
+<a name="ln3395"> * The cursor is only shown if the cursor is enabled. 1-indexed.</a>
+<a name="ln3396"> */</a>
+<a name="ln3397">void show_cursor_at(coord_def pos)</a>
+<a name="ln3398">{</a>
+<a name="ln3399">    ui_root.cursor_pos = pos;</a>
+<a name="ln3400">}</a>
+<a name="ln3401"> </a>
+<a name="ln3402">void show_cursor_at(int x, int y)</a>
+<a name="ln3403">{</a>
+<a name="ln3404">    show_cursor_at(coord_def(x, y));</a>
+<a name="ln3405">}</a>
+<a name="ln3406"> </a>
+<a name="ln3407">/**</a>
+<a name="ln3408"> * A basic progress bar popup. This is meant to be invoked in an RAII style;</a>
+<a name="ln3409"> * the caller is responsible for regularly calling `advance_progress` in order</a>
+<a name="ln3410"> * to actually trigger UI redraws.</a>
+<a name="ln3411"> */</a>
+<a name="ln3412">progress_popup::progress_popup(string title, int width)</a>
+<a name="ln3413">    : position(0), bar_width(width), no_more(crawl_state.show_more_prompt, false)</a>
+<a name="ln3414">{</a>
+<a name="ln3415">    auto container = make_shared&lt;Box&gt;(Widget::VERT);</a>
+<a name="ln3416">    container-&gt;set_cross_alignment(Widget::CENTER);</a>
+<a name="ln3417">#ifndef USE_TILE_LOCAL</a>
+<a name="ln3418">    // Center the popup in console.</a>
+<a name="ln3419">    // if webtiles browser ever uses this property, then this will probably</a>
+<a name="ln3420">    // look bad there and need another solution. But right now, webtiles ignores</a>
+<a name="ln3421">    // expand_h.</a>
+<a name="ln3422">    container-&gt;expand_h = true;</a>
+<a name="ln3423">#endif</a>
+<a name="ln3424">    formatted_string bar_string = get_progress_string(bar_width);</a>
+<a name="ln3425">    progress_bar = make_shared&lt;Text&gt;(bar_string);</a>
+<a name="ln3426">    auto title_text = make_shared&lt;Text&gt;(title);</a>
+<a name="ln3427">    status_text = make_shared&lt;Text&gt;(&quot;&quot;);</a>
+<a name="ln3428">    container-&gt;add_child(title_text);</a>
+<a name="ln3429">    container-&gt;add_child(progress_bar);</a>
+<a name="ln3430">    container-&gt;add_child(status_text);</a>
+<a name="ln3431">    contents = make_shared&lt;Popup&gt;(container);</a>
+<a name="ln3432"> </a>
+<a name="ln3433">#ifdef USE_TILE_WEB</a>
+<a name="ln3434">    tiles.json_open_object();</a>
+<a name="ln3435">    tiles.json_write_string(&quot;title&quot;, title);</a>
+<a name="ln3436">    tiles.json_write_string(&quot;bar_text&quot;, bar_string.to_colour_string());</a>
+<a name="ln3437">    tiles.json_write_string(&quot;status&quot;, &quot;&quot;);</a>
+<a name="ln3438">    tiles.push_ui_layout(&quot;progress-bar&quot;, 1);</a>
+<a name="ln3439">    tiles.flush_messages();</a>
+<a name="ln3440">    contents-&gt;on_layout_pop([](){ tiles.pop_ui_layout(); });</a>
+<a name="ln3441">#endif</a>
+<a name="ln3442"> </a>
+<a name="ln3443">    push_layout(move(contents));</a>
+<a name="ln3444">    pump_events(0);</a>
+<a name="ln3445">}</a>
+<a name="ln3446"> </a>
+<a name="ln3447">progress_popup::~progress_popup()</a>
+<a name="ln3448">{</a>
+<a name="ln3449">    pop_layout();</a>
+<a name="ln3450"> </a>
+<a name="ln3451">#ifdef USE_TILE_WEB</a>
+<a name="ln3452">    tiles.flush_messages();</a>
+<a name="ln3453">#endif</a>
+<a name="ln3454">}</a>
+<a name="ln3455"> </a>
+<a name="ln3456">void progress_popup::force_redraw()</a>
+<a name="ln3457">{</a>
+<a name="ln3458">#ifdef USE_TILE_WEB</a>
+<a name="ln3459">    tiles.json_open_object();</a>
+<a name="ln3460">    tiles.json_write_string(&quot;status&quot;, status_text-&gt;get_text());</a>
+<a name="ln3461">    tiles.json_write_string(&quot;bar_text&quot;,</a>
+<a name="ln3462">        progress_bar-&gt;get_text().to_colour_string());</a>
+<a name="ln3463">    tiles.ui_state_change(&quot;progress-bar&quot;, 0);</a>
+<a name="ln3464">    // need to manually flush messages in case the caller doesn't pause for</a>
+<a name="ln3465">    // input.</a>
+<a name="ln3466">    tiles.flush_messages();</a>
+<a name="ln3467">#endif</a>
+<a name="ln3468">    pump_events(0);</a>
+<a name="ln3469">}</a>
+<a name="ln3470"> </a>
+<a name="ln3471">void progress_popup::set_status_text(string status)</a>
+<a name="ln3472">{</a>
+<a name="ln3473">    status_text-&gt;set_text(status);</a>
+<a name="ln3474">    force_redraw();</a>
+<a name="ln3475">}</a>
+<a name="ln3476"> </a>
+<a name="ln3477">void progress_popup::advance_progress()</a>
+<a name="ln3478">{</a>
+<a name="ln3479">    position++;</a>
+<a name="ln3480">    formatted_string new_bar = get_progress_string(bar_width);</a>
+<a name="ln3481">    progress_bar-&gt;set_text(new_bar);</a>
+<a name="ln3482">    force_redraw();</a>
+<a name="ln3483">}</a>
+<a name="ln3484"> </a>
+<a name="ln3485">formatted_string progress_popup::get_progress_string(unsigned int len)</a>
+<a name="ln3486">{</a>
+<a name="ln3487">    string bar = string(len, ' ');</a>
+<a name="ln3488">    if (len &lt; 3)</a>
+<a name="ln3489">        return formatted_string(bar);</a>
+<a name="ln3490">    const unsigned int center_pos = len + position % len;</a>
+<a name="ln3491">    const bool up = center_pos % 2 == 0;</a>
+<a name="ln3492">    const string marker = up ? &quot;/o/&quot; : &quot;\\o\\&quot;;</a>
+<a name="ln3493">    bar[(center_pos - 1) % len] = marker[0];</a>
+<a name="ln3494">    bar[center_pos % len] = marker[1];</a>
+<a name="ln3495">    bar[(center_pos + 1) % len] = marker[2];</a>
+<a name="ln3496">    bar = string(&quot;&lt;lightmagenta&gt;&quot;) + bar + &quot;&lt;/lightmagenta&gt;&quot;;</a>
+<a name="ln3497">    return formatted_string::parse_string(bar);</a>
+<a name="ln3498">}</a>
+<a name="ln3499"> </a>
+<a name="ln3500">void set_focused_widget(Widget* w)</a>
+<a name="ln3501">{</a>
+<a name="ln3502">    static bool sent_focusout;</a>
+<a name="ln3503">    static Widget* new_focus;</a>
+<a name="ln3504"> </a>
+<a name="ln3505">    const auto top = top_layout();</a>
+<a name="ln3506"> </a>
+<a name="ln3507">    if (!top)</a>
+<a name="ln3508">        return;</a>
+<a name="ln3509"> </a>
+<a name="ln3510">    if (w &amp;&amp; !top-&gt;is_ancestor_of(w-&gt;get_shared()))</a>
+<a name="ln3511">        return;</a>
+<a name="ln3512"> </a>
+<a name="ln3513">    if (!w)</a>
+<a name="ln3514">        w = ui_root.state.default_focus;</a>
+<a name="ln3515"> </a>
+<a name="ln3516">    auto current_focus = ui_root.state.current_focus;</a>
+<a name="ln3517"> </a>
+<a name="ln3518">    if (w == current_focus)</a>
+<a name="ln3519">        return;</a>
+<a name="ln3520"> </a>
+<a name="ln3521">#ifdef USE_TILE_WEB</a>
+<a name="ln3522">    tiles.json_open_object();</a>
+<a name="ln3523">    tiles.json_write_string(&quot;msg&quot;, &quot;ui-state-sync&quot;);</a>
+<a name="ln3524">    tiles.json_write_bool(&quot;has_focus&quot;, true);</a>
+<a name="ln3525">    tiles.json_write_string(&quot;widget_id&quot;, w-&gt;sync_id());  // &quot;&quot; means default</a>
+<a name="ln3526">    tiles.json_write_bool(&quot;from_webtiles&quot;, ui_root.receiving_ui_state);</a>
+<a name="ln3527">    tiles.json_write_int(&quot;generation_id&quot;, ui_root.state.generation_id);</a>
+<a name="ln3528">    tiles.json_close_object();</a>
+<a name="ln3529">    tiles.finish_message();</a>
+<a name="ln3530">#endif</a>
+<a name="ln3531"> </a>
+<a name="ln3532">    new_focus = w;</a>
+<a name="ln3533"> </a>
+<a name="ln3534">    if (current_focus &amp;&amp; !sent_focusout)</a>
+<a name="ln3535">    {</a>
+<a name="ln3536">        sent_focusout = true;</a>
+<a name="ln3537">        auto ev = FocusEvent(Event::Type::FocusOut);</a>
+<a name="ln3538">        ev.set_target(current_focus-&gt;get_shared());</a>
+<a name="ln3539">        ui_root.deliver_event(ev);</a>
+<a name="ln3540">    }</a>
+<a name="ln3541"> </a>
+<a name="ln3542">    if (new_focus != w)</a>
+<a name="ln3543">        return;</a>
+<a name="ln3544"> </a>
+<a name="ln3545">    ui_root.state.current_focus = new_focus;</a>
+<a name="ln3546"> </a>
+<a name="ln3547">    sent_focusout = false;</a>
+<a name="ln3548"> </a>
+<a name="ln3549">    if (new_focus)</a>
+<a name="ln3550">    {</a>
+<a name="ln3551">        auto ev = FocusEvent(Event::Type::FocusIn);</a>
+<a name="ln3552">        ev.set_target(new_focus-&gt;get_shared());</a>
+<a name="ln3553">        ui_root.deliver_event(ev);</a>
+<a name="ln3554">    }</a>
+<a name="ln3555">}</a>
+<a name="ln3556"> </a>
+<a name="ln3557">Widget* get_focused_widget()</a>
+<a name="ln3558">{</a>
+<a name="ln3559">    return ui_root.state.current_focus;</a>
+<a name="ln3560">}</a>
+<a name="ln3561"> </a>
+<a name="ln3562">#ifdef USE_TILE_WEB</a>
+<a name="ln3563">void recv_ui_state_change(const JsonNode *state)</a>
+<a name="ln3564">{</a>
+<a name="ln3565">    ui_root.recv_ui_state_change(state);</a>
+<a name="ln3566">}</a>
+<a name="ln3567"> </a>
+<a name="ln3568">void sync_ui_state()</a>
+<a name="ln3569">{</a>
+<a name="ln3570">    ui_root.sync_state();</a>
+<a name="ln3571">}</a>
+<a name="ln3572"> </a>
+<a name="ln3573">int layout_generation_id()</a>
+<a name="ln3574">{</a>
+<a name="ln3575">    return ui_root.next_generation_id;</a>
+<a name="ln3576">}</a>
+<a name="ln3577">#endif</a>
+<a name="ln3578"> </a>
+<a name="ln3579">bool raise_event(Event&amp; event)</a>
+<a name="ln3580">{</a>
+<a name="ln3581">    return ui_root.deliver_event(event);</a>
+<a name="ln3582">}</a>
+<a name="ln3583"> </a>
+<a name="ln3584">}</a>
+
+</code></pre>
+<div class="balloon" rel="1978"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'history' is always false.</p></div>
+<div class="balloon" rel="3323"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1047/" target="_blank">V1047</a> Lifetime of the lambda is greater than lifetime of the local variable 'done' captured by reference.</p></div>
+<div class="balloon" rel="3323"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1047/" target="_blank">V1047</a> Lifetime of the lambda is greater than lifetime of the local variable 'key' captured by reference.</p></div>
+<div class="balloon" rel="3313"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v657/" target="_blank">V657</a> It's odd that this function always returns one and the same value.</p></div>
+<div class="balloon" rel="3542"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'new_focus != w' is always false.</p></div>
+<div class="balloon" rel="597"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> It is possible that not all members of a class are initialized inside the constructor. Consider inspecting: hl_line.</p></div>
+<div class="balloon" rel="58"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the compiler generated constructor. Consider inspecting: needs_paint, m_w, m_h.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1718 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>traps.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Traps related functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;traps.h&quot;</a>
+<a name="ln9">#include &quot;trap-def.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &lt;algorithm&gt;</a>
+<a name="ln12">#include &lt;cmath&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;areas.h&quot;</a>
+<a name="ln15">#include &quot;bloodspatter.h&quot;</a>
+<a name="ln16">#include &quot;branch.h&quot;</a>
+<a name="ln17">#include &quot;cloud.h&quot;</a>
+<a name="ln18">#include &quot;coordit.h&quot;</a>
+<a name="ln19">#include &quot;delay.h&quot;</a>
+<a name="ln20">#include &quot;describe.h&quot;</a>
+<a name="ln21">#include &quot;dungeon.h&quot;</a>
+<a name="ln22">#include &quot;english.h&quot;</a>
+<a name="ln23">#include &quot;god-passive.h&quot; // passive_t::avoid_traps</a>
+<a name="ln24">#include &quot;hints.h&quot;</a>
+<a name="ln25">#include &quot;item-prop.h&quot;</a>
+<a name="ln26">#include &quot;items.h&quot;</a>
+<a name="ln27">#include &quot;libutil.h&quot;</a>
+<a name="ln28">#include &quot;mapmark.h&quot;</a>
+<a name="ln29">#include &quot;mon-cast.h&quot; // recall for zot traps</a>
+<a name="ln30">#include &quot;mon-enum.h&quot;</a>
+<a name="ln31">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln32">#include &quot;mon-util.h&quot;</a>
+<a name="ln33">#include &quot;message.h&quot;</a>
+<a name="ln34">#include &quot;mon-place.h&quot;</a>
+<a name="ln35">#include &quot;nearby-danger.h&quot;</a>
+<a name="ln36">#include &quot;player-stats.h&quot; // lose_stat for zot traps</a>
+<a name="ln37">#include &quot;random.h&quot;</a>
+<a name="ln38">#include &quot;religion.h&quot;</a>
+<a name="ln39">#include &quot;shout.h&quot;</a>
+<a name="ln40">#include &quot;spl-transloc.h&quot;</a>
+<a name="ln41">#include &quot;spl-summoning.h&quot;</a>
+<a name="ln42">#include &quot;stash.h&quot;</a>
+<a name="ln43">#include &quot;state.h&quot;</a>
+<a name="ln44">#include &quot;stringutil.h&quot;</a>
+<a name="ln45">#include &quot;teleport.h&quot;</a>
+<a name="ln46">#include &quot;terrain.h&quot;</a>
+<a name="ln47">#include &quot;travel.h&quot;</a>
+<a name="ln48">#include &quot;xom.h&quot;</a>
+<a name="ln49"> </a>
+<a name="ln50">bool trap_def::active() const</a>
+<a name="ln51">{</a>
+<a name="ln52">    return type != TRAP_UNASSIGNED;</a>
+<a name="ln53">}</a>
+<a name="ln54"> </a>
+<a name="ln55">bool trap_def::type_has_ammo() const</a>
+<a name="ln56">{</a>
+<a name="ln57">    switch (type)</a>
+<a name="ln58">    {</a>
+<a name="ln59">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln60">    case TRAP_NEEDLE:</a>
+<a name="ln61">#endif</a>
+<a name="ln62">    case TRAP_ARROW:  case TRAP_BOLT:</a>
+<a name="ln63">    case TRAP_DART: case TRAP_SPEAR:</a>
+<a name="ln64">        return true;</a>
+<a name="ln65">    default:</a>
+<a name="ln66">        break;</a>
+<a name="ln67">    }</a>
+<a name="ln68">    return false;</a>
+<a name="ln69">}</a>
+<a name="ln70"> </a>
+<a name="ln71">void trap_def::destroy(bool known)</a>
+<a name="ln72">{</a>
+<a name="ln73">    if (!in_bounds(pos))</a>
+<a name="ln74">        die(&quot;Trap position out of bounds!&quot;);</a>
+<a name="ln75"> </a>
+<a name="ln76">    grd(pos) = DNGN_FLOOR;</a>
+<a name="ln77">    if (known)</a>
+<a name="ln78">    {</a>
+<a name="ln79">        env.map_knowledge(pos).set_feature(DNGN_FLOOR);</a>
+<a name="ln80">        StashTrack.update_stash(pos);</a>
+<a name="ln81">    }</a>
+<a name="ln82">    env.trap.erase(pos);</a>
+<a name="ln83">}</a>
+<a name="ln84"> </a>
+<a name="ln85">void trap_def::prepare_ammo(int charges)</a>
+<a name="ln86">{</a>
+<a name="ln87">    skill_rnd = random2(256);</a>
+<a name="ln88"> </a>
+<a name="ln89">    if (charges)</a>
+<a name="ln90">    {</a>
+<a name="ln91">        ammo_qty = charges;</a>
+<a name="ln92">        return;</a>
+<a name="ln93">    }</a>
+<a name="ln94">    switch (type)</a>
+<a name="ln95">    {</a>
+<a name="ln96">    case TRAP_ARROW:</a>
+<a name="ln97">    case TRAP_BOLT:</a>
+<a name="ln98">    case TRAP_DART:</a>
+<a name="ln99">        ammo_qty = 3 + random2avg(9, 3);</a>
+<a name="ln100">        break;</a>
+<a name="ln101">    case TRAP_SPEAR:</a>
+<a name="ln102">        ammo_qty = 2 + random2avg(6, 3);</a>
+<a name="ln103">        break;</a>
+<a name="ln104">    case TRAP_GOLUBRIA:</a>
+<a name="ln105">        // really, turns until it vanishes</a>
+<a name="ln106">        ammo_qty = 30 + random2(20);</a>
+<a name="ln107">        break;</a>
+<a name="ln108">    case TRAP_TELEPORT:</a>
+<a name="ln109">        ammo_qty = 1;</a>
+<a name="ln110">        break;</a>
+<a name="ln111">    default:</a>
+<a name="ln112">        ammo_qty = 0;</a>
+<a name="ln113">        break;</a>
+<a name="ln114">    }</a>
+<a name="ln115">}</a>
+<a name="ln116"> </a>
+<a name="ln117">void trap_def::reveal()</a>
+<a name="ln118">{</a>
+<a name="ln119">    grd(pos) = feature();</a>
+<a name="ln120">}</a>
+<a name="ln121"> </a>
+<a name="ln122">string trap_def::name(description_level_type desc) const</a>
+<a name="ln123">{</a>
+<a name="ln124">    if (type &gt;= NUM_TRAPS)</a>
+<a name="ln125">        return &quot;buggy&quot;;</a>
+<a name="ln126"> </a>
+<a name="ln127">    string basename = full_trap_name(type);</a>
+<a name="ln128">    if (desc == DESC_A)</a>
+<a name="ln129">    {</a>
+<a name="ln130">        string prefix = &quot;a&quot;;</a>
+<a name="ln131">        if (is_vowel(basename[0]))</a>
+<a name="ln132">            prefix += 'n';</a>
+<a name="ln133">        prefix += ' ';</a>
+<a name="ln134">        return prefix + basename;</a>
+<a name="ln135">    }</a>
+<a name="ln136">    else if (desc == DESC_THE)</a>
+<a name="ln137">        return string(&quot;the &quot;) + basename;</a>
+<a name="ln138">    else                        // everything else</a>
+<a name="ln139">        return basename;</a>
+<a name="ln140">}</a>
+<a name="ln141"> </a>
+<a name="ln142">bool trap_def::is_bad_for_player() const</a>
+<a name="ln143">{</a>
+<a name="ln144">    return type == TRAP_ALARM</a>
+<a name="ln145">           || type == TRAP_DISPERSAL</a>
+<a name="ln146">           || type == TRAP_ZOT</a>
+<a name="ln147">           || type == TRAP_NET;</a>
+<a name="ln148">}</a>
+<a name="ln149"> </a>
+<a name="ln150">bool trap_def::is_safe(actor* act) const</a>
+<a name="ln151">{</a>
+<a name="ln152">    if (!act)</a>
+<a name="ln153">        act = &amp;you;</a>
+<a name="ln154"> </a>
+<a name="ln155">    // TODO: For now, just assume they're safe; they don't damage outright,</a>
+<a name="ln156">    // and the messages get old very quickly</a>
+<a name="ln157">    if (type == TRAP_WEB) // &amp;&amp; act-&gt;is_web_immune()</a>
+<a name="ln158">        return true;</a>
+<a name="ln159"> </a>
+<a name="ln160">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln161">    if (type == TRAP_SHADOW_DORMANT || type == TRAP_SHADOW)</a>
+<a name="ln162">        return true;</a>
+<a name="ln163">#endif</a>
+<a name="ln164"> </a>
+<a name="ln165">    if (!act-&gt;is_player())</a>
+<a name="ln166">        return is_bad_for_player();</a>
+<a name="ln167"> </a>
+<a name="ln168">    // No prompt (teleport traps are ineffective if wearing a -Tele item)</a>
+<a name="ln169">    if ((type == TRAP_TELEPORT || type == TRAP_TELEPORT_PERMANENT)</a>
+<a name="ln170">        &amp;&amp; you.no_tele(false))</a>
+<a name="ln171">    {</a>
+<a name="ln172">        return true;</a>
+<a name="ln173">    }</a>
+<a name="ln174"> </a>
+<a name="ln175">    if (type == TRAP_GOLUBRIA || type == TRAP_SHAFT)</a>
+<a name="ln176">        return true;</a>
+<a name="ln177"> </a>
+<a name="ln178">#ifdef CLUA_BINDINGS</a>
+<a name="ln179">    // Let players specify traps as safe via lua.</a>
+<a name="ln180">    if (clua.callbooleanfn(false, &quot;c_trap_is_safe&quot;, &quot;s&quot;, trap_name(type).c_str()))</a>
+<a name="ln181">        return true;</a>
+<a name="ln182">#endif</a>
+<a name="ln183"> </a>
+<a name="ln184">    if (type == TRAP_DART)</a>
+<a name="ln185">        return you.hp &gt; 15;</a>
+<a name="ln186">    else if (type == TRAP_ARROW)</a>
+<a name="ln187">        return you.hp &gt; 35;</a>
+<a name="ln188">    else if (type == TRAP_BOLT)</a>
+<a name="ln189">        return you.hp &gt; 45;</a>
+<a name="ln190">    else if (type == TRAP_SPEAR)</a>
+<a name="ln191">        return you.hp &gt; 40;</a>
+<a name="ln192">    else if (type == TRAP_BLADE)</a>
+<a name="ln193">        return you.hp &gt; 95;</a>
+<a name="ln194"> </a>
+<a name="ln195">    return false;</a>
+<a name="ln196">}</a>
+<a name="ln197"> </a>
+<a name="ln198">/**</a>
+<a name="ln199"> * Get the item index of the first net on the square.</a>
+<a name="ln200"> *</a>
+<a name="ln201"> * @param where The location.</a>
+<a name="ln202"> * @param trapped If true, the index of the stationary net (trapping a victim)</a>
+<a name="ln203"> *                is returned.</a>
+<a name="ln204"> * @return  The item index of the net.</a>
+<a name="ln205">*/</a>
+<a name="ln206">int get_trapping_net(const coord_def&amp; where, bool trapped)</a>
+<a name="ln207">{</a>
+<a name="ln208">    for (stack_iterator si(where); si; ++si)</a>
+<a name="ln209">    {</a>
+<a name="ln210">        if (si-&gt;is_type(OBJ_MISSILES, MI_THROWING_NET)</a>
+<a name="ln211">            &amp;&amp; (!trapped || item_is_stationary_net(*si)))</a>
+<a name="ln212">        {</a>
+<a name="ln213">            return si-&gt;index();</a>
+<a name="ln214">        }</a>
+<a name="ln215">    }</a>
+<a name="ln216">    return NON_ITEM;</a>
+<a name="ln217">}</a>
+<a name="ln218"> </a>
+<a name="ln219">/**</a>
+<a name="ln220"> * Return a string describing the reason a given actor is ensnared. (Since nets</a>
+<a name="ln221"> * &amp; webs use the same status.</a>
+<a name="ln222"> *</a>
+<a name="ln223"> * @param actor     The ensnared actor.</a>
+<a name="ln224"> * @return          Either 'held in a net' or 'caught in a web'.</a>
+<a name="ln225"> */</a>
+<a name="ln226">const char* held_status(actor *act)</a>
+<a name="ln227">{</a>
+<a name="ln228">    act = act ? act : &amp;you;</a>
+<a name="ln229"> </a>
+<a name="ln230">    if (get_trapping_net(act-&gt;pos(), true) != NON_ITEM)</a>
+<a name="ln231">        return &quot;held in a net&quot;;</a>
+<a name="ln232">    else</a>
+<a name="ln233">        return &quot;caught in a web&quot;;</a>
+<a name="ln234">}</a>
+<a name="ln235"> </a>
+<a name="ln236">// If there are more than one net on this square</a>
+<a name="ln237">// split off one of them for checking/setting values.</a>
+<a name="ln238">static void _maybe_split_nets(item_def &amp;item, const coord_def&amp; where)</a>
+<a name="ln239">{</a>
+<a name="ln240">    if (item.quantity == 1)</a>
+<a name="ln241">    {</a>
+<a name="ln242">        set_net_stationary(item);</a>
+<a name="ln243">        return;</a>
+<a name="ln244">    }</a>
+<a name="ln245"> </a>
+<a name="ln246">    item_def it;</a>
+<a name="ln247"> </a>
+<a name="ln248">    it.base_type = item.base_type;</a>
+<a name="ln249">    it.sub_type  = item.sub_type;</a>
+<a name="ln250">    it.net_durability      = item.net_durability;</a>
+<a name="ln251">    it.net_placed  = item.net_placed;</a>
+<a name="ln252">    it.flags     = item.flags;</a>
+<a name="ln253">    it.special   = item.special;</a>
+<a name="ln254">    it.quantity  = --item.quantity;</a>
+<a name="ln255">    item_colour(it);</a>
+<a name="ln256"> </a>
+<a name="ln257">    item.quantity = 1;</a>
+<a name="ln258">    set_net_stationary(item);</a>
+<a name="ln259"> </a>
+<a name="ln260">    copy_item_to_grid(it, where);</a>
+<a name="ln261">}</a>
+<a name="ln262"> </a>
+<a name="ln263">static void _mark_net_trapping(const coord_def&amp; where)</a>
+<a name="ln264">{</a>
+<a name="ln265">    int net = get_trapping_net(where);</a>
+<a name="ln266">    if (net == NON_ITEM)</a>
+<a name="ln267">    {</a>
+<a name="ln268">        net = get_trapping_net(where, false);</a>
+<a name="ln269">        if (net != NON_ITEM)</a>
+<a name="ln270">            _maybe_split_nets(mitm[net], where);</a>
+<a name="ln271">    }</a>
+<a name="ln272">}</a>
+<a name="ln273"> </a>
+<a name="ln274">/**</a>
+<a name="ln275"> * Attempt to trap a monster in a net.</a>
+<a name="ln276"> *</a>
+<a name="ln277"> * @param mon       The monster being trapped.</a>
+<a name="ln278"> * @return          Whether the monster was successfully trapped.</a>
+<a name="ln279"> */</a>
+<a name="ln280">bool monster_caught_in_net(monster* mon)</a>
+<a name="ln281">{</a>
+<a name="ln282">    if (mon-&gt;body_size(PSIZE_BODY) &gt;= SIZE_GIANT)</a>
+<a name="ln283">    {</a>
+<a name="ln284">        if (you.see_cell(mon-&gt;pos()))</a>
+<a name="ln285">        {</a>
+<a name="ln286">            if (!mon-&gt;visible_to(&amp;you))</a>
+<a name="ln287">                mpr(&quot;The net bounces off something gigantic!&quot;);</a>
+<a name="ln288">            else</a>
+<a name="ln289">                simple_monster_message(*mon, &quot; is too large for the net to hold!&quot;);</a>
+<a name="ln290">        }</a>
+<a name="ln291">        return false;</a>
+<a name="ln292">    }</a>
+<a name="ln293"> </a>
+<a name="ln294">    if (mons_class_is_stationary(mon-&gt;type))</a>
+<a name="ln295">    {</a>
+<a name="ln296">        if (you.see_cell(mon-&gt;pos()))</a>
+<a name="ln297">        {</a>
+<a name="ln298">            if (mon-&gt;visible_to(&amp;you))</a>
+<a name="ln299">            {</a>
+<a name="ln300">                mprf(&quot;The net is caught on %s!&quot;,</a>
+<a name="ln301">                     mon-&gt;name(DESC_THE).c_str());</a>
+<a name="ln302">            }</a>
+<a name="ln303">            else</a>
+<a name="ln304">                mpr(&quot;The net is caught on something unseen!&quot;);</a>
+<a name="ln305">        }</a>
+<a name="ln306">        return false;</a>
+<a name="ln307">    }</a>
+<a name="ln308"> </a>
+<a name="ln309">    if (mon-&gt;is_insubstantial())</a>
+<a name="ln310">    {</a>
+<a name="ln311">        if (you.can_see(*mon))</a>
+<a name="ln312">        {</a>
+<a name="ln313">            mprf(&quot;The net passes right through %s!&quot;,</a>
+<a name="ln314">                 mon-&gt;name(DESC_THE).c_str());</a>
+<a name="ln315">        }</a>
+<a name="ln316">        return false;</a>
+<a name="ln317">    }</a>
+<a name="ln318"> </a>
+<a name="ln319">    if (!mon-&gt;caught() &amp;&amp; mon-&gt;add_ench(ENCH_HELD))</a>
+<a name="ln320">    {</a>
+<a name="ln321">        if (you.see_cell(mon-&gt;pos()))</a>
+<a name="ln322">        {</a>
+<a name="ln323">            if (!mon-&gt;visible_to(&amp;you))</a>
+<a name="ln324">                mpr(&quot;Something gets caught in the net!&quot;);</a>
+<a name="ln325">            else</a>
+<a name="ln326">                simple_monster_message(*mon, &quot; is caught in the net!&quot;);</a>
+<a name="ln327">        }</a>
+<a name="ln328">        return true;</a>
+<a name="ln329">    }</a>
+<a name="ln330"> </a>
+<a name="ln331">    return false;</a>
+<a name="ln332">}</a>
+<a name="ln333"> </a>
+<a name="ln334">bool player_caught_in_net()</a>
+<a name="ln335">{</a>
+<a name="ln336">    if (you.body_size(PSIZE_BODY) &gt;= SIZE_GIANT)</a>
+<a name="ln337">        return false;</a>
+<a name="ln338"> </a>
+<a name="ln339">    if (!you.attribute[ATTR_HELD])</a>
+<a name="ln340">    {</a>
+<a name="ln341">        mpr(&quot;You become entangled in the net!&quot;);</a>
+<a name="ln342">        stop_running();</a>
+<a name="ln343"> </a>
+<a name="ln344">        // Set the attribute after the mpr, otherwise the screen updates</a>
+<a name="ln345">        // and we get a glimpse of a web because there isn't a trapping net</a>
+<a name="ln346">        // item yet</a>
+<a name="ln347">        you.attribute[ATTR_HELD] = 1;</a>
+<a name="ln348"> </a>
+<a name="ln349">        stop_delay(true); // even stair delays</a>
+<a name="ln350">        return true;</a>
+<a name="ln351">    }</a>
+<a name="ln352">    return false;</a>
+<a name="ln353">}</a>
+<a name="ln354"> </a>
+<a name="ln355">void check_net_will_hold_monster(monster* mons)</a>
+<a name="ln356">{</a>
+<a name="ln357">    ASSERT(mons); // XXX: should be monster &amp;mons</a>
+<a name="ln358">    if (mons-&gt;body_size(PSIZE_BODY) &gt;= SIZE_GIANT)</a>
+<a name="ln359">    {</a>
+<a name="ln360">        int net = get_trapping_net(mons-&gt;pos());</a>
+<a name="ln361">        if (net != NON_ITEM)</a>
+<a name="ln362">            destroy_item(net);</a>
+<a name="ln363"> </a>
+<a name="ln364">        if (you.see_cell(mons-&gt;pos()))</a>
+<a name="ln365">        {</a>
+<a name="ln366">            if (mons-&gt;visible_to(&amp;you))</a>
+<a name="ln367">            {</a>
+<a name="ln368">                mprf(&quot;The net rips apart, and %s comes free!&quot;,</a>
+<a name="ln369">                     mons-&gt;name(DESC_THE).c_str());</a>
+<a name="ln370">            }</a>
+<a name="ln371">            else</a>
+<a name="ln372">                mpr(&quot;All of a sudden the net rips apart!&quot;);</a>
+<a name="ln373">        }</a>
+<a name="ln374">    }</a>
+<a name="ln375">    else if (mons-&gt;is_insubstantial())</a>
+<a name="ln376">    {</a>
+<a name="ln377">        const int net = get_trapping_net(mons-&gt;pos());</a>
+<a name="ln378">        if (net != NON_ITEM)</a>
+<a name="ln379">            free_stationary_net(net);</a>
+<a name="ln380"> </a>
+<a name="ln381">        simple_monster_message(*mons,</a>
+<a name="ln382">                               &quot; drifts right through the net!&quot;);</a>
+<a name="ln383">    }</a>
+<a name="ln384">    else</a>
+<a name="ln385">        mons-&gt;add_ench(ENCH_HELD);</a>
+<a name="ln386">}</a>
+<a name="ln387"> </a>
+<a name="ln388">static bool _player_caught_in_web()</a>
+<a name="ln389">{</a>
+<a name="ln390">    if (you.attribute[ATTR_HELD])</a>
+<a name="ln391">        return false;</a>
+<a name="ln392"> </a>
+<a name="ln393">    you.attribute[ATTR_HELD] = 1;</a>
+<a name="ln394"> </a>
+<a name="ln395">    you.redraw_armour_class = true;</a>
+<a name="ln396">    you.redraw_evasion      = true;</a>
+<a name="ln397">    you.redraw_quiver       = true;</a>
+<a name="ln398"> </a>
+<a name="ln399">    // No longer stop_running() and stop_delay().</a>
+<a name="ln400">    return true;</a>
+<a name="ln401">}</a>
+<a name="ln402"> </a>
+<a name="ln403">vector&lt;coord_def&gt; find_golubria_on_level()</a>
+<a name="ln404">{</a>
+<a name="ln405">    vector&lt;coord_def&gt; ret;</a>
+<a name="ln406">    for (rectangle_iterator ri(coord_def(0, 0), coord_def(GXM-1, GYM-1)); ri; ++ri)</a>
+<a name="ln407">    {</a>
+<a name="ln408">        trap_def *trap = trap_at(*ri);</a>
+<a name="ln409">        if (trap &amp;&amp; trap-&gt;type == TRAP_GOLUBRIA)</a>
+<a name="ln410">            ret.push_back(*ri);</a>
+<a name="ln411">    }</a>
+<a name="ln412">    return ret;</a>
+<a name="ln413">}</a>
+<a name="ln414"> </a>
+<a name="ln415">enum class passage_type</a>
+<a name="ln416">{</a>
+<a name="ln417">    free,</a>
+<a name="ln418">    blocked,</a>
+<a name="ln419">    none,</a>
+<a name="ln420">};</a>
+<a name="ln421"> </a>
+<a name="ln422">static passage_type _find_other_passage_side(coord_def&amp; to)</a>
+<a name="ln423">{</a>
+<a name="ln424">    vector&lt;coord_def&gt; clear_passages;</a>
+<a name="ln425">    bool has_blocks = false;</a>
+<a name="ln426">    for (coord_def passage : find_golubria_on_level())</a>
+<a name="ln427">    {</a>
+<a name="ln428">        if (passage != to)</a>
+<a name="ln429">        {</a>
+<a name="ln430">            if (!actor_at(passage))</a>
+<a name="ln431">                clear_passages.push_back(passage);</a>
+<a name="ln432">            else</a>
+<a name="ln433">                has_blocks = true;</a>
+<a name="ln434">        }</a>
+<a name="ln435">    }</a>
+<a name="ln436">    const int choices = clear_passages.size();</a>
+<a name="ln437">    if (choices &lt; 1)</a>
+<a name="ln438">        return has_blocks ? passage_type::blocked : passage_type::none;</a>
+<a name="ln439">    to = clear_passages[random2(choices)];</a>
+<a name="ln440">    return passage_type::free;</a>
+<a name="ln441">}</a>
+<a name="ln442"> </a>
+<a name="ln443">// Table of possible Zot trap effects as pairs with weights.</a>
+<a name="ln444">// 2/3 are &quot;evil magic&quot;, 1/3 are &quot;summons&quot;</a>
+<a name="ln445">static const vector&lt;pair&lt;function&lt;void ()&gt;, int&gt;&gt; zot_effects = {</a>
+<a name="ln446">    { [] { lose_stat(STAT_RANDOM, 1 + random2avg(5, 2)); }, 4 },</a>
+<a name="ln447">    { [] { contaminate_player(7000 + random2avg(13000, 2), false); }, 4 },</a>
+<a name="ln448">    { [] { you.paralyse(nullptr, 2 + random2(4), &quot;a Zot trap&quot;); }, 1 },</a>
+<a name="ln449">    { [] { dec_mp(you.magic_points); canned_msg(MSG_MAGIC_DRAIN); }, 2 },</a>
+<a name="ln450">    { [] { you.petrify(nullptr); }, 1 },</a>
+<a name="ln451">    { [] { you.increase_duration(DUR_LOWERED_MR, random2(20), 20,</a>
+<a name="ln452">                &quot;You feel susceptible to magic.&quot;); }, 4 },</a>
+<a name="ln453">    { [] { mons_word_of_recall(nullptr, 2 + random2(3)); }, 3 },</a>
+<a name="ln454">    { [] {</a>
+<a name="ln455">              mgen_data mg = mgen_data::hostile_at(RANDOM_DEMON_GREATER,</a>
+<a name="ln456">                                                   true, you.pos());</a>
+<a name="ln457">              mg.set_summoned(nullptr, 0, SPELL_NO_SPELL, GOD_NO_GOD);</a>
+<a name="ln458">              mg.set_non_actor_summoner(&quot;a Zot trap&quot;);</a>
+<a name="ln459">              mg.extra_flags |= (MF_NO_REWARD | MF_HARD_RESET);</a>
+<a name="ln460">              if (create_monster(mg))</a>
+<a name="ln461">                  mpr(&quot;You sense a hostile presence.&quot;);</a>
+<a name="ln462">         }, 3 },</a>
+<a name="ln463">    { [] {</a>
+<a name="ln464">             coord_def pt = find_gateway_location(&amp;you);</a>
+<a name="ln465">             if (pt != coord_def(0, 0))</a>
+<a name="ln466">                 create_malign_gateway(pt, BEH_HOSTILE, &quot;a Zot trap&quot;, 150);</a>
+<a name="ln467">         }, 1 },</a>
+<a name="ln468">    { [] {</a>
+<a name="ln469">              mgen_data mg = mgen_data::hostile_at(MONS_TWISTER,</a>
+<a name="ln470">                                                   false, you.pos());</a>
+<a name="ln471">              mg.set_summoned(nullptr, 2, SPELL_NO_SPELL, GOD_NO_GOD);</a>
+<a name="ln472">              mg.set_non_actor_summoner(&quot;a Zot trap&quot;);</a>
+<a name="ln473">              mg.extra_flags |= (MF_NO_REWARD | MF_HARD_RESET);</a>
+<a name="ln474">              if (create_monster(mg))</a>
+<a name="ln475">                  mpr(&quot;A huge vortex of air appears!&quot;);</a>
+<a name="ln476">         }, 1 },</a>
+<a name="ln477">};</a>
+<a name="ln478"> </a>
+<a name="ln479">// Zot traps only target the player. This rolls their effect.</a>
+<a name="ln480">static void _zot_trap()</a>
+<a name="ln481">{</a>
+<a name="ln482">    mpr(&quot;The power of Zot is invoked against you!&quot;);</a>
+<a name="ln483">    (*random_choose_weighted(zot_effects))();</a>
+<a name="ln484">}</a>
+<a name="ln485"> </a>
+<a name="ln486">void trap_def::trigger(actor&amp; triggerer)</a>
+<a name="ln487">{</a>
+<a name="ln488">    const bool you_trigger = triggerer.is_player();</a>
+<a name="ln489"> </a>
+<a name="ln490">    // Out of sight, out of mind.</a>
+<a name="ln491">    if (!you.see_cell(pos))</a>
+<a name="ln492">        return;</a>
+<a name="ln493"> </a>
+<a name="ln494">    // If set, the trap will be removed at the end of the</a>
+<a name="ln495">    // triggering process.</a>
+<a name="ln496">    bool trap_destroyed = false, know_trap_destroyed = false;</a>
+<a name="ln497"> </a>
+<a name="ln498">    monster* m = triggerer.as_monster();</a>
+<a name="ln499"> </a>
+<a name="ln500">    // Intelligent monsters native to a branch get a bonus avoiding traps</a>
+<a name="ln501">    const bool trig_smart = m</a>
+<a name="ln502">        &amp;&amp; mons_is_native_in_branch(*m)</a>
+<a name="ln503">        &amp;&amp; mons_intel(*m) &gt;= I_HUMAN;</a>
+<a name="ln504"> </a>
+<a name="ln505">    // Smarter monsters and those native to the level will simply</a>
+<a name="ln506">    // side-step known shafts. Unless they are already looking for</a>
+<a name="ln507">    // an exit, of course.</a>
+<a name="ln508">    if (type == TRAP_SHAFT</a>
+<a name="ln509">        &amp;&amp; m</a>
+<a name="ln510">        &amp;&amp; (!m-&gt;will_trigger_shaft()</a>
+<a name="ln511">            || trig_smart &amp;&amp; !mons_is_fleeing(*m) &amp;&amp; !m-&gt;pacified()))</a>
+<a name="ln512">    {</a>
+<a name="ln513">        return;</a>
+<a name="ln514">    }</a>
+<a name="ln515"> </a>
+<a name="ln516">    // Tentacles aren't real monsters, and shouldn't invoke magic traps.</a>
+<a name="ln517">    if (m &amp;&amp; mons_is_tentacle_or_tentacle_segment(m-&gt;type)</a>
+<a name="ln518">        &amp;&amp; !is_mechanical())</a>
+<a name="ln519">    {</a>
+<a name="ln520">        return;</a>
+<a name="ln521">    }</a>
+<a name="ln522"> </a>
+<a name="ln523">    // Store the position now in case it gets cleared in between.</a>
+<a name="ln524">    const coord_def p(pos);</a>
+<a name="ln525"> </a>
+<a name="ln526">    if (type_has_ammo())</a>
+<a name="ln527">        shoot_ammo(triggerer, trig_smart || you_trigger);</a>
+<a name="ln528">    else switch (type)</a>
+<a name="ln529">    {</a>
+<a name="ln530">    case TRAP_GOLUBRIA:</a>
+<a name="ln531">    {</a>
+<a name="ln532">        coord_def to = p;</a>
+<a name="ln533">        passage_type search_result = _find_other_passage_side(to);</a>
+<a name="ln534">        if (search_result == passage_type::free)</a>
+<a name="ln535">        {</a>
+<a name="ln536">            if (you_trigger)</a>
+<a name="ln537">                mpr(&quot;You enter the passage of Golubria.&quot;);</a>
+<a name="ln538">            else</a>
+<a name="ln539">                simple_monster_message(*m, &quot; enters the passage of Golubria.&quot;);</a>
+<a name="ln540"> </a>
+<a name="ln541">            // Should always be true.</a>
+<a name="ln542">            bool moved = triggerer.move_to_pos(to);</a>
+<a name="ln543">            ASSERT(moved);</a>
+<a name="ln544"> </a>
+<a name="ln545">            place_cloud(CLOUD_TLOC_ENERGY, p, 1 + random2(3), &amp;triggerer);</a>
+<a name="ln546">            trap_destroyed = true;</a>
+<a name="ln547">            know_trap_destroyed = you_trigger;</a>
+<a name="ln548">        }</a>
+<a name="ln549">        else if (you_trigger)</a>
+<a name="ln550">        {</a>
+<a name="ln551">            mprf(&quot;This passage %s!&quot;, search_result == passage_type::blocked ?</a>
+<a name="ln552">                 &quot;seems to be blocked by something&quot; : &quot;doesn't lead anywhere&quot;);</a>
+<a name="ln553">        }</a>
+<a name="ln554">        break;</a>
+<a name="ln555">    }</a>
+<a name="ln556">    case TRAP_DISPERSAL:</a>
+<a name="ln557">        dprf(&quot;Triggered dispersal.&quot;);</a>
+<a name="ln558">        if (you_trigger)</a>
+<a name="ln559">            mprf(&quot;You enter %s!&quot;, name(DESC_A).c_str());</a>
+<a name="ln560">        else</a>
+<a name="ln561">            mprf(&quot;%s enters %s!&quot;, triggerer.name(DESC_THE).c_str(),</a>
+<a name="ln562">                    name(DESC_A).c_str());</a>
+<a name="ln563">        apply_visible_monsters([] (monster&amp; mons) {</a>
+<a name="ln564">                return !mons.no_tele() &amp;&amp; monster_blink(&amp;mons);</a>
+<a name="ln565">            }, pos);</a>
+<a name="ln566">        if (!you_trigger &amp;&amp; you.see_cell_no_trans(pos))</a>
+<a name="ln567">            you.blink();</a>
+<a name="ln568">        // Don't chain disperse</a>
+<a name="ln569">        triggerer.blink();</a>
+<a name="ln570">        break;</a>
+<a name="ln571">    case TRAP_TELEPORT:</a>
+<a name="ln572">    case TRAP_TELEPORT_PERMANENT:</a>
+<a name="ln573">        if (you_trigger)</a>
+<a name="ln574">            mprf(&quot;You enter %s!&quot;, name(DESC_A).c_str());</a>
+<a name="ln575">        if (ammo_qty &gt; 0 &amp;&amp; !--ammo_qty)</a>
+<a name="ln576">        {</a>
+<a name="ln577">            // can't use trap_destroyed, as we might recurse into a shaft</a>
+<a name="ln578">            // or be banished by a Zot trap</a>
+<a name="ln579">            env.map_knowledge(pos).set_feature(DNGN_FLOOR);</a>
+<a name="ln580">            mprf(&quot;%s disappears.&quot;, name(DESC_THE).c_str());</a>
+<a name="ln581">            destroy();</a>
+<a name="ln582">        }</a>
+<a name="ln583">        if (!triggerer.no_tele(true, you_trigger))</a>
+<a name="ln584">            triggerer.teleport(true);</a>
+<a name="ln585">        break;</a>
+<a name="ln586"> </a>
+<a name="ln587">    case TRAP_ALARM:</a>
+<a name="ln588">        // Alarms always mark the player, but not through glass</a>
+<a name="ln589">        // The trap gets destroyed to prevent the player from abusing an alarm</a>
+<a name="ln590">        // trap found in favourable terrain.</a>
+<a name="ln591">        if (!you.see_cell_no_trans(pos))</a>
+<a name="ln592">            break;</a>
+<a name="ln593">        trap_destroyed = true;</a>
+<a name="ln594">        if (you_trigger)</a>
+<a name="ln595">            mprf(&quot;You set off the alarm!&quot;);</a>
+<a name="ln596">        else</a>
+<a name="ln597">            mprf(&quot;%s %s the alarm!&quot;, triggerer.name(DESC_THE).c_str(),</a>
+<a name="ln598">                 mons_intel(*m) &gt;= I_HUMAN ? &quot;pulls&quot; : &quot;sets off&quot;);</a>
+<a name="ln599"> </a>
+<a name="ln600">        if (silenced(pos))</a>
+<a name="ln601">        {</a>
+<a name="ln602">            mprf(&quot;%s vibrates slightly, failing to make a sound.&quot;,</a>
+<a name="ln603">                 name(DESC_THE).c_str());</a>
+<a name="ln604">        }</a>
+<a name="ln605">        else</a>
+<a name="ln606">        {</a>
+<a name="ln607">            string msg = make_stringf(&quot;%s emits a blaring wail!&quot;,</a>
+<a name="ln608">                               name(DESC_THE).c_str());</a>
+<a name="ln609">            noisy(40, pos, msg.c_str(), triggerer.mid);</a>
+<a name="ln610">        }</a>
+<a name="ln611"> </a>
+<a name="ln612">        you.sentinel_mark(true);</a>
+<a name="ln613">        break;</a>
+<a name="ln614"> </a>
+<a name="ln615">    case TRAP_BLADE:</a>
+<a name="ln616">        if (you_trigger)</a>
+<a name="ln617">        {</a>
+<a name="ln618">            const int narrow_miss_rnd = random2(6) + 3;</a>
+<a name="ln619">            if (one_chance_in(3))</a>
+<a name="ln620">                mpr(&quot;You avoid triggering a blade trap.&quot;);</a>
+<a name="ln621">            else if (random2limit(you.evasion(), 40) + narrow_miss_rnd &gt; 8)</a>
+<a name="ln622">                mpr(&quot;A huge blade swings just past you!&quot;);</a>
+<a name="ln623">            else</a>
+<a name="ln624">            {</a>
+<a name="ln625">                mpr(&quot;A huge blade swings out and slices into you!&quot;);</a>
+<a name="ln626">                const int damage = you.apply_ac(48 + random2avg(29, 2));</a>
+<a name="ln627">                string n = name(DESC_A);</a>
+<a name="ln628">                ouch(damage, KILLED_BY_TRAP, MID_NOBODY, n.c_str());</a>
+<a name="ln629">                bleed_onto_floor(you.pos(), MONS_PLAYER, damage, true);</a>
+<a name="ln630">            }</a>
+<a name="ln631">        }</a>
+<a name="ln632">        else if (m)</a>
+<a name="ln633">        {</a>
+<a name="ln634">            if (one_chance_in(5) || (trig_smart &amp;&amp; coinflip()))</a>
+<a name="ln635">            {</a>
+<a name="ln636">                // Trap doesn't trigger.</a>
+<a name="ln637">                simple_monster_message(*m, &quot; fails to trigger a blade trap.&quot;);</a>
+<a name="ln638">            }</a>
+<a name="ln639">            else if (random2(m-&gt;evasion()) &gt; 8</a>
+<a name="ln640">                     || (trig_smart &amp;&amp; random2(m-&gt;evasion()) &gt; 8))</a>
+<a name="ln641">            {</a>
+<a name="ln642">                if (!simple_monster_message(*m,</a>
+<a name="ln643">                                            &quot; avoids a huge, swinging blade.&quot;))</a>
+<a name="ln644">                {</a>
+<a name="ln645">                    mpr(&quot;A huge blade swings out!&quot;);</a>
+<a name="ln646">                }</a>
+<a name="ln647">            }</a>
+<a name="ln648">            else</a>
+<a name="ln649">            {</a>
+<a name="ln650">                string msg = &quot;A huge blade swings out&quot;;</a>
+<a name="ln651">                if (m-&gt;visible_to(&amp;you))</a>
+<a name="ln652">                {</a>
+<a name="ln653">                    msg += &quot; and slices into &quot;;</a>
+<a name="ln654">                    msg += m-&gt;name(DESC_THE);</a>
+<a name="ln655">                }</a>
+<a name="ln656">                msg += &quot;!&quot;;</a>
+<a name="ln657">                mpr(msg);</a>
+<a name="ln658"> </a>
+<a name="ln659">                int damage_taken = m-&gt;apply_ac(10 + random2avg(29, 2));</a>
+<a name="ln660"> </a>
+<a name="ln661">                if (!m-&gt;is_summoned())</a>
+<a name="ln662">                    bleed_onto_floor(m-&gt;pos(), m-&gt;type, damage_taken, true);</a>
+<a name="ln663"> </a>
+<a name="ln664">                m-&gt;hurt(nullptr, damage_taken);</a>
+<a name="ln665">                if (m-&gt;alive())</a>
+<a name="ln666">                    print_wounds(*m);</a>
+<a name="ln667">            }</a>
+<a name="ln668">        }</a>
+<a name="ln669">        break;</a>
+<a name="ln670"> </a>
+<a name="ln671">    case TRAP_NET:</a>
+<a name="ln672">        {</a>
+<a name="ln673">        // Nets need LOF to hit the player, no netting through glass.</a>
+<a name="ln674">        if (!you.see_cell_no_trans(pos))</a>
+<a name="ln675">            break;</a>
+<a name="ln676">        bool triggered = you_trigger;</a>
+<a name="ln677">        if (m)</a>
+<a name="ln678">        {</a>
+<a name="ln679">            if (mons_intel(*m) &lt; I_HUMAN)</a>
+<a name="ln680">            {</a>
+<a name="ln681">                // Not triggered, trap stays.</a>
+<a name="ln682">                simple_monster_message(*m, &quot; fails to trigger a net trap.&quot;);</a>
+<a name="ln683">            }</a>
+<a name="ln684">            else</a>
+<a name="ln685">            {</a>
+<a name="ln686">                // Triggered, net the player.</a>
+<a name="ln687">                triggered = true;</a>
+<a name="ln688"> </a>
+<a name="ln689">                if (!simple_monster_message(*m,</a>
+<a name="ln690">                                            &quot; drops a net on you.&quot;))</a>
+<a name="ln691">                {</a>
+<a name="ln692">                    mpr(&quot;Something launches a net on you.&quot;);</a>
+<a name="ln693">                }</a>
+<a name="ln694">            }</a>
+<a name="ln695">        }</a>
+<a name="ln696"> </a>
+<a name="ln697">        if (triggered)</a>
+<a name="ln698">        {</a>
+<a name="ln699">            item_def item = generate_trap_item();</a>
+<a name="ln700">            copy_item_to_grid(item, you.pos());</a>
+<a name="ln701"> </a>
+<a name="ln702">            if (random2avg(2 * you.evasion(), 2) &gt; 18 + env.absdepth0 / 2)</a>
+<a name="ln703">                mpr(&quot;A net drops to the ground!&quot;);</a>
+<a name="ln704">            else</a>
+<a name="ln705">            {</a>
+<a name="ln706">                mpr(&quot;A large net falls onto you!&quot;);</a>
+<a name="ln707">                if (player_caught_in_net())</a>
+<a name="ln708">                {</a>
+<a name="ln709">                    if (player_in_a_dangerous_place())</a>
+<a name="ln710">                        xom_is_stimulated(50);</a>
+<a name="ln711"> </a>
+<a name="ln712">                    // Mark the item as trapping; after this it's</a>
+<a name="ln713">                    // safe to update the view.</a>
+<a name="ln714">                    _mark_net_trapping(you.pos());</a>
+<a name="ln715">                }</a>
+<a name="ln716">            }</a>
+<a name="ln717"> </a>
+<a name="ln718">            trap_destroyed = true;</a>
+<a name="ln719">        }</a>
+<a name="ln720">        }</a>
+<a name="ln721">        break;</a>
+<a name="ln722"> </a>
+<a name="ln723">    case TRAP_WEB:</a>
+<a name="ln724">        if (triggerer.is_web_immune())</a>
+<a name="ln725">        {</a>
+<a name="ln726">            if (m)</a>
+<a name="ln727">            {</a>
+<a name="ln728">                if (m-&gt;is_insubstantial())</a>
+<a name="ln729">                    simple_monster_message(*m, &quot; passes through a web.&quot;);</a>
+<a name="ln730">                else if (mons_genus(m-&gt;type) == MONS_JELLY)</a>
+<a name="ln731">                    simple_monster_message(*m, &quot; oozes through a web.&quot;);</a>
+<a name="ln732">                // too spammy for spiders, and expected</a>
+<a name="ln733">            }</a>
+<a name="ln734">            break;</a>
+<a name="ln735">        }</a>
+<a name="ln736"> </a>
+<a name="ln737">        if (you_trigger)</a>
+<a name="ln738">        {</a>
+<a name="ln739">            if (one_chance_in(3))</a>
+<a name="ln740">                mpr(&quot;You pick your way through the web.&quot;);</a>
+<a name="ln741">            else</a>
+<a name="ln742">            {</a>
+<a name="ln743">                mpr(&quot;You are caught in the web!&quot;);</a>
+<a name="ln744"> </a>
+<a name="ln745">                if (_player_caught_in_web())</a>
+<a name="ln746">                {</a>
+<a name="ln747">                    check_monsters_sense(SENSE_WEB_VIBRATION, 9, you.pos());</a>
+<a name="ln748">                    if (player_in_a_dangerous_place())</a>
+<a name="ln749">                        xom_is_stimulated(50);</a>
+<a name="ln750">                }</a>
+<a name="ln751">            }</a>
+<a name="ln752">        }</a>
+<a name="ln753">        else if (m)</a>
+<a name="ln754">        {</a>
+<a name="ln755">            if (one_chance_in(3) || (trig_smart &amp;&amp; coinflip()))</a>
+<a name="ln756">                simple_monster_message(*m, &quot; evades a web.&quot;);</a>
+<a name="ln757">            else</a>
+<a name="ln758">            {</a>
+<a name="ln759">                if (m-&gt;visible_to(&amp;you))</a>
+<a name="ln760">                    simple_monster_message(*m, &quot; is caught in a web!&quot;);</a>
+<a name="ln761">                else</a>
+<a name="ln762">                    mpr(&quot;A web moves frantically as something is caught in it!&quot;);</a>
+<a name="ln763"> </a>
+<a name="ln764">                // If somehow already caught, make it worse.</a>
+<a name="ln765">                m-&gt;add_ench(ENCH_HELD);</a>
+<a name="ln766"> </a>
+<a name="ln767">                // Don't try to escape the web in the same turn</a>
+<a name="ln768">                m-&gt;props[NEWLY_TRAPPED_KEY] = true;</a>
+<a name="ln769"> </a>
+<a name="ln770">                // Alert monsters.</a>
+<a name="ln771">                check_monsters_sense(SENSE_WEB_VIBRATION, 9, triggerer.position);</a>
+<a name="ln772">            }</a>
+<a name="ln773">        }</a>
+<a name="ln774">        break;</a>
+<a name="ln775"> </a>
+<a name="ln776">    case TRAP_ZOT:</a>
+<a name="ln777">        if (you_trigger)</a>
+<a name="ln778">        {</a>
+<a name="ln779">            mpr(&quot;You enter the Zot trap.&quot;);</a>
+<a name="ln780">            _zot_trap();</a>
+<a name="ln781">        }</a>
+<a name="ln782">        else if (m)</a>
+<a name="ln783">        {</a>
+<a name="ln784">            // Zot traps are out to get *the player*! Hostile monsters</a>
+<a name="ln785">            // benefit and friendly monsters bring effects down on</a>
+<a name="ln786">            // the player. Such is life.</a>
+<a name="ln787"> </a>
+<a name="ln788">            // Give the player a chance to figure out what happened</a>
+<a name="ln789">            if (player_can_hear(pos))</a>
+<a name="ln790">                mprf(MSGCH_SOUND, &quot;You hear a loud \&quot;Zot\&quot;!&quot;);</a>
+<a name="ln791"> </a>
+<a name="ln792">            if (you.see_cell_no_trans(pos) &amp;&amp; one_chance_in(5))</a>
+<a name="ln793">                _zot_trap();</a>
+<a name="ln794">        }</a>
+<a name="ln795">        break;</a>
+<a name="ln796"> </a>
+<a name="ln797">    case TRAP_SHAFT:</a>
+<a name="ln798">        // Known shafts don't trigger as traps.</a>
+<a name="ln799">        // Allies don't fall through shafts (no herding!)</a>
+<a name="ln800">        if (trig_smart || (m &amp;&amp; m-&gt;wont_attack()) || you_trigger)</a>
+<a name="ln801">            break;</a>
+<a name="ln802"> </a>
+<a name="ln803">        // A chance to escape.</a>
+<a name="ln804">        if (one_chance_in(4))</a>
+<a name="ln805">            break;</a>
+<a name="ln806"> </a>
+<a name="ln807">        {</a>
+<a name="ln808">        // keep this for messaging purposes</a>
+<a name="ln809">        const bool triggerer_seen = you.can_see(triggerer);</a>
+<a name="ln810"> </a>
+<a name="ln811">        // Fire away!</a>
+<a name="ln812">        triggerer.do_shaft();</a>
+<a name="ln813"> </a>
+<a name="ln814">        // Player-used shafts are destroyed</a>
+<a name="ln815">        // after one use in down_stairs()</a>
+<a name="ln816">        if (!you_trigger)</a>
+<a name="ln817">        {</a>
+<a name="ln818">            mprf(&quot;%s shaft crumbles and collapses.&quot;,</a>
+<a name="ln819">                 triggerer_seen ? &quot;The&quot; : &quot;A&quot;);</a>
+<a name="ln820">            know_trap_destroyed = true;</a>
+<a name="ln821">            trap_destroyed = true;</a>
+<a name="ln822">        }</a>
+<a name="ln823">        }</a>
+<a name="ln824">        break;</a>
+<a name="ln825"> </a>
+<a name="ln826">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln827">    case TRAP_GAS:</a>
+<a name="ln828">        mpr(&quot;The gas trap seems to be inoperative.&quot;);</a>
+<a name="ln829">        trap_destroyed = true;</a>
+<a name="ln830">        break;</a>
+<a name="ln831">#endif</a>
+<a name="ln832"> </a>
+<a name="ln833">    case TRAP_PLATE:</a>
+<a name="ln834">        dungeon_events.fire_position_event(DET_PRESSURE_PLATE, pos);</a>
+<a name="ln835">        break;</a>
+<a name="ln836"> </a>
+<a name="ln837">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln838">    case TRAP_SHADOW:</a>
+<a name="ln839">    case TRAP_SHADOW_DORMANT:</a>
+<a name="ln840">#endif</a>
+<a name="ln841">    default:</a>
+<a name="ln842">        break;</a>
+<a name="ln843">    }</a>
+<a name="ln844"> </a>
+<a name="ln845">    if (you_trigger)</a>
+<a name="ln846">        learned_something_new(HINT_SEEN_TRAP, p);</a>
+<a name="ln847"> </a>
+<a name="ln848">    if (trap_destroyed)</a>
+<a name="ln849">        destroy(know_trap_destroyed);</a>
+<a name="ln850">}</a>
+<a name="ln851"> </a>
+<a name="ln852">int trap_def::max_damage(const actor&amp; act)</a>
+<a name="ln853">{</a>
+<a name="ln854">    // Trap damage to monsters is a lot smaller, because they are fairly</a>
+<a name="ln855">    // stupid and tend to have fewer hp than players -- this choice prevents</a>
+<a name="ln856">    // traps from easily killing large monsters.</a>
+<a name="ln857">    bool mon = act.is_monster();</a>
+<a name="ln858"> </a>
+<a name="ln859">    switch (type)</a>
+<a name="ln860">    {</a>
+<a name="ln861">        case TRAP_DART: return 0;</a>
+<a name="ln862">        case TRAP_ARROW:  return mon ?  7 : 15;</a>
+<a name="ln863">        case TRAP_SPEAR:  return mon ? 10 : 26;</a>
+<a name="ln864">        case TRAP_BOLT:   return mon ? 18 : 40;</a>
+<a name="ln865">        case TRAP_BLADE:  return mon ? 38 : 76;</a>
+<a name="ln866">        default:          return 0;</a>
+<a name="ln867">    }</a>
+<a name="ln868"> </a>
+<a name="ln869">    return 0;</a>
+<a name="ln870">}</a>
+<a name="ln871"> </a>
+<a name="ln872">int trap_def::shot_damage(actor&amp; act)</a>
+<a name="ln873">{</a>
+<a name="ln874">    const int dam = max_damage(act);</a>
+<a name="ln875"> </a>
+<a name="ln876">    if (!dam)</a>
+<a name="ln877">        return 0;</a>
+<a name="ln878">    return random2(dam) + 1;</a>
+<a name="ln879">}</a>
+<a name="ln880"> </a>
+<a name="ln881">int trap_def::to_hit_bonus()</a>
+<a name="ln882">{</a>
+<a name="ln883">    switch (type)</a>
+<a name="ln884">    {</a>
+<a name="ln885">    // To-hit:</a>
+<a name="ln886">    case TRAP_ARROW:</a>
+<a name="ln887">        return 7;</a>
+<a name="ln888">    case TRAP_SPEAR:</a>
+<a name="ln889">        return 10;</a>
+<a name="ln890">    case TRAP_BOLT:</a>
+<a name="ln891">        return 15;</a>
+<a name="ln892">    case TRAP_NET:</a>
+<a name="ln893">        return 5;</a>
+<a name="ln894">    case TRAP_DART:</a>
+<a name="ln895">        return 8;</a>
+<a name="ln896">    // Irrelevant:</a>
+<a name="ln897">    default:</a>
+<a name="ln898">        return 0;</a>
+<a name="ln899">    }</a>
+<a name="ln900">}</a>
+<a name="ln901"> </a>
+<a name="ln902">void destroy_trap(const coord_def&amp; pos)</a>
+<a name="ln903">{</a>
+<a name="ln904">    if (trap_def* ptrap = trap_at(pos))</a>
+<a name="ln905">        ptrap-&gt;destroy();</a>
+<a name="ln906">}</a>
+<a name="ln907"> </a>
+<a name="ln908">trap_def* trap_at(const coord_def&amp; pos)</a>
+<a name="ln909">{</a>
+<a name="ln910">    if (!feat_is_trap(grd(pos)))</a>
+<a name="ln911">        return nullptr;</a>
+<a name="ln912"> </a>
+<a name="ln913">    auto it = env.trap.find(pos);</a>
+<a name="ln914">    ASSERT(it != env.trap.end());</a>
+<a name="ln915">    ASSERT(it-&gt;second.pos == pos);</a>
+<a name="ln916">    ASSERT(it-&gt;second.type != TRAP_UNASSIGNED);</a>
+<a name="ln917"> </a>
+<a name="ln918">    return &amp;it-&gt;second;</a>
+<a name="ln919">}</a>
+<a name="ln920"> </a>
+<a name="ln921">trap_type get_trap_type(const coord_def&amp; pos)</a>
+<a name="ln922">{</a>
+<a name="ln923">    if (trap_def* ptrap = trap_at(pos))</a>
+<a name="ln924">        return ptrap-&gt;type;</a>
+<a name="ln925"> </a>
+<a name="ln926">    return TRAP_UNASSIGNED;</a>
+<a name="ln927">}</a>
+<a name="ln928"> </a>
+<a name="ln929">/**</a>
+<a name="ln930"> * End the ATTR_HELD state &amp; redraw appropriate UI.</a>
+<a name="ln931"> *</a>
+<a name="ln932"> * Do NOT call without clearing up nets, webs, etc first!</a>
+<a name="ln933"> */</a>
+<a name="ln934">void stop_being_held()</a>
+<a name="ln935">{</a>
+<a name="ln936">    you.attribute[ATTR_HELD] = 0;</a>
+<a name="ln937">    you.redraw_quiver = true;</a>
+<a name="ln938">    you.redraw_evasion = true;</a>
+<a name="ln939">}</a>
+<a name="ln940"> </a>
+<a name="ln941">/**</a>
+<a name="ln942"> * Exit a web that's currently holding you.</a>
+<a name="ln943"> *</a>
+<a name="ln944"> * @param quiet     Whether to squash messages.</a>
+<a name="ln945"> */</a>
+<a name="ln946">void leave_web(bool quiet)</a>
+<a name="ln947">{</a>
+<a name="ln948">    const trap_def *trap = trap_at(you.pos());</a>
+<a name="ln949">    if (!trap || trap-&gt;type != TRAP_WEB)</a>
+<a name="ln950">        return;</a>
+<a name="ln951"> </a>
+<a name="ln952">    if (trap-&gt;ammo_qty == 1) // temp web from e.g. jumpspider/spidersack</a>
+<a name="ln953">    {</a>
+<a name="ln954">        if (!quiet)</a>
+<a name="ln955">            mpr(&quot;The web tears apart.&quot;);</a>
+<a name="ln956">        destroy_trap(you.pos());</a>
+<a name="ln957">    }</a>
+<a name="ln958">    else if (!quiet)</a>
+<a name="ln959">        mpr(&quot;You disentangle yourself.&quot;);</a>
+<a name="ln960"> </a>
+<a name="ln961">    stop_being_held();</a>
+<a name="ln962">}</a>
+<a name="ln963"> </a>
+<a name="ln964">/**</a>
+<a name="ln965"> * Let the player attempt to unstick themself from a web.</a>
+<a name="ln966"> */</a>
+<a name="ln967">static void _free_self_from_web()</a>
+<a name="ln968">{</a>
+<a name="ln969">    // Check if there's actually a web trap in your tile.</a>
+<a name="ln970">    trap_def *trap = trap_at(you.pos());</a>
+<a name="ln971">    if (trap &amp;&amp; trap-&gt;type == TRAP_WEB)</a>
+<a name="ln972">    {</a>
+<a name="ln973">        // if so, roll a chance to escape the web.</a>
+<a name="ln974">        if (x_chance_in_y(3, 10))</a>
+<a name="ln975">        {</a>
+<a name="ln976">            mpr(&quot;You struggle to detach yourself from the web.&quot;);</a>
+<a name="ln977">            // but you actually accomplished nothing!</a>
+<a name="ln978">            return;</a>
+<a name="ln979">        }</a>
+<a name="ln980"> </a>
+<a name="ln981">        leave_web();</a>
+<a name="ln982">    }</a>
+<a name="ln983"> </a>
+<a name="ln984">    // whether or not there was a web trap there, you're free now.</a>
+<a name="ln985">    stop_being_held();</a>
+<a name="ln986">}</a>
+<a name="ln987"> </a>
+<a name="ln988">void free_self_from_net()</a>
+<a name="ln989">{</a>
+<a name="ln990">    const int net = get_trapping_net(you.pos());</a>
+<a name="ln991"> </a>
+<a name="ln992">    if (net == NON_ITEM)</a>
+<a name="ln993">    {</a>
+<a name="ln994">        // If there's no net, it must be a web.</a>
+<a name="ln995">        _free_self_from_web();</a>
+<a name="ln996">        return;</a>
+<a name="ln997">    }</a>
+<a name="ln998"> </a>
+<a name="ln999">    int hold = mitm[net].net_durability;</a>
+<a name="ln1000">    dprf(&quot;net.net_durability: %d&quot;, hold);</a>
+<a name="ln1001"> </a>
+<a name="ln1002">    const int damage = 1 + random2(4);</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    hold -= damage;</a>
+<a name="ln1005">    mitm[net].net_durability = hold;</a>
+<a name="ln1006"> </a>
+<a name="ln1007">    if (hold &lt; NET_MIN_DURABILITY)</a>
+<a name="ln1008">    {</a>
+<a name="ln1009">        mprf(&quot;You %s the net and break free!&quot;, damage &gt; 3 ? &quot;shred&quot; : &quot;rip&quot;);</a>
+<a name="ln1010"> </a>
+<a name="ln1011">        destroy_item(net);</a>
+<a name="ln1012">        stop_being_held();</a>
+<a name="ln1013">        return;</a>
+<a name="ln1014">    }</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    if (damage &gt; 3)</a>
+<a name="ln1017">        mpr(&quot;You tear a large gash into the net.&quot;);</a>
+<a name="ln1018">    else</a>
+<a name="ln1019">        mpr(&quot;You struggle against the net.&quot;);</a>
+<a name="ln1020">}</a>
+<a name="ln1021"> </a>
+<a name="ln1022">/**</a>
+<a name="ln1023"> * Deals with messaging &amp; cleanup for temporary web traps. Does not actually</a>
+<a name="ln1024"> * delete ENCH_HELD!</a>
+<a name="ln1025"> *</a>
+<a name="ln1026"> * @param mons      The monster leaving a web.</a>
+<a name="ln1027"> * @param quiet     Whether to suppress messages.</a>
+<a name="ln1028"> */</a>
+<a name="ln1029">void monster_web_cleanup(const monster &amp;mons, bool quiet)</a>
+<a name="ln1030">{</a>
+<a name="ln1031">    trap_def *trap = trap_at(mons.pos());</a>
+<a name="ln1032">    if (trap &amp;&amp; trap-&gt;type == TRAP_WEB)</a>
+<a name="ln1033">    {</a>
+<a name="ln1034">        if (trap-&gt;ammo_qty == 1)</a>
+<a name="ln1035">        {</a>
+<a name="ln1036">            // temp web from e.g. jumpspider/spidersack</a>
+<a name="ln1037">            if (!quiet)</a>
+<a name="ln1038">                simple_monster_message(mons, &quot; tears the web.&quot;);</a>
+<a name="ln1039">            destroy_trap(mons.pos());</a>
+<a name="ln1040">        }</a>
+<a name="ln1041">        else if (!quiet)</a>
+<a name="ln1042">            simple_monster_message(mons, &quot; pulls away from the web.&quot;);</a>
+<a name="ln1043">    }</a>
+<a name="ln1044">}</a>
+<a name="ln1045"> </a>
+<a name="ln1046">void mons_clear_trapping_net(monster* mon)</a>
+<a name="ln1047">{</a>
+<a name="ln1048">    if (!mon-&gt;caught())</a>
+<a name="ln1049">        return;</a>
+<a name="ln1050"> </a>
+<a name="ln1051">    const int net = get_trapping_net(mon-&gt;pos());</a>
+<a name="ln1052">    if (net != NON_ITEM)</a>
+<a name="ln1053">        free_stationary_net(net);</a>
+<a name="ln1054"> </a>
+<a name="ln1055">    mon-&gt;del_ench(ENCH_HELD, true);</a>
+<a name="ln1056">}</a>
+<a name="ln1057"> </a>
+<a name="ln1058">void free_stationary_net(int item_index)</a>
+<a name="ln1059">{</a>
+<a name="ln1060">    item_def &amp;item = mitm[item_index];</a>
+<a name="ln1061">    if (item.is_type(OBJ_MISSILES, MI_THROWING_NET))</a>
+<a name="ln1062">    {</a>
+<a name="ln1063">        const coord_def pos = item.pos;</a>
+<a name="ln1064">        // Probabilistically mulch net based on damage done, otherwise</a>
+<a name="ln1065">        // reset damage counter (ie: item.net_durability).</a>
+<a name="ln1066">        if (x_chance_in_y(-item.net_durability, 9))</a>
+<a name="ln1067">            destroy_item(item_index);</a>
+<a name="ln1068">        else</a>
+<a name="ln1069">        {</a>
+<a name="ln1070">            item.net_durability = 0;</a>
+<a name="ln1071">            item.net_placed = false;</a>
+<a name="ln1072">        }</a>
+<a name="ln1073"> </a>
+<a name="ln1074">        // Make sure we don't leave a bad trapping net in the stash</a>
+<a name="ln1075">        // FIXME: may leak info if a monster escapes an out-of-sight net.</a>
+<a name="ln1076">        StashTrack.update_stash(pos);</a>
+<a name="ln1077">        StashTrack.unmark_trapping_nets(pos);</a>
+<a name="ln1078">    }</a>
+<a name="ln1079">}</a>
+<a name="ln1080"> </a>
+<a name="ln1081">void clear_trapping_net()</a>
+<a name="ln1082">{</a>
+<a name="ln1083">    if (!you.attribute[ATTR_HELD])</a>
+<a name="ln1084">        return;</a>
+<a name="ln1085"> </a>
+<a name="ln1086">    if (!in_bounds(you.pos()))</a>
+<a name="ln1087">        return;</a>
+<a name="ln1088"> </a>
+<a name="ln1089">    const int net = get_trapping_net(you.pos());</a>
+<a name="ln1090">    if (net == NON_ITEM)</a>
+<a name="ln1091">        leave_web(true);</a>
+<a name="ln1092">    else</a>
+<a name="ln1093">        free_stationary_net(net);</a>
+<a name="ln1094"> </a>
+<a name="ln1095">    stop_being_held();</a>
+<a name="ln1096">}</a>
+<a name="ln1097"> </a>
+<a name="ln1098">item_def trap_def::generate_trap_item()</a>
+<a name="ln1099">{</a>
+<a name="ln1100">    item_def item;</a>
+<a name="ln1101">    object_class_type base;</a>
+<a name="ln1102">    int sub;</a>
+<a name="ln1103"> </a>
+<a name="ln1104">    switch (type)</a>
+<a name="ln1105">    {</a>
+<a name="ln1106">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1107">    case TRAP_NEEDLE: base = OBJ_MISSILES; sub = MI_NEEDLE;       break;</a>
+<a name="ln1108">#endif</a>
+<a name="ln1109">    case TRAP_ARROW:  base = OBJ_MISSILES; sub = MI_ARROW;        break;</a>
+<a name="ln1110">    case TRAP_BOLT:   base = OBJ_MISSILES; sub = MI_BOLT;         break;</a>
+<a name="ln1111">    case TRAP_SPEAR:  base = OBJ_WEAPONS;  sub = WPN_SPEAR;       break;</a>
+<a name="ln1112">    case TRAP_DART:   base = OBJ_MISSILES; sub = MI_DART;         break;</a>
+<a name="ln1113">    case TRAP_NET:    base = OBJ_MISSILES; sub = MI_THROWING_NET; break;</a>
+<a name="ln1114">    default:          return item;</a>
+<a name="ln1115">    }</a>
+<a name="ln1116"> </a>
+<a name="ln1117">    item.base_type = base;</a>
+<a name="ln1118">    item.sub_type  = sub;</a>
+<a name="ln1119">    item.quantity  = 1;</a>
+<a name="ln1120"> </a>
+<a name="ln1121">    if (base == OBJ_MISSILES)</a>
+<a name="ln1122">    {</a>
+<a name="ln1123">        set_item_ego_type(item, base,</a>
+<a name="ln1124">                          (sub == MI_DART) ? SPMSL_POISONED : SPMSL_NORMAL);</a>
+<a name="ln1125">    }</a>
+<a name="ln1126">    else</a>
+<a name="ln1127">        set_item_ego_type(item, base, SPWPN_NORMAL);</a>
+<a name="ln1128"> </a>
+<a name="ln1129">    item_colour(item);</a>
+<a name="ln1130">    return item;</a>
+<a name="ln1131">}</a>
+<a name="ln1132"> </a>
+<a name="ln1133">// Shoot a single piece of ammo at the relevant actor.</a>
+<a name="ln1134">void trap_def::shoot_ammo(actor&amp; act, bool was_known)</a>
+<a name="ln1135">{</a>
+<a name="ln1136">    if (ammo_qty &lt;= 0)</a>
+<a name="ln1137">    {</a>
+<a name="ln1138">        if (was_known &amp;&amp; act.is_player())</a>
+<a name="ln1139">            mpr(&quot;The trap is out of ammunition!&quot;);</a>
+<a name="ln1140">        else if (player_can_hear(pos) &amp;&amp; you.see_cell(pos))</a>
+<a name="ln1141">            mpr(&quot;You hear a soft click.&quot;);</a>
+<a name="ln1142"> </a>
+<a name="ln1143">        destroy();</a>
+<a name="ln1144">        return;</a>
+<a name="ln1145">    }</a>
+<a name="ln1146"> </a>
+<a name="ln1147">    if (act.is_player())</a>
+<a name="ln1148">    {</a>
+<a name="ln1149">        if (one_chance_in(5) || was_known &amp;&amp; !one_chance_in(4))</a>
+<a name="ln1150">        {</a>
+<a name="ln1151">            mprf(&quot;You avoid triggering %s.&quot;, name(DESC_A).c_str());</a>
+<a name="ln1152">            return;</a>
+<a name="ln1153">        }</a>
+<a name="ln1154">    }</a>
+<a name="ln1155">    else if (one_chance_in(5))</a>
+<a name="ln1156">    {</a>
+<a name="ln1157">        if (was_known &amp;&amp; you.see_cell(pos) &amp;&amp; you.can_see(act))</a>
+<a name="ln1158">        {</a>
+<a name="ln1159">            mprf(&quot;%s avoids triggering %s.&quot;, act.name(DESC_THE).c_str(),</a>
+<a name="ln1160">                 name(DESC_A).c_str());</a>
+<a name="ln1161">        }</a>
+<a name="ln1162">        return;</a>
+<a name="ln1163">    }</a>
+<a name="ln1164"> </a>
+<a name="ln1165">    item_def shot = generate_trap_item();</a>
+<a name="ln1166"> </a>
+<a name="ln1167">    int trap_hit = 20 + (to_hit_bonus()*2);</a>
+<a name="ln1168">    trap_hit *= random2(200);</a>
+<a name="ln1169">    trap_hit /= 100;</a>
+<a name="ln1170">    if (act.missile_repulsion())</a>
+<a name="ln1171">        trap_hit = random2(trap_hit);</a>
+<a name="ln1172"> </a>
+<a name="ln1173">    const int con_block = random2(20 + act.shield_block_penalty());</a>
+<a name="ln1174">    const int pro_block = act.shield_bonus();</a>
+<a name="ln1175">    dprf(&quot;%s: hit %d EV %d, shield hit %d block %d&quot;, name(DESC_PLAIN).c_str(),</a>
+<a name="ln1176">         trap_hit, act.evasion(), con_block, pro_block);</a>
+<a name="ln1177"> </a>
+<a name="ln1178">    // Determine whether projectile hits.</a>
+<a name="ln1179">    if (trap_hit &lt; act.evasion())</a>
+<a name="ln1180">    {</a>
+<a name="ln1181">        if (act.is_player())</a>
+<a name="ln1182">            mprf(&quot;%s shoots out and misses you.&quot;, shot.name(DESC_A).c_str());</a>
+<a name="ln1183">        else if (you.see_cell(act.pos()))</a>
+<a name="ln1184">        {</a>
+<a name="ln1185">            mprf(&quot;%s misses %s!&quot;, shot.name(DESC_A).c_str(),</a>
+<a name="ln1186">                 act.name(DESC_THE).c_str());</a>
+<a name="ln1187">        }</a>
+<a name="ln1188">    }</a>
+<a name="ln1189">    else if (pro_block &gt;= con_block</a>
+<a name="ln1190">             &amp;&amp; you.see_cell(act.pos()))</a>
+<a name="ln1191">    {</a>
+<a name="ln1192">        string owner;</a>
+<a name="ln1193">        if (act.is_player())</a>
+<a name="ln1194">            owner = &quot;your&quot;;</a>
+<a name="ln1195">        else if (you.can_see(act))</a>
+<a name="ln1196">            owner = apostrophise(act.name(DESC_THE));</a>
+<a name="ln1197">        else // &quot;its&quot; sounds abysmal; animals don't use shields</a>
+<a name="ln1198">            owner = &quot;someone's&quot;;</a>
+<a name="ln1199">        mprf(&quot;%s shoots out and hits %s shield.&quot;, shot.name(DESC_A).c_str(),</a>
+<a name="ln1200">             owner.c_str());</a>
+<a name="ln1201"> </a>
+<a name="ln1202">        act.shield_block_succeeded(0);</a>
+<a name="ln1203">    }</a>
+<a name="ln1204">    else // OK, we've been hit.</a>
+<a name="ln1205">    {</a>
+<a name="ln1206">        bool poison = type == TRAP_DART</a>
+<a name="ln1207">                       &amp;&amp; (x_chance_in_y(50 - (3*act.armour_class()) / 2, 100));</a>
+<a name="ln1208"> </a>
+<a name="ln1209">        int damage_taken = act.apply_ac(shot_damage(act));</a>
+<a name="ln1210"> </a>
+<a name="ln1211">        if (act.is_player())</a>
+<a name="ln1212">        {</a>
+<a name="ln1213">            mprf(&quot;%s shoots out and hits you!&quot;, shot.name(DESC_A).c_str());</a>
+<a name="ln1214"> </a>
+<a name="ln1215">            string n = name(DESC_A);</a>
+<a name="ln1216"> </a>
+<a name="ln1217">            // Needle traps can poison.</a>
+<a name="ln1218">            if (poison)</a>
+<a name="ln1219">                poison_player(1 + roll_dice(2, 9), &quot;&quot;, n);</a>
+<a name="ln1220"> </a>
+<a name="ln1221">            ouch(damage_taken, KILLED_BY_TRAP, MID_NOBODY, n.c_str());</a>
+<a name="ln1222">        }</a>
+<a name="ln1223">        else</a>
+<a name="ln1224">        {</a>
+<a name="ln1225">            if (you.see_cell(act.pos()))</a>
+<a name="ln1226">            {</a>
+<a name="ln1227">                mprf(&quot;%s hits %s%s!&quot;,</a>
+<a name="ln1228">                     shot.name(DESC_A).c_str(),</a>
+<a name="ln1229">                     act.name(DESC_THE).c_str(),</a>
+<a name="ln1230">                     (damage_taken == 0 &amp;&amp; !poison) ?</a>
+<a name="ln1231">                         &quot;, but does no damage&quot; : &quot;&quot;);</a>
+<a name="ln1232">            }</a>
+<a name="ln1233"> </a>
+<a name="ln1234">            if (poison)</a>
+<a name="ln1235">                act.poison(nullptr, 3 + roll_dice(2, 5));</a>
+<a name="ln1236">            act.hurt(nullptr, damage_taken);</a>
+<a name="ln1237">        }</a>
+<a name="ln1238">    }</a>
+<a name="ln1239">    ammo_qty--;</a>
+<a name="ln1240">}</a>
+<a name="ln1241"> </a>
+<a name="ln1242">bool trap_def::is_mechanical() const</a>
+<a name="ln1243">{</a>
+<a name="ln1244">    switch (type)</a>
+<a name="ln1245">    {</a>
+<a name="ln1246">    case TRAP_ARROW:</a>
+<a name="ln1247">    case TRAP_SPEAR:</a>
+<a name="ln1248">    case TRAP_BLADE:</a>
+<a name="ln1249">    case TRAP_DART:</a>
+<a name="ln1250">    case TRAP_BOLT:</a>
+<a name="ln1251">    case TRAP_NET:</a>
+<a name="ln1252">    case TRAP_PLATE:</a>
+<a name="ln1253">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1254">    case TRAP_NEEDLE:</a>
+<a name="ln1255">    case TRAP_GAS:</a>
+<a name="ln1256">#endif</a>
+<a name="ln1257">        return true;</a>
+<a name="ln1258">    default:</a>
+<a name="ln1259">        return false;</a>
+<a name="ln1260">    }</a>
+<a name="ln1261">}</a>
+<a name="ln1262"> </a>
+<a name="ln1263">dungeon_feature_type trap_def::feature() const</a>
+<a name="ln1264">{</a>
+<a name="ln1265">    return trap_feature(type);</a>
+<a name="ln1266">}</a>
+<a name="ln1267"> </a>
+<a name="ln1268">dungeon_feature_type trap_feature(trap_type type)</a>
+<a name="ln1269">{</a>
+<a name="ln1270">    switch (type)</a>
+<a name="ln1271">    {</a>
+<a name="ln1272">    case TRAP_WEB:</a>
+<a name="ln1273">        return DNGN_TRAP_WEB;</a>
+<a name="ln1274">    case TRAP_SHAFT:</a>
+<a name="ln1275">        return DNGN_TRAP_SHAFT;</a>
+<a name="ln1276">    case TRAP_DISPERSAL:</a>
+<a name="ln1277">        return DNGN_TRAP_DISPERSAL;</a>
+<a name="ln1278">    case TRAP_TELEPORT:</a>
+<a name="ln1279">        return DNGN_TRAP_TELEPORT;</a>
+<a name="ln1280">    case TRAP_TELEPORT_PERMANENT:</a>
+<a name="ln1281">        return DNGN_TRAP_TELEPORT_PERMANENT;</a>
+<a name="ln1282">    case TRAP_ALARM:</a>
+<a name="ln1283">        return DNGN_TRAP_ALARM;</a>
+<a name="ln1284">    case TRAP_ZOT:</a>
+<a name="ln1285">        return DNGN_TRAP_ZOT;</a>
+<a name="ln1286">    case TRAP_GOLUBRIA:</a>
+<a name="ln1287">        return DNGN_PASSAGE_OF_GOLUBRIA;</a>
+<a name="ln1288">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1289">    case TRAP_SHADOW:</a>
+<a name="ln1290">        return DNGN_TRAP_SHADOW;</a>
+<a name="ln1291">    case TRAP_SHADOW_DORMANT:</a>
+<a name="ln1292">        return DNGN_TRAP_SHADOW_DORMANT;</a>
+<a name="ln1293">#endif</a>
+<a name="ln1294"> </a>
+<a name="ln1295">    case TRAP_ARROW:</a>
+<a name="ln1296">        return DNGN_TRAP_ARROW;</a>
+<a name="ln1297">    case TRAP_SPEAR:</a>
+<a name="ln1298">        return DNGN_TRAP_SPEAR;</a>
+<a name="ln1299">    case TRAP_BLADE:</a>
+<a name="ln1300">        return DNGN_TRAP_BLADE;</a>
+<a name="ln1301">    case TRAP_DART:</a>
+<a name="ln1302">        return DNGN_TRAP_DART;</a>
+<a name="ln1303">    case TRAP_BOLT:</a>
+<a name="ln1304">        return DNGN_TRAP_BOLT;</a>
+<a name="ln1305">    case TRAP_NET:</a>
+<a name="ln1306">        return DNGN_TRAP_NET;</a>
+<a name="ln1307">    case TRAP_PLATE:</a>
+<a name="ln1308">        return DNGN_TRAP_PLATE;</a>
+<a name="ln1309"> </a>
+<a name="ln1310">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1311">    case TRAP_NEEDLE:</a>
+<a name="ln1312">    case TRAP_GAS:</a>
+<a name="ln1313">        return DNGN_TRAP_MECHANICAL;</a>
+<a name="ln1314">#endif</a>
+<a name="ln1315"> </a>
+<a name="ln1316">    default:</a>
+<a name="ln1317">        die(&quot;placeholder trap type %d used&quot;, type);</a>
+<a name="ln1318">    }</a>
+<a name="ln1319">}</a>
+<a name="ln1320"> </a>
+<a name="ln1321">/***</a>
+<a name="ln1322"> * Can a shaft be placed on the current level?</a>
+<a name="ln1323"> *</a>
+<a name="ln1324"> * @returns true if such a shaft can be placed.</a>
+<a name="ln1325"> */</a>
+<a name="ln1326">bool is_valid_shaft_level()</a>
+<a name="ln1327">{</a>
+<a name="ln1328">    // Important: We are sometimes called before the level has been loaded</a>
+<a name="ln1329">    // or generated, so should not depend on properties of the level itself,</a>
+<a name="ln1330">    // but only on its level_id.</a>
+<a name="ln1331">    const level_id place = level_id::current();</a>
+<a name="ln1332">    if (crawl_state.game_is_sprint())</a>
+<a name="ln1333">        return false;</a>
+<a name="ln1334"> </a>
+<a name="ln1335">    if (!is_connected_branch(place))</a>
+<a name="ln1336">        return false;</a>
+<a name="ln1337"> </a>
+<a name="ln1338">    const Branch &amp;branch = branches[place.branch];</a>
+<a name="ln1339"> </a>
+<a name="ln1340">    if (branch.branch_flags &amp; brflag::no_shafts)</a>
+<a name="ln1341">        return false;</a>
+<a name="ln1342"> </a>
+<a name="ln1343">    // Don't allow shafts from the bottom of a branch.</a>
+<a name="ln1344">    return (brdepth[place.branch] - place.depth) &gt;= 1;</a>
+<a name="ln1345">}</a>
+<a name="ln1346"> </a>
+<a name="ln1347">/***</a>
+<a name="ln1348"> * Can we force shaft the player from this level?</a>
+<a name="ln1349"> *</a>
+<a name="ln1350"> * @returns true if we can.</a>
+<a name="ln1351"> */</a>
+<a name="ln1352">bool is_valid_shaft_effect_level()</a>
+<a name="ln1353">{</a>
+<a name="ln1354">    const level_id place = level_id::current();</a>
+<a name="ln1355">    const Branch &amp;branch = branches[place.branch];</a>
+<a name="ln1356"> </a>
+<a name="ln1357">    // Don't shaft the player when we can't, and also when it would be into a</a>
+<a name="ln1358">    // dangerous end.</a>
+<a name="ln1359">    return is_valid_shaft_level()</a>
+<a name="ln1360">           &amp;&amp; !(branch.branch_flags &amp; brflag::dangerous_end</a>
+<a name="ln1361">                &amp;&amp; brdepth[place.branch] - place.depth == 1);</a>
+<a name="ln1362">}</a>
+<a name="ln1363"> </a>
+<a name="ln1364">/***</a>
+<a name="ln1365"> * The player rolled a new tile, see if they deserve to be trapped.</a>
+<a name="ln1366"> */</a>
+<a name="ln1367">void roll_trap_effects()</a>
+<a name="ln1368">{</a>
+<a name="ln1369">    int trap_rate = trap_rate_for_place();</a>
+<a name="ln1370"> </a>
+<a name="ln1371">    you.trapped = you.num_turns &amp;&amp; !have_passive(passive_t::avoid_traps)</a>
+<a name="ln1372">        &amp;&amp; (you.trapped || x_chance_in_y(trap_rate, 9 * env.density));</a>
+<a name="ln1373">}</a>
+<a name="ln1374"> </a>
+<a name="ln1375">/***</a>
+<a name="ln1376"> * Separate from roll_trap_effects so the trap triggers when crawl is in an</a>
+<a name="ln1377"> * appropriate state</a>
+<a name="ln1378"> */</a>
+<a name="ln1379">void do_trap_effects()</a>
+<a name="ln1380">{</a>
+<a name="ln1381">    // Try to shaft, teleport, or alarm the player.</a>
+<a name="ln1382"> </a>
+<a name="ln1383">    // We figure out which possibilities are allowed before picking which happens</a>
+<a name="ln1384">    // so that the overall chance of being trapped doesn't depend on which</a>
+<a name="ln1385">    // possibilities are allowed.</a>
+<a name="ln1386"> </a>
+<a name="ln1387">    // Teleport effects are allowed everywhere, no need to check</a>
+<a name="ln1388">    vector&lt;trap_type&gt; available_traps = { TRAP_TELEPORT };</a>
+<a name="ln1389">    // Don't shaft the player when shafts aren't allowed in the location or when</a>
+<a name="ln1390">    //  it would be into a dangerous end.</a>
+<a name="ln1391">    if (is_valid_shaft_effect_level())</a>
+<a name="ln1392">        available_traps.push_back(TRAP_SHAFT);</a>
+<a name="ln1393">    // No alarms on the first 3 floors</a>
+<a name="ln1394">    if (env.absdepth0 &gt; 3)</a>
+<a name="ln1395">        available_traps.push_back(TRAP_ALARM);</a>
+<a name="ln1396"> </a>
+<a name="ln1397">    switch (*random_iterator(available_traps))</a>
+<a name="ln1398">    {</a>
+<a name="ln1399">        case TRAP_SHAFT:</a>
+<a name="ln1400">            dprf(&quot;Attempting to shaft player.&quot;);</a>
+<a name="ln1401">            you.do_shaft();</a>
+<a name="ln1402">            break;</a>
+<a name="ln1403"> </a>
+<a name="ln1404">        case TRAP_ALARM:</a>
+<a name="ln1405">            // Alarm effect alarms are always noisy, even if the player is</a>
+<a name="ln1406">            // silenced, to avoid &quot;travel only while silenced&quot; behaviour.</a>
+<a name="ln1407">            // XXX: improve messaging to make it clear there's a wail outside of the</a>
+<a name="ln1408">            // player's silence</a>
+<a name="ln1409">            mprf(&quot;You set off the alarm!&quot;);</a>
+<a name="ln1410">            fake_noisy(40, you.pos());</a>
+<a name="ln1411">            you.sentinel_mark(true);</a>
+<a name="ln1412">            break;</a>
+<a name="ln1413"> </a>
+<a name="ln1414">        case TRAP_TELEPORT:</a>
+<a name="ln1415">            you_teleport_now(false, true, &quot;You stumble into a teleport trap!&quot;);</a>
+<a name="ln1416">            break;</a>
+<a name="ln1417"> </a>
+<a name="ln1418">        // Other cases shouldn't be possible, but having a default here quiets</a>
+<a name="ln1419">        // compiler warnings</a>
+<a name="ln1420">        default:</a>
+<a name="ln1421">            break;</a>
+<a name="ln1422">    }</a>
+<a name="ln1423">}</a>
+<a name="ln1424"> </a>
+<a name="ln1425">level_id generic_shaft_dest(level_id place)</a>
+<a name="ln1426">{</a>
+<a name="ln1427">    if (!is_connected_branch(place))</a>
+<a name="ln1428">        return place;</a>
+<a name="ln1429"> </a>
+<a name="ln1430">    int curr_depth = place.depth;</a>
+<a name="ln1431">    int max_depth = brdepth[place.branch];</a>
+<a name="ln1432"> </a>
+<a name="ln1433">    // Shafts drop you 1/2/3 levels with equal chance.</a>
+<a name="ln1434">    // 33.3% for 1, 2, 3 from D:3, less before</a>
+<a name="ln1435">    place.depth += 1 + random2(min(place.depth, 3));</a>
+<a name="ln1436"> </a>
+<a name="ln1437">    if (place.depth &gt; max_depth)</a>
+<a name="ln1438">        place.depth = max_depth;</a>
+<a name="ln1439"> </a>
+<a name="ln1440">    if (place.depth == curr_depth)</a>
+<a name="ln1441">        return place;</a>
+<a name="ln1442"> </a>
+<a name="ln1443">    // Only shafts on the level immediately above a dangerous branch</a>
+<a name="ln1444">    // bottom will take you to that dangerous bottom.</a>
+<a name="ln1445">    if (branches[place.branch].branch_flags &amp; brflag::dangerous_end</a>
+<a name="ln1446">        &amp;&amp; place.depth == max_depth</a>
+<a name="ln1447">        &amp;&amp; (max_depth - curr_depth) &gt; 1)</a>
+<a name="ln1448">    {</a>
+<a name="ln1449">        place.depth--;</a>
+<a name="ln1450">    }</a>
+<a name="ln1451"> </a>
+<a name="ln1452">    return place;</a>
+<a name="ln1453">}</a>
+<a name="ln1454"> </a>
+<a name="ln1455">/**</a>
+<a name="ln1456"> * Get the trap effect rate for the current level.</a>
+<a name="ln1457"> *</a>
+<a name="ln1458"> * No traps effects occur in either Temple or disconnected branches other than</a>
+<a name="ln1459"> * Pandemonium. For other branches, this value starts at 1. It is increased for</a>
+<a name="ln1460"> * deeper levels; by one for every 10 levels of absdepth,</a>
+<a name="ln1461"> * capping out at max 9.</a>
+<a name="ln1462"> *</a>
+<a name="ln1463"> * No traps in tutorial, sprint, and arena.</a>
+<a name="ln1464"> *</a>
+<a name="ln1465"> * @return  The trap rate for the current level.</a>
+<a name="ln1466">*/</a>
+<a name="ln1467">int trap_rate_for_place()</a>
+<a name="ln1468">{</a>
+<a name="ln1469">    if (player_in_branch(BRANCH_TEMPLE)</a>
+<a name="ln1470">        || (!player_in_connected_branch()</a>
+<a name="ln1471">            &amp;&amp; !player_in_branch(BRANCH_PANDEMONIUM))</a>
+<a name="ln1472">        || crawl_state.game_is_sprint()</a>
+<a name="ln1473">        || crawl_state.game_is_tutorial()</a>
+<a name="ln1474">        || crawl_state.game_is_arena())</a>
+<a name="ln1475">    {</a>
+<a name="ln1476">        return 0;</a>
+<a name="ln1477">    }</a>
+<a name="ln1478"> </a>
+<a name="ln1479">    return 1 + env.absdepth0 / 10;</a>
+<a name="ln1480">}</a>
+<a name="ln1481"> </a>
+<a name="ln1482">/**</a>
+<a name="ln1483"> * Choose a weighted random trap type for the currently-generated level.</a>
+<a name="ln1484"> *</a>
+<a name="ln1485"> * Odds of generating zot traps vary by depth (and are depth-limited). Alarm</a>
+<a name="ln1486"> * traps also can't be placed before D:4. All other traps are depth-agnostic.</a>
+<a name="ln1487"> *</a>
+<a name="ln1488"> * @return                    A random trap type.</a>
+<a name="ln1489"> *                            May be NUM_TRAPS, if no traps were valid.</a>
+<a name="ln1490"> */</a>
+<a name="ln1491"> </a>
+<a name="ln1492">trap_type random_trap_for_place()</a>
+<a name="ln1493">{</a>
+<a name="ln1494">    // zot traps are Very Special.</a>
+<a name="ln1495">    // very common in zot...</a>
+<a name="ln1496">    if (player_in_branch(BRANCH_ZOT) &amp;&amp; coinflip())</a>
+<a name="ln1497">        return TRAP_ZOT;</a>
+<a name="ln1498"> </a>
+<a name="ln1499">    // and elsewhere, increasingly common with depth</a>
+<a name="ln1500">    // possible starting at depth 15 (end of D, late lair, lair branches)</a>
+<a name="ln1501">    // XXX: is there a better way to express this?</a>
+<a name="ln1502">    if (random2(1 + env.absdepth0) &gt; 14 &amp;&amp; one_chance_in(3))</a>
+<a name="ln1503">        return TRAP_ZOT;</a>
+<a name="ln1504"> </a>
+<a name="ln1505">    const bool shaft_ok = is_valid_shaft_level();</a>
+<a name="ln1506">    const bool tele_ok = !crawl_state.game_is_sprint();</a>
+<a name="ln1507">    const bool alarm_ok = env.absdepth0 &gt; 3;</a>
+<a name="ln1508"> </a>
+<a name="ln1509">    const pair&lt;trap_type, int&gt; trap_weights[] =</a>
+<a name="ln1510">    {</a>
+<a name="ln1511">        { TRAP_DISPERSAL, tele_ok  ? 1 : 0},</a>
+<a name="ln1512">        { TRAP_TELEPORT,  tele_ok  ? 1 : 0},</a>
+<a name="ln1513">        { TRAP_SHAFT,    shaft_ok  ? 1 : 0},</a>
+<a name="ln1514">        { TRAP_ALARM,    alarm_ok  ? 1 : 0},</a>
+<a name="ln1515">    };</a>
+<a name="ln1516"> </a>
+<a name="ln1517">    const trap_type *trap = random_choose_weighted(trap_weights);</a>
+<a name="ln1518">    return trap ? *trap : NUM_TRAPS;</a>
+<a name="ln1519">}</a>
+<a name="ln1520"> </a>
+<a name="ln1521">/**</a>
+<a name="ln1522"> * Oldstyle trap algorithm, used for vaults. Very bad. Please remove ASAP.</a>
+<a name="ln1523"> */</a>
+<a name="ln1524">trap_type random_vault_trap()</a>
+<a name="ln1525">{</a>
+<a name="ln1526">    const int level_number = env.absdepth0;</a>
+<a name="ln1527">    trap_type type = TRAP_ARROW;</a>
+<a name="ln1528"> </a>
+<a name="ln1529">    if ((random2(1 + level_number) &gt; 1) &amp;&amp; one_chance_in(4))</a>
+<a name="ln1530">        type = TRAP_DART;</a>
+<a name="ln1531">    if (random2(1 + level_number) &gt; 3)</a>
+<a name="ln1532">        type = TRAP_SPEAR;</a>
+<a name="ln1533"> </a>
+<a name="ln1534">    if (type == TRAP_ARROW &amp;&amp; one_chance_in(15))</a>
+<a name="ln1535">        type = TRAP_NET;</a>
+<a name="ln1536"> </a>
+<a name="ln1537">    if (random2(1 + level_number) &gt; 7)</a>
+<a name="ln1538">        type = TRAP_BOLT;</a>
+<a name="ln1539">    if (random2(1 + level_number) &gt; 14)</a>
+<a name="ln1540">        type = TRAP_BLADE;</a>
+<a name="ln1541"> </a>
+<a name="ln1542">    if (random2(1 + level_number) &gt; 14 &amp;&amp; one_chance_in(3)</a>
+<a name="ln1543">        || (player_in_branch(BRANCH_ZOT) &amp;&amp; coinflip()))</a>
+<a name="ln1544">    {</a>
+<a name="ln1545">        type = TRAP_ZOT;</a>
+<a name="ln1546">    }</a>
+<a name="ln1547"> </a>
+<a name="ln1548">    if (one_chance_in(20) &amp;&amp; is_valid_shaft_level())</a>
+<a name="ln1549">        type = TRAP_SHAFT;</a>
+<a name="ln1550">    if (one_chance_in(20) &amp;&amp; !crawl_state.game_is_sprint())</a>
+<a name="ln1551">        type = TRAP_TELEPORT;</a>
+<a name="ln1552">    if (one_chance_in(40) &amp;&amp; level_number &gt; 3)</a>
+<a name="ln1553">        type = TRAP_ALARM;</a>
+<a name="ln1554"> </a>
+<a name="ln1555">    return type;</a>
+<a name="ln1556">}</a>
+<a name="ln1557"> </a>
+<a name="ln1558">int count_traps(trap_type ttyp)</a>
+<a name="ln1559">{</a>
+<a name="ln1560">    int num = 0;</a>
+<a name="ln1561">    for (const auto&amp; entry : env.trap)</a>
+<a name="ln1562">        if (entry.second.type == ttyp)</a>
+<a name="ln1563">            num++;</a>
+<a name="ln1564">    return num;</a>
+<a name="ln1565">}</a>
+<a name="ln1566"> </a>
+<a name="ln1567">void place_webs(int num)</a>
+<a name="ln1568">{</a>
+<a name="ln1569">    trap_def ts;</a>
+<a name="ln1570">    for (int j = 0; j &lt; num; j++)</a>
+<a name="ln1571">    {</a>
+<a name="ln1572">        int tries;</a>
+<a name="ln1573">        // this is hardly ever enough to place many webs, most of the time</a>
+<a name="ln1574">        // it will fail prematurely. Which is fine.</a>
+<a name="ln1575">        for (tries = 0; tries &lt; 200; ++tries)</a>
+<a name="ln1576">        {</a>
+<a name="ln1577">            ts.pos.x = random2(GXM);</a>
+<a name="ln1578">            ts.pos.y = random2(GYM);</a>
+<a name="ln1579">            if (in_bounds(ts.pos)</a>
+<a name="ln1580">                &amp;&amp; grd(ts.pos) == DNGN_FLOOR</a>
+<a name="ln1581">                &amp;&amp; !map_masked(ts.pos, MMT_NO_TRAP))</a>
+<a name="ln1582">            {</a>
+<a name="ln1583">                // Calculate weight.</a>
+<a name="ln1584">                int weight = 0;</a>
+<a name="ln1585">                for (adjacent_iterator ai(ts.pos); ai; ++ai)</a>
+<a name="ln1586">                {</a>
+<a name="ln1587">                    // Solid wall?</a>
+<a name="ln1588">                    int solid_weight = 0;</a>
+<a name="ln1589">                    // Orthogonals weight three, diagonals 1.</a>
+<a name="ln1590">                    if (cell_is_solid(*ai))</a>
+<a name="ln1591">                    {</a>
+<a name="ln1592">                        solid_weight = (ai-&gt;x == ts.pos.x || ai-&gt;y == ts.pos.y)</a>
+<a name="ln1593">                                        ? 3 : 1;</a>
+<a name="ln1594">                    }</a>
+<a name="ln1595">                    weight += solid_weight;</a>
+<a name="ln1596">                }</a>
+<a name="ln1597"> </a>
+<a name="ln1598">                // Maximum weight is 4*3+4*1 = 16</a>
+<a name="ln1599">                // *But* that would imply completely surrounded by rock (no point there)</a>
+<a name="ln1600">                if (weight &lt;= 16 &amp;&amp; x_chance_in_y(weight + 2, 34))</a>
+<a name="ln1601">                    break;</a>
+<a name="ln1602">            }</a>
+<a name="ln1603">        }</a>
+<a name="ln1604"> </a>
+<a name="ln1605">        if (tries &gt;= 200)</a>
+<a name="ln1606">            break;</a>
+<a name="ln1607"> </a>
+<a name="ln1608">        ts.type = TRAP_WEB;</a>
+<a name="ln1609">        ts.prepare_ammo();</a>
+<a name="ln1610">        ts.reveal();</a>
+<a name="ln1611">        env.trap[ts.pos] = ts;</a>
+<a name="ln1612">    }</a>
+<a name="ln1613">}</a>
+<a name="ln1614"> </a>
+<a name="ln1615">bool ensnare(actor *fly)</a>
+<a name="ln1616">{</a>
+<a name="ln1617">    ASSERT(fly); // XXX: change to actor &amp;fly</a>
+<a name="ln1618">    if (fly-&gt;is_web_immune())</a>
+<a name="ln1619">        return false;</a>
+<a name="ln1620"> </a>
+<a name="ln1621">    if (fly-&gt;caught())</a>
+<a name="ln1622">    {</a>
+<a name="ln1623">        // currently webs are stateless so except for flavour it's a no-op</a>
+<a name="ln1624">        if (fly-&gt;is_player())</a>
+<a name="ln1625">            mpr(&quot;You are even more entangled.&quot;);</a>
+<a name="ln1626">        return false;</a>
+<a name="ln1627">    }</a>
+<a name="ln1628"> </a>
+<a name="ln1629">    if (fly-&gt;body_size() &gt;= SIZE_GIANT)</a>
+<a name="ln1630">    {</a>
+<a name="ln1631">        if (you.can_see(*fly))</a>
+<a name="ln1632">            mprf(&quot;A web harmlessly splats on %s.&quot;, fly-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1633">        return false;</a>
+<a name="ln1634">    }</a>
+<a name="ln1635"> </a>
+<a name="ln1636">    // If we're over water, an open door, shop, portal, etc, the web will</a>
+<a name="ln1637">    // fail to attach and you'll be released after a single turn.</a>
+<a name="ln1638">    if (grd(fly-&gt;pos()) == DNGN_FLOOR)</a>
+<a name="ln1639">    {</a>
+<a name="ln1640">        place_specific_trap(fly-&gt;pos(), TRAP_WEB, 1); // 1 ammo = destroyed on exit (hackish)</a>
+<a name="ln1641">        if (you.see_cell(fly-&gt;pos()))</a>
+<a name="ln1642">            grd(fly-&gt;pos()) = DNGN_TRAP_WEB;</a>
+<a name="ln1643">    }</a>
+<a name="ln1644"> </a>
+<a name="ln1645">    if (fly-&gt;is_player())</a>
+<a name="ln1646">    {</a>
+<a name="ln1647">        if (_player_caught_in_web()) // no fail, returns false if already held</a>
+<a name="ln1648">            mpr(&quot;You are caught in a web!&quot;);</a>
+<a name="ln1649">    }</a>
+<a name="ln1650">    else</a>
+<a name="ln1651">    {</a>
+<a name="ln1652">        simple_monster_message(*fly-&gt;as_monster(), &quot; is caught in a web!&quot;);</a>
+<a name="ln1653">        fly-&gt;as_monster()-&gt;add_ench(ENCH_HELD);</a>
+<a name="ln1654">    }</a>
+<a name="ln1655"> </a>
+<a name="ln1656">    // Drowned?</a>
+<a name="ln1657">    if (!fly-&gt;alive())</a>
+<a name="ln1658">        return true;</a>
+<a name="ln1659"> </a>
+<a name="ln1660">    check_monsters_sense(SENSE_WEB_VIBRATION, 9, fly-&gt;pos());</a>
+<a name="ln1661">    return true;</a>
+<a name="ln1662">}</a>
+<a name="ln1663"> </a>
+<a name="ln1664">// Whether this trap type can be placed in vaults by the ^ glphy</a>
+<a name="ln1665">bool is_regular_trap(trap_type trap)</a>
+<a name="ln1666">{</a>
+<a name="ln1667">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1668">    return trap &lt;= TRAP_MAX_REGULAR || trap == TRAP_DISPERSAL;</a>
+<a name="ln1669">#else</a>
+<a name="ln1670">    return trap &lt;= TRAP_MAX_REGULAR;</a>
+<a name="ln1671">#endif</a>
+<a name="ln1672">}</a>
+
+</code></pre>
+<div class="balloon" rel="1149"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

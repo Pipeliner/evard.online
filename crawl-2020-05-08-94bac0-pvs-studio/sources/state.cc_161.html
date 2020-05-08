@@ -1,0 +1,685 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>state.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Game state functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;state.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#ifndef TARGET_OS_WINDOWS</a>
+<a name="ln11">#include &lt;unistd.h&gt;</a>
+<a name="ln12">#endif</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;dbg-util.h&quot;</a>
+<a name="ln15">#include &quot;delay.h&quot;</a>
+<a name="ln16">#include &quot;directn.h&quot;</a>
+<a name="ln17">#include &quot;hints.h&quot;</a>
+<a name="ln18">#include &quot;macro.h&quot;</a>
+<a name="ln19">#include &quot;menu.h&quot;</a>
+<a name="ln20">#include &quot;message.h&quot;</a>
+<a name="ln21">#include &quot;monster.h&quot;</a>
+<a name="ln22">#include &quot;player.h&quot;</a>
+<a name="ln23">#include &quot;religion.h&quot;</a>
+<a name="ln24">#include &quot;showsymb.h&quot;</a>
+<a name="ln25">#include &quot;unwind.h&quot;</a>
+<a name="ln26"> </a>
+<a name="ln27">game_state::game_state()</a>
+<a name="ln28">    : game_crashed(false), crash_debug_scans_safe(true),</a>
+<a name="ln29">      mouse_enabled(false), waiting_for_command(false),</a>
+<a name="ln30">      terminal_resized(false), last_winch(0),</a>
+<a name="ln31">      seed(0),</a>
+<a name="ln32">      io_inited(false),</a>
+<a name="ln33">      need_save(false), game_started(false), saving_game(false),</a>
+<a name="ln34">      updating_scores(false),</a>
+<a name="ln35">      seen_hups(0), map_stat_gen(false), map_stat_dump_disconnect(false),</a>
+<a name="ln36">      obj_stat_gen(false), type(GAME_TYPE_NORMAL),</a>
+<a name="ln37">      last_type(GAME_TYPE_UNSPECIFIED), last_game_exit(game_exit::unknown),</a>
+<a name="ln38">      marked_as_won(false), arena_suspended(false),</a>
+<a name="ln39">      generating_level(false), dump_maps(false), test(false), script(false),</a>
+<a name="ln40">      build_db(false), tests_selected(),</a>
+<a name="ln41">#ifdef DGAMELAUNCH</a>
+<a name="ln42">      throttle(true),</a>
+<a name="ln43">      bypassed_startup_menu(true),</a>
+<a name="ln44">#else</a>
+<a name="ln45">      throttle(false),</a>
+<a name="ln46">      bypassed_startup_menu(false),</a>
+<a name="ln47">#endif</a>
+<a name="ln48">      show_more_prompt(true), terminal_resize_handler(nullptr),</a>
+<a name="ln49">      terminal_resize_check(nullptr), doing_prev_cmd_again(false),</a>
+<a name="ln50">      prev_cmd(CMD_NO_CMD), repeat_cmd(CMD_NO_CMD),</a>
+<a name="ln51">      cmd_repeat_started_unsafe(false), lua_calls_no_turn(0),</a>
+<a name="ln52">      stat_gain_prompt(false), simulating_xp_gain(false),</a>
+<a name="ln53">      level_annotation_shown(false),</a>
+<a name="ln54">      viewport_monster_hp(false), viewport_weapons(false),</a>
+<a name="ln55">      tiles_disabled(false),</a>
+<a name="ln56">      title_screen(true),</a>
+<a name="ln57">      invisible_targeting(false),</a>
+<a name="ln58">      darken_range(nullptr), unsaved_macros(false), disables(),</a>
+<a name="ln59">      minor_version(-1), save_rcs_version(),</a>
+<a name="ln60">      nonempty_buffer_flush_errors(false),</a>
+<a name="ln61">      mon_act(nullptr)</a>
+<a name="ln62">{</a>
+<a name="ln63">    reset_cmd_repeat();</a>
+<a name="ln64">    reset_cmd_again();</a>
+<a name="ln65">#ifdef TARGET_OS_WINDOWS</a>
+<a name="ln66">    no_gdb = &quot;Non-UNIX Platform -&gt; not running gdb.&quot;;</a>
+<a name="ln67">#else</a>
+<a name="ln68">    no_gdb = access(GDB_PATH, 1) ? &quot;gdb not executable.&quot; : 0;</a>
+<a name="ln69">#endif</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">/**</a>
+<a name="ln73"> * Cleanup for when the game is reset.</a>
+<a name="ln74"> *</a>
+<a name="ln75"> * @see main.cc:_reset_game()</a>
+<a name="ln76"> */</a>
+<a name="ln77">void game_state::reset_game()</a>
+<a name="ln78">{</a>
+<a name="ln79">    game_started = false;</a>
+<a name="ln80">    // need_save is unset by death, but not by saving with restart_after_save.</a>
+<a name="ln81">    need_save = false;</a>
+<a name="ln82">    type = GAME_TYPE_UNSPECIFIED;</a>
+<a name="ln83">    updating_scores = false;</a>
+<a name="ln84">    clear_mon_acting();</a>
+<a name="ln85">    reset_cmd_repeat();</a>
+<a name="ln86">    reset_cmd_again();</a>
+<a name="ln87">}</a>
+<a name="ln88"> </a>
+<a name="ln89">///////////////////////////////////////////////////////////////////////////</a>
+<a name="ln90">// Repeating commands and doing the previous command over again.</a>
+<a name="ln91"> </a>
+<a name="ln92">bool game_state::is_replaying_keys() const</a>
+<a name="ln93">{</a>
+<a name="ln94">    return crawl_state.doing_prev_cmd_again</a>
+<a name="ln95">           || crawl_state.is_repeating_cmd();</a>
+<a name="ln96">}</a>
+<a name="ln97"> </a>
+<a name="ln98">bool game_state::is_repeating_cmd() const</a>
+<a name="ln99">{</a>
+<a name="ln100">    return repeat_cmd != CMD_NO_CMD;</a>
+<a name="ln101">}</a>
+<a name="ln102"> </a>
+<a name="ln103">void game_state::cancel_cmd_repeat(string reason, bool force)</a>
+<a name="ln104">{</a>
+<a name="ln105">    if (!force &amp;&amp; !is_repeating_cmd())</a>
+<a name="ln106">        return;</a>
+<a name="ln107"> </a>
+<a name="ln108">    if (repeat_cmd == CMD_WIZARD)</a>
+<a name="ln109">    {</a>
+<a name="ln110">        // Don't interrupt wizard testing of religion.</a>
+<a name="ln111">        if (is_god_acting())</a>
+<a name="ln112">            return;</a>
+<a name="ln113"> </a>
+<a name="ln114">        // Don't interrupt wizard testing just because we can't</a>
+<a name="ln115">        // move.</a>
+<a name="ln116">        if (you.cannot_act())</a>
+<a name="ln117">            return;</a>
+<a name="ln118"> </a>
+<a name="ln119">        // We've probably just recovered from being unable to act;</a>
+<a name="ln120">        // again, don't interrupt.</a>
+<a name="ln121">        if (you.turn_is_over)</a>
+<a name="ln122">            return;</a>
+<a name="ln123">    }</a>
+<a name="ln124"> </a>
+<a name="ln125">    if (is_replaying_keys() || cmd_repeat_start)</a>
+<a name="ln126">        flush_input_buffer(FLUSH_KEY_REPLAY_CANCEL);</a>
+<a name="ln127"> </a>
+<a name="ln128">    if (is_processing_macro())</a>
+<a name="ln129">        flush_input_buffer(FLUSH_ABORT_MACRO);</a>
+<a name="ln130"> </a>
+<a name="ln131">    reset_cmd_repeat();</a>
+<a name="ln132"> </a>
+<a name="ln133">    if (!reason.empty())</a>
+<a name="ln134">        mpr(reason);</a>
+<a name="ln135">}</a>
+<a name="ln136"> </a>
+<a name="ln137">void game_state::cancel_cmd_again(string reason, bool force)</a>
+<a name="ln138">{</a>
+<a name="ln139">    if (!force &amp;&amp; !doing_prev_cmd_again)</a>
+<a name="ln140">        return;</a>
+<a name="ln141"> </a>
+<a name="ln142">    if (is_replaying_keys() || cmd_repeat_start)</a>
+<a name="ln143">        flush_input_buffer(FLUSH_KEY_REPLAY_CANCEL);</a>
+<a name="ln144"> </a>
+<a name="ln145">    if (is_processing_macro())</a>
+<a name="ln146">        flush_input_buffer(FLUSH_ABORT_MACRO);</a>
+<a name="ln147"> </a>
+<a name="ln148">    reset_cmd_again();</a>
+<a name="ln149"> </a>
+<a name="ln150">    if (!reason.empty())</a>
+<a name="ln151">        mpr(reason);</a>
+<a name="ln152">}</a>
+<a name="ln153"> </a>
+<a name="ln154">void game_state::cancel_cmd_all(string reason)</a>
+<a name="ln155">{</a>
+<a name="ln156">    cancel_cmd_repeat(reason);</a>
+<a name="ln157">    cancel_cmd_again(reason);</a>
+<a name="ln158">}</a>
+<a name="ln159"> </a>
+<a name="ln160">void game_state::cant_cmd_repeat(string reason)</a>
+<a name="ln161">{</a>
+<a name="ln162">    if (reason.empty())</a>
+<a name="ln163">        reason = &quot;Can't repeat that command.&quot;;</a>
+<a name="ln164"> </a>
+<a name="ln165">    cancel_cmd_repeat(reason);</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">void game_state::cant_cmd_again(string reason)</a>
+<a name="ln169">{</a>
+<a name="ln170">    if (reason.empty())</a>
+<a name="ln171">        reason = &quot;Can't redo that command.&quot;;</a>
+<a name="ln172"> </a>
+<a name="ln173">    cancel_cmd_again(reason);</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">void game_state::cant_cmd_any(string reason)</a>
+<a name="ln177">{</a>
+<a name="ln178">    cant_cmd_repeat(reason);</a>
+<a name="ln179">    cant_cmd_again(reason);</a>
+<a name="ln180">}</a>
+<a name="ln181"> </a>
+<a name="ln182">// The method is called to prevent the &quot;no repeating zero turns</a>
+<a name="ln183">// commands&quot; message that input() generates (in the absence of</a>
+<a name="ln184">// cancelling the repetition) for a repeated command that took no</a>
+<a name="ln185">// turns. A wrapper around cancel_cmd_repeat(), its only purpose is</a>
+<a name="ln186">// to make it clear why cancel_cmd_repeat() is being called.</a>
+<a name="ln187">void game_state::zero_turns_taken()</a>
+<a name="ln188">{</a>
+<a name="ln189">    ASSERT(!you.turn_is_over);</a>
+<a name="ln190">    cancel_cmd_repeat();</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">bool interrupt_cmd_repeat(activity_interrupt ai,</a>
+<a name="ln194">                           const activity_interrupt_data &amp;at)</a>
+<a name="ln195">{</a>
+<a name="ln196">    if (crawl_state.cmd_repeat_start)</a>
+<a name="ln197">        return false;</a>
+<a name="ln198"> </a>
+<a name="ln199">    if (crawl_state.repeat_cmd == CMD_WIZARD)</a>
+<a name="ln200">        return false;</a>
+<a name="ln201"> </a>
+<a name="ln202">    switch (ai)</a>
+<a name="ln203">    {</a>
+<a name="ln204">    case activity_interrupt::hungry:</a>
+<a name="ln205">    case activity_interrupt::teleport:</a>
+<a name="ln206">    case activity_interrupt::force:</a>
+<a name="ln207">    case activity_interrupt::hp_loss:</a>
+<a name="ln208">    case activity_interrupt::monster_attacks:</a>
+<a name="ln209">    case activity_interrupt::mimic:</a>
+<a name="ln210">        crawl_state.cancel_cmd_repeat(&quot;Command repetition interrupted.&quot;);</a>
+<a name="ln211">        return true;</a>
+<a name="ln212"> </a>
+<a name="ln213">    default:</a>
+<a name="ln214">        break;</a>
+<a name="ln215">    }</a>
+<a name="ln216"> </a>
+<a name="ln217">    if (ai == activity_interrupt::see_monster)</a>
+<a name="ln218">    {</a>
+<a name="ln219">        const monster* mon = at.mons_data;</a>
+<a name="ln220">        ASSERT(mon);</a>
+<a name="ln221">        if (!you.can_see(*mon))</a>
+<a name="ln222">            return false;</a>
+<a name="ln223"> </a>
+<a name="ln224">        if (crawl_state.cmd_repeat_started_unsafe</a>
+<a name="ln225">            &amp;&amp; at.context != SC_NEWLY_SEEN)</a>
+<a name="ln226">        {</a>
+<a name="ln227">            return false;</a>
+<a name="ln228">        }</a>
+<a name="ln229"> </a>
+<a name="ln230">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln231"> </a>
+<a name="ln232">#ifndef DEBUG_DIAGNOSTICS</a>
+<a name="ln233">        if (at.context == SC_NEWLY_SEEN)</a>
+<a name="ln234">        {</a>
+<a name="ln235">            monster_info mi(mon);</a>
+<a name="ln236"> </a>
+<a name="ln237">            mprf(MSGCH_WARN, &quot;%s comes into view.&quot;,</a>
+<a name="ln238">                 get_monster_equipment_desc(mi, DESC_WEAPON).c_str());</a>
+<a name="ln239">        }</a>
+<a name="ln240"> </a>
+<a name="ln241">        if (crawl_state.game_is_hints())</a>
+<a name="ln242">            hints_monster_seen(*mon);</a>
+<a name="ln243">#else</a>
+<a name="ln244">        formatted_string fs(channel_to_colour(MSGCH_WARN));</a>
+<a name="ln245">        fs.cprintf(&quot;%s (&quot;, mon-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln246">        monster_info mi(mon);</a>
+<a name="ln247">        fs.add_glyph(get_mons_glyph(mi));</a>
+<a name="ln248">        fs.cprintf(&quot;) in view: (%d,%d), see_cell: %s&quot;,</a>
+<a name="ln249">                   mon-&gt;pos().x, mon-&gt;pos().y,</a>
+<a name="ln250">                   you.see_cell(mon-&gt;pos())? &quot;yes&quot; : &quot;no&quot;);</a>
+<a name="ln251">        formatted_mpr(fs, MSGCH_WARN);</a>
+<a name="ln252">#endif</a>
+<a name="ln253"> </a>
+<a name="ln254">        return true;</a>
+<a name="ln255">    }</a>
+<a name="ln256"> </a>
+<a name="ln257">    // If command repetition is being used to imitate the rest command,</a>
+<a name="ln258">    // then everything interrupts it.</a>
+<a name="ln259">    if (crawl_state.repeat_cmd == CMD_WAIT)</a>
+<a name="ln260">    {</a>
+<a name="ln261">        if (ai == activity_interrupt::full_mp)</a>
+<a name="ln262">            crawl_state.cancel_cmd_repeat(&quot;Magic restored.&quot;);</a>
+<a name="ln263">        else if (ai == activity_interrupt::full_hp)</a>
+<a name="ln264">            crawl_state.cancel_cmd_repeat(&quot;HP restored&quot;);</a>
+<a name="ln265">        else</a>
+<a name="ln266">            crawl_state.cancel_cmd_repeat(&quot;Command repetition interrupted.&quot;);</a>
+<a name="ln267"> </a>
+<a name="ln268">        return true;</a>
+<a name="ln269">    }</a>
+<a name="ln270"> </a>
+<a name="ln271">    if (crawl_state.cmd_repeat_started_unsafe)</a>
+<a name="ln272">        return false;</a>
+<a name="ln273"> </a>
+<a name="ln274">    if (ai == activity_interrupt::hit_monster)</a>
+<a name="ln275">    {</a>
+<a name="ln276">        // This check is for when command repetition is used to</a>
+<a name="ln277">        // whack away at a 0xp monster, since the player feels safe</a>
+<a name="ln278">        // when the only monsters around are 0xp.</a>
+<a name="ln279">        const monster* mon = at.mons_data;</a>
+<a name="ln280"> </a>
+<a name="ln281">        if (!mons_is_threatening(*mon) &amp;&amp; mon-&gt;visible_to(&amp;you))</a>
+<a name="ln282">            return false;</a>
+<a name="ln283"> </a>
+<a name="ln284">        crawl_state.cancel_cmd_repeat(&quot;Command repetition interrupted.&quot;);</a>
+<a name="ln285">        return true;</a>
+<a name="ln286">    }</a>
+<a name="ln287"> </a>
+<a name="ln288">    return false;</a>
+<a name="ln289">}</a>
+<a name="ln290"> </a>
+<a name="ln291">void game_state::reset_cmd_repeat()</a>
+<a name="ln292">{</a>
+<a name="ln293">    repeat_cmd           = CMD_NO_CMD;</a>
+<a name="ln294">    cmd_repeat_start     = false;</a>
+<a name="ln295">}</a>
+<a name="ln296"> </a>
+<a name="ln297">void game_state::reset_cmd_again()</a>
+<a name="ln298">{</a>
+<a name="ln299">    doing_prev_cmd_again = false;</a>
+<a name="ln300">    prev_cmd             = CMD_NO_CMD;</a>
+<a name="ln301">    prev_cmd_repeat_goal = 0;</a>
+<a name="ln302">    prev_repeat_cmd      = CMD_NO_CMD;</a>
+<a name="ln303"> </a>
+<a name="ln304">    prev_cmd_keys.clear();</a>
+<a name="ln305">}</a>
+<a name="ln306"> </a>
+<a name="ln307">///////////////////////////////////////////////////////////</a>
+<a name="ln308">// Keeping track of which god is currently doing something</a>
+<a name="ln309">///////////////////////////////////////////////////////////</a>
+<a name="ln310"> </a>
+<a name="ln311">god_act_state::god_act_state()</a>
+<a name="ln312">{</a>
+<a name="ln313">    reset();</a>
+<a name="ln314">}</a>
+<a name="ln315"> </a>
+<a name="ln316">void god_act_state::reset()</a>
+<a name="ln317">{</a>
+<a name="ln318">    which_god   = GOD_NO_GOD;</a>
+<a name="ln319">    retribution = false;</a>
+<a name="ln320">    depth       = 0;</a>
+<a name="ln321">}</a>
+<a name="ln322"> </a>
+<a name="ln323">bool game_state::is_god_acting() const</a>
+<a name="ln324">{</a>
+<a name="ln325">    ASSERT(god_act.depth &gt;= 0);</a>
+<a name="ln326">    bool god_is_acting = god_act.depth &gt; 0;</a>
+<a name="ln327">    ASSERT(!(god_is_acting &amp;&amp; god_act.which_god == GOD_NO_GOD));</a>
+<a name="ln328">    ASSERT(god_is_acting || god_act.which_god == GOD_NO_GOD);</a>
+<a name="ln329">    ASSERT(god_is_acting || god_act_stack.empty());</a>
+<a name="ln330"> </a>
+<a name="ln331">    return god_is_acting;</a>
+<a name="ln332">}</a>
+<a name="ln333"> </a>
+<a name="ln334">bool game_state::is_god_retribution() const</a>
+<a name="ln335">{</a>
+<a name="ln336">    ASSERT(is_god_acting());</a>
+<a name="ln337"> </a>
+<a name="ln338">    return god_act.retribution;</a>
+<a name="ln339">}</a>
+<a name="ln340"> </a>
+<a name="ln341">god_type game_state::which_god_acting() const</a>
+<a name="ln342">{</a>
+<a name="ln343">    return god_act.which_god;</a>
+<a name="ln344">}</a>
+<a name="ln345"> </a>
+<a name="ln346">void game_state::inc_god_acting(bool is_retribution)</a>
+<a name="ln347">{</a>
+<a name="ln348">    inc_god_acting(you.religion, is_retribution);</a>
+<a name="ln349">}</a>
+<a name="ln350"> </a>
+<a name="ln351">void game_state::inc_god_acting(god_type which_god, bool is_retribution)</a>
+<a name="ln352">{</a>
+<a name="ln353">    ASSERT(which_god != GOD_NO_GOD);</a>
+<a name="ln354"> </a>
+<a name="ln355">    if (god_act.which_god != GOD_NO_GOD</a>
+<a name="ln356">        &amp;&amp; god_act.which_god != which_god)</a>
+<a name="ln357">    {</a>
+<a name="ln358">        ASSERT(god_act.depth &gt;= 1);</a>
+<a name="ln359"> </a>
+<a name="ln360">        god_act_stack.push_back(god_act);</a>
+<a name="ln361">        god_act.reset();</a>
+<a name="ln362">    }</a>
+<a name="ln363"> </a>
+<a name="ln364">    god_act.which_god   = which_god;</a>
+<a name="ln365">    god_act.retribution = is_retribution || god_act.retribution;</a>
+<a name="ln366">    god_act.depth++;</a>
+<a name="ln367">}</a>
+<a name="ln368"> </a>
+<a name="ln369">void game_state::dec_god_acting()</a>
+<a name="ln370">{</a>
+<a name="ln371">    dec_god_acting(you.religion);</a>
+<a name="ln372">}</a>
+<a name="ln373"> </a>
+<a name="ln374">void game_state::dec_god_acting(god_type which_god)</a>
+<a name="ln375">{</a>
+<a name="ln376">    ASSERT(which_god != GOD_NO_GOD);</a>
+<a name="ln377">    ASSERT(god_act.depth &gt; 0);</a>
+<a name="ln378">    ASSERT(god_act.which_god == which_god);</a>
+<a name="ln379"> </a>
+<a name="ln380">    god_act.depth--;</a>
+<a name="ln381"> </a>
+<a name="ln382">    if (god_act.depth == 0)</a>
+<a name="ln383">    {</a>
+<a name="ln384">        god_act.reset();</a>
+<a name="ln385">        if (!god_act_stack.empty())</a>
+<a name="ln386">        {</a>
+<a name="ln387">            god_act = god_act_stack[god_act_stack.size() - 1];</a>
+<a name="ln388">            god_act_stack.pop_back();</a>
+<a name="ln389">            ASSERT(god_act.depth &gt;= 1);</a>
+<a name="ln390">            ASSERT(god_act.which_god != GOD_NO_GOD);</a>
+<a name="ln391">            ASSERT(god_act.which_god != which_god);</a>
+<a name="ln392">        }</a>
+<a name="ln393">    }</a>
+<a name="ln394">}</a>
+<a name="ln395"> </a>
+<a name="ln396">void game_state::clear_god_acting()</a>
+<a name="ln397">{</a>
+<a name="ln398">    ASSERT(!is_god_acting());</a>
+<a name="ln399">    ASSERT(god_act_stack.empty());</a>
+<a name="ln400"> </a>
+<a name="ln401">    god_act.reset();</a>
+<a name="ln402">}</a>
+<a name="ln403"> </a>
+<a name="ln404">vector&lt;god_act_state&gt; game_state::other_gods_acting() const</a>
+<a name="ln405">{</a>
+<a name="ln406">    ASSERT(is_god_acting());</a>
+<a name="ln407">    return god_act_stack;</a>
+<a name="ln408">}</a>
+<a name="ln409"> </a>
+<a name="ln410">bool game_state::is_mon_acting() const</a>
+<a name="ln411">{</a>
+<a name="ln412">    return mon_act != nullptr;</a>
+<a name="ln413">}</a>
+<a name="ln414"> </a>
+<a name="ln415">monster* game_state::which_mon_acting() const</a>
+<a name="ln416">{</a>
+<a name="ln417">    return mon_act;</a>
+<a name="ln418">}</a>
+<a name="ln419"> </a>
+<a name="ln420">void game_state::inc_mon_acting(monster* mon)</a>
+<a name="ln421">{</a>
+<a name="ln422">    ASSERT(!invalid_monster(mon));</a>
+<a name="ln423"> </a>
+<a name="ln424">    if (mon_act != nullptr)</a>
+<a name="ln425">        mon_act_stack.push_back(mon_act);</a>
+<a name="ln426"> </a>
+<a name="ln427">    mon_act = mon;</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">void game_state::dec_mon_acting(monster* mon)</a>
+<a name="ln431">{</a>
+<a name="ln432">    ASSERT(mon_act == mon);</a>
+<a name="ln433"> </a>
+<a name="ln434">    mon_act = nullptr;</a>
+<a name="ln435"> </a>
+<a name="ln436">    const unsigned int size = mon_act_stack.size();</a>
+<a name="ln437">    if (size &gt; 0)</a>
+<a name="ln438">    {</a>
+<a name="ln439">        mon_act = mon_act_stack[size - 1];</a>
+<a name="ln440">        ASSERT(!invalid_monster(mon_act));</a>
+<a name="ln441">        mon_act_stack.pop_back();</a>
+<a name="ln442">    }</a>
+<a name="ln443">}</a>
+<a name="ln444"> </a>
+<a name="ln445">void game_state::clear_mon_acting()</a>
+<a name="ln446">{</a>
+<a name="ln447">    mon_act = nullptr;</a>
+<a name="ln448">    mon_act_stack.clear();</a>
+<a name="ln449">}</a>
+<a name="ln450"> </a>
+<a name="ln451">void game_state::mon_gone(monster* mon)</a>
+<a name="ln452">{</a>
+<a name="ln453">    for (unsigned int i = 0, size = mon_act_stack.size(); i &lt; size; i++)</a>
+<a name="ln454">    {</a>
+<a name="ln455">        if (mon_act_stack[i] == mon)</a>
+<a name="ln456">        {</a>
+<a name="ln457">            mon_act_stack.erase(mon_act_stack.begin() + i);</a>
+<a name="ln458">            i--;</a>
+<a name="ln459">            size--;</a>
+<a name="ln460">        }</a>
+<a name="ln461">    }</a>
+<a name="ln462"> </a>
+<a name="ln463">    if (mon_act == mon)</a>
+<a name="ln464">        dec_mon_acting(mon);</a>
+<a name="ln465">}</a>
+<a name="ln466"> </a>
+<a name="ln467">void game_state::dump()</a>
+<a name="ln468">{</a>
+<a name="ln469">    fprintf(stderr, &quot;\nGame state:\n\n&quot;);</a>
+<a name="ln470"> </a>
+<a name="ln471">    fprintf(stderr, &quot;mouse_enabled: %d, waiting_for_command: %d, &quot;</a>
+<a name="ln472">                  &quot;terminal_resized: %d\n&quot;,</a>
+<a name="ln473">            mouse_enabled, waiting_for_command, terminal_resized);</a>
+<a name="ln474">    fprintf(stderr, &quot;io_inited: %d, need_save: %d, saving_game: %d, &quot;</a>
+<a name="ln475">                  &quot;updating_scores: %d:\n&quot;,</a>
+<a name="ln476">            io_inited, need_save, saving_game, updating_scores);</a>
+<a name="ln477">    fprintf(stderr, &quot;seen_hups: %d, map_stat_gen: %d, type: %d, &quot;</a>
+<a name="ln478">                  &quot;arena_suspended: %d\n&quot;,</a>
+<a name="ln479">            seen_hups, map_stat_gen, type, arena_suspended);</a>
+<a name="ln480">    if (last_winch)</a>
+<a name="ln481">    {</a>
+<a name="ln482">        fprintf(stderr, &quot;Last resize was %&quot; PRId64&quot; seconds ago.\n&quot;,</a>
+<a name="ln483">                (int64_t)(time(0) - last_winch));</a>
+<a name="ln484">    }</a>
+<a name="ln485"> </a>
+<a name="ln486">    fprintf(stderr, &quot;\n&quot;);</a>
+<a name="ln487"> </a>
+<a name="ln488">    // Arena mode can change behavior of the rest of the code and/or lead</a>
+<a name="ln489">    // to asserts.</a>
+<a name="ln490">    unwind_var&lt;game_type&gt; _type(type, GAME_TYPE_NORMAL);</a>
+<a name="ln491">    unwind_bool _arena_suspended(arena_suspended, false);</a>
+<a name="ln492"> </a>
+<a name="ln493">    fprintf(stderr, &quot;prev_cmd = %s\n&quot;, command_to_name(prev_cmd).c_str());</a>
+<a name="ln494"> </a>
+<a name="ln495">    if (doing_prev_cmd_again)</a>
+<a name="ln496">    {</a>
+<a name="ln497">        fprintf(stderr, &quot;Doing prev_cmd again with keys: &quot;);</a>
+<a name="ln498">        for (int key : prev_cmd_keys)</a>
+<a name="ln499">            fprintf(stderr, &quot;%d, &quot;, key);</a>
+<a name="ln500">        fprintf(stderr, &quot;\n&quot;);</a>
+<a name="ln501">        fprintf(stderr, &quot;As ASCII keys: &quot;);</a>
+<a name="ln502">        for (int key : prev_cmd_keys)</a>
+<a name="ln503">            fprintf(stderr, &quot;%c&quot;, (char) key);</a>
+<a name="ln504">        fprintf(stderr, &quot;\n\n&quot;);</a>
+<a name="ln505">    }</a>
+<a name="ln506">    fprintf(stderr, &quot;repeat_cmd = %s\n&quot;, command_to_name(repeat_cmd).c_str());</a>
+<a name="ln507"> </a>
+<a name="ln508">    fprintf(stderr, &quot;\n&quot;);</a>
+<a name="ln509"> </a>
+<a name="ln510">    if (god_act.which_god != GOD_NO_GOD || god_act.depth != 0)</a>
+<a name="ln511">    {</a>
+<a name="ln512">        fprintf(stderr, &quot;God %s currently acting with depth %d\n\n&quot;,</a>
+<a name="ln513">                god_name(god_act.which_god).c_str(), god_act.depth);</a>
+<a name="ln514">    }</a>
+<a name="ln515"> </a>
+<a name="ln516">    if (!god_act_stack.empty())</a>
+<a name="ln517">    {</a>
+<a name="ln518">        fprintf(stderr, &quot;Other gods acting:\n&quot;);</a>
+<a name="ln519">        for (const god_act_state &amp;godact : god_act_stack)</a>
+<a name="ln520">        {</a>
+<a name="ln521">            fprintf(stderr, &quot;God %s with depth %d\n&quot;,</a>
+<a name="ln522">                    god_name(godact.which_god).c_str(), godact.depth);</a>
+<a name="ln523">        }</a>
+<a name="ln524">        fprintf(stderr, &quot;\n\n&quot;);</a>
+<a name="ln525">    }</a>
+<a name="ln526"> </a>
+<a name="ln527">    if (mon_act != nullptr)</a>
+<a name="ln528">    {</a>
+<a name="ln529">        fprintf(stderr, &quot;%s currently acting:\n\n&quot;,</a>
+<a name="ln530">                debug_mon_str(mon_act).c_str());</a>
+<a name="ln531">        debug_dump_mon(mon_act, true);</a>
+<a name="ln532">    }</a>
+<a name="ln533"> </a>
+<a name="ln534">    if (!mon_act_stack.empty())</a>
+<a name="ln535">    {</a>
+<a name="ln536">        fprintf(stderr, &quot;Others monsters acting:\n&quot;);</a>
+<a name="ln537">        for (const monster *mon : mon_act_stack)</a>
+<a name="ln538">            fprintf(stderr, &quot;    %s\n&quot;, debug_mon_str(mon).c_str());</a>
+<a name="ln539">    }</a>
+<a name="ln540">}</a>
+<a name="ln541"> </a>
+<a name="ln542">bool game_state::player_is_dead() const</a>
+<a name="ln543">{</a>
+<a name="ln544">    return updating_scores &amp;&amp; !need_save;</a>
+<a name="ln545">}</a>
+<a name="ln546"> </a>
+<a name="ln547">bool game_state::game_standard_levelgen() const</a>
+<a name="ln548">{</a>
+<a name="ln549">    return game_is_normal() || game_is_hints();</a>
+<a name="ln550">}</a>
+<a name="ln551"> </a>
+<a name="ln552">bool game_state::game_is_valid_type() const</a>
+<a name="ln553">{</a>
+<a name="ln554">    return type &lt; NUM_GAME_TYPE;</a>
+<a name="ln555">}</a>
+<a name="ln556"> </a>
+<a name="ln557">bool game_state::game_is_normal() const</a>
+<a name="ln558">{</a>
+<a name="ln559">    ASSERT(game_is_valid_type());</a>
+<a name="ln560">    return type == GAME_TYPE_NORMAL || type == GAME_TYPE_CUSTOM_SEED</a>
+<a name="ln561">                                    || type == GAME_TYPE_UNSPECIFIED;</a>
+<a name="ln562">}</a>
+<a name="ln563"> </a>
+<a name="ln564">bool game_state::game_is_tutorial() const</a>
+<a name="ln565">{</a>
+<a name="ln566">    ASSERT(game_is_valid_type());</a>
+<a name="ln567">    return type == GAME_TYPE_TUTORIAL;</a>
+<a name="ln568">}</a>
+<a name="ln569"> </a>
+<a name="ln570">bool game_state::game_is_arena() const</a>
+<a name="ln571">{</a>
+<a name="ln572">    ASSERT(game_is_valid_type());</a>
+<a name="ln573">    return type == GAME_TYPE_ARENA;</a>
+<a name="ln574">}</a>
+<a name="ln575"> </a>
+<a name="ln576">bool game_state::game_is_sprint() const</a>
+<a name="ln577">{</a>
+<a name="ln578">    ASSERT(game_is_valid_type());</a>
+<a name="ln579">    return type == GAME_TYPE_SPRINT;</a>
+<a name="ln580">}</a>
+<a name="ln581"> </a>
+<a name="ln582">bool game_state::game_is_hints() const</a>
+<a name="ln583">{</a>
+<a name="ln584">    ASSERT(game_is_valid_type());</a>
+<a name="ln585">    return type == GAME_TYPE_HINTS;</a>
+<a name="ln586">}</a>
+<a name="ln587"> </a>
+<a name="ln588">bool game_state::game_is_hints_tutorial() const</a>
+<a name="ln589">{</a>
+<a name="ln590">    return game_is_hints() || game_is_tutorial();</a>
+<a name="ln591">}</a>
+<a name="ln592"> </a>
+<a name="ln593">string game_state::game_type_name() const</a>
+<a name="ln594">{</a>
+<a name="ln595">    return game_type_name_for(type);</a>
+<a name="ln596">}</a>
+<a name="ln597"> </a>
+<a name="ln598">string game_state::game_type_name_for(game_type _type)</a>
+<a name="ln599">{</a>
+<a name="ln600">    switch (_type)</a>
+<a name="ln601">    {</a>
+<a name="ln602">    case GAME_TYPE_UNSPECIFIED:</a>
+<a name="ln603">    case GAME_TYPE_NORMAL:</a>
+<a name="ln604">    case GAME_TYPE_HINTS:</a>
+<a name="ln605">    default:</a>
+<a name="ln606">        // No explicit game type name for default game.</a>
+<a name="ln607">        return &quot;&quot;;</a>
+<a name="ln608">    case GAME_TYPE_CUSTOM_SEED:</a>
+<a name="ln609">        return &quot;Seeded&quot;;</a>
+<a name="ln610">    case GAME_TYPE_TUTORIAL:</a>
+<a name="ln611">        return &quot;Tutorial&quot;;</a>
+<a name="ln612">    case GAME_TYPE_ARENA:</a>
+<a name="ln613">        return &quot;Arena&quot;;</a>
+<a name="ln614">    case GAME_TYPE_SPRINT:</a>
+<a name="ln615">        return &quot;Dungeon Sprint&quot;;</a>
+<a name="ln616">    case NUM_GAME_TYPE:</a>
+<a name="ln617">        return &quot;Unknown&quot;;</a>
+<a name="ln618">    }</a>
+<a name="ln619">}</a>
+<a name="ln620"> </a>
+<a name="ln621">string game_state::game_savedir_path() const</a>
+<a name="ln622">{</a>
+<a name="ln623">    if (!game_is_valid_type())</a>
+<a name="ln624">        return &quot;&quot;; // a game from the future -- avoid the ASSERT below</a>
+<a name="ln625">    return game_is_sprint()? &quot;sprint/&quot; : &quot;&quot;;</a>
+<a name="ln626">}</a>
+<a name="ln627"> </a>
+<a name="ln628">string game_state::game_type_qualifier() const</a>
+<a name="ln629">{</a>
+<a name="ln630">    if (type == GAME_TYPE_CUSTOM_SEED)</a>
+<a name="ln631">        return &quot;-seeded&quot;;</a>
+<a name="ln632">    if (crawl_state.game_is_sprint())</a>
+<a name="ln633">        return &quot;-sprint&quot;;</a>
+<a name="ln634">    if (crawl_state.game_is_tutorial())</a>
+<a name="ln635">        return &quot;-tutorial&quot;;</a>
+<a name="ln636">    if (crawl_state.game_is_hints())</a>
+<a name="ln637">        return &quot;-hints&quot;;</a>
+<a name="ln638">    return &quot;&quot;;</a>
+<a name="ln639">}</a>
+
+</code></pre>
+<div class="balloon" rel="27"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> It is possible that not all members of a class are initialized inside the constructor. Consider inspecting: test_list, flash_monsters.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

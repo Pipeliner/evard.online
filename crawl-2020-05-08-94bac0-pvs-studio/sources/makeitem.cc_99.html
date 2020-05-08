@@ -1,0 +1,2308 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>makeitem.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Item creation routines.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;makeitem.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;art-enum.h&quot; // unrand -&gt; magic staff silliness</a>
+<a name="ln13">#include &quot;artefact.h&quot;</a>
+<a name="ln14">#include &quot;colour.h&quot;</a>
+<a name="ln15">#include &quot;describe.h&quot;</a>
+<a name="ln16">#include &quot;dungeon.h&quot;</a>
+<a name="ln17">#include &quot;item-name.h&quot;</a>
+<a name="ln18">#include &quot;item-prop.h&quot;</a>
+<a name="ln19">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln20">#include &quot;items.h&quot;</a>
+<a name="ln21">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln22">#include &quot;randbook.h&quot;</a>
+<a name="ln23">#include &quot;spl-book.h&quot;</a>
+<a name="ln24">#include &quot;state.h&quot;</a>
+<a name="ln25">#include &quot;stepdown.h&quot;</a>
+<a name="ln26">#include &quot;stringutil.h&quot;</a>
+<a name="ln27"> </a>
+<a name="ln28">int create_item_named(string name, coord_def pos, string *error)</a>
+<a name="ln29">{</a>
+<a name="ln30">    trim_string(name);</a>
+<a name="ln31"> </a>
+<a name="ln32">    item_list ilist;</a>
+<a name="ln33">    const string err = ilist.add_item(name, false);</a>
+<a name="ln34">    if (!err.empty())</a>
+<a name="ln35">    {</a>
+<a name="ln36">        if (error)</a>
+<a name="ln37">            *error = err;</a>
+<a name="ln38">        return NON_ITEM;</a>
+<a name="ln39">    }</a>
+<a name="ln40"> </a>
+<a name="ln41">    item_spec ispec = ilist.get_item(0);</a>
+<a name="ln42">    int item = dgn_place_item(ispec, pos);</a>
+<a name="ln43">    if (item != NON_ITEM)</a>
+<a name="ln44">        link_items();</a>
+<a name="ln45">    else if (error)</a>
+<a name="ln46">        *error = &quot;Failed to create item '&quot; + name + &quot;'&quot;;</a>
+<a name="ln47"> </a>
+<a name="ln48">    return item;</a>
+<a name="ln49">}</a>
+<a name="ln50"> </a>
+<a name="ln51">bool got_curare_roll(const int item_level)</a>
+<a name="ln52">{</a>
+<a name="ln53">    return one_chance_in(item_level &gt; 27 ? 6   :</a>
+<a name="ln54">                         item_level &lt; 2  ? 15  :</a>
+<a name="ln55">                         (364 - 7 * item_level) / 25);</a>
+<a name="ln56">}</a>
+<a name="ln57"> </a>
+<a name="ln58">/// A mapping from randomly-described object types to their per-game descript</a>
+<a name="ln59">static map&lt;object_class_type, item_description_type&gt; _type_to_idesc = {</a>
+<a name="ln60">    {OBJ_WANDS, IDESC_WANDS},</a>
+<a name="ln61">    {OBJ_POTIONS, IDESC_POTIONS},</a>
+<a name="ln62">    {OBJ_JEWELLERY, IDESC_RINGS},</a>
+<a name="ln63">    {OBJ_SCROLLS, IDESC_SCROLLS},</a>
+<a name="ln64">    {OBJ_STAVES, IDESC_STAVES},</a>
+<a name="ln65">};</a>
+<a name="ln66"> </a>
+<a name="ln67">/**</a>
+<a name="ln68"> * Initialize the randomized appearance of a given item.</a>
+<a name="ln69"> *</a>
+<a name="ln70"> * For e.g. wand names, potions colors, helmet tiles...</a>
+<a name="ln71"> *</a>
+<a name="ln72"> * XXX: could this be moved into a constructor or reset method...?</a>
+<a name="ln73"> *</a>
+<a name="ln74"> * @param item  The item to have its appearance initialized.</a>
+<a name="ln75"> */</a>
+<a name="ln76">void item_colour(item_def &amp;item)</a>
+<a name="ln77">{</a>
+<a name="ln78">    // Compute random tile/colour choice.</a>
+<a name="ln79">    item.rnd = 1 + random2(255); // reserve 0 for uninitialized</a>
+<a name="ln80"> </a>
+<a name="ln81">    // reserve the high bit for marking 1 in 10 books &quot;visually special&quot;</a>
+<a name="ln82">    if (item.base_type == OBJ_BOOKS)</a>
+<a name="ln83">    {</a>
+<a name="ln84">        if (one_chance_in(10))</a>
+<a name="ln85">            item.rnd |= 128;</a>
+<a name="ln86">        else</a>
+<a name="ln87">            item.rnd = 1 + random2(127); // can't just trim the high bit,</a>
+<a name="ln88">                                         // since it might be the only set bit</a>
+<a name="ln89">    }</a>
+<a name="ln90"> </a>
+<a name="ln91">    if (is_unrandom_artefact(item))</a>
+<a name="ln92">        return; // don't stomp on item.special!</a>
+<a name="ln93"> </a>
+<a name="ln94">    // initialize item appearance.</a>
+<a name="ln95">    // we don't actually *need* to store this now, but we *do* need to store</a>
+<a name="ln96">    // it in appearance at some point, since sub_type isn't public information</a>
+<a name="ln97">    // for un-id'd items, and therefore can't be used to do a lookup at the</a>
+<a name="ln98">    // time item names/colours are calculated.</a>
+<a name="ln99">    // it would probably be better to store this at the time that item_info is</a>
+<a name="ln100">    // generated (get_item_info), but that requires some save compat work (and</a>
+<a name="ln101">    // would be wrong if we ever try to get item colour/names directly...?)</a>
+<a name="ln102">    // possibly a todo for a later date.</a>
+<a name="ln103"> </a>
+<a name="ln104">    if (auto idesc = map_find(_type_to_idesc, item.base_type))</a>
+<a name="ln105">        item.subtype_rnd = you.item_description[*idesc][item.sub_type];</a>
+<a name="ln106">}</a>
+<a name="ln107"> </a>
+<a name="ln108">// Does Xom consider an item boring?</a>
+<a name="ln109">static bool _is_boring_item(int type, int sub_type)</a>
+<a name="ln110">{</a>
+<a name="ln111">    switch (type)</a>
+<a name="ln112">    {</a>
+<a name="ln113">    case OBJ_SCROLLS:</a>
+<a name="ln114">        // These scrolls increase knowledge and thus reduce risk.</a>
+<a name="ln115">        switch (sub_type)</a>
+<a name="ln116">        {</a>
+<a name="ln117">        case SCR_REMOVE_CURSE:</a>
+<a name="ln118">        case SCR_IDENTIFY:</a>
+<a name="ln119">        case SCR_MAGIC_MAPPING:</a>
+<a name="ln120">            return true;</a>
+<a name="ln121">        default:</a>
+<a name="ln122">            break;</a>
+<a name="ln123">        }</a>
+<a name="ln124">        break;</a>
+<a name="ln125">    case OBJ_JEWELLERY:</a>
+<a name="ln126">        return sub_type == AMU_NOTHING;</a>
+<a name="ln127">    default:</a>
+<a name="ln128">        break;</a>
+<a name="ln129">    }</a>
+<a name="ln130">    return false;</a>
+<a name="ln131">}</a>
+<a name="ln132"> </a>
+<a name="ln133">static weapon_type _determine_weapon_subtype(int item_level)</a>
+<a name="ln134">{</a>
+<a name="ln135">    if (item_level &gt; 6 &amp;&amp; one_chance_in(30)</a>
+<a name="ln136">        &amp;&amp; x_chance_in_y(10 + item_level, 100))</a>
+<a name="ln137">    {</a>
+<a name="ln138">        return random_choose(WPN_LAJATANG,</a>
+<a name="ln139">                             WPN_FUSTIBALUS,</a>
+<a name="ln140">                             WPN_TRIPLE_CROSSBOW,</a>
+<a name="ln141">                             WPN_DEMON_WHIP,</a>
+<a name="ln142">                             WPN_DEMON_BLADE,</a>
+<a name="ln143">                             WPN_DEMON_TRIDENT,</a>
+<a name="ln144">                             WPN_DOUBLE_SWORD,</a>
+<a name="ln145">                             WPN_EVENINGSTAR,</a>
+<a name="ln146">                             WPN_EXECUTIONERS_AXE,</a>
+<a name="ln147">                             WPN_QUICK_BLADE,</a>
+<a name="ln148">                             WPN_TRIPLE_SWORD);</a>
+<a name="ln149">    }</a>
+<a name="ln150">    else if (x_chance_in_y(item_level, 20))</a>
+<a name="ln151">    {</a>
+<a name="ln152">        // Pick a weapon based on rarity.</a>
+<a name="ln153">        while (true)</a>
+<a name="ln154">        {</a>
+<a name="ln155">            const int wpntype = random2(NUM_WEAPONS);</a>
+<a name="ln156"> </a>
+<a name="ln157">            if (x_chance_in_y(weapon_rarity(wpntype), 10))</a>
+<a name="ln158">                return static_cast&lt;weapon_type&gt;(wpntype);</a>
+<a name="ln159">        }</a>
+<a name="ln160">    }</a>
+<a name="ln161">    else if (x_chance_in_y(item_level, item_level+7))</a>
+<a name="ln162">    {</a>
+<a name="ln163">        return random_choose(WPN_QUARTERSTAFF,</a>
+<a name="ln164">                             WPN_FALCHION,</a>
+<a name="ln165">                             WPN_LONG_SWORD,</a>
+<a name="ln166">                             WPN_WAR_AXE,</a>
+<a name="ln167">                             WPN_TRIDENT,</a>
+<a name="ln168">                             WPN_FLAIL,</a>
+<a name="ln169">                             WPN_RAPIER);</a>
+<a name="ln170">    }</a>
+<a name="ln171">    else</a>
+<a name="ln172">    {</a>
+<a name="ln173">        return random_choose(WPN_HUNTING_SLING,</a>
+<a name="ln174">                             WPN_SPEAR,</a>
+<a name="ln175">                             WPN_HAND_AXE,</a>
+<a name="ln176">                             WPN_MACE,</a>
+<a name="ln177">                             // Not worth _weighted for one doubled type.</a>
+<a name="ln178">                             WPN_DAGGER, WPN_DAGGER,</a>
+<a name="ln179">                             WPN_CLUB,</a>
+<a name="ln180">                             WPN_WHIP,</a>
+<a name="ln181">                             WPN_SHORT_SWORD);</a>
+<a name="ln182">    }</a>
+<a name="ln183">}</a>
+<a name="ln184"> </a>
+<a name="ln185">static bool _try_make_item_unrand(item_def&amp; item, int force_type, int agent)</a>
+<a name="ln186">{</a>
+<a name="ln187">    if (player_in_branch(BRANCH_PANDEMONIUM) &amp;&amp; agent == NO_AGENT)</a>
+<a name="ln188">        return false;</a>
+<a name="ln189"> </a>
+<a name="ln190">    int idx = find_okay_unrandart(item.base_type, force_type,</a>
+<a name="ln191">                                  player_in_branch(BRANCH_ABYSS)</a>
+<a name="ln192">                                      &amp;&amp; agent == NO_AGENT);</a>
+<a name="ln193"> </a>
+<a name="ln194">    if (idx != -1 &amp;&amp; make_item_unrandart(item, idx))</a>
+<a name="ln195">        return true;</a>
+<a name="ln196"> </a>
+<a name="ln197">    return false;</a>
+<a name="ln198">}</a>
+<a name="ln199"> </a>
+<a name="ln200">static bool _weapon_disallows_randart(int sub_type)</a>
+<a name="ln201">{</a>
+<a name="ln202">    // Clubs are never randarts.</a>
+<a name="ln203">    return sub_type == WPN_CLUB;</a>
+<a name="ln204">}</a>
+<a name="ln205"> </a>
+<a name="ln206">// Return whether we made an artefact.</a>
+<a name="ln207">static bool _try_make_weapon_artefact(item_def&amp; item, int force_type,</a>
+<a name="ln208">                                      int item_level, bool force_randart,</a>
+<a name="ln209">                                      int agent)</a>
+<a name="ln210">{</a>
+<a name="ln211">    if (item_level &gt; 2 &amp;&amp; x_chance_in_y(101 + item_level * 3, 4000)</a>
+<a name="ln212">        || force_randart)</a>
+<a name="ln213">    {</a>
+<a name="ln214">        // Make a randart or unrandart.</a>
+<a name="ln215"> </a>
+<a name="ln216">        // 1 in 20 randarts are unrandarts.</a>
+<a name="ln217">        if (one_chance_in(item_level == ISPEC_GOOD_ITEM ? 7 : 20)</a>
+<a name="ln218">            &amp;&amp; !force_randart)</a>
+<a name="ln219">        {</a>
+<a name="ln220">            if (_try_make_item_unrand(item, force_type, agent))</a>
+<a name="ln221">                return true;</a>
+<a name="ln222">        }</a>
+<a name="ln223"> </a>
+<a name="ln224">        if (_weapon_disallows_randart(item.sub_type))</a>
+<a name="ln225">            return false;</a>
+<a name="ln226"> </a>
+<a name="ln227">        // Mean enchantment +6.</a>
+<a name="ln228">        item.plus = 12 - biased_random2(7,2);</a>
+<a name="ln229">        item.plus -= biased_random2(7,2);</a>
+<a name="ln230">        item.plus -= biased_random2(7,2);</a>
+<a name="ln231"> </a>
+<a name="ln232">        bool cursed = false;</a>
+<a name="ln233">        if (one_chance_in(5))</a>
+<a name="ln234">        {</a>
+<a name="ln235">            cursed = true;</a>
+<a name="ln236">            item.plus = 3 - random2(6);</a>
+<a name="ln237">        }</a>
+<a name="ln238">        else if (item.plus &lt; 0 &amp;&amp; !one_chance_in(3))</a>
+<a name="ln239">            cursed = true;</a>
+<a name="ln240"> </a>
+<a name="ln241">        // On weapons, an enchantment of less than 0 is never viable.</a>
+<a name="ln242">        item.plus = max(static_cast&lt;int&gt;(item.plus), random2(2));</a>
+<a name="ln243"> </a>
+<a name="ln244">        // The rest are normal randarts.</a>
+<a name="ln245">        make_item_randart(item);</a>
+<a name="ln246"> </a>
+<a name="ln247">        if (cursed)</a>
+<a name="ln248">            do_curse_item(item);</a>
+<a name="ln249"> </a>
+<a name="ln250">        return true;</a>
+<a name="ln251">    }</a>
+<a name="ln252"> </a>
+<a name="ln253">    return false;</a>
+<a name="ln254">}</a>
+<a name="ln255"> </a>
+<a name="ln256">/**</a>
+<a name="ln257"> * The number of times to try finding a brand for a given item.</a>
+<a name="ln258"> *</a>
+<a name="ln259"> * Result may vary from call to call.</a>
+<a name="ln260"> */</a>
+<a name="ln261">static int _num_brand_tries(const item_def&amp; item, int item_level)</a>
+<a name="ln262">{</a>
+<a name="ln263">    if (item_level &gt;= ISPEC_GIFT)</a>
+<a name="ln264">        return 5;</a>
+<a name="ln265">    if (is_demonic(item) || x_chance_in_y(101 + item_level, 300))</a>
+<a name="ln266">        return 1;</a>
+<a name="ln267">    return 0;</a>
+<a name="ln268">}</a>
+<a name="ln269"> </a>
+<a name="ln270">brand_type determine_weapon_brand(const item_def&amp; item, int item_level)</a>
+<a name="ln271">{</a>
+<a name="ln272">    // Forced ego.</a>
+<a name="ln273">    if (item.brand != 0)</a>
+<a name="ln274">        return static_cast&lt;brand_type&gt;(item.brand);</a>
+<a name="ln275"> </a>
+<a name="ln276">    const weapon_type wpn_type = static_cast&lt;weapon_type&gt;(item.sub_type);</a>
+<a name="ln277">    const int tries       = _num_brand_tries(item, item_level);</a>
+<a name="ln278">    brand_type rc         = SPWPN_NORMAL;</a>
+<a name="ln279"> </a>
+<a name="ln280">    for (int count = 0; count &lt; tries &amp;&amp; rc == SPWPN_NORMAL; ++count)</a>
+<a name="ln281">        rc = choose_weapon_brand(wpn_type);</a>
+<a name="ln282"> </a>
+<a name="ln283">    ASSERT(is_weapon_brand_ok(item.sub_type, rc, true));</a>
+<a name="ln284">    return rc;</a>
+<a name="ln285">}</a>
+<a name="ln286"> </a>
+<a name="ln287">// Reject brands which are outright bad for the item. Unorthodox combinations</a>
+<a name="ln288">// are ok, since they can happen on randarts.</a>
+<a name="ln289">bool is_weapon_brand_ok(int type, int brand, bool /*strict*/)</a>
+<a name="ln290">{</a>
+<a name="ln291">    item_def item;</a>
+<a name="ln292">    item.base_type = OBJ_WEAPONS;</a>
+<a name="ln293">    item.sub_type = type;</a>
+<a name="ln294"> </a>
+<a name="ln295">    if (brand &lt;= SPWPN_NORMAL)</a>
+<a name="ln296">        return true;</a>
+<a name="ln297"> </a>
+<a name="ln298">    if (type == WPN_QUICK_BLADE &amp;&amp; brand == SPWPN_SPEED)</a>
+<a name="ln299">        return false;</a>
+<a name="ln300"> </a>
+<a name="ln301">    switch ((brand_type)brand)</a>
+<a name="ln302">    {</a>
+<a name="ln303">    // Universal brands.</a>
+<a name="ln304">    case SPWPN_NORMAL:</a>
+<a name="ln305">    case SPWPN_VENOM:</a>
+<a name="ln306">    case SPWPN_PROTECTION:</a>
+<a name="ln307">    case SPWPN_SPEED:</a>
+<a name="ln308">    case SPWPN_VORPAL:</a>
+<a name="ln309">    case SPWPN_CHAOS:</a>
+<a name="ln310">    case SPWPN_HOLY_WRATH:</a>
+<a name="ln311">    case SPWPN_ELECTROCUTION:</a>
+<a name="ln312">    case SPWPN_FLAMING:</a>
+<a name="ln313">    case SPWPN_FREEZING:</a>
+<a name="ln314">        break;</a>
+<a name="ln315"> </a>
+<a name="ln316">    // Melee-only brands.</a>
+<a name="ln317">    case SPWPN_DRAINING:</a>
+<a name="ln318">    case SPWPN_VAMPIRISM:</a>
+<a name="ln319">    case SPWPN_PAIN:</a>
+<a name="ln320">    case SPWPN_DISTORTION:</a>
+<a name="ln321">    case SPWPN_ANTIMAGIC:</a>
+<a name="ln322">    case SPWPN_REAPING: // only exists on Sword of Zonguldrok</a>
+<a name="ln323">        if (is_range_weapon(item))</a>
+<a name="ln324">            return false;</a>
+<a name="ln325">        break;</a>
+<a name="ln326"> </a>
+<a name="ln327">    // Ranged-only brands.</a>
+<a name="ln328">    case SPWPN_PENETRATION:</a>
+<a name="ln329">    case SPWPN_ACID: // Only exists on Punk</a>
+<a name="ln330">        if (!is_range_weapon(item))</a>
+<a name="ln331">            return false;</a>
+<a name="ln332">        break;</a>
+<a name="ln333"> </a>
+<a name="ln334">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln335">    // Removed brands.</a>
+<a name="ln336">    case SPWPN_RETURNING:</a>
+<a name="ln337">    case SPWPN_REACHING:</a>
+<a name="ln338">    case SPWPN_ORC_SLAYING:</a>
+<a name="ln339">    case SPWPN_FLAME:</a>
+<a name="ln340">    case SPWPN_FROST:</a>
+<a name="ln341">    case SPWPN_DRAGON_SLAYING:</a>
+<a name="ln342">    case SPWPN_EVASION:</a>
+<a name="ln343">        return false;</a>
+<a name="ln344">#endif</a>
+<a name="ln345"> </a>
+<a name="ln346">    case SPWPN_CONFUSE:</a>
+<a name="ln347">    case SPWPN_FORBID_BRAND:</a>
+<a name="ln348">    case SPWPN_DEBUG_RANDART:</a>
+<a name="ln349">    case NUM_SPECIAL_WEAPONS:</a>
+<a name="ln350">    case NUM_REAL_SPECIAL_WEAPONS:</a>
+<a name="ln351">        die(&quot;invalid brand %d on weapon %d (%s)&quot;, brand, type,</a>
+<a name="ln352">            item.name(DESC_PLAIN).c_str());</a>
+<a name="ln353">        break;</a>
+<a name="ln354">    }</a>
+<a name="ln355"> </a>
+<a name="ln356">    return true;</a>
+<a name="ln357">}</a>
+<a name="ln358"> </a>
+<a name="ln359">static void _roll_weapon_type(item_def&amp; item, int item_level)</a>
+<a name="ln360">{</a>
+<a name="ln361">    for (int i = 0; i &lt; 1000; ++i)</a>
+<a name="ln362">    {</a>
+<a name="ln363">        item.sub_type = _determine_weapon_subtype(item_level);</a>
+<a name="ln364">        if (is_weapon_brand_ok(item.sub_type, item.brand, true))</a>
+<a name="ln365">            return;</a>
+<a name="ln366">    }</a>
+<a name="ln367"> </a>
+<a name="ln368">    item.brand = SPWPN_NORMAL; // fall back to no brand</a>
+<a name="ln369">}</a>
+<a name="ln370"> </a>
+<a name="ln371">/// Plusses for a non-artefact weapon with positive plusses.</a>
+<a name="ln372">int determine_nice_weapon_plusses(int item_level)</a>
+<a name="ln373">{</a>
+<a name="ln374">    const int chance = (item_level &gt;= ISPEC_GIFT ? 200 : item_level);</a>
+<a name="ln375"> </a>
+<a name="ln376">    // Odd-looking, but this is how the algorithm compacts {dlb}.</a>
+<a name="ln377">    int plus = 0;</a>
+<a name="ln378">    for (int i = 0; i &lt; 4; ++i)</a>
+<a name="ln379">    {</a>
+<a name="ln380">        plus += random2(3);</a>
+<a name="ln381"> </a>
+<a name="ln382">        if (random2(425) &gt; 35 + chance)</a>
+<a name="ln383">            break;</a>
+<a name="ln384">    }</a>
+<a name="ln385"> </a>
+<a name="ln386">    return plus;</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389">static void _generate_weapon_item(item_def&amp; item, bool allow_uniques,</a>
+<a name="ln390">                                  int force_type, int item_level,</a>
+<a name="ln391">                                  int agent = NO_AGENT)</a>
+<a name="ln392">{</a>
+<a name="ln393">    // Determine weapon type.</a>
+<a name="ln394">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln395">        item.sub_type = force_type;</a>
+<a name="ln396">    else</a>
+<a name="ln397">        _roll_weapon_type(item, item_level);</a>
+<a name="ln398"> </a>
+<a name="ln399">    // Fall back to an ordinary item if randarts not allowed for this type.</a>
+<a name="ln400">    if (item_level == ISPEC_RANDART &amp;&amp; _weapon_disallows_randart(item.sub_type))</a>
+<a name="ln401">        item_level = ISPEC_GOOD_ITEM;</a>
+<a name="ln402"> </a>
+<a name="ln403">    // Forced randart.</a>
+<a name="ln404">    if (item_level == ISPEC_RANDART)</a>
+<a name="ln405">    {</a>
+<a name="ln406">        int ego = item.brand;</a>
+<a name="ln407">        for (int i = 0; i &lt; 100; ++i)</a>
+<a name="ln408">            if (_try_make_weapon_artefact(item, force_type, 0, true, agent)</a>
+<a name="ln409">                &amp;&amp; is_artefact(item))</a>
+<a name="ln410">            {</a>
+<a name="ln411">                if (ego &gt; SPWPN_NORMAL)</a>
+<a name="ln412">                    item.props[ARTEFACT_PROPS_KEY].get_vector()[ARTP_BRAND].get_short() = ego;</a>
+<a name="ln413">                if (randart_is_bad(item)) // recheck, the brand changed</a>
+<a name="ln414">                {</a>
+<a name="ln415">                    force_type = item.sub_type;</a>
+<a name="ln416">                    item.clear();</a>
+<a name="ln417">                    item.quantity = 1;</a>
+<a name="ln418">                    item.base_type = OBJ_WEAPONS;</a>
+<a name="ln419">                    item.sub_type = force_type;</a>
+<a name="ln420">                    continue;</a>
+<a name="ln421">                }</a>
+<a name="ln422">                return;</a>
+<a name="ln423">            }</a>
+<a name="ln424">        // fall back to an ordinary item</a>
+<a name="ln425">        item_level = ISPEC_GOOD_ITEM;</a>
+<a name="ln426">    }</a>
+<a name="ln427"> </a>
+<a name="ln428">    // If we make the unique roll, no further generation necessary.</a>
+<a name="ln429">    if (allow_uniques</a>
+<a name="ln430">        &amp;&amp; _try_make_weapon_artefact(item, force_type, item_level, false, agent))</a>
+<a name="ln431">    {</a>
+<a name="ln432">        return;</a>
+<a name="ln433">    }</a>
+<a name="ln434"> </a>
+<a name="ln435">    ASSERT(!is_artefact(item));</a>
+<a name="ln436"> </a>
+<a name="ln437">    // Artefacts handled, let's make a normal item.</a>
+<a name="ln438">    const bool force_good = item_level &gt;= ISPEC_GIFT;</a>
+<a name="ln439">    const bool forced_ego = item.brand &gt; 0;</a>
+<a name="ln440">    const bool no_brand   = item.brand == SPWPN_FORBID_BRAND;</a>
+<a name="ln441"> </a>
+<a name="ln442">    if (no_brand)</a>
+<a name="ln443">        set_item_ego_type(item, OBJ_WEAPONS, SPWPN_NORMAL);</a>
+<a name="ln444"> </a>
+<a name="ln445">    // If it's forced to be a good item, reroll clubs.</a>
+<a name="ln446">    while (force_good &amp;&amp; force_type == OBJ_RANDOM &amp;&amp; item.sub_type == WPN_CLUB)</a>
+<a name="ln447">        _roll_weapon_type(item, item_level);</a>
+<a name="ln448"> </a>
+<a name="ln449">    item.plus = 0;</a>
+<a name="ln450"> </a>
+<a name="ln451">    if (item_level &lt; 0)</a>
+<a name="ln452">    {</a>
+<a name="ln453">        // Thoroughly damaged, could had been good once.</a>
+<a name="ln454">        if (!no_brand &amp;&amp; (forced_ego || one_chance_in(4)))</a>
+<a name="ln455">        {</a>
+<a name="ln456">            // Brand is set as for &quot;good&quot; items.</a>
+<a name="ln457">            set_item_ego_type(item, OBJ_WEAPONS,</a>
+<a name="ln458">                determine_weapon_brand(item, 2 + 2 * env.absdepth0));</a>
+<a name="ln459">        }</a>
+<a name="ln460">        item.plus -= 1 + random2(3);</a>
+<a name="ln461"> </a>
+<a name="ln462">        if (item_level == ISPEC_BAD)</a>
+<a name="ln463">            do_curse_item(item);</a>
+<a name="ln464">    }</a>
+<a name="ln465">    else if ((force_good || is_demonic(item) || forced_ego</a>
+<a name="ln466">                    || x_chance_in_y(51 + item_level, 200))</a>
+<a name="ln467">                &amp;&amp; (!item.is_mundane() || force_good))</a>
+<a name="ln468">    {</a>
+<a name="ln469">        // Make a better item (possibly ego).</a>
+<a name="ln470">        if (!no_brand)</a>
+<a name="ln471">        {</a>
+<a name="ln472">            set_item_ego_type(item, OBJ_WEAPONS,</a>
+<a name="ln473">                              determine_weapon_brand(item, item_level));</a>
+<a name="ln474">        }</a>
+<a name="ln475"> </a>
+<a name="ln476">        // if acquired item still not ego... enchant it up a bit.</a>
+<a name="ln477">        if (force_good &amp;&amp; item.brand == SPWPN_NORMAL)</a>
+<a name="ln478">            item.plus += 2 + random2(3);</a>
+<a name="ln479"> </a>
+<a name="ln480">        item.plus += determine_nice_weapon_plusses(item_level);</a>
+<a name="ln481"> </a>
+<a name="ln482">        // squash boring items.</a>
+<a name="ln483">        if (!force_good &amp;&amp; item.brand == SPWPN_NORMAL &amp;&amp; item.plus &lt; 3)</a>
+<a name="ln484">            item.plus = 0;</a>
+<a name="ln485">    }</a>
+<a name="ln486">    else</a>
+<a name="ln487">    {</a>
+<a name="ln488">        if (one_chance_in(12))</a>
+<a name="ln489">        {</a>
+<a name="ln490">            // Make a cursed item.</a>
+<a name="ln491">            do_curse_item(item);</a>
+<a name="ln492">            item.plus  -= random2(4);</a>
+<a name="ln493">            set_item_ego_type(item, OBJ_WEAPONS, SPWPN_NORMAL);</a>
+<a name="ln494">        }</a>
+<a name="ln495">    }</a>
+<a name="ln496">}</a>
+<a name="ln497"> </a>
+<a name="ln498">// Remember to update the code in is_missile_brand_ok if adding or altering</a>
+<a name="ln499">// brands that are applied to missiles. {due}</a>
+<a name="ln500">static special_missile_type _determine_missile_brand(const item_def&amp; item,</a>
+<a name="ln501">                                                     int item_level)</a>
+<a name="ln502">{</a>
+<a name="ln503">    // Forced ego.</a>
+<a name="ln504">    if (item.brand != 0)</a>
+<a name="ln505">        return static_cast&lt;special_missile_type&gt;(item.brand);</a>
+<a name="ln506"> </a>
+<a name="ln507">    special_missile_type rc = SPMSL_NORMAL;</a>
+<a name="ln508"> </a>
+<a name="ln509">    // Weight of SPMSL_NORMAL</a>
+<a name="ln510">    // Gifts from Trog/Oka can be unbranded boomerangs/javelins</a>
+<a name="ln511">    // but not poisoned darts</a>
+<a name="ln512">    int nw = item_level &gt;= ISPEC_GOOD_ITEM ?   0 :</a>
+<a name="ln513">             item_level == ISPEC_GIFT      ? 120</a>
+<a name="ln514">                                           : random2(2000 - 55 * item_level);</a>
+<a name="ln515"> </a>
+<a name="ln516">    // Weight of SPMSL_POISONED</a>
+<a name="ln517">    int pw = item_level &gt;= ISPEC_GIFT ? 0 : random2(2000 - 55 * item_level);</a>
+<a name="ln518"> </a>
+<a name="ln519">    switch (item.sub_type)</a>
+<a name="ln520">    {</a>
+<a name="ln521">    case MI_THROWING_NET:</a>
+<a name="ln522">    case MI_STONE:</a>
+<a name="ln523">    case MI_LARGE_ROCK:</a>
+<a name="ln524">    case MI_SLING_BULLET:</a>
+<a name="ln525">    case MI_ARROW:</a>
+<a name="ln526">    case MI_BOLT:</a>
+<a name="ln527">        rc = SPMSL_NORMAL;</a>
+<a name="ln528">        break;</a>
+<a name="ln529">    case MI_DART:</a>
+<a name="ln530">        // Curare is special cased, all the others aren't.</a>
+<a name="ln531">        if (got_curare_roll(item_level))</a>
+<a name="ln532">        {</a>
+<a name="ln533">            rc = SPMSL_CURARE;</a>
+<a name="ln534">            break;</a>
+<a name="ln535">        }</a>
+<a name="ln536"> </a>
+<a name="ln537">        rc = random_choose_weighted(60, SPMSL_BLINDING,</a>
+<a name="ln538">                                    20, SPMSL_FRENZY,</a>
+<a name="ln539">                                    pw, SPMSL_POISONED);</a>
+<a name="ln540">        break;</a>
+<a name="ln541">    case MI_JAVELIN:</a>
+<a name="ln542">        rc = random_choose_weighted(90, SPMSL_SILVER,</a>
+<a name="ln543">                                    nw, SPMSL_NORMAL);</a>
+<a name="ln544">        break;</a>
+<a name="ln545">    case MI_BOOMERANG:</a>
+<a name="ln546">        rc = random_choose_weighted(30, SPMSL_SILVER,</a>
+<a name="ln547">                                    30, SPMSL_DISPERSAL,</a>
+<a name="ln548">                                    nw, SPMSL_NORMAL);</a>
+<a name="ln549">        break;</a>
+<a name="ln550">    }</a>
+<a name="ln551"> </a>
+<a name="ln552">    ASSERT(is_missile_brand_ok(item.sub_type, rc, true));</a>
+<a name="ln553"> </a>
+<a name="ln554">    return rc;</a>
+<a name="ln555">}</a>
+<a name="ln556"> </a>
+<a name="ln557">bool is_missile_brand_ok(int type, int brand, bool strict)</a>
+<a name="ln558">{</a>
+<a name="ln559">    // Launcher ammo can never be branded.</a>
+<a name="ln560">    if ((type == MI_STONE</a>
+<a name="ln561">        || type == MI_LARGE_ROCK</a>
+<a name="ln562">        || type == MI_SLING_BULLET</a>
+<a name="ln563">        || type == MI_ARROW</a>
+<a name="ln564">        || type == MI_BOLT)</a>
+<a name="ln565">        &amp;&amp; brand != SPMSL_NORMAL</a>
+<a name="ln566">        &amp;&amp; strict)</a>
+<a name="ln567">    {</a>
+<a name="ln568">        return false;</a>
+<a name="ln569">    }</a>
+<a name="ln570"> </a>
+<a name="ln571">    // Never generates, only used for chaos-branded missiles.</a>
+<a name="ln572">    if (brand == SPMSL_FLAME || brand == SPMSL_FROST)</a>
+<a name="ln573">        return false;</a>
+<a name="ln574"> </a>
+<a name="ln575">    // In contrast, darts should always be branded.</a>
+<a name="ln576">    // And all of these brands save poison are unique to darts.</a>
+<a name="ln577">    switch (brand)</a>
+<a name="ln578">    {</a>
+<a name="ln579">    case SPMSL_POISONED:</a>
+<a name="ln580">        if (type == MI_DART)</a>
+<a name="ln581">            return true;</a>
+<a name="ln582">        break;</a>
+<a name="ln583"> </a>
+<a name="ln584">    case SPMSL_CURARE:</a>
+<a name="ln585">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln586">    case SPMSL_PARALYSIS:</a>
+<a name="ln587">#endif</a>
+<a name="ln588">    case SPMSL_FRENZY:</a>
+<a name="ln589">        return type == MI_DART;</a>
+<a name="ln590"> </a>
+<a name="ln591">    case SPMSL_BLINDING:</a>
+<a name="ln592">        // possible on ex-pies</a>
+<a name="ln593">        return type == MI_DART || (type == MI_BOOMERANG &amp;&amp; !strict);</a>
+<a name="ln594"> </a>
+<a name="ln595">    default:</a>
+<a name="ln596">        if (type == MI_DART)</a>
+<a name="ln597">            return false;</a>
+<a name="ln598">    }</a>
+<a name="ln599"> </a>
+<a name="ln600">    // Everything else doesn't matter.</a>
+<a name="ln601">    if (brand == SPMSL_NORMAL)</a>
+<a name="ln602">        return true;</a>
+<a name="ln603"> </a>
+<a name="ln604">    // In non-strict mode, everything other than darts is mostly ok.</a>
+<a name="ln605">    if (!strict)</a>
+<a name="ln606">        return true;</a>
+<a name="ln607"> </a>
+<a name="ln608">    // Not a missile?</a>
+<a name="ln609">    if (type == 0)</a>
+<a name="ln610">        return true;</a>
+<a name="ln611"> </a>
+<a name="ln612">    // Specifics</a>
+<a name="ln613">    switch (brand)</a>
+<a name="ln614">    {</a>
+<a name="ln615">    case SPMSL_POISONED:</a>
+<a name="ln616">        return false;</a>
+<a name="ln617">    case SPMSL_CHAOS:</a>
+<a name="ln618">        return type == MI_BOOMERANG || type == MI_JAVELIN;</a>
+<a name="ln619">    case SPMSL_DISPERSAL:</a>
+<a name="ln620">        return type == MI_BOOMERANG;</a>
+<a name="ln621">    case SPMSL_SILVER:</a>
+<a name="ln622">        return type == MI_JAVELIN || type == MI_BOOMERANG;</a>
+<a name="ln623">    default: break;</a>
+<a name="ln624">    }</a>
+<a name="ln625"> </a>
+<a name="ln626">    // Assume no, if we've gotten this far.</a>
+<a name="ln627">    return false;</a>
+<a name="ln628">}</a>
+<a name="ln629"> </a>
+<a name="ln630">static void _generate_missile_item(item_def&amp; item, int force_type,</a>
+<a name="ln631">                                   int item_level)</a>
+<a name="ln632">{</a>
+<a name="ln633">    const bool no_brand = (item.brand == SPMSL_FORBID_BRAND);</a>
+<a name="ln634">    if (no_brand)</a>
+<a name="ln635">        item.brand = SPMSL_NORMAL;</a>
+<a name="ln636"> </a>
+<a name="ln637">    item.plus = 0;</a>
+<a name="ln638"> </a>
+<a name="ln639">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln640">        item.sub_type = force_type;</a>
+<a name="ln641">    else</a>
+<a name="ln642">    {</a>
+<a name="ln643">        item.sub_type =</a>
+<a name="ln644">            random_choose_weighted(50, MI_STONE,</a>
+<a name="ln645">                                   20, MI_ARROW,</a>
+<a name="ln646">                                   12, MI_BOLT,</a>
+<a name="ln647">                                   12, MI_SLING_BULLET,</a>
+<a name="ln648">                                   10, MI_DART,</a>
+<a name="ln649">                                   3,  MI_BOOMERANG,</a>
+<a name="ln650">                                   2,  MI_JAVELIN,</a>
+<a name="ln651">                                   1,  MI_THROWING_NET,</a>
+<a name="ln652">                                   1,  MI_LARGE_ROCK);</a>
+<a name="ln653">    }</a>
+<a name="ln654"> </a>
+<a name="ln655">    // No fancy rocks -- break out before we get to special stuff.</a>
+<a name="ln656">    if (item.sub_type == MI_LARGE_ROCK)</a>
+<a name="ln657">    {</a>
+<a name="ln658">        item.quantity = 2 + random2avg(5,2);</a>
+<a name="ln659">        return;</a>
+<a name="ln660">    }</a>
+<a name="ln661">    else if (item.sub_type == MI_STONE)</a>
+<a name="ln662">    {</a>
+<a name="ln663">        item.quantity = 1 + random2(7); // sequence points for random2</a>
+<a name="ln664">        item.quantity += random2(10);</a>
+<a name="ln665">        item.quantity += random2(12);</a>
+<a name="ln666">        item.quantity += random2(10);</a>
+<a name="ln667">        return;</a>
+<a name="ln668">    }</a>
+<a name="ln669">    else if (item.sub_type == MI_THROWING_NET) // no fancy nets, either</a>
+<a name="ln670">    {</a>
+<a name="ln671">        item.quantity = 1 + one_chance_in(4); // and only one, rarely two</a>
+<a name="ln672">        return;</a>
+<a name="ln673">    }</a>
+<a name="ln674"> </a>
+<a name="ln675">    if (!no_brand)</a>
+<a name="ln676">    {</a>
+<a name="ln677">        set_item_ego_type(item, OBJ_MISSILES,</a>
+<a name="ln678">                           _determine_missile_brand(item, item_level));</a>
+<a name="ln679">    }</a>
+<a name="ln680"> </a>
+<a name="ln681">    // Reduced quantity if special.</a>
+<a name="ln682">    if (item.sub_type == MI_JAVELIN || item.sub_type == MI_BOOMERANG</a>
+<a name="ln683">        || (item.sub_type == MI_DART &amp;&amp; get_ammo_brand(item) != SPMSL_POISONED)</a>
+<a name="ln684">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln685">        || get_ammo_brand(item) == SPMSL_RETURNING</a>
+<a name="ln686">#endif</a>
+<a name="ln687">        )</a>
+<a name="ln688">    {</a>
+<a name="ln689">        item.quantity = random_range(2, 8);</a>
+<a name="ln690">    }</a>
+<a name="ln691">    else</a>
+<a name="ln692">    {</a>
+<a name="ln693">        item.quantity = 1 + random2(7); // sequence points for random2</a>
+<a name="ln694">        item.quantity += random2(10);</a>
+<a name="ln695">        item.quantity += random2(10);</a>
+<a name="ln696">        if (get_ammo_brand(item) == SPMSL_NORMAL)</a>
+<a name="ln697">            item.quantity += random2(12);</a>
+<a name="ln698"> </a>
+<a name="ln699">    }</a>
+<a name="ln700">}</a>
+<a name="ln701"> </a>
+<a name="ln702">static bool _armour_disallows_randart(int sub_type)</a>
+<a name="ln703">{</a>
+<a name="ln704">    // Scarves are never randarts.</a>
+<a name="ln705">    return sub_type == ARM_SCARF;</a>
+<a name="ln706">}</a>
+<a name="ln707"> </a>
+<a name="ln708">static bool _try_make_armour_artefact(item_def&amp; item, int force_type,</a>
+<a name="ln709">                                      int item_level, bool force_randart,</a>
+<a name="ln710">                                      int agent)</a>
+<a name="ln711">{</a>
+<a name="ln712">    if (item_level &gt; 2 &amp;&amp; x_chance_in_y(101 + item_level * 3, 4000)</a>
+<a name="ln713">        || force_randart)</a>
+<a name="ln714">    {</a>
+<a name="ln715">        // Make a randart or unrandart.</a>
+<a name="ln716"> </a>
+<a name="ln717">        // 1 in 20 randarts are unrandarts.</a>
+<a name="ln718">        if (one_chance_in(item_level == ISPEC_GOOD_ITEM ? 7 : 20)</a>
+<a name="ln719">            &amp;&amp; !force_randart)</a>
+<a name="ln720">        {</a>
+<a name="ln721">            if (_try_make_item_unrand(item, force_type, agent))</a>
+<a name="ln722">                return true;</a>
+<a name="ln723">        }</a>
+<a name="ln724"> </a>
+<a name="ln725">        if (_armour_disallows_randart(item.sub_type))</a>
+<a name="ln726">            return false;</a>
+<a name="ln727"> </a>
+<a name="ln728">        // The rest are normal randarts.</a>
+<a name="ln729"> </a>
+<a name="ln730">        // 10% of boots become barding.</a>
+<a name="ln731">        if (item.sub_type == ARM_BOOTS &amp;&amp; one_chance_in(10))</a>
+<a name="ln732">        {</a>
+<a name="ln733">            item.sub_type = random_choose(ARM_NAGA_BARDING,</a>
+<a name="ln734">                                          ARM_CENTAUR_BARDING);</a>
+<a name="ln735">        }</a>
+<a name="ln736"> </a>
+<a name="ln737">        // Determine enchantment and cursedness.</a>
+<a name="ln738">        if (one_chance_in(5))</a>
+<a name="ln739">        {</a>
+<a name="ln740">            do_curse_item(item);</a>
+<a name="ln741">            item.plus = 0;</a>
+<a name="ln742">        }</a>
+<a name="ln743">        else</a>
+<a name="ln744">        {</a>
+<a name="ln745">            int max_plus = armour_max_enchant(item);</a>
+<a name="ln746">            item.plus = random2(max_plus + 1);</a>
+<a name="ln747"> </a>
+<a name="ln748">            if (one_chance_in(5))</a>
+<a name="ln749">                item.plus += random2(max_plus + 6) / 2;</a>
+<a name="ln750"> </a>
+<a name="ln751">            if (one_chance_in(6))</a>
+<a name="ln752">                item.plus -= random2(max_plus + 6);</a>
+<a name="ln753"> </a>
+<a name="ln754">            if (item.plus &lt; 0 &amp;&amp; !one_chance_in(3))</a>
+<a name="ln755">                do_curse_item(item);</a>
+<a name="ln756">        }</a>
+<a name="ln757"> </a>
+<a name="ln758">        // On body armour, an enchantment of less than 0 is never viable.</a>
+<a name="ln759">        if (get_armour_slot(item) == EQ_BODY_ARMOUR)</a>
+<a name="ln760">            item.plus = max(static_cast&lt;int&gt;(item.plus), random2(2));</a>
+<a name="ln761"> </a>
+<a name="ln762">        // Needs to be done after the barding chance else we get randart</a>
+<a name="ln763">        // bardings named Boots of xy.</a>
+<a name="ln764">        make_item_randart(item);</a>
+<a name="ln765"> </a>
+<a name="ln766">        // Don't let unenchantable armour get minuses.</a>
+<a name="ln767">        if (!armour_is_enchantable(item))</a>
+<a name="ln768">            item.plus = 0;</a>
+<a name="ln769"> </a>
+<a name="ln770">        return true;</a>
+<a name="ln771">    }</a>
+<a name="ln772"> </a>
+<a name="ln773">    return false;</a>
+<a name="ln774">}</a>
+<a name="ln775"> </a>
+<a name="ln776">/**</a>
+<a name="ln777"> * Generate an appropriate ego for a type of armour.</a>
+<a name="ln778"> *</a>
+<a name="ln779"> * @param item          The type of armour in question.</a>
+<a name="ln780"> * @return              An ego appropriate to the item type.</a>
+<a name="ln781"> *                      May be SPARM_NORMAL.</a>
+<a name="ln782"> */</a>
+<a name="ln783">static special_armour_type _generate_armour_type_ego(armour_type type)</a>
+<a name="ln784">{</a>
+<a name="ln785">    // TODO: move this into data</a>
+<a name="ln786">    switch (type)</a>
+<a name="ln787">    {</a>
+<a name="ln788">    case ARM_KITE_SHIELD:</a>
+<a name="ln789">    case ARM_TOWER_SHIELD:</a>
+<a name="ln790">    case ARM_BUCKLER:</a>
+<a name="ln791">        return random_choose_weighted(1, SPARM_RESISTANCE,</a>
+<a name="ln792">                                      3, SPARM_FIRE_RESISTANCE,</a>
+<a name="ln793">                                      3, SPARM_COLD_RESISTANCE,</a>
+<a name="ln794">                                      3, SPARM_POISON_RESISTANCE,</a>
+<a name="ln795">                                      3, SPARM_POSITIVE_ENERGY,</a>
+<a name="ln796">                                      6, SPARM_REFLECTION,</a>
+<a name="ln797">                                      12, SPARM_PROTECTION);</a>
+<a name="ln798"> </a>
+<a name="ln799">    case ARM_SCARF:</a>
+<a name="ln800">        return random_choose_weighted(1, SPARM_SPIRIT_SHIELD,</a>
+<a name="ln801">                                      1, SPARM_RESISTANCE,</a>
+<a name="ln802">                                      1, SPARM_REPULSION,</a>
+<a name="ln803">                                      1, SPARM_CLOUD_IMMUNE);</a>
+<a name="ln804"> </a>
+<a name="ln805">    case ARM_CLOAK:</a>
+<a name="ln806">        return random_choose(SPARM_POISON_RESISTANCE,</a>
+<a name="ln807">                             SPARM_INVISIBILITY,</a>
+<a name="ln808">                             SPARM_MAGIC_RESISTANCE);</a>
+<a name="ln809"> </a>
+<a name="ln810">    case ARM_HAT:</a>
+<a name="ln811">        return random_choose_weighted(7, SPARM_NORMAL,</a>
+<a name="ln812">                                      3, SPARM_MAGIC_RESISTANCE,</a>
+<a name="ln813">                                      2, SPARM_INTELLIGENCE,</a>
+<a name="ln814">                                      2, SPARM_SEE_INVISIBLE);</a>
+<a name="ln815"> </a>
+<a name="ln816">    case ARM_HELMET:</a>
+<a name="ln817">        return random_choose(SPARM_SEE_INVISIBLE, SPARM_INTELLIGENCE);</a>
+<a name="ln818"> </a>
+<a name="ln819">    case ARM_GLOVES:</a>
+<a name="ln820">        return random_choose(SPARM_DEXTERITY, SPARM_STRENGTH, SPARM_ARCHERY);</a>
+<a name="ln821"> </a>
+<a name="ln822">    case ARM_BOOTS:</a>
+<a name="ln823">        return random_choose(SPARM_RUNNING, SPARM_FLYING, SPARM_STEALTH);</a>
+<a name="ln824"> </a>
+<a name="ln825">    case ARM_NAGA_BARDING:</a>
+<a name="ln826">    case ARM_CENTAUR_BARDING:</a>
+<a name="ln827">        return random_choose(SPARM_FLYING, SPARM_STEALTH,</a>
+<a name="ln828">                             SPARM_COLD_RESISTANCE, SPARM_FIRE_RESISTANCE);</a>
+<a name="ln829"> </a>
+<a name="ln830">    case ARM_ROBE:</a>
+<a name="ln831">        return random_choose_weighted(1, SPARM_RESISTANCE,</a>
+<a name="ln832">                                      1, SPARM_ARCHMAGI,</a>
+<a name="ln833">                                      2, SPARM_NORMAL,</a>
+<a name="ln834">                                      2, SPARM_COLD_RESISTANCE,</a>
+<a name="ln835">                                      2, SPARM_FIRE_RESISTANCE,</a>
+<a name="ln836">                                      2, SPARM_POSITIVE_ENERGY,</a>
+<a name="ln837">                                      4, SPARM_MAGIC_RESISTANCE);</a>
+<a name="ln838"> </a>
+<a name="ln839">    case ARM_PLATE_ARMOUR:</a>
+<a name="ln840">        return random_choose_weighted(26, SPARM_FIRE_RESISTANCE,</a>
+<a name="ln841">                                      26, SPARM_COLD_RESISTANCE,</a>
+<a name="ln842">                                      19, SPARM_POISON_RESISTANCE,</a>
+<a name="ln843">                                      15, SPARM_MAGIC_RESISTANCE,</a>
+<a name="ln844">                                       7, SPARM_POSITIVE_ENERGY,</a>
+<a name="ln845">                                       7, SPARM_PONDEROUSNESS);</a>
+<a name="ln846"> </a>
+<a name="ln847">    // other body armour</a>
+<a name="ln848">    default:</a>
+<a name="ln849">        break;</a>
+<a name="ln850">    }</a>
+<a name="ln851"> </a>
+<a name="ln852">    // dragon/troll armour, animal hides, and crystal plate are never generated</a>
+<a name="ln853">    // with egos. (unless they're artefacts, but those aren't handled here.)</a>
+<a name="ln854">    // TODO: deduplicate with armour_is_special() (same except for animal skin)</a>
+<a name="ln855">    if (armour_type_is_hide(type)</a>
+<a name="ln856">        || type == ARM_ANIMAL_SKIN</a>
+<a name="ln857">        || type == ARM_CRYSTAL_PLATE_ARMOUR)</a>
+<a name="ln858">    {</a>
+<a name="ln859">        return SPARM_NORMAL;</a>
+<a name="ln860">    }</a>
+<a name="ln861"> </a>
+<a name="ln862">    return random_choose_weighted(7, SPARM_FIRE_RESISTANCE,</a>
+<a name="ln863">                                  7, SPARM_COLD_RESISTANCE,</a>
+<a name="ln864">                                  5, SPARM_POISON_RESISTANCE,</a>
+<a name="ln865">                                  4, SPARM_MAGIC_RESISTANCE,</a>
+<a name="ln866">                                  2, SPARM_POSITIVE_ENERGY);</a>
+<a name="ln867">}</a>
+<a name="ln868"> </a>
+<a name="ln869">/**</a>
+<a name="ln870"> * Generate an appropriate ego for a piece of armour.</a>
+<a name="ln871"> *</a>
+<a name="ln872"> * @param item          The item in question.</a>
+<a name="ln873"> * @return              The item's current ego, if it already has one;</a>
+<a name="ln874"> *                      otherwise, an ego appropriate to the item.</a>
+<a name="ln875"> *                      May be SPARM_NORMAL.</a>
+<a name="ln876"> */</a>
+<a name="ln877">static special_armour_type _generate_armour_ego(const item_def&amp; item)</a>
+<a name="ln878">{</a>
+<a name="ln879">    if (item.brand != SPARM_NORMAL)</a>
+<a name="ln880">        return static_cast&lt;special_armour_type&gt;(item.brand);</a>
+<a name="ln881"> </a>
+<a name="ln882">    const special_armour_type ego</a>
+<a name="ln883">        = _generate_armour_type_ego(static_cast&lt;armour_type&gt;(item.sub_type));</a>
+<a name="ln884"> </a>
+<a name="ln885">    ASSERT(is_armour_brand_ok(item.sub_type, ego, true));</a>
+<a name="ln886">    return ego;</a>
+<a name="ln887">}</a>
+<a name="ln888"> </a>
+<a name="ln889">bool is_armour_brand_ok(int type, int brand, bool strict)</a>
+<a name="ln890">{</a>
+<a name="ln891">    equipment_type slot = get_armour_slot((armour_type)type);</a>
+<a name="ln892"> </a>
+<a name="ln893">    // Currently being too restrictive results in asserts, being too</a>
+<a name="ln894">    // permissive will generate such items on &quot;any armour ego:XXX&quot;.</a>
+<a name="ln895">    // The latter is definitely so much safer -- 1KB</a>
+<a name="ln896">    switch ((special_armour_type)brand)</a>
+<a name="ln897">    {</a>
+<a name="ln898">    case SPARM_FORBID_EGO:</a>
+<a name="ln899">    case SPARM_NORMAL:</a>
+<a name="ln900">        return true;</a>
+<a name="ln901"> </a>
+<a name="ln902">    case SPARM_FLYING:</a>
+<a name="ln903">        if (slot == EQ_BODY_ARMOUR)</a>
+<a name="ln904">            return true;</a>
+<a name="ln905">        // deliberate fall-through</a>
+<a name="ln906">    case SPARM_RUNNING:</a>
+<a name="ln907">    case SPARM_STEALTH:</a>
+<a name="ln908">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln909">    case SPARM_JUMPING:</a>
+<a name="ln910">#endif</a>
+<a name="ln911">        return slot == EQ_BOOTS;</a>
+<a name="ln912"> </a>
+<a name="ln913">    case SPARM_ARCHMAGI:</a>
+<a name="ln914">        return !strict || type == ARM_ROBE;</a>
+<a name="ln915"> </a>
+<a name="ln916">    case SPARM_PONDEROUSNESS:</a>
+<a name="ln917">        return true;</a>
+<a name="ln918">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln919">    case SPARM_PRESERVATION:</a>
+<a name="ln920">        if (type == ARM_PLATE_ARMOUR &amp;&amp; !strict)</a>
+<a name="ln921">            return true;</a>
+<a name="ln922">        // deliberate fall-through</a>
+<a name="ln923">#endif</a>
+<a name="ln924">    case SPARM_INVISIBILITY:</a>
+<a name="ln925">        return slot == EQ_CLOAK;</a>
+<a name="ln926"> </a>
+<a name="ln927">    case SPARM_REFLECTION:</a>
+<a name="ln928">    case SPARM_PROTECTION:</a>
+<a name="ln929">        return slot == EQ_SHIELD;</a>
+<a name="ln930"> </a>
+<a name="ln931">    case SPARM_STRENGTH:</a>
+<a name="ln932">    case SPARM_DEXTERITY:</a>
+<a name="ln933">        if (!strict)</a>
+<a name="ln934">            return true;</a>
+<a name="ln935">        // deliberate fall-through</a>
+<a name="ln936">    case SPARM_ARCHERY:</a>
+<a name="ln937">        return slot == EQ_GLOVES;</a>
+<a name="ln938"> </a>
+<a name="ln939">    case SPARM_SEE_INVISIBLE:</a>
+<a name="ln940">    case SPARM_INTELLIGENCE:</a>
+<a name="ln941">        return slot == EQ_HELMET;</a>
+<a name="ln942"> </a>
+<a name="ln943">    case SPARM_FIRE_RESISTANCE:</a>
+<a name="ln944">    case SPARM_COLD_RESISTANCE:</a>
+<a name="ln945">    case SPARM_RESISTANCE:</a>
+<a name="ln946">        if (type == ARM_FIRE_DRAGON_ARMOUR</a>
+<a name="ln947">            || type == ARM_ICE_DRAGON_ARMOUR</a>
+<a name="ln948">            || type == ARM_GOLD_DRAGON_ARMOUR)</a>
+<a name="ln949">        {</a>
+<a name="ln950">            return false; // contradictory or redundant</a>
+<a name="ln951">        }</a>
+<a name="ln952">        return true; // in portal vaults, these can happen on every slot</a>
+<a name="ln953"> </a>
+<a name="ln954">    case SPARM_MAGIC_RESISTANCE:</a>
+<a name="ln955">        if (type == ARM_HAT)</a>
+<a name="ln956">            return true;</a>
+<a name="ln957">        // deliberate fall-through</a>
+<a name="ln958">    case SPARM_POISON_RESISTANCE:</a>
+<a name="ln959">    case SPARM_POSITIVE_ENERGY:</a>
+<a name="ln960">        if (type == ARM_PEARL_DRAGON_ARMOUR &amp;&amp; brand == SPARM_POSITIVE_ENERGY)</a>
+<a name="ln961">            return false; // contradictory or redundant</a>
+<a name="ln962"> </a>
+<a name="ln963">        return slot == EQ_BODY_ARMOUR || slot == EQ_SHIELD || slot == EQ_CLOAK</a>
+<a name="ln964">                       || !strict;</a>
+<a name="ln965"> </a>
+<a name="ln966">    case SPARM_SPIRIT_SHIELD:</a>
+<a name="ln967">        return</a>
+<a name="ln968">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln969">               type == ARM_HAT ||</a>
+<a name="ln970">               type == ARM_CAP ||</a>
+<a name="ln971">#endif</a>
+<a name="ln972">               slot == EQ_SHIELD ||</a>
+<a name="ln973">               type == ARM_SCARF || !strict;</a>
+<a name="ln974"> </a>
+<a name="ln975">    case SPARM_REPULSION:</a>
+<a name="ln976">    case SPARM_CLOUD_IMMUNE:</a>
+<a name="ln977">        return type == ARM_SCARF;</a>
+<a name="ln978"> </a>
+<a name="ln979">    case NUM_SPECIAL_ARMOURS:</a>
+<a name="ln980">    case NUM_REAL_SPECIAL_ARMOURS:</a>
+<a name="ln981">        die(&quot;invalid armour brand&quot;);</a>
+<a name="ln982">    }</a>
+<a name="ln983"> </a>
+<a name="ln984"> </a>
+<a name="ln985">    return true;</a>
+<a name="ln986">}</a>
+<a name="ln987"> </a>
+<a name="ln988">/**</a>
+<a name="ln989"> * Return the number of plusses required for a type of armour to be notable.</a>
+<a name="ln990"> * (From plus alone.)</a>
+<a name="ln991"> *</a>
+<a name="ln992"> * @param armour_type   The type of armour being considered.</a>
+<a name="ln993"> * @return              The armour plus value required to be interesting.</a>
+<a name="ln994"> */</a>
+<a name="ln995">static int _armour_plus_threshold(equipment_type armour_type)</a>
+<a name="ln996">{</a>
+<a name="ln997">    switch (armour_type)</a>
+<a name="ln998">    {</a>
+<a name="ln999">        // body armour is very common; squelch most of it</a>
+<a name="ln1000">        case EQ_BODY_ARMOUR:</a>
+<a name="ln1001">            return 3;</a>
+<a name="ln1002">        // shields are fairly common</a>
+<a name="ln1003">        case EQ_SHIELD:</a>
+<a name="ln1004">            return 2;</a>
+<a name="ln1005">        // aux armour is relatively uncommon</a>
+<a name="ln1006">        default:</a>
+<a name="ln1007">            return 1;</a>
+<a name="ln1008">    }</a>
+<a name="ln1009">}</a>
+<a name="ln1010"> </a>
+<a name="ln1011">/**</a>
+<a name="ln1012"> * Pick an armour type (ex. plate armour), based on item_level</a>
+<a name="ln1013"> *</a>
+<a name="ln1014"> * @param item_level The rough power level of the item.</a>
+<a name="ln1015"> *</a>
+<a name="ln1016"> * @return The selected armour type.</a>
+<a name="ln1017"> */</a>
+<a name="ln1018">static armour_type _get_random_armour_type(int item_level)</a>
+<a name="ln1019">{</a>
+<a name="ln1020"> </a>
+<a name="ln1021">    // Dummy value for initilization, always changed by the conditional</a>
+<a name="ln1022">    // (and not changing it would trigger an ASSERT)</a>
+<a name="ln1023">    armour_type armtype = NUM_ARMOURS;</a>
+<a name="ln1024"> </a>
+<a name="ln1025">    // Secondary armours.</a>
+<a name="ln1026">    if (one_chance_in(5))</a>
+<a name="ln1027">    {</a>
+<a name="ln1028">        // Total weight is 60, each slot has a weight of 12</a>
+<a name="ln1029">        armtype = random_choose_weighted(12, ARM_BOOTS,</a>
+<a name="ln1030">                                         12, ARM_GLOVES,</a>
+<a name="ln1031">                                         // Cloak slot</a>
+<a name="ln1032">                                         9, ARM_CLOAK,</a>
+<a name="ln1033">                                         3, ARM_SCARF,</a>
+<a name="ln1034">                                         // Head slot</a>
+<a name="ln1035">                                         10, ARM_HELMET,</a>
+<a name="ln1036">                                         2, ARM_HAT,</a>
+<a name="ln1037">                                         // Shield slot</a>
+<a name="ln1038">                                         4, ARM_KITE_SHIELD,</a>
+<a name="ln1039">                                         6, ARM_BUCKLER,</a>
+<a name="ln1040">                                         2, ARM_TOWER_SHIELD);</a>
+<a name="ln1041">    }</a>
+<a name="ln1042">    else if (x_chance_in_y(11 + item_level, 10000))</a>
+<a name="ln1043">    {</a>
+<a name="ln1044">        // High level dragon scales</a>
+<a name="ln1045">        armtype = random_choose(ARM_STEAM_DRAGON_ARMOUR,</a>
+<a name="ln1046">                                ARM_ACID_DRAGON_ARMOUR,</a>
+<a name="ln1047">                                ARM_STORM_DRAGON_ARMOUR,</a>
+<a name="ln1048">                                ARM_GOLD_DRAGON_ARMOUR,</a>
+<a name="ln1049">                                ARM_SWAMP_DRAGON_ARMOUR,</a>
+<a name="ln1050">                                ARM_PEARL_DRAGON_ARMOUR,</a>
+<a name="ln1051">                                ARM_SHADOW_DRAGON_ARMOUR,</a>
+<a name="ln1052">                                ARM_QUICKSILVER_DRAGON_ARMOUR);</a>
+<a name="ln1053">    }</a>
+<a name="ln1054">    else if (x_chance_in_y(11 + item_level, 8000))</a>
+<a name="ln1055">    {</a>
+<a name="ln1056">        // Crystal plate, some armours which are normally gained by butchering</a>
+<a name="ln1057">        // monsters for hides.</a>
+<a name="ln1058">        armtype = random_choose(ARM_CRYSTAL_PLATE_ARMOUR,</a>
+<a name="ln1059">                                ARM_TROLL_LEATHER_ARMOUR,</a>
+<a name="ln1060">                                ARM_FIRE_DRAGON_ARMOUR,</a>
+<a name="ln1061">                                ARM_ICE_DRAGON_ARMOUR);</a>
+<a name="ln1062"> </a>
+<a name="ln1063">    }</a>
+<a name="ln1064">    else if (x_chance_in_y(11 + item_level, 60))</a>
+<a name="ln1065">    {</a>
+<a name="ln1066">        // All the &quot;mundane&quot; armours. Generally the player will find at least</a>
+<a name="ln1067">        // one copy of these by the Lair.</a>
+<a name="ln1068">        armtype = random_choose(ARM_ROBE,</a>
+<a name="ln1069">                                ARM_LEATHER_ARMOUR,</a>
+<a name="ln1070">                                ARM_RING_MAIL,</a>
+<a name="ln1071">                                ARM_SCALE_MAIL,</a>
+<a name="ln1072">                                ARM_CHAIN_MAIL,</a>
+<a name="ln1073">                                ARM_PLATE_ARMOUR);</a>
+<a name="ln1074">    }</a>
+<a name="ln1075">    else if (x_chance_in_y(11 + item_level, 35))</a>
+<a name="ln1076">    {</a>
+<a name="ln1077">        // All the &quot;mundane&quot; amours except plate.</a>
+<a name="ln1078">        armtype = random_choose(ARM_ROBE,</a>
+<a name="ln1079">                                ARM_LEATHER_ARMOUR,</a>
+<a name="ln1080">                                ARM_RING_MAIL,</a>
+<a name="ln1081">                                ARM_SCALE_MAIL,</a>
+<a name="ln1082">                                ARM_CHAIN_MAIL);</a>
+<a name="ln1083">    }</a>
+<a name="ln1084">    else</a>
+<a name="ln1085">    {</a>
+<a name="ln1086">        // Default (lowest-level) armours.</a>
+<a name="ln1087">        armtype = random_choose(ARM_ROBE,</a>
+<a name="ln1088">                                ARM_LEATHER_ARMOUR,</a>
+<a name="ln1089">                                ARM_RING_MAIL);</a>
+<a name="ln1090">    }</a>
+<a name="ln1091"> </a>
+<a name="ln1092">    ASSERT(armtype != NUM_ARMOURS);</a>
+<a name="ln1093"> </a>
+<a name="ln1094">    return armtype;</a>
+<a name="ln1095">}</a>
+<a name="ln1096"> </a>
+<a name="ln1097">static void _generate_armour_item(item_def&amp; item, bool allow_uniques,</a>
+<a name="ln1098">                                  int force_type, int item_level,</a>
+<a name="ln1099">                                  int agent = NO_AGENT)</a>
+<a name="ln1100">{</a>
+<a name="ln1101">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln1102">        item.sub_type = force_type;</a>
+<a name="ln1103">    else</a>
+<a name="ln1104">    {</a>
+<a name="ln1105">        for (int i = 0; i &lt; 1000; ++i)</a>
+<a name="ln1106">        {</a>
+<a name="ln1107">            item.sub_type = _get_random_armour_type(item_level);</a>
+<a name="ln1108">            if (is_armour_brand_ok(item.sub_type, item.brand, true))</a>
+<a name="ln1109">                break;</a>
+<a name="ln1110">        }</a>
+<a name="ln1111">    }</a>
+<a name="ln1112"> </a>
+<a name="ln1113"> </a>
+<a name="ln1114">    // Fall back to an ordinary item if artefacts not allowed for this type.</a>
+<a name="ln1115">    if (item_level == ISPEC_RANDART &amp;&amp; _armour_disallows_randart(item.sub_type))</a>
+<a name="ln1116">        item_level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1117"> </a>
+<a name="ln1118">    // Forced randart.</a>
+<a name="ln1119">    if (item_level == ISPEC_RANDART)</a>
+<a name="ln1120">    {</a>
+<a name="ln1121">        int ego = item.brand;</a>
+<a name="ln1122">        for (int i = 0; i &lt; 100; ++i)</a>
+<a name="ln1123">            if (_try_make_armour_artefact(item, force_type, 0, true, agent)</a>
+<a name="ln1124">                &amp;&amp; is_artefact(item))</a>
+<a name="ln1125">            {</a>
+<a name="ln1126">                // borrowed from similar code for weapons -- is this really the</a>
+<a name="ln1127">                // best way to force an ego??</a>
+<a name="ln1128">                if (ego &gt; SPARM_NORMAL)</a>
+<a name="ln1129">                {</a>
+<a name="ln1130">                    item.props[ARTEFACT_PROPS_KEY].get_vector()[ARTP_BRAND].get_short() = ego;</a>
+<a name="ln1131">                    if (randart_is_bad(item)) // recheck, the brand changed</a>
+<a name="ln1132">                    {</a>
+<a name="ln1133">                        force_type = item.sub_type;</a>
+<a name="ln1134">                        item.clear();</a>
+<a name="ln1135">                        item.quantity = 1;</a>
+<a name="ln1136">                        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1137">                        item.sub_type = force_type;</a>
+<a name="ln1138">                        continue;</a>
+<a name="ln1139">                    }</a>
+<a name="ln1140">                }</a>
+<a name="ln1141">                return;</a>
+<a name="ln1142">            }</a>
+<a name="ln1143">        // fall back to an ordinary item</a>
+<a name="ln1144">        item_level = ISPEC_GOOD_ITEM;</a>
+<a name="ln1145">    }</a>
+<a name="ln1146"> </a>
+<a name="ln1147">    if (allow_uniques</a>
+<a name="ln1148">        &amp;&amp; _try_make_armour_artefact(item, force_type, item_level, false, agent))</a>
+<a name="ln1149">    {</a>
+<a name="ln1150">        return;</a>
+<a name="ln1151">    }</a>
+<a name="ln1152"> </a>
+<a name="ln1153">    if (item.sub_type == ARM_BOOTS)</a>
+<a name="ln1154">    {</a>
+<a name="ln1155">        if (one_chance_in(8))</a>
+<a name="ln1156">            item.sub_type = ARM_NAGA_BARDING;</a>
+<a name="ln1157">        else if (one_chance_in(7))</a>
+<a name="ln1158">            item.sub_type = ARM_CENTAUR_BARDING;</a>
+<a name="ln1159">    }</a>
+<a name="ln1160"> </a>
+<a name="ln1161">    const bool force_good = item_level &gt;= ISPEC_GIFT;</a>
+<a name="ln1162">    const bool forced_ego = (item.brand &gt; 0);</a>
+<a name="ln1163">    const bool no_ego     = (item.brand == SPARM_FORBID_EGO);</a>
+<a name="ln1164"> </a>
+<a name="ln1165">    if (no_ego)</a>
+<a name="ln1166">        item.brand = SPARM_NORMAL;</a>
+<a name="ln1167"> </a>
+<a name="ln1168">    if (item_level &lt; 0)</a>
+<a name="ln1169">    {</a>
+<a name="ln1170">        // Thoroughly damaged, could have been good once.</a>
+<a name="ln1171">        if (!no_ego &amp;&amp; (forced_ego || one_chance_in(4)))</a>
+<a name="ln1172">        {</a>
+<a name="ln1173">            // Brand is set as for &quot;good&quot; items.</a>
+<a name="ln1174">            set_item_ego_type(item, OBJ_ARMOUR, _generate_armour_ego(item));</a>
+<a name="ln1175">        }</a>
+<a name="ln1176"> </a>
+<a name="ln1177">        item.plus -= 1 + random2(3);</a>
+<a name="ln1178"> </a>
+<a name="ln1179">        if (item_level == ISPEC_BAD)</a>
+<a name="ln1180">            do_curse_item(item);</a>
+<a name="ln1181">    }</a>
+<a name="ln1182">    // Scarves always get an ego.</a>
+<a name="ln1183">    else if (item.sub_type == ARM_SCARF)</a>
+<a name="ln1184">        set_item_ego_type(item, OBJ_ARMOUR, _generate_armour_ego(item));</a>
+<a name="ln1185">    else if ((forced_ego || item.sub_type == ARM_HAT</a>
+<a name="ln1186">                    || x_chance_in_y(51 + item_level, 250))</a>
+<a name="ln1187">                &amp;&amp; !item.is_mundane() || force_good)</a>
+<a name="ln1188">    {</a>
+<a name="ln1189">        // Make a good item...</a>
+<a name="ln1190">        item.plus += random2(3);</a>
+<a name="ln1191"> </a>
+<a name="ln1192">        if (item.sub_type &lt;= ARM_PLATE_ARMOUR</a>
+<a name="ln1193">            &amp;&amp; x_chance_in_y(21 + item_level, 300))</a>
+<a name="ln1194">        {</a>
+<a name="ln1195">            item.plus += random2(3);</a>
+<a name="ln1196">        }</a>
+<a name="ln1197"> </a>
+<a name="ln1198">        if (!no_ego &amp;&amp; x_chance_in_y(31 + item_level, 350))</a>
+<a name="ln1199">        {</a>
+<a name="ln1200">            // ...an ego item, in fact.</a>
+<a name="ln1201">            set_item_ego_type(item, OBJ_ARMOUR, _generate_armour_ego(item));</a>
+<a name="ln1202"> </a>
+<a name="ln1203">            if (get_armour_ego_type(item) == SPARM_PONDEROUSNESS)</a>
+<a name="ln1204">                item.plus += 3 + random2(8);</a>
+<a name="ln1205">        }</a>
+<a name="ln1206">    }</a>
+<a name="ln1207">    else if (one_chance_in(12))</a>
+<a name="ln1208">    {</a>
+<a name="ln1209">        // Make a bad (cursed) item.</a>
+<a name="ln1210">        do_curse_item(item);</a>
+<a name="ln1211"> </a>
+<a name="ln1212">        if (one_chance_in(5))</a>
+<a name="ln1213">            item.plus -= random2(3);</a>
+<a name="ln1214"> </a>
+<a name="ln1215">        set_item_ego_type(item, OBJ_ARMOUR, SPARM_NORMAL);</a>
+<a name="ln1216">    }</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    // Don't overenchant items.</a>
+<a name="ln1219">    if (item.plus &gt; armour_max_enchant(item))</a>
+<a name="ln1220">        item.plus = armour_max_enchant(item);</a>
+<a name="ln1221"> </a>
+<a name="ln1222">    // Don't let unenchantable armour get minuses.</a>
+<a name="ln1223">    if (!armour_is_enchantable(item))</a>
+<a name="ln1224">        item.plus = 0;</a>
+<a name="ln1225"> </a>
+<a name="ln1226">    // Never give brands to scales or hides, in case of misbehaving vaults.</a>
+<a name="ln1227">    if (armour_type_is_hide(static_cast&lt;armour_type&gt;(item.sub_type)))</a>
+<a name="ln1228">        set_item_ego_type(item, OBJ_ARMOUR, SPARM_NORMAL);</a>
+<a name="ln1229"> </a>
+<a name="ln1230">    // squash boring items.</a>
+<a name="ln1231">    if (!force_good &amp;&amp; item.brand == SPARM_NORMAL &amp;&amp; item.plus &gt; 0</a>
+<a name="ln1232">        &amp;&amp; item.plus &lt; _armour_plus_threshold(get_armour_slot(item)))</a>
+<a name="ln1233">    {</a>
+<a name="ln1234">        item.plus = 0;</a>
+<a name="ln1235">    }</a>
+<a name="ln1236">}</a>
+<a name="ln1237"> </a>
+<a name="ln1238">static monster_type _choose_random_monster_corpse()</a>
+<a name="ln1239">{</a>
+<a name="ln1240">    for (int count = 0; count &lt; 1000; ++count)</a>
+<a name="ln1241">    {</a>
+<a name="ln1242">        monster_type spc = mons_species(static_cast&lt;monster_type&gt;(</a>
+<a name="ln1243">                                        random2(NUM_MONSTERS)));</a>
+<a name="ln1244">        if (mons_class_flag(spc, M_NO_POLY_TO | M_CANT_SPAWN))</a>
+<a name="ln1245">            continue;</a>
+<a name="ln1246">        if (mons_class_can_leave_corpse(spc))</a>
+<a name="ln1247">            return spc;</a>
+<a name="ln1248">    }</a>
+<a name="ln1249"> </a>
+<a name="ln1250">    return MONS_RAT;          // if you can't find anything else...</a>
+<a name="ln1251">}</a>
+<a name="ln1252"> </a>
+<a name="ln1253">/**</a>
+<a name="ln1254"> * Choose a random wand subtype for ordinary wand generation.</a>
+<a name="ln1255"> *</a>
+<a name="ln1256"> * Some wands [mostly more powerful ones] are less common than others.</a>
+<a name="ln1257"> * Attack wands are more common, mostly to preserve historical wand freqs.</a>
+<a name="ln1258"> *</a>
+<a name="ln1259"> * @return      A random wand_type.</a>
+<a name="ln1260"> */</a>
+<a name="ln1261">static int _random_wand_subtype()</a>
+<a name="ln1262">{</a>
+<a name="ln1263">    // total weight 75 [arbitrary]</a>
+<a name="ln1264">    return random_choose_weighted(10, WAND_FLAME,</a>
+<a name="ln1265">                                  10, WAND_ICEBLAST,</a>
+<a name="ln1266">                                  8, WAND_RANDOM_EFFECTS,</a>
+<a name="ln1267">                                  8, WAND_POLYMORPH,</a>
+<a name="ln1268">                                  8, WAND_PARALYSIS,</a>
+<a name="ln1269">                                  8, WAND_ACID,</a>
+<a name="ln1270">                                  6, WAND_DISINTEGRATION,</a>
+<a name="ln1271">                                  6, WAND_DIGGING,</a>
+<a name="ln1272">                                  5, WAND_ENSLAVEMENT,</a>
+<a name="ln1273">                                  3, WAND_CLOUDS,</a>
+<a name="ln1274">                                  3, WAND_SCATTERSHOT);</a>
+<a name="ln1275">}</a>
+<a name="ln1276"> </a>
+<a name="ln1277">/**</a>
+<a name="ln1278"> * Should wands of this type NOT spawn extremely early on? (At very low</a>
+<a name="ln1279"> * item_level, or in the hands of very low HD monsters?)</a>
+<a name="ln1280"> *</a>
+<a name="ln1281"> * @param type      The wand_type in question.</a>
+<a name="ln1282"> * @return          Whether it'd be excessively mean for this wand to be used</a>
+<a name="ln1283"> *                  against very early players.</a>
+<a name="ln1284"> */</a>
+<a name="ln1285">bool is_high_tier_wand(int type)</a>
+<a name="ln1286">{</a>
+<a name="ln1287">    switch (type)</a>
+<a name="ln1288">    {</a>
+<a name="ln1289">    case WAND_ENSLAVEMENT:</a>
+<a name="ln1290">    case WAND_PARALYSIS:</a>
+<a name="ln1291">    case WAND_ACID:</a>
+<a name="ln1292">    case WAND_ICEBLAST:</a>
+<a name="ln1293">    case WAND_DISINTEGRATION:</a>
+<a name="ln1294">    case WAND_CLOUDS:</a>
+<a name="ln1295">    case WAND_SCATTERSHOT:</a>
+<a name="ln1296">        return true;</a>
+<a name="ln1297">    default:</a>
+<a name="ln1298">        return false;</a>
+<a name="ln1299">    }</a>
+<a name="ln1300">}</a>
+<a name="ln1301"> </a>
+<a name="ln1302">static void _generate_wand_item(item_def&amp; item, int force_type, int item_level)</a>
+<a name="ln1303">{</a>
+<a name="ln1304">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln1305">        item.sub_type = force_type;</a>
+<a name="ln1306">    else</a>
+<a name="ln1307">        item.sub_type = _random_wand_subtype();</a>
+<a name="ln1308"> </a>
+<a name="ln1309">    // Add wand charges and ensure we have at least one charge.</a>
+<a name="ln1310">    item.charges = 1 + random2avg(wand_charge_value(item.sub_type), 3);</a>
+<a name="ln1311"> </a>
+<a name="ln1312">    // Don't let monsters pickup early high-tier wands</a>
+<a name="ln1313">    if (item_level &lt; 2 &amp;&amp; is_high_tier_wand(item.sub_type))</a>
+<a name="ln1314">        item.flags |= ISFLAG_NO_PICKUP;</a>
+<a name="ln1315">}</a>
+<a name="ln1316"> </a>
+<a name="ln1317">static void _generate_food_item(item_def&amp; item, int force_quant, int force_type)</a>
+<a name="ln1318">{</a>
+<a name="ln1319">    // Determine sub_type:</a>
+<a name="ln1320">    if (force_type == OBJ_RANDOM)</a>
+<a name="ln1321">        item.sub_type = FOOD_RATION;</a>
+<a name="ln1322">    else</a>
+<a name="ln1323">        item.sub_type = force_type;</a>
+<a name="ln1324"> </a>
+<a name="ln1325">    // Happens with ghoul food acquirement -- use place_chunks() outherwise</a>
+<a name="ln1326">    if (item.sub_type == FOOD_CHUNK)</a>
+<a name="ln1327">    {</a>
+<a name="ln1328">        // Set chunk flavour:</a>
+<a name="ln1329">        item.plus = _choose_random_monster_corpse();</a>
+<a name="ln1330">        item.orig_monnum = item.plus;</a>
+<a name="ln1331">        // Set duration.</a>
+<a name="ln1332">        item.freshness = (10 + random2(11)) * 10;</a>
+<a name="ln1333">    }</a>
+<a name="ln1334"> </a>
+<a name="ln1335">    // Determine quantity.</a>
+<a name="ln1336">    item.quantity = force_quant &gt; 1 ? force_quant : 1;</a>
+<a name="ln1337">}</a>
+<a name="ln1338"> </a>
+<a name="ln1339">static void _generate_potion_item(item_def&amp; item, int force_type,</a>
+<a name="ln1340">                                  int item_level, int agent)</a>
+<a name="ln1341">{</a>
+<a name="ln1342">    item.quantity = 1;</a>
+<a name="ln1343"> </a>
+<a name="ln1344">    if (one_chance_in(18))</a>
+<a name="ln1345">        item.quantity++;</a>
+<a name="ln1346"> </a>
+<a name="ln1347">    if (one_chance_in(25))</a>
+<a name="ln1348">        item.quantity++;</a>
+<a name="ln1349"> </a>
+<a name="ln1350">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln1351">        item.sub_type = force_type;</a>
+<a name="ln1352">    else</a>
+<a name="ln1353">    {</a>
+<a name="ln1354">        int stype;</a>
+<a name="ln1355">        int tries = 500;</a>
+<a name="ln1356"> </a>
+<a name="ln1357">        // If created by Xom, keep going until an approved potion is chosen</a>
+<a name="ln1358">        // Currently does nothing, until we come up with a boring potion.</a>
+<a name="ln1359">        do</a>
+<a name="ln1360">        {</a>
+<a name="ln1361">            // total weight: 1045</a>
+<a name="ln1362">            stype = random_choose_weighted(192, POT_CURING,</a>
+<a name="ln1363">                                           105, POT_HEAL_WOUNDS,</a>
+<a name="ln1364">                                            73, POT_LIGNIFY,</a>
+<a name="ln1365">                                            73, POT_FLIGHT,</a>
+<a name="ln1366">                                            73, POT_HASTE,</a>
+<a name="ln1367">                                            66, POT_DEGENERATION,</a>
+<a name="ln1368">                                            66, POT_MIGHT,</a>
+<a name="ln1369">                                            66, POT_STABBING,</a>
+<a name="ln1370">                                            66, POT_BRILLIANCE,</a>
+<a name="ln1371">                                            53, POT_MUTATION,</a>
+<a name="ln1372">                                            35, POT_INVISIBILITY,</a>
+<a name="ln1373">                                            35, POT_RESISTANCE,</a>
+<a name="ln1374">                                            35, POT_MAGIC,</a>
+<a name="ln1375">                                            35, POT_BERSERK_RAGE,</a>
+<a name="ln1376">                                            35, POT_CANCELLATION,</a>
+<a name="ln1377">                                            35, POT_AMBROSIA,</a>
+<a name="ln1378">                                             2, POT_EXPERIENCE);</a>
+<a name="ln1379">        }</a>
+<a name="ln1380">        while (agent == GOD_XOM</a>
+<a name="ln1381">               &amp;&amp; _is_boring_item(OBJ_POTIONS, stype)</a>
+<a name="ln1382">               &amp;&amp; --tries &gt; 0);</a>
+<a name="ln1383"> </a>
+<a name="ln1384">        item.sub_type = stype;</a>
+<a name="ln1385">    }</a>
+<a name="ln1386">    // don't let monsters pickup early dangerous potions</a>
+<a name="ln1387">    if (item_level &lt; 2 &amp;&amp; item.sub_type == POT_BERSERK_RAGE)</a>
+<a name="ln1388">        item.flags |= ISFLAG_NO_PICKUP;</a>
+<a name="ln1389">}</a>
+<a name="ln1390"> </a>
+<a name="ln1391">static void _generate_scroll_item(item_def&amp; item, int force_type,</a>
+<a name="ln1392">                                  int item_level, int agent)</a>
+<a name="ln1393">{</a>
+<a name="ln1394">    // determine sub_type:</a>
+<a name="ln1395">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln1396">        item.sub_type = force_type;</a>
+<a name="ln1397">    else</a>
+<a name="ln1398">    {</a>
+<a name="ln1399">        const int depth_mod = random2(1 + item_level);</a>
+<a name="ln1400">        int tries = 500;</a>
+<a name="ln1401"> </a>
+<a name="ln1402">        // If this item is created by Xom, keep looping until an</a>
+<a name="ln1403">        // interesting scroll is discovered (as determined by</a>
+<a name="ln1404">        // _is_boring_item). Otherwise just weighted-choose a scroll.</a>
+<a name="ln1405">        do</a>
+<a name="ln1406">        {</a>
+<a name="ln1407">            // total weight:    709  if depth_mod &lt; 4</a>
+<a name="ln1408">            //                  828  otherwise</a>
+<a name="ln1409">            //                 -122  in sprint</a>
+<a name="ln1410">            item.sub_type = random_choose_weighted(</a>
+<a name="ln1411">                200, SCR_IDENTIFY,</a>
+<a name="ln1412">                112, SCR_REMOVE_CURSE,</a>
+<a name="ln1413">                 // [Cha] don't generate teleportation scrolls if in sprint</a>
+<a name="ln1414">                100, (crawl_state.game_is_sprint() ? NUM_SCROLLS</a>
+<a name="ln1415">                                                   : SCR_TELEPORTATION),</a>
+<a name="ln1416">                 45, SCR_AMNESIA,</a>
+<a name="ln1417">                 40, SCR_ENCHANT_ARMOUR,</a>
+<a name="ln1418">                 40, SCR_ENCHANT_WEAPON,</a>
+<a name="ln1419">                 40, SCR_MAGIC_MAPPING,</a>
+<a name="ln1420">                 32, SCR_FEAR,</a>
+<a name="ln1421">                 32, SCR_FOG,</a>
+<a name="ln1422">                 32, SCR_BLINKING,</a>
+<a name="ln1423">                 32, SCR_IMMOLATION,</a>
+<a name="ln1424">                 // [Cha] don't generate noise scrolls if in sprint</a>
+<a name="ln1425">                 22, (crawl_state.game_is_sprint() ? NUM_SCROLLS : SCR_NOISE),</a>
+<a name="ln1426">                 22, SCR_RANDOM_USELESSNESS,</a>
+<a name="ln1427">                 // Higher-level scrolls.</a>
+<a name="ln1428">                 27, (depth_mod &lt; 4 ? NUM_SCROLLS : SCR_VULNERABILITY),</a>
+<a name="ln1429">                 17, (depth_mod &lt; 4 ? NUM_SCROLLS : SCR_SUMMONING),</a>
+<a name="ln1430">                 15, (depth_mod &lt; 4 ? NUM_SCROLLS : SCR_ACQUIREMENT),</a>
+<a name="ln1431">                 15, (depth_mod &lt; 4 ? NUM_SCROLLS : SCR_SILENCE),</a>
+<a name="ln1432">                 15, (depth_mod &lt; 4 ? NUM_SCROLLS : SCR_BRAND_WEAPON),</a>
+<a name="ln1433">                 15, (depth_mod &lt; 4 ? NUM_SCROLLS : SCR_TORMENT),</a>
+<a name="ln1434">                 15, (depth_mod &lt; 4 ? NUM_SCROLLS : SCR_HOLY_WORD));</a>
+<a name="ln1435">        }</a>
+<a name="ln1436">        while (item.sub_type == NUM_SCROLLS</a>
+<a name="ln1437">               || agent == GOD_XOM</a>
+<a name="ln1438">                  &amp;&amp; _is_boring_item(OBJ_SCROLLS, item.sub_type)</a>
+<a name="ln1439">                  &amp;&amp; --tries &gt; 0);</a>
+<a name="ln1440">    }</a>
+<a name="ln1441"> </a>
+<a name="ln1442">    item.quantity = random_choose_weighted(46, 1,</a>
+<a name="ln1443">                                            1, 2,</a>
+<a name="ln1444">                                            1, 3);</a>
+<a name="ln1445"> </a>
+<a name="ln1446">    item.plus = 0;</a>
+<a name="ln1447">}</a>
+<a name="ln1448"> </a>
+<a name="ln1449">/// Choose a random spellbook type for the given level.</a>
+<a name="ln1450">static book_type _choose_book_type(int item_level)</a>
+<a name="ln1451">{</a>
+<a name="ln1452">    const book_type book = static_cast&lt;book_type&gt;(random2(NUM_FIXED_BOOKS));</a>
+<a name="ln1453">    if (item_type_removed(OBJ_BOOKS, book))</a>
+<a name="ln1454">        return _choose_book_type(item_level); // choose something else</a>
+<a name="ln1455"> </a>
+<a name="ln1456">    // If this book is really rare for this depth, continue trying.</a>
+<a name="ln1457">    const int rarity = book_rarity(book);</a>
+<a name="ln1458">    ASSERT(rarity != 100); // 'removed item' - ugh...</a>
+<a name="ln1459"> </a>
+<a name="ln1460">    if (!one_chance_in(100) &amp;&amp; x_chance_in_y(rarity-1, item_level+1))</a>
+<a name="ln1461">        return _choose_book_type(item_level); // choose something else</a>
+<a name="ln1462"> </a>
+<a name="ln1463">    return book;</a>
+<a name="ln1464">}</a>
+<a name="ln1465"> </a>
+<a name="ln1466">/// Choose a random skill for a manual to be generated for.</a>
+<a name="ln1467">static skill_type _choose_manual_skill()</a>
+<a name="ln1468">{</a>
+<a name="ln1469">    // spell skill (or invo/evo)</a>
+<a name="ln1470">    if (one_chance_in(4))</a>
+<a name="ln1471">    {</a>
+<a name="ln1472">        return static_cast&lt;skill_type&gt;(</a>
+<a name="ln1473">            SK_SPELLCASTING + random2(NUM_SKILLS - SK_SPELLCASTING));</a>
+<a name="ln1474">    }</a>
+<a name="ln1475"> </a>
+<a name="ln1476">    // mundane skill</a>
+<a name="ln1477">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1478">    skill_type skill = SK_TRAPS;</a>
+<a name="ln1479">    while (skill == SK_TRAPS || skill == SK_STABBING)</a>
+<a name="ln1480">        skill = static_cast&lt;skill_type&gt;(random2(SK_LAST_MUNDANE+1));</a>
+<a name="ln1481">    return skill;</a>
+<a name="ln1482">#else</a>
+<a name="ln1483">    return static_cast&lt;skill_type&gt;(random2(SK_LAST_MUNDANE + 1));</a>
+<a name="ln1484">#endif</a>
+<a name="ln1485">}</a>
+<a name="ln1486"> </a>
+<a name="ln1487">static void _generate_book_item(item_def&amp; item, bool allow_uniques,</a>
+<a name="ln1488">                                int force_type, int item_level)</a>
+<a name="ln1489">{</a>
+<a name="ln1490">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln1491">        item.sub_type = force_type;</a>
+<a name="ln1492">    else if (item_level &gt; 6 &amp;&amp; x_chance_in_y(21 + item_level, 4000))</a>
+<a name="ln1493">        item.sub_type = BOOK_MANUAL; // skill manual - rare!</a>
+<a name="ln1494">    else</a>
+<a name="ln1495">        item.sub_type = _choose_book_type(item_level);</a>
+<a name="ln1496"> </a>
+<a name="ln1497">    if (item.sub_type == BOOK_MANUAL)</a>
+<a name="ln1498">    {</a>
+<a name="ln1499">        item.skill = _choose_manual_skill();</a>
+<a name="ln1500">        // Set number of bonus skill points.</a>
+<a name="ln1501">        item.skill_points = random_range(2000, 3000);</a>
+<a name="ln1502">        // Preidentify.</a>
+<a name="ln1503">        set_ident_type(item, true);</a>
+<a name="ln1504">        set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln1505">        return; // rare enough without being replaced with randarts</a>
+<a name="ln1506">    }</a>
+<a name="ln1507"> </a>
+<a name="ln1508">    // Only randomly generate randart books for OBJ_RANDOM, since randart</a>
+<a name="ln1509">    // spellbooks aren't merely of-the-same-type-but-better, but</a>
+<a name="ln1510">    // have an entirely different set of spells.</a>
+<a name="ln1511">    if (allow_uniques &amp;&amp; item_level &gt; 2 &amp;&amp; force_type == OBJ_RANDOM</a>
+<a name="ln1512">        &amp;&amp; x_chance_in_y(101 + item_level * 3, 4000))</a>
+<a name="ln1513">    {</a>
+<a name="ln1514">        int choice = random_choose_weighted(</a>
+<a name="ln1515">            29, BOOK_RANDART_THEME,</a>
+<a name="ln1516">             1, BOOK_RANDART_LEVEL);</a>
+<a name="ln1517"> </a>
+<a name="ln1518">        item.sub_type = choice;</a>
+<a name="ln1519">    }</a>
+<a name="ln1520"> </a>
+<a name="ln1521">    if (item.sub_type == BOOK_RANDART_THEME)</a>
+<a name="ln1522">        build_themed_book(item, capped_spell_filter(20));</a>
+<a name="ln1523">    else if (item.sub_type == BOOK_RANDART_LEVEL)</a>
+<a name="ln1524">    {</a>
+<a name="ln1525">        int max_level  = min(9, max(1, item_level / 3));</a>
+<a name="ln1526">        int spl_level  = random_range(1, max_level);</a>
+<a name="ln1527">        make_book_level_randart(item, spl_level);</a>
+<a name="ln1528">    }</a>
+<a name="ln1529">}</a>
+<a name="ln1530"> </a>
+<a name="ln1531">static void _generate_staff_item(item_def&amp; item, bool allow_uniques,</a>
+<a name="ln1532">                                 int force_type, int item_level, int agent)</a>
+<a name="ln1533">{</a>
+<a name="ln1534">    // If we make the unique roll, no further generation necessary.</a>
+<a name="ln1535">    // Copied unrand code from _try_make_weapon_artefact since randart enhancer staves</a>
+<a name="ln1536">    // can't happen.</a>
+<a name="ln1537">    if (allow_uniques</a>
+<a name="ln1538">        &amp;&amp; one_chance_in(item_level == ISPEC_GOOD_ITEM ? 27 : 100))</a>
+<a name="ln1539">    {</a>
+<a name="ln1540">        // Temporarily fix the base_type to get enhancer staves</a>
+<a name="ln1541">        item.base_type = OBJ_WEAPONS;</a>
+<a name="ln1542">        if (_try_make_item_unrand(item, WPN_STAFF, agent))</a>
+<a name="ln1543">            return;</a>
+<a name="ln1544">        item.base_type = OBJ_STAVES;</a>
+<a name="ln1545">    }</a>
+<a name="ln1546"> </a>
+<a name="ln1547">    if (force_type == OBJ_RANDOM)</a>
+<a name="ln1548">    {</a>
+<a name="ln1549">        do</a>
+<a name="ln1550">        {</a>
+<a name="ln1551">            item.sub_type = random2(NUM_STAVES);</a>
+<a name="ln1552">        }</a>
+<a name="ln1553">        while (item_type_removed(OBJ_STAVES, item.sub_type));</a>
+<a name="ln1554"> </a>
+<a name="ln1555">        // staves of energy are 25% less common, wizardry is more common</a>
+<a name="ln1556">        if (item.sub_type == STAFF_ENERGY &amp;&amp; one_chance_in(4))</a>
+<a name="ln1557">            item.sub_type = STAFF_WIZARDRY;</a>
+<a name="ln1558">    }</a>
+<a name="ln1559">    else</a>
+<a name="ln1560">        item.sub_type = force_type;</a>
+<a name="ln1561"> </a>
+<a name="ln1562">    if (one_chance_in(16))</a>
+<a name="ln1563">        do_curse_item(item);</a>
+<a name="ln1564">}</a>
+<a name="ln1565"> </a>
+<a name="ln1566">static void _generate_rune_item(item_def&amp; item, int force_type)</a>
+<a name="ln1567">{</a>
+<a name="ln1568">    if (force_type == OBJ_RANDOM)</a>
+<a name="ln1569">    {</a>
+<a name="ln1570">        vector&lt;int&gt; possibles;</a>
+<a name="ln1571">        for (int i = 0; i &lt; NUM_RUNE_TYPES; i++)</a>
+<a name="ln1572">            if (!item_type_removed(OBJ_RUNES, i) &amp;&amp; !you.runes[i]</a>
+<a name="ln1573">                &amp;&amp; i != RUNE_ELF &amp;&amp; i != RUNE_FOREST)</a>
+<a name="ln1574">            {</a>
+<a name="ln1575">                possibles.push_back(i);</a>
+<a name="ln1576">            }</a>
+<a name="ln1577"> </a>
+<a name="ln1578">        item.sub_type = possibles.empty()</a>
+<a name="ln1579">                      ? RUNE_DEMONIC</a>
+<a name="ln1580">                      : *random_iterator(possibles);</a>
+<a name="ln1581">    }</a>
+<a name="ln1582">    else</a>
+<a name="ln1583">        item.sub_type = force_type;</a>
+<a name="ln1584">}</a>
+<a name="ln1585"> </a>
+<a name="ln1586">static bool _try_make_jewellery_unrandart(item_def&amp; item, int force_type,</a>
+<a name="ln1587">                                          int item_level, int agent)</a>
+<a name="ln1588">{</a>
+<a name="ln1589">    int type = (force_type == NUM_RINGS)     ? get_random_ring_type() :</a>
+<a name="ln1590">               (force_type == NUM_JEWELLERY) ? get_random_amulet_type()</a>
+<a name="ln1591">                                             : force_type;</a>
+<a name="ln1592">    if (item_level &gt; 2</a>
+<a name="ln1593">        &amp;&amp; one_chance_in(20)</a>
+<a name="ln1594">        &amp;&amp; x_chance_in_y(101 + item_level * 3, 2000))</a>
+<a name="ln1595">    {</a>
+<a name="ln1596">        if (_try_make_item_unrand(item, type, agent))</a>
+<a name="ln1597">            return true;</a>
+<a name="ln1598">    }</a>
+<a name="ln1599"> </a>
+<a name="ln1600">    return false;</a>
+<a name="ln1601">}</a>
+<a name="ln1602"> </a>
+<a name="ln1603">/**</a>
+<a name="ln1604"> * Generate a random 'bad' plus for a ring type that cares about plusses.</a>
+<a name="ln1605"> *</a>
+<a name="ln1606"> * @return a bad 'plus', between -2 and -6 (inclusive).</a>
+<a name="ln1607"> */</a>
+<a name="ln1608">static int _bad_ring_plus()</a>
+<a name="ln1609">{</a>
+<a name="ln1610">    int plus = -2;</a>
+<a name="ln1611">    if (coinflip())</a>
+<a name="ln1612">        --plus;</a>
+<a name="ln1613">    if (one_chance_in(3))</a>
+<a name="ln1614">        plus -= random2(4);</a>
+<a name="ln1615">    return plus;</a>
+<a name="ln1616">}</a>
+<a name="ln1617"> </a>
+<a name="ln1618">/**</a>
+<a name="ln1619"> * Generate a random 'good' plus for a ring type that cares about plusses.</a>
+<a name="ln1620"> *</a>
+<a name="ln1621"> * @param subtype       The type of ring in question.</a>
+<a name="ln1622"> * @return              Between 1 and 6 (inclusive); 2-6 for statrings.</a>
+<a name="ln1623"> *                      (+1 stat rings are extremely boring.)</a>
+<a name="ln1624"> */</a>
+<a name="ln1625">static int _good_jewellery_plus(int subtype)</a>
+<a name="ln1626">{</a>
+<a name="ln1627">    switch (subtype)</a>
+<a name="ln1628">    {</a>
+<a name="ln1629">        case RING_STRENGTH:</a>
+<a name="ln1630">        case RING_DEXTERITY:</a>
+<a name="ln1631">        case RING_INTELLIGENCE:</a>
+<a name="ln1632">        case AMU_REFLECTION:</a>
+<a name="ln1633">            return 2 + (one_chance_in(3) ? random2(2) : random2avg(5, 2));</a>
+<a name="ln1634">        default:</a>
+<a name="ln1635">            return 1 + (one_chance_in(3) ? random2(3) : random2avg(6, 2));</a>
+<a name="ln1636">    }</a>
+<a name="ln1637">}</a>
+<a name="ln1638"> </a>
+<a name="ln1639">/**</a>
+<a name="ln1640"> * Generate a random 'plus' for a given type of ring.</a>
+<a name="ln1641"> *</a>
+<a name="ln1642"> * @param subtype       The type of ring in question.</a>
+<a name="ln1643"> * @return              A 'plus' for that ring. 0 for most types.</a>
+<a name="ln1644"> */</a>
+<a name="ln1645">static int _determine_ring_plus(int subtype)</a>
+<a name="ln1646">{</a>
+<a name="ln1647">    switch (subtype)</a>
+<a name="ln1648">    {</a>
+<a name="ln1649">    case RING_PROTECTION:</a>
+<a name="ln1650">    case RING_STRENGTH:</a>
+<a name="ln1651">    case RING_SLAYING:</a>
+<a name="ln1652">    case RING_EVASION:</a>
+<a name="ln1653">    case RING_DEXTERITY:</a>
+<a name="ln1654">    case RING_INTELLIGENCE:</a>
+<a name="ln1655">        if (one_chance_in(5)) // 20% of such rings are cursed {dlb}</a>
+<a name="ln1656">            return _bad_ring_plus();</a>
+<a name="ln1657">        return _good_jewellery_plus(subtype);</a>
+<a name="ln1658"> </a>
+<a name="ln1659">    case AMU_REFLECTION:</a>
+<a name="ln1660">        return _good_jewellery_plus(subtype);</a>
+<a name="ln1661"> </a>
+<a name="ln1662">    default:</a>
+<a name="ln1663">        return 0;</a>
+<a name="ln1664">    }</a>
+<a name="ln1665">}</a>
+<a name="ln1666"> </a>
+<a name="ln1667">static void _generate_jewellery_item(item_def&amp; item, bool allow_uniques,</a>
+<a name="ln1668">                                     int force_type, int item_level,</a>
+<a name="ln1669">                                     int agent)</a>
+<a name="ln1670">{</a>
+<a name="ln1671">    if (allow_uniques &amp;&amp; item_level != ISPEC_RANDART</a>
+<a name="ln1672">        &amp;&amp; _try_make_jewellery_unrandart(item, force_type, item_level, agent))</a>
+<a name="ln1673">    {</a>
+<a name="ln1674">        return;</a>
+<a name="ln1675">    }</a>
+<a name="ln1676"> </a>
+<a name="ln1677">    // Determine subtype.</a>
+<a name="ln1678">    // Note: removed double probability reduction for some subtypes</a>
+<a name="ln1679">    if (force_type != OBJ_RANDOM</a>
+<a name="ln1680">        &amp;&amp; force_type != NUM_RINGS</a>
+<a name="ln1681">        &amp;&amp; force_type != NUM_JEWELLERY)</a>
+<a name="ln1682">    {</a>
+<a name="ln1683">        item.sub_type = force_type;</a>
+<a name="ln1684">    }</a>
+<a name="ln1685">    else</a>
+<a name="ln1686">    {</a>
+<a name="ln1687">        int tries = 500;</a>
+<a name="ln1688">        do</a>
+<a name="ln1689">        {</a>
+<a name="ln1690">            if (force_type == NUM_RINGS)</a>
+<a name="ln1691">                item.sub_type = get_random_ring_type();</a>
+<a name="ln1692">            else if (force_type == NUM_JEWELLERY)</a>
+<a name="ln1693">                item.sub_type = get_random_amulet_type();</a>
+<a name="ln1694">            else</a>
+<a name="ln1695">                item.sub_type = (one_chance_in(4) ? get_random_amulet_type()</a>
+<a name="ln1696">                                                  : get_random_ring_type());</a>
+<a name="ln1697">        }</a>
+<a name="ln1698">        while (agent == GOD_XOM</a>
+<a name="ln1699">               &amp;&amp; _is_boring_item(OBJ_JEWELLERY, item.sub_type)</a>
+<a name="ln1700">               &amp;&amp; --tries &gt; 0);</a>
+<a name="ln1701">    }</a>
+<a name="ln1702"> </a>
+<a name="ln1703">    item.plus = _determine_ring_plus(item.sub_type);</a>
+<a name="ln1704"> </a>
+<a name="ln1705">    if (item.plus &lt; 0)</a>
+<a name="ln1706">        do_curse_item(item);</a>
+<a name="ln1707"> </a>
+<a name="ln1708">    // All jewellery base types should now work. - bwr</a>
+<a name="ln1709">    if (item_level == ISPEC_RANDART</a>
+<a name="ln1710">        || allow_uniques &amp;&amp; item_level &gt; 2</a>
+<a name="ln1711">           &amp;&amp; x_chance_in_y(101 + item_level * 3, 4000))</a>
+<a name="ln1712">    {</a>
+<a name="ln1713">        make_item_randart(item);</a>
+<a name="ln1714">    }</a>
+<a name="ln1715">    else if (item.sub_type == RING_ATTENTION</a>
+<a name="ln1716">             || item.sub_type == RING_TELEPORTATION</a>
+<a name="ln1717">             || item.sub_type == AMU_INACCURACY</a>
+<a name="ln1718">             || one_chance_in(50))</a>
+<a name="ln1719">    {</a>
+<a name="ln1720">        // Bad jewellery is always cursed {dlb}:</a>
+<a name="ln1721">        do_curse_item(item);</a>
+<a name="ln1722">    }</a>
+<a name="ln1723">}</a>
+<a name="ln1724"> </a>
+<a name="ln1725">static void _generate_misc_item(item_def&amp; item, int force_type)</a>
+<a name="ln1726">{</a>
+<a name="ln1727">    if (force_type != OBJ_RANDOM)</a>
+<a name="ln1728">        item.sub_type = force_type;</a>
+<a name="ln1729">    else</a>
+<a name="ln1730">    {</a>
+<a name="ln1731">        item.sub_type = random_choose(MISC_PHIAL_OF_FLOODS,</a>
+<a name="ln1732">                                      MISC_LIGHTNING_ROD,</a>
+<a name="ln1733">                                      MISC_BOX_OF_BEASTS,</a>
+<a name="ln1734">                                      MISC_PHANTOM_MIRROR,</a>
+<a name="ln1735">                                      MISC_TIN_OF_TREMORSTONES);</a>
+<a name="ln1736">    }</a>
+<a name="ln1737">}</a>
+<a name="ln1738"> </a>
+<a name="ln1739">/**</a>
+<a name="ln1740"> * Alter the inputed item to have no &quot;plusses&quot; (mostly weapon/armour enchantment)</a>
+<a name="ln1741"> *</a>
+<a name="ln1742"> * @param[in,out] item_slot The item slot of the item to remove &quot;plusses&quot; from.</a>
+<a name="ln1743"> */</a>
+<a name="ln1744">void squash_plusses(int item_slot)</a>
+<a name="ln1745">{</a>
+<a name="ln1746">    item_def&amp; item(mitm[item_slot]);</a>
+<a name="ln1747"> </a>
+<a name="ln1748">    item.plus         = 0;</a>
+<a name="ln1749">    item.plus2        = 0;</a>
+<a name="ln1750">    item.brand        = 0;</a>
+<a name="ln1751">    set_equip_desc(item, ISFLAG_NO_DESC);</a>
+<a name="ln1752">}</a>
+<a name="ln1753"> </a>
+<a name="ln1754">static bool _ego_unrand_only(int base_type, int ego)</a>
+<a name="ln1755">{</a>
+<a name="ln1756">    if (base_type == OBJ_WEAPONS)</a>
+<a name="ln1757">    {</a>
+<a name="ln1758">        switch (static_cast&lt;brand_type&gt;(ego))</a>
+<a name="ln1759">        {</a>
+<a name="ln1760">        case SPWPN_REAPING:</a>
+<a name="ln1761">        case SPWPN_ACID:</a>
+<a name="ln1762">            return true;</a>
+<a name="ln1763">        default:</a>
+<a name="ln1764">            return false;</a>
+<a name="ln1765">        }</a>
+<a name="ln1766">    }</a>
+<a name="ln1767">    // all armours are ok?</a>
+<a name="ln1768">    return false;</a>
+<a name="ln1769">}</a>
+<a name="ln1770"> </a>
+<a name="ln1771">// Make a corresponding randart instead as a fallback.</a>
+<a name="ln1772">// Attempts to use base type, sub type, and ego (for armour/weapons).</a>
+<a name="ln1773">// Artefacts can explicitly specify a base type and fallback type.</a>
+<a name="ln1774"> </a>
+<a name="ln1775">// Could be even more flexible: maybe allow an item spec to describe</a>
+<a name="ln1776">// complex fallbacks?</a>
+<a name="ln1777">static void _setup_fallback_randart(const int unrand_id,</a>
+<a name="ln1778">                                    item_def &amp;item,</a>
+<a name="ln1779">                                    int &amp;force_type,</a>
+<a name="ln1780">                                    int &amp;item_level)</a>
+<a name="ln1781">{</a>
+<a name="ln1782">    ASSERT(get_unrand_entry(unrand_id));</a>
+<a name="ln1783">    const unrandart_entry &amp;unrand = *get_unrand_entry(unrand_id);</a>
+<a name="ln1784">    dprf(&quot;Placing fallback randart for %s&quot;, unrand.name);</a>
+<a name="ln1785"> </a>
+<a name="ln1786">    uint8_t fallback_sub_type;</a>
+<a name="ln1787">    if (unrand.fallback_base_type != OBJ_UNASSIGNED)</a>
+<a name="ln1788">    {</a>
+<a name="ln1789">        item.base_type = unrand.fallback_base_type;</a>
+<a name="ln1790">        fallback_sub_type = unrand.fallback_sub_type;</a>
+<a name="ln1791">    }</a>
+<a name="ln1792">    else</a>
+<a name="ln1793">    {</a>
+<a name="ln1794">        item.base_type = unrand.base_type;</a>
+<a name="ln1795">        fallback_sub_type = unrand.sub_type;</a>
+<a name="ln1796">    }</a>
+<a name="ln1797"> </a>
+<a name="ln1798">    if (item.base_type == OBJ_WEAPONS</a>
+<a name="ln1799">        &amp;&amp; fallback_sub_type == WPN_STAFF)</a>
+<a name="ln1800">    {</a>
+<a name="ln1801">        item.base_type = OBJ_STAVES;</a>
+<a name="ln1802">        if (unrand_id == UNRAND_WUCAD_MU)</a>
+<a name="ln1803">            force_type = STAFF_ENERGY;</a>
+<a name="ln1804">        else if (unrand_id == UNRAND_OLGREB)</a>
+<a name="ln1805">            force_type = STAFF_POISON;</a>
+<a name="ln1806">        else</a>
+<a name="ln1807">            force_type = OBJ_RANDOM;</a>
+<a name="ln1808">        // XXX: small chance of the other unrand...</a>
+<a name="ln1809">        // (but we won't hit this case until a new staff unrand is added)</a>
+<a name="ln1810">    }</a>
+<a name="ln1811">    else if (item.base_type == OBJ_JEWELLERY</a>
+<a name="ln1812">             &amp;&amp; fallback_sub_type == AMU_NOTHING)</a>
+<a name="ln1813">    {</a>
+<a name="ln1814">        force_type = NUM_JEWELLERY;</a>
+<a name="ln1815">    }</a>
+<a name="ln1816">    else</a>
+<a name="ln1817">        force_type = fallback_sub_type;</a>
+<a name="ln1818"> </a>
+<a name="ln1819">    // import some brand information from the unrand. TODO: I'm doing this for</a>
+<a name="ln1820">    // the sake of vault designers who make themed vaults. But it also often</a>
+<a name="ln1821">    // makes the item more redundant with the unrand; maybe add a bit more</a>
+<a name="ln1822">    // flexibility in item specs so that this part is optional? However, from a</a>
+<a name="ln1823">    // seeding perspective, it also makes sense if the item generated is</a>
+<a name="ln1824">    // very comparable.</a>
+<a name="ln1825"> </a>
+<a name="ln1826">    // unset fallback_brand is -1. In that case it will try to use the regular</a>
+<a name="ln1827">    // brand if there is one. If the end result here is 0, the brand (for</a>
+<a name="ln1828">    // weapons) will be chosen randomly. So to force randomness, use</a>
+<a name="ln1829">    // SPWPN_NORMAL on the fallback ego, or set neither. (Randarts cannot be</a>
+<a name="ln1830">    // unbranded.)</a>
+<a name="ln1831">    item.brand = unrand.fallback_brand; // no type checking here...</a>
+<a name="ln1832"> </a>
+<a name="ln1833">    if (item.brand &lt; 0</a>
+<a name="ln1834">        &amp;&amp; !_ego_unrand_only(item.base_type, unrand.prpty[ARTP_BRAND])</a>
+<a name="ln1835">        &amp;&amp; item.base_type == unrand.base_type // brand isn't well-defined for != case</a>
+<a name="ln1836">        &amp;&amp; ((item.base_type == OBJ_WEAPONS</a>
+<a name="ln1837">             &amp;&amp; is_weapon_brand_ok(item.sub_type, unrand.prpty[ARTP_BRAND], true))</a>
+<a name="ln1838">            || (item.base_type == OBJ_ARMOUR</a>
+<a name="ln1839">             &amp;&amp; is_armour_brand_ok(item.sub_type, unrand.prpty[ARTP_BRAND], true))))</a>
+<a name="ln1840">    {</a>
+<a name="ln1841">        // maybe do jewellery too?</a>
+<a name="ln1842">        item.brand = unrand.prpty[ARTP_BRAND];</a>
+<a name="ln1843">    }</a>
+<a name="ln1844">    if (item.brand &lt; 0)</a>
+<a name="ln1845">        item.brand = 0;</a>
+<a name="ln1846"> </a>
+<a name="ln1847">    item_level = ISPEC_RANDART;</a>
+<a name="ln1848">}</a>
+<a name="ln1849"> </a>
+<a name="ln1850">/**</a>
+<a name="ln1851"> * Create an item.</a>
+<a name="ln1852"> *</a>
+<a name="ln1853"> * Various parameters determine whether the item can be an artifact, set the</a>
+<a name="ln1854"> * item class (ex. weapon, wand), set the item subtype (ex.</a>
+<a name="ln1855"> * hand axe, wand of flame), set the item ego (ex. of flaming, of running), set</a>
+<a name="ln1856"> * the rough power level of the item, and set the agent of the item (which</a>
+<a name="ln1857"> * affects what artefacts can be generated, and also non-artefact items if the</a>
+<a name="ln1858"> * agent is Xom). Item class, Item type, and Item ego can also be randomly</a>
+<a name="ln1859"> * selected (by setting those parameters to OBJ_RANDOM, OBJ_RANDOM, and 0</a>
+<a name="ln1860"> * respectively).</a>
+<a name="ln1861"> *</a>
+<a name="ln1862"> * @param allow_uniques Can the item generated be an artefact?</a>
+<a name="ln1863"> * @param force_class The desired OBJECTS class (Example: OBJ_ARMOUR)</a>
+<a name="ln1864"> * @param force_type The desired SUBTYPE - enum varies by OBJ</a>
+<a name="ln1865"> * @param item_level How powerful the item is allowed to be</a>
+<a name="ln1866"> * @param force_ego The desired ego/brand</a>
+<a name="ln1867"> * @param agent The agent creating the item (Example: Xom) or -1 if NA</a>
+<a name="ln1868"> *</a>
+<a name="ln1869"> * @return The generated item's item slot or NON_ITEM if it fails.</a>
+<a name="ln1870"> */</a>
+<a name="ln1871">int items(bool allow_uniques,</a>
+<a name="ln1872">          object_class_type force_class,</a>
+<a name="ln1873">          int force_type,</a>
+<a name="ln1874">          int item_level,</a>
+<a name="ln1875">          int force_ego,</a>
+<a name="ln1876">          int agent)</a>
+<a name="ln1877">{</a>
+<a name="ln1878">    rng::subgenerator item_rng;</a>
+<a name="ln1879"> </a>
+<a name="ln1880">    ASSERT(force_ego &lt;= 0</a>
+<a name="ln1881">           || force_class == OBJ_WEAPONS</a>
+<a name="ln1882">           || force_class == OBJ_ARMOUR</a>
+<a name="ln1883">           || force_class == OBJ_MISSILES</a>
+<a name="ln1884">           || force_class == OBJ_MISCELLANY);</a>
+<a name="ln1885"> </a>
+<a name="ln1886">    // Find an empty slot for the item (with culling if required).</a>
+<a name="ln1887">    int p = get_mitm_slot(10);</a>
+<a name="ln1888">    if (p == NON_ITEM)</a>
+<a name="ln1889">        return NON_ITEM;</a>
+<a name="ln1890"> </a>
+<a name="ln1891">    item_def&amp; item(mitm[p]);</a>
+<a name="ln1892"> </a>
+<a name="ln1893">    const bool force_good = item_level &gt;= ISPEC_GIFT;</a>
+<a name="ln1894"> </a>
+<a name="ln1895">    if (force_ego != 0)</a>
+<a name="ln1896">        allow_uniques = false;</a>
+<a name="ln1897"> </a>
+<a name="ln1898">    item.brand = force_ego;</a>
+<a name="ln1899"> </a>
+<a name="ln1900">    // cap item_level unless an acquirement-level item {dlb}:</a>
+<a name="ln1901">    if (item_level &gt; 50 &amp;&amp; !force_good)</a>
+<a name="ln1902">        item_level = 50;</a>
+<a name="ln1903"> </a>
+<a name="ln1904">    // determine base_type for item generated {dlb}:</a>
+<a name="ln1905">    if (force_class != OBJ_RANDOM)</a>
+<a name="ln1906">    {</a>
+<a name="ln1907">        ASSERT(force_class &lt; NUM_OBJECT_CLASSES);</a>
+<a name="ln1908">        item.base_type = force_class;</a>
+<a name="ln1909">    }</a>
+<a name="ln1910">    else</a>
+<a name="ln1911">    {</a>
+<a name="ln1912">        ASSERT(force_type == OBJ_RANDOM);</a>
+<a name="ln1913">        // Total weight: 1960</a>
+<a name="ln1914">        item.base_type = random_choose_weighted(</a>
+<a name="ln1915">                                    10, OBJ_STAVES,</a>
+<a name="ln1916">                                    30, OBJ_BOOKS,</a>
+<a name="ln1917">                                    50, OBJ_JEWELLERY,</a>
+<a name="ln1918">                                    70, OBJ_WANDS,</a>
+<a name="ln1919">                                   140, OBJ_FOOD,</a>
+<a name="ln1920">                                   212, OBJ_ARMOUR,</a>
+<a name="ln1921">                                   212, OBJ_WEAPONS,</a>
+<a name="ln1922">                                   176, OBJ_POTIONS,</a>
+<a name="ln1923">                                   300, OBJ_MISSILES,</a>
+<a name="ln1924">                                   320, OBJ_SCROLLS,</a>
+<a name="ln1925">                                   440, OBJ_GOLD);</a>
+<a name="ln1926"> </a>
+<a name="ln1927">        // misc items placement wholly dependent upon current depth {dlb}:</a>
+<a name="ln1928">        if (item_level &gt; 7 &amp;&amp; x_chance_in_y(21 + item_level, 5000))</a>
+<a name="ln1929">            item.base_type = OBJ_MISCELLANY;</a>
+<a name="ln1930"> </a>
+<a name="ln1931">        if (item_level &lt; 7</a>
+<a name="ln1932">            &amp;&amp; (item.base_type == OBJ_BOOKS</a>
+<a name="ln1933">                || item.base_type == OBJ_STAVES</a>
+<a name="ln1934">                || item.base_type == OBJ_WANDS)</a>
+<a name="ln1935">            &amp;&amp; random2(7) &gt;= item_level)</a>
+<a name="ln1936">        {</a>
+<a name="ln1937">            item.base_type = random_choose(OBJ_POTIONS, OBJ_SCROLLS);</a>
+<a name="ln1938">        }</a>
+<a name="ln1939">    }</a>
+<a name="ln1940"> </a>
+<a name="ln1941">    ASSERT(force_type == OBJ_RANDOM</a>
+<a name="ln1942">           || item.base_type == OBJ_JEWELLERY &amp;&amp; force_type == NUM_JEWELLERY</a>
+<a name="ln1943">           || force_type &lt; get_max_subtype(item.base_type));</a>
+<a name="ln1944"> </a>
+<a name="ln1945">    // make_item_randart() might do things differently based upon the</a>
+<a name="ln1946">    // acquirement agent, especially for god gifts.</a>
+<a name="ln1947">    if (agent != NO_AGENT &amp;&amp; !is_stackable_item(item))</a>
+<a name="ln1948">        origin_acquired(item, agent);</a>
+<a name="ln1949"> </a>
+<a name="ln1950">    item.quantity = 1;          // generally the case</a>
+<a name="ln1951"> </a>
+<a name="ln1952">    if (force_ego &lt; SP_FORBID_EGO)</a>
+<a name="ln1953">    {</a>
+<a name="ln1954">        const int unrand_id = -force_ego;</a>
+<a name="ln1955">        if (get_unique_item_status(unrand_id) == UNIQ_NOT_EXISTS)</a>
+<a name="ln1956">        {</a>
+<a name="ln1957">            make_item_unrandart(mitm[p], unrand_id);</a>
+<a name="ln1958">            ASSERT(mitm[p].is_valid());</a>
+<a name="ln1959">            return p;</a>
+<a name="ln1960">        }</a>
+<a name="ln1961"> </a>
+<a name="ln1962">        _setup_fallback_randart(unrand_id, item, force_type, item_level);</a>
+<a name="ln1963">        allow_uniques = false;</a>
+<a name="ln1964">    }</a>
+<a name="ln1965"> </a>
+<a name="ln1966">    // Determine sub_type accordingly. {dlb}</a>
+<a name="ln1967">    switch (item.base_type)</a>
+<a name="ln1968">    {</a>
+<a name="ln1969">    case OBJ_WEAPONS:</a>
+<a name="ln1970">        _generate_weapon_item(item, allow_uniques, force_type,</a>
+<a name="ln1971">                              item_level, agent);</a>
+<a name="ln1972">        break;</a>
+<a name="ln1973"> </a>
+<a name="ln1974">    case OBJ_MISSILES:</a>
+<a name="ln1975">        _generate_missile_item(item, force_type, item_level);</a>
+<a name="ln1976">        break;</a>
+<a name="ln1977"> </a>
+<a name="ln1978">    case OBJ_ARMOUR:</a>
+<a name="ln1979">        _generate_armour_item(item, allow_uniques, force_type, item_level,</a>
+<a name="ln1980">                              agent);</a>
+<a name="ln1981">        break;</a>
+<a name="ln1982"> </a>
+<a name="ln1983">    case OBJ_WANDS:</a>
+<a name="ln1984">        _generate_wand_item(item, force_type, item_level);</a>
+<a name="ln1985">        break;</a>
+<a name="ln1986"> </a>
+<a name="ln1987">    case OBJ_FOOD:</a>
+<a name="ln1988">        _generate_food_item(item, allow_uniques, force_type);</a>
+<a name="ln1989">        break;</a>
+<a name="ln1990"> </a>
+<a name="ln1991">    case OBJ_POTIONS:</a>
+<a name="ln1992">        _generate_potion_item(item, force_type, item_level, agent);</a>
+<a name="ln1993">        break;</a>
+<a name="ln1994"> </a>
+<a name="ln1995">    case OBJ_SCROLLS:</a>
+<a name="ln1996">        _generate_scroll_item(item, force_type, item_level, agent);</a>
+<a name="ln1997">        break;</a>
+<a name="ln1998"> </a>
+<a name="ln1999">    case OBJ_JEWELLERY:</a>
+<a name="ln2000">        _generate_jewellery_item(item, allow_uniques, force_type, item_level,</a>
+<a name="ln2001">                                 agent);</a>
+<a name="ln2002">        break;</a>
+<a name="ln2003"> </a>
+<a name="ln2004">    case OBJ_BOOKS:</a>
+<a name="ln2005">        _generate_book_item(item, allow_uniques, force_type, item_level);</a>
+<a name="ln2006">        break;</a>
+<a name="ln2007"> </a>
+<a name="ln2008">    case OBJ_STAVES:</a>
+<a name="ln2009">        // Don't generate unrand staves this way except through acquirement,</a>
+<a name="ln2010">        // since they also generate as OBJ_WEAPONS.</a>
+<a name="ln2011">        _generate_staff_item(item, (agent != NO_AGENT), force_type, item_level, agent);</a>
+<a name="ln2012">        break;</a>
+<a name="ln2013"> </a>
+<a name="ln2014">    case OBJ_ORBS:              // always forced in current setup {dlb}</a>
+<a name="ln2015">    case OBJ_RUNES:</a>
+<a name="ln2016">        _generate_rune_item(item, force_type);</a>
+<a name="ln2017">        break;</a>
+<a name="ln2018"> </a>
+<a name="ln2019">    case OBJ_MISCELLANY:</a>
+<a name="ln2020">        _generate_misc_item(item, force_type);</a>
+<a name="ln2021">        break;</a>
+<a name="ln2022"> </a>
+<a name="ln2023">    // that is, everything turns to gold if not enumerated above, so ... {dlb}</a>
+<a name="ln2024">    default:</a>
+<a name="ln2025">        item.base_type = OBJ_GOLD;</a>
+<a name="ln2026">        if (force_good)</a>
+<a name="ln2027">            item.quantity = 100 + random2(400);</a>
+<a name="ln2028">        else</a>
+<a name="ln2029">        {</a>
+<a name="ln2030">            item.quantity = 1 + random2avg(19, 2);</a>
+<a name="ln2031">            item.quantity += random2(item_level);</a>
+<a name="ln2032">        }</a>
+<a name="ln2033">        break;</a>
+<a name="ln2034">    }</a>
+<a name="ln2035"> </a>
+<a name="ln2036">    if (item.base_type == OBJ_WEAPONS</a>
+<a name="ln2037">          &amp;&amp; !is_weapon_brand_ok(item.sub_type, get_weapon_brand(item), false)</a>
+<a name="ln2038">        || item.base_type == OBJ_ARMOUR</a>
+<a name="ln2039">          &amp;&amp; !is_armour_brand_ok(item.sub_type, get_armour_ego_type(item), false)</a>
+<a name="ln2040">        || item.base_type == OBJ_MISSILES</a>
+<a name="ln2041">          &amp;&amp; !is_missile_brand_ok(item.sub_type, item.brand, false))</a>
+<a name="ln2042">    {</a>
+<a name="ln2043">        mprf(MSGCH_ERROR, &quot;Invalid brand on item %s, annulling.&quot;,</a>
+<a name="ln2044">            item.name(DESC_PLAIN, false, true, false, false, ISFLAG_KNOW_PLUSES</a>
+<a name="ln2045">                      | ISFLAG_KNOW_CURSE).c_str());</a>
+<a name="ln2046">        item.brand = 0;</a>
+<a name="ln2047">    }</a>
+<a name="ln2048"> </a>
+<a name="ln2049">    // Colour the item.</a>
+<a name="ln2050">    item_colour(item);</a>
+<a name="ln2051"> </a>
+<a name="ln2052">    // Set brand appearance.</a>
+<a name="ln2053">    item_set_appearance(item);</a>
+<a name="ln2054"> </a>
+<a name="ln2055">    // Don't place the item just yet.</a>
+<a name="ln2056">    item.pos.reset();</a>
+<a name="ln2057">    item.link = NON_ITEM;</a>
+<a name="ln2058"> </a>
+<a name="ln2059">    // Note that item might be invalidated now, since p could have changed.</a>
+<a name="ln2060">    ASSERTM(mitm[p].is_valid(),</a>
+<a name="ln2061">            &quot;idx: %d, qty: %hd, base: %d, sub: %d, spe: %d, col: %d, rnd: %d&quot;,</a>
+<a name="ln2062">            item.index(), item.quantity,</a>
+<a name="ln2063">            (int)item.base_type, (int)item.sub_type, item.special,</a>
+<a name="ln2064">            (int)item.get_colour(), (int)item.rnd);</a>
+<a name="ln2065">    return p;</a>
+<a name="ln2066">}</a>
+<a name="ln2067"> </a>
+<a name="ln2068">void reroll_brand(item_def &amp;item, int item_level)</a>
+<a name="ln2069">{</a>
+<a name="ln2070">    ASSERT(!is_artefact(item));</a>
+<a name="ln2071">    switch (item.base_type)</a>
+<a name="ln2072">    {</a>
+<a name="ln2073">    case OBJ_WEAPONS:</a>
+<a name="ln2074">        item.brand = determine_weapon_brand(item, item_level);</a>
+<a name="ln2075">        break;</a>
+<a name="ln2076">    case OBJ_MISSILES:</a>
+<a name="ln2077">        item.brand = _determine_missile_brand(item, item_level);</a>
+<a name="ln2078">        break;</a>
+<a name="ln2079">    case OBJ_ARMOUR:</a>
+<a name="ln2080">        item.brand = _generate_armour_ego(item);</a>
+<a name="ln2081">        break;</a>
+<a name="ln2082">    default:</a>
+<a name="ln2083">        die(&quot;can't reroll brands of this type&quot;);</a>
+<a name="ln2084">    }</a>
+<a name="ln2085">    item_set_appearance(item);</a>
+<a name="ln2086">}</a>
+<a name="ln2087"> </a>
+<a name="ln2088">static bool _weapon_is_visibly_special(const item_def &amp;item)</a>
+<a name="ln2089">{</a>
+<a name="ln2090">    const int brand = get_weapon_brand(item);</a>
+<a name="ln2091">    const bool visibly_branded = (brand != SPWPN_NORMAL);</a>
+<a name="ln2092"> </a>
+<a name="ln2093">    if (get_equip_desc(item) != ISFLAG_NO_DESC)</a>
+<a name="ln2094">        return false;</a>
+<a name="ln2095"> </a>
+<a name="ln2096">    if (visibly_branded || is_artefact(item) || item.plus &gt; 0)</a>
+<a name="ln2097">        return true;</a>
+<a name="ln2098"> </a>
+<a name="ln2099">    if (item.is_mundane())</a>
+<a name="ln2100">        return false;</a>
+<a name="ln2101"> </a>
+<a name="ln2102">    if (item.flags &amp; ISFLAG_CURSED &amp;&amp; one_chance_in(3))</a>
+<a name="ln2103">        return true;</a>
+<a name="ln2104"> </a>
+<a name="ln2105">    return false;</a>
+<a name="ln2106">}</a>
+<a name="ln2107"> </a>
+<a name="ln2108">static bool _armour_is_visibly_special(const item_def &amp;item)</a>
+<a name="ln2109">{</a>
+<a name="ln2110">    const int brand = get_armour_ego_type(item);</a>
+<a name="ln2111">    const bool visibly_branded = (brand != SPARM_NORMAL);</a>
+<a name="ln2112"> </a>
+<a name="ln2113">    if (get_equip_desc(item) != ISFLAG_NO_DESC)</a>
+<a name="ln2114">        return false;</a>
+<a name="ln2115"> </a>
+<a name="ln2116">    if (visibly_branded || is_artefact(item) || item.plus &gt; 0)</a>
+<a name="ln2117">        return true;</a>
+<a name="ln2118"> </a>
+<a name="ln2119">    if (item.is_mundane())</a>
+<a name="ln2120">        return false;</a>
+<a name="ln2121"> </a>
+<a name="ln2122">    if (item.flags &amp; ISFLAG_CURSED &amp;&amp; one_chance_in(3))</a>
+<a name="ln2123">        return true;</a>
+<a name="ln2124"> </a>
+<a name="ln2125">    return false;</a>
+<a name="ln2126">}</a>
+<a name="ln2127"> </a>
+<a name="ln2128"> </a>
+<a name="ln2129">jewellery_type get_random_amulet_type()</a>
+<a name="ln2130">{</a>
+<a name="ln2131">    int res;</a>
+<a name="ln2132">    do</a>
+<a name="ln2133">    {</a>
+<a name="ln2134">        res = random_range(AMU_FIRST_AMULET, NUM_JEWELLERY - 1);</a>
+<a name="ln2135">    }</a>
+<a name="ln2136">    // Do not generate removed item types.</a>
+<a name="ln2137">    while (item_type_removed(OBJ_JEWELLERY, res));</a>
+<a name="ln2138"> </a>
+<a name="ln2139">    return jewellery_type(res);</a>
+<a name="ln2140">}</a>
+<a name="ln2141"> </a>
+<a name="ln2142">static jewellery_type _get_raw_random_ring_type()</a>
+<a name="ln2143">{</a>
+<a name="ln2144">    jewellery_type ring;</a>
+<a name="ln2145">    do</a>
+<a name="ln2146">    {</a>
+<a name="ln2147">        ring = (jewellery_type)(random_range(RING_FIRST_RING, NUM_RINGS - 1));</a>
+<a name="ln2148">    }</a>
+<a name="ln2149">    while (ring == RING_TELEPORTATION &amp;&amp; crawl_state.game_is_sprint()</a>
+<a name="ln2150">           || item_type_removed(OBJ_JEWELLERY, ring));</a>
+<a name="ln2151">    return ring;</a>
+<a name="ln2152">}</a>
+<a name="ln2153"> </a>
+<a name="ln2154">jewellery_type get_random_ring_type()</a>
+<a name="ln2155">{</a>
+<a name="ln2156">    const jewellery_type j = _get_raw_random_ring_type();</a>
+<a name="ln2157">    // Adjusted distribution here. - bwr</a>
+<a name="ln2158">    if (j == RING_SLAYING &amp;&amp; !one_chance_in(3))</a>
+<a name="ln2159">        return _get_raw_random_ring_type();</a>
+<a name="ln2160"> </a>
+<a name="ln2161">    return j;</a>
+<a name="ln2162">}</a>
+<a name="ln2163"> </a>
+<a name="ln2164">// Sets item appearance to match brands, if any.</a>
+<a name="ln2165">void item_set_appearance(item_def &amp;item)</a>
+<a name="ln2166">{</a>
+<a name="ln2167">    // Artefact appearance overrides cosmetic flags anyway.</a>
+<a name="ln2168">    if (is_artefact(item))</a>
+<a name="ln2169">        return;</a>
+<a name="ln2170"> </a>
+<a name="ln2171">    if (get_equip_desc(item) != ISFLAG_NO_DESC)</a>
+<a name="ln2172">        return;</a>
+<a name="ln2173"> </a>
+<a name="ln2174">    switch (item.base_type)</a>
+<a name="ln2175">    {</a>
+<a name="ln2176">    case OBJ_WEAPONS:</a>
+<a name="ln2177">        if (_weapon_is_visibly_special(item))</a>
+<a name="ln2178">            set_equip_desc(item, random_choose(ISFLAG_GLOWING, ISFLAG_RUNED));</a>
+<a name="ln2179">        break;</a>
+<a name="ln2180"> </a>
+<a name="ln2181">    case OBJ_ARMOUR:</a>
+<a name="ln2182">        if (_armour_is_visibly_special(item))</a>
+<a name="ln2183">        {</a>
+<a name="ln2184">            set_equip_desc(item, random_choose(ISFLAG_GLOWING, ISFLAG_RUNED,</a>
+<a name="ln2185">                                               ISFLAG_EMBROIDERED_SHINY));</a>
+<a name="ln2186">        }</a>
+<a name="ln2187">        break;</a>
+<a name="ln2188"> </a>
+<a name="ln2189">    default:</a>
+<a name="ln2190">        break;</a>
+<a name="ln2191">    }</a>
+<a name="ln2192">}</a>
+<a name="ln2193"> </a>
+<a name="ln2194">#if defined(DEBUG_DIAGNOSTICS) || defined(DEBUG_TESTS)</a>
+<a name="ln2195">static int _test_item_level()</a>
+<a name="ln2196">{</a>
+<a name="ln2197">    switch (random2(10))</a>
+<a name="ln2198">    {</a>
+<a name="ln2199">    case 0:</a>
+<a name="ln2200">        return ISPEC_GOOD_ITEM;</a>
+<a name="ln2201">    case 1:</a>
+<a name="ln2202">        return ISPEC_DAMAGED;</a>
+<a name="ln2203">    case 2:</a>
+<a name="ln2204">        return ISPEC_BAD;</a>
+<a name="ln2205">    case 3:</a>
+<a name="ln2206">        return ISPEC_RANDART;</a>
+<a name="ln2207">    default:</a>
+<a name="ln2208">        return random2(50);</a>
+<a name="ln2209">    }</a>
+<a name="ln2210">}</a>
+<a name="ln2211"> </a>
+<a name="ln2212">void makeitem_tests()</a>
+<a name="ln2213">{</a>
+<a name="ln2214">    int i, level;</a>
+<a name="ln2215">    item_def item;</a>
+<a name="ln2216"> </a>
+<a name="ln2217">    mpr(&quot;Running generate_weapon_item tests.&quot;);</a>
+<a name="ln2218">    for (i = 0; i &lt; 10000; ++i)</a>
+<a name="ln2219">    {</a>
+<a name="ln2220">        item.clear();</a>
+<a name="ln2221">        level = _test_item_level();</a>
+<a name="ln2222">        item.base_type = OBJ_WEAPONS;</a>
+<a name="ln2223">        item.brand = coinflip() ? SPWPN_NORMAL</a>
+<a name="ln2224">                                : random2(NUM_REAL_SPECIAL_WEAPONS);</a>
+<a name="ln2225">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2226">        if (item.brand == SPWPN_ORC_SLAYING</a>
+<a name="ln2227">            || item.brand == SPWPN_REACHING</a>
+<a name="ln2228">            || item.brand == SPWPN_RETURNING</a>
+<a name="ln2229">            || item.brand == SPWPN_CONFUSE</a>
+<a name="ln2230">            || item.brand == SPWPN_DRAGON_SLAYING)</a>
+<a name="ln2231">        {</a>
+<a name="ln2232">            item.brand = SPWPN_FORBID_BRAND;</a>
+<a name="ln2233">        }</a>
+<a name="ln2234">#endif</a>
+<a name="ln2235">        auto weap_type = coinflip() ? OBJ_RANDOM : random2(NUM_WEAPONS);</a>
+<a name="ln2236">        _generate_weapon_item(item,</a>
+<a name="ln2237">                              coinflip(),</a>
+<a name="ln2238">                              weap_type,</a>
+<a name="ln2239">                              level);</a>
+<a name="ln2240">    }</a>
+<a name="ln2241"> </a>
+<a name="ln2242">    mpr(&quot;Running generate_armour_item tests.&quot;);</a>
+<a name="ln2243">    for (i = 0; i &lt; 10000; ++i)</a>
+<a name="ln2244">    {</a>
+<a name="ln2245">        item.clear();</a>
+<a name="ln2246">        level = _test_item_level();</a>
+<a name="ln2247">        item.base_type = OBJ_ARMOUR;</a>
+<a name="ln2248">        item.brand = coinflip() ? SPARM_NORMAL</a>
+<a name="ln2249">                                : random2(NUM_REAL_SPECIAL_ARMOURS);</a>
+<a name="ln2250">        int type = coinflip() ? OBJ_RANDOM : random2(NUM_ARMOURS);</a>
+<a name="ln2251">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln2252">        if (type == ARM_CAP)</a>
+<a name="ln2253">            type = ARM_HAT;</a>
+<a name="ln2254">#endif</a>
+<a name="ln2255">        _generate_armour_item(item,</a>
+<a name="ln2256">                              coinflip(),</a>
+<a name="ln2257">                              type,</a>
+<a name="ln2258">                              level);</a>
+<a name="ln2259">    }</a>
+<a name="ln2260">}</a>
+<a name="ln2261">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="609"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'type == 0' is always false.</p></div>
+<div class="balloon" rel="1941"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

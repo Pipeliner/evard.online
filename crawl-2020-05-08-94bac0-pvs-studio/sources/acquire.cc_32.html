@@ -1,0 +1,1829 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>acquire.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Acquirement and Trog/Oka/Sif gifts.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;acquire.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cmath&gt;</a>
+<a name="ln12">#include &lt;cstdio&gt;</a>
+<a name="ln13">#include &lt;cstdlib&gt;</a>
+<a name="ln14">#include &lt;cstring&gt;</a>
+<a name="ln15">#include &lt;queue&gt;</a>
+<a name="ln16">#include &lt;set&gt;</a>
+<a name="ln17"> </a>
+<a name="ln18">#include &quot;ability.h&quot;</a>
+<a name="ln19">#include &quot;artefact.h&quot;</a>
+<a name="ln20">#include &quot;art-enum.h&quot;</a>
+<a name="ln21">#include &quot;colour.h&quot;</a>
+<a name="ln22">#include &quot;describe.h&quot;</a>
+<a name="ln23">#include &quot;dungeon.h&quot;</a>
+<a name="ln24">#include &quot;food.h&quot;</a>
+<a name="ln25">#include &quot;god-item.h&quot;</a>
+<a name="ln26">#include &quot;god-passive.h&quot;</a>
+<a name="ln27">#include &quot;item-name.h&quot;</a>
+<a name="ln28">#include &quot;item-prop.h&quot;</a>
+<a name="ln29">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln30">#include &quot;items.h&quot;</a>
+<a name="ln31">#include &quot;item-use.h&quot;</a>
+<a name="ln32">#include &quot;invent.h&quot;</a>
+<a name="ln33">#include &quot;known-items.h&quot;</a>
+<a name="ln34">#include &quot;libutil.h&quot;</a>
+<a name="ln35">#include &quot;macro.h&quot;</a>
+<a name="ln36">#include &quot;message.h&quot;</a>
+<a name="ln37">#include &quot;output.h&quot;</a>
+<a name="ln38">#include &quot;options.h&quot;</a>
+<a name="ln39">#include &quot;prompt.h&quot;</a>
+<a name="ln40">#include &quot;randbook.h&quot;</a>
+<a name="ln41">#include &quot;random.h&quot;</a>
+<a name="ln42">#include &quot;religion.h&quot;</a>
+<a name="ln43">#include &quot;shopping.h&quot;</a>
+<a name="ln44">#include &quot;skills.h&quot;</a>
+<a name="ln45">#include &quot;spl-book.h&quot;</a>
+<a name="ln46">#include &quot;spl-util.h&quot;</a>
+<a name="ln47">#include &quot;state.h&quot;</a>
+<a name="ln48">#include &quot;stringutil.h&quot;</a>
+<a name="ln49">#include &quot;terrain.h&quot;</a>
+<a name="ln50">#include &quot;unwind.h&quot;</a>
+<a name="ln51">#include &quot;ui.h&quot;</a>
+<a name="ln52"> </a>
+<a name="ln53">static equipment_type _acquirement_armour_slot(bool);</a>
+<a name="ln54">static armour_type _acquirement_armour_for_slot(equipment_type, bool);</a>
+<a name="ln55">static armour_type _acquirement_shield_type();</a>
+<a name="ln56">static armour_type _acquirement_body_armour(bool);</a>
+<a name="ln57">static armour_type _useless_armour_type();</a>
+<a name="ln58"> </a>
+<a name="ln59">/**</a>
+<a name="ln60"> * Get a randomly rounded value for the player's specified skill, unmodified</a>
+<a name="ln61"> * by crosstraining, draining, etc.</a>
+<a name="ln62"> *</a>
+<a name="ln63"> * @param skill     The skill in question; e.g. SK_ARMOUR.</a>
+<a name="ln64"> * @param mult      A multiplier to the skill, for higher precision.</a>
+<a name="ln65"> * @return          A rounded value of that skill; e.g. _skill_rdiv(SK_ARMOUR)</a>
+<a name="ln66"> *                  for a value of 10.1 will return 11 90% of the time &amp;</a>
+<a name="ln67"> *                  10 the remainder.</a>
+<a name="ln68"> */</a>
+<a name="ln69">static int _skill_rdiv(skill_type skill, int mult = 1)</a>
+<a name="ln70">{</a>
+<a name="ln71">    const int scale = 256;</a>
+<a name="ln72">    return div_rand_round(you.skill(skill, mult * scale, true), scale);</a>
+<a name="ln73">}</a>
+<a name="ln74"> </a>
+<a name="ln75">/**</a>
+<a name="ln76"> * Choose a random subtype of armour to generate through acquirement/divine</a>
+<a name="ln77"> * gifts.</a>
+<a name="ln78"> *</a>
+<a name="ln79"> * Guaranteed to be wearable, in principle.</a>
+<a name="ln80"> *</a>
+<a name="ln81"> * @param divine    Lowers the odds of high-tier body armours being chosen.</a>
+<a name="ln82"> * @return          The armour_type of the armour to be generated.</a>
+<a name="ln83"> */</a>
+<a name="ln84">static int _acquirement_armour_subtype(bool divine, int &amp; /*quantity*/,</a>
+<a name="ln85">                                       int /*agent*/)</a>
+<a name="ln86">{</a>
+<a name="ln87">    const equipment_type slot_type = _acquirement_armour_slot(divine);</a>
+<a name="ln88">    return _acquirement_armour_for_slot(slot_type, divine);</a>
+<a name="ln89">}</a>
+<a name="ln90"> </a>
+<a name="ln91">/**</a>
+<a name="ln92"> * Take a set of weighted elements and a filter, and return a random element</a>
+<a name="ln93"> * from those elements that fulfills the filter condition.</a>
+<a name="ln94"> *</a>
+<a name="ln95"> * @param weights       The elements to choose from.</a>
+<a name="ln96"> * @param filter        An optional filter; if present, only elements for which</a>
+<a name="ln97"> *                      the filter returns true may be chosen.</a>
+<a name="ln98"> * @return              A random element from the given list.</a>
+<a name="ln99"> */</a>
+<a name="ln100">template&lt;class M&gt;</a>
+<a name="ln101">M filtered_vector_select(vector&lt;pair&lt;M, int&gt;&gt; weights, function&lt;bool(M)&gt; filter)</a>
+<a name="ln102">{</a>
+<a name="ln103">    for (auto &amp;weight : weights)</a>
+<a name="ln104">    {</a>
+<a name="ln105">        if (filter &amp;&amp; !filter(weight.first))</a>
+<a name="ln106">            weight.second = 0;</a>
+<a name="ln107">        else</a>
+<a name="ln108">            weight.second = max(weight.second, 0); // cleanup</a>
+<a name="ln109">    }</a>
+<a name="ln110"> </a>
+<a name="ln111">    M *chosen_elem = random_choose_weighted(weights);</a>
+<a name="ln112">    ASSERT(chosen_elem);</a>
+<a name="ln113">    return *chosen_elem;</a>
+<a name="ln114">}</a>
+<a name="ln115"> </a>
+<a name="ln116">/**</a>
+<a name="ln117"> * Choose a random slot to acquire armour for.</a>
+<a name="ln118"> *</a>
+<a name="ln119"> * For most races, even odds for all armour slots when acquiring, or 50-50</a>
+<a name="ln120"> * split between body armour/aux armour when getting god gifts.</a>
+<a name="ln121"> *</a>
+<a name="ln122"> * Centaurs &amp; nagas get a high extra chance for bardings, especially if they</a>
+<a name="ln123"> * haven't seen any yet.</a>
+<a name="ln124"> *</a>
+<a name="ln125"> * Guaranteed to be wearable, in principle.</a>
+<a name="ln126"> *</a>
+<a name="ln127"> * @param divine    Whether the item is a god gift.</a>
+<a name="ln128"> * @return          A random equipment slot; e.g. EQ_SHIELD, EQ_BODY_ARMOUR...</a>
+<a name="ln129"> */</a>
+<a name="ln130">static equipment_type _acquirement_armour_slot(bool divine)</a>
+<a name="ln131">{</a>
+<a name="ln132">    if (you.species == SP_NAGA || you.species == SP_CENTAUR)</a>
+<a name="ln133">    {</a>
+<a name="ln134">        const armour_type bard =</a>
+<a name="ln135">            (you.species == SP_NAGA) ? ARM_NAGA_BARDING</a>
+<a name="ln136">                                     : ARM_CENTAUR_BARDING;</a>
+<a name="ln137">        if (one_chance_in(you.seen_armour[bard] ? 4 : 2))</a>
+<a name="ln138">            return EQ_BOOTS;</a>
+<a name="ln139">    }</a>
+<a name="ln140"> </a>
+<a name="ln141">    vector&lt;pair&lt;equipment_type, int&gt;&gt; weights = {</a>
+<a name="ln142">        { EQ_BODY_ARMOUR,   divine ? 5 : 1 },</a>
+<a name="ln143">        { EQ_SHIELD,        1 },</a>
+<a name="ln144">        { EQ_CLOAK,         1 },</a>
+<a name="ln145">        { EQ_HELMET,        1 },</a>
+<a name="ln146">        { EQ_GLOVES,        1 },</a>
+<a name="ln147">        { EQ_BOOTS,         1 },</a>
+<a name="ln148">    };</a>
+<a name="ln149"> </a>
+<a name="ln150">    return filtered_vector_select&lt;equipment_type&gt;(weights,</a>
+<a name="ln151">        [] (equipment_type etyp) {</a>
+<a name="ln152">            return you_can_wear(etyp); // evading template nonsense</a>
+<a name="ln153">        });</a>
+<a name="ln154">}</a>
+<a name="ln155"> </a>
+<a name="ln156"> </a>
+<a name="ln157">/**</a>
+<a name="ln158"> * Choose a random subtype of armour that will fit in the given equipment slot,</a>
+<a name="ln159"> * to generate through acquirement/divine gifts.</a>
+<a name="ln160"> *</a>
+<a name="ln161"> * Guaranteed to be usable by the player &amp; weighted weakly by their skills;</a>
+<a name="ln162"> * heavy investment in armour skill, relative to dodging &amp; spellcasting, makes</a>
+<a name="ln163"> * heavier armours more likely to be generated.</a>
+<a name="ln164"> *</a>
+<a name="ln165"> * @param divine    Whether the armour is a god gift.</a>
+<a name="ln166"> * @return          The armour_type of the armour to be generated.</a>
+<a name="ln167"> */</a>
+<a name="ln168">static armour_type _acquirement_armour_for_slot(equipment_type slot_type,</a>
+<a name="ln169">                                                bool divine)</a>
+<a name="ln170">{</a>
+<a name="ln171">    switch (slot_type)</a>
+<a name="ln172">    {</a>
+<a name="ln173">        case EQ_CLOAK:</a>
+<a name="ln174">            if (you_can_wear(EQ_CLOAK) == MB_TRUE)</a>
+<a name="ln175">                return random_choose(ARM_CLOAK, ARM_SCARF);</a>
+<a name="ln176">            return ARM_SCARF;</a>
+<a name="ln177">        case EQ_GLOVES:</a>
+<a name="ln178">            return ARM_GLOVES;</a>
+<a name="ln179">        case EQ_BOOTS:</a>
+<a name="ln180">            switch (you.species)</a>
+<a name="ln181">            {</a>
+<a name="ln182">                case SP_NAGA:</a>
+<a name="ln183">                    return ARM_NAGA_BARDING;</a>
+<a name="ln184">                case SP_CENTAUR:</a>
+<a name="ln185">                    return ARM_CENTAUR_BARDING;</a>
+<a name="ln186">                default:</a>
+<a name="ln187">                    return ARM_BOOTS;</a>
+<a name="ln188">            }</a>
+<a name="ln189">        case EQ_HELMET:</a>
+<a name="ln190">            if (you_can_wear(EQ_HELMET) == MB_TRUE)</a>
+<a name="ln191">                return random_choose(ARM_HELMET, ARM_HAT);</a>
+<a name="ln192">            return ARM_HAT;</a>
+<a name="ln193">        case EQ_SHIELD:</a>
+<a name="ln194">            return _acquirement_shield_type();</a>
+<a name="ln195">        case EQ_BODY_ARMOUR:</a>
+<a name="ln196">            return _acquirement_body_armour(divine);</a>
+<a name="ln197">        default:</a>
+<a name="ln198">            die(&quot;Unknown armour slot %d!&quot;, slot_type);</a>
+<a name="ln199">    }</a>
+<a name="ln200">}</a>
+<a name="ln201"> </a>
+<a name="ln202">/**</a>
+<a name="ln203"> * Choose a random type of shield to be generated via acquirement or god gifts.</a>
+<a name="ln204"> *</a>
+<a name="ln205"> * Weighted by Shields skill &amp; the secret racial shield bonus.</a>
+<a name="ln206"> *</a>
+<a name="ln207"> * Ratios by shields skill &amp; player size (B = buckler, K = kite shield, P = tower shield)</a>
+<a name="ln208"> *</a>
+<a name="ln209"> *     Shields    0           5         10          15        20</a>
+<a name="ln210"> * Large:   {6B}/5K/4P  ~{1B}/1K/1P  ~{1B}/5K/7P  ~2K/3P     1K/2P</a>
+<a name="ln211"> * Med.:        2B/1K    6B/4K/1P      2B/2K/1P   4B/8K/3P   1K/1P</a>
+<a name="ln212"> * Small:      ~3B/1K     ~5B/2K      ~2B/1K     ~3B/2K     ~1B/1K</a>
+<a name="ln213"> *</a>
+<a name="ln214"> * XXX: possibly shield skill should count for more for non-med races?</a>
+<a name="ln215"> *</a>
+<a name="ln216"> * @return A potentially wearable type of shield.</a>
+<a name="ln217"> */</a>
+<a name="ln218">static armour_type _acquirement_shield_type()</a>
+<a name="ln219">{</a>
+<a name="ln220">    const int scale = 256;</a>
+<a name="ln221">    vector&lt;pair&lt;armour_type, int&gt;&gt; weights = {</a>
+<a name="ln222">        { ARM_BUCKLER,       player_shield_racial_factor() * 4 * scale</a>
+<a name="ln223">                                - _skill_rdiv(SK_SHIELDS, scale) },</a>
+<a name="ln224">        { ARM_KITE_SHIELD,        10 * scale },</a>
+<a name="ln225">        { ARM_TOWER_SHIELD,  20 * scale</a>
+<a name="ln226">                             - player_shield_racial_factor() * 4 * scale</a>
+<a name="ln227">                             + _skill_rdiv(SK_SHIELDS, scale / 2) },</a>
+<a name="ln228">    };</a>
+<a name="ln229"> </a>
+<a name="ln230">    return filtered_vector_select&lt;armour_type&gt;(weights, [] (armour_type shtyp) {</a>
+<a name="ln231">        return check_armour_size(shtyp,  you.body_size(PSIZE_TORSO, true));</a>
+<a name="ln232">    });</a>
+<a name="ln233">}</a>
+<a name="ln234"> </a>
+<a name="ln235">/**</a>
+<a name="ln236"> * Determine the weight (likelihood) to acquire a specific type of body armour.</a>
+<a name="ln237"> *</a>
+<a name="ln238"> * If divine is set, returns the base weight for the armour type.</a>
+<a name="ln239"> * Otherwise, if warrior is set, multiplies the base weight by the base ac^2.</a>
+<a name="ln240"> * Otherwise, uses the player's Armour skill to crudely guess how likely they</a>
+<a name="ln241"> * are to want the armour, based on its EVP.</a>
+<a name="ln242"> *</a>
+<a name="ln243"> * @param armour    The type of armour in question. (E.g. ARM_ROBE.)</a>
+<a name="ln244"> * @param divine    Whether the 'acquirement' is actually a god gift.</a>
+<a name="ln245"> * @param warrior   Whether we think the player only cares about AC.</a>
+<a name="ln246"> * @return          A weight for the armour.</a>
+<a name="ln247"> */</a>
+<a name="ln248">static int _body_acquirement_weight(armour_type armour,</a>
+<a name="ln249">                                    bool divine, bool warrior)</a>
+<a name="ln250">{</a>
+<a name="ln251">    const int base_weight = armour_acq_weight(armour);</a>
+<a name="ln252">    if (divine)</a>
+<a name="ln253">        return base_weight; // gods don't care about your skills, apparently</a>
+<a name="ln254"> </a>
+<a name="ln255">    if (warrior)</a>
+<a name="ln256">    {</a>
+<a name="ln257">        const int ac = armour_prop(armour, PARM_AC);</a>
+<a name="ln258">        return base_weight * ac * ac;</a>
+<a name="ln259">    }</a>
+<a name="ln260"> </a>
+<a name="ln261">    // highest chance when armour skill = (displayed) evp - 3</a>
+<a name="ln262">    const int evp = armour_prop(armour, PARM_EVASION);</a>
+<a name="ln263">    const int skill = min(27, _skill_rdiv(SK_ARMOUR) + 3);</a>
+<a name="ln264">    const int sk_diff = skill + evp / 10;</a>
+<a name="ln265">    const int inv_diff = max(1, 27 - sk_diff);</a>
+<a name="ln266">    // armour closest to ideal evp is 27^3 times as likely as the furthest away</a>
+<a name="ln267">    return base_weight * inv_diff * inv_diff * inv_diff;</a>
+<a name="ln268">}</a>
+<a name="ln269"> </a>
+<a name="ln270">/**</a>
+<a name="ln271"> * Choose a random type of body armour to be generated via acquirement or</a>
+<a name="ln272"> * god gifts.</a>
+<a name="ln273"> *</a>
+<a name="ln274"> * @param divine      Whether the armour is a god gift.</a>
+<a name="ln275"> * @return A potentially wearable type of body armour..</a>
+<a name="ln276"> */</a>
+<a name="ln277">static armour_type _acquirement_body_armour(bool divine)</a>
+<a name="ln278">{</a>
+<a name="ln279">    // Using an arbitrary legacy formula, do we think the player doesn't care</a>
+<a name="ln280">    // about armour EVP?</a>
+<a name="ln281">    int light_pref = _skill_rdiv(SK_SPELLCASTING, 3);</a>
+<a name="ln282">    light_pref += _skill_rdiv(SK_DODGING);</a>
+<a name="ln283">    light_pref = random2(light_pref);</a>
+<a name="ln284">    const bool warrior = light_pref &lt; random2(_skill_rdiv(SK_ARMOUR, 2));</a>
+<a name="ln285"> </a>
+<a name="ln286">    vector&lt;pair&lt;armour_type, int&gt;&gt; weights;</a>
+<a name="ln287">    for (int i = ARM_FIRST_MUNDANE_BODY; i &lt; NUM_ARMOURS; ++i)</a>
+<a name="ln288">    {</a>
+<a name="ln289">        const armour_type armour = (armour_type)i;</a>
+<a name="ln290">        if (get_armour_slot(armour) != EQ_BODY_ARMOUR)</a>
+<a name="ln291">            continue;</a>
+<a name="ln292"> </a>
+<a name="ln293">        if (!check_armour_size(armour, you.body_size(PSIZE_TORSO, true)))</a>
+<a name="ln294">            continue;</a>
+<a name="ln295"> </a>
+<a name="ln296">        const int weight = _body_acquirement_weight(armour, divine, warrior);</a>
+<a name="ln297"> </a>
+<a name="ln298">        if (weight)</a>
+<a name="ln299">        {</a>
+<a name="ln300">            const pair&lt;armour_type, int&gt; weight_pair = { armour, weight };</a>
+<a name="ln301">            weights.push_back(weight_pair);</a>
+<a name="ln302">        }</a>
+<a name="ln303">    }</a>
+<a name="ln304"> </a>
+<a name="ln305">    const armour_type* armour_ptr = random_choose_weighted(weights);</a>
+<a name="ln306">    ASSERT(armour_ptr);</a>
+<a name="ln307">    return *armour_ptr;</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">/**</a>
+<a name="ln311"> * Choose a random type of armour that the player cannot wear, for Xom to spite</a>
+<a name="ln312"> * the player with.</a>
+<a name="ln313"> *</a>
+<a name="ln314"> * @return  A random useless armour_type.</a>
+<a name="ln315"> */</a>
+<a name="ln316">static armour_type _useless_armour_type()</a>
+<a name="ln317">{</a>
+<a name="ln318">    vector&lt;pair&lt;equipment_type, int&gt;&gt; weights = {</a>
+<a name="ln319">        { EQ_BODY_ARMOUR, 1 }, { EQ_SHIELD, 1 }, { EQ_CLOAK, 1 },</a>
+<a name="ln320">        { EQ_HELMET, 1 }, { EQ_GLOVES, 1 }, { EQ_BOOTS, 1 },</a>
+<a name="ln321">    };</a>
+<a name="ln322"> </a>
+<a name="ln323">    // everyone has some kind of boot-slot item they can't wear, regardless</a>
+<a name="ln324">    // of what you_can_wear() claims</a>
+<a name="ln325">    for (auto &amp;weight : weights)</a>
+<a name="ln326">        if (you_can_wear(weight.first) == MB_TRUE &amp;&amp; weight.first != EQ_BOOTS)</a>
+<a name="ln327">            weight.second = 0;</a>
+<a name="ln328"> </a>
+<a name="ln329">    const equipment_type* slot_ptr = random_choose_weighted(weights);</a>
+<a name="ln330">    const equipment_type slot = slot_ptr ? *slot_ptr : EQ_BOOTS;</a>
+<a name="ln331"> </a>
+<a name="ln332">    switch (slot)</a>
+<a name="ln333">    {</a>
+<a name="ln334">        case EQ_BOOTS:</a>
+<a name="ln335">            // Boots-wearers get bardings, bardings-wearers get the wrong</a>
+<a name="ln336">            // barding, everyone else gets boots.</a>
+<a name="ln337">            if (you_can_wear(EQ_BOOTS) == MB_TRUE)</a>
+<a name="ln338">                return random_choose(ARM_CENTAUR_BARDING, ARM_NAGA_BARDING);</a>
+<a name="ln339">            if (you.species == SP_NAGA)</a>
+<a name="ln340">                return ARM_CENTAUR_BARDING;</a>
+<a name="ln341">            if (you.species == SP_CENTAUR)</a>
+<a name="ln342">                return ARM_NAGA_BARDING;</a>
+<a name="ln343">            return ARM_BOOTS;</a>
+<a name="ln344">        case EQ_GLOVES:</a>
+<a name="ln345">            return ARM_GLOVES;</a>
+<a name="ln346">        case EQ_HELMET:</a>
+<a name="ln347">            if (you_can_wear(EQ_HELMET))</a>
+<a name="ln348">                return ARM_HELMET;</a>
+<a name="ln349">            return random_choose(ARM_HELMET, ARM_HAT);</a>
+<a name="ln350">        case EQ_CLOAK:</a>
+<a name="ln351">            return ARM_CLOAK;</a>
+<a name="ln352">        case EQ_SHIELD:</a>
+<a name="ln353">        {</a>
+<a name="ln354">            vector&lt;pair&lt;armour_type, int&gt;&gt; shield_weights = {</a>
+<a name="ln355">                { ARM_BUCKLER,       1 },</a>
+<a name="ln356">                { ARM_KITE_SHIELD,        1 },</a>
+<a name="ln357">                { ARM_TOWER_SHIELD,  1 },</a>
+<a name="ln358">            };</a>
+<a name="ln359"> </a>
+<a name="ln360">            return filtered_vector_select&lt;armour_type&gt;(shield_weights,</a>
+<a name="ln361">                                          [] (armour_type shtyp) {</a>
+<a name="ln362">                return !check_armour_size(shtyp,</a>
+<a name="ln363">                                          you.body_size(PSIZE_TORSO, true));</a>
+<a name="ln364">            });</a>
+<a name="ln365">        }</a>
+<a name="ln366">        case EQ_BODY_ARMOUR:</a>
+<a name="ln367">            // only the rarest &amp; most precious of unwearable armours for Xom</a>
+<a name="ln368">            if (you_can_wear(EQ_BODY_ARMOUR))</a>
+<a name="ln369">                return ARM_CRYSTAL_PLATE_ARMOUR;</a>
+<a name="ln370">            // arbitrary selection of [unwearable] dragon armours</a>
+<a name="ln371">            return random_choose(ARM_FIRE_DRAGON_ARMOUR,</a>
+<a name="ln372">                                 ARM_ICE_DRAGON_ARMOUR,</a>
+<a name="ln373">                                 ARM_PEARL_DRAGON_ARMOUR,</a>
+<a name="ln374">                                 ARM_GOLD_DRAGON_ARMOUR,</a>
+<a name="ln375">                                 ARM_SHADOW_DRAGON_ARMOUR,</a>
+<a name="ln376">                                 ARM_STORM_DRAGON_ARMOUR);</a>
+<a name="ln377">        default:</a>
+<a name="ln378">            die(&quot;Unknown slot type selected for Xom bad-armour-acq!&quot;);</a>
+<a name="ln379">    }</a>
+<a name="ln380">}</a>
+<a name="ln381"> </a>
+<a name="ln382">static armour_type _pick_unseen_armour()</a>
+<a name="ln383">{</a>
+<a name="ln384">    // Consider shields uninteresting always, since unlike with other slots</a>
+<a name="ln385">    // players might well prefer an empty slot to wearing one. We don't</a>
+<a name="ln386">    // want to try to guess at this by looking at their weapon's handedness</a>
+<a name="ln387">    // because this would encourage switching weapons or putting on a</a>
+<a name="ln388">    // shield right before reading acquirement in some cases. --elliptic</a>
+<a name="ln389">    // This affects only the &quot;unfilled slot&quot; special-case, not regular</a>
+<a name="ln390">    // acquirement which can always produce (wearable) shields.</a>
+<a name="ln391">    static const equipment_type armour_slots[] =</a>
+<a name="ln392">        {  EQ_CLOAK, EQ_HELMET, EQ_GLOVES, EQ_BOOTS  };</a>
+<a name="ln393"> </a>
+<a name="ln394">    armour_type picked = NUM_ARMOURS;</a>
+<a name="ln395">    int count = 0;</a>
+<a name="ln396">    for (auto &amp;slot : armour_slots)</a>
+<a name="ln397">    {</a>
+<a name="ln398">        if (!you_can_wear(slot))</a>
+<a name="ln399">            continue;</a>
+<a name="ln400"> </a>
+<a name="ln401">        const armour_type sub_type = _acquirement_armour_for_slot(slot, false);</a>
+<a name="ln402">        ASSERT(sub_type != NUM_ARMOURS);</a>
+<a name="ln403"> </a>
+<a name="ln404">        if (!you.seen_armour[sub_type] &amp;&amp; one_chance_in(++count))</a>
+<a name="ln405">            picked = sub_type;</a>
+<a name="ln406">    }</a>
+<a name="ln407"> </a>
+<a name="ln408">    return picked;</a>
+<a name="ln409">}</a>
+<a name="ln410"> </a>
+<a name="ln411">static int _acquirement_food_subtype(bool /*divine*/, int&amp; quantity,</a>
+<a name="ln412">                                     int /*agent*/)</a>
+<a name="ln413">{</a>
+<a name="ln414">    int type_wanted;</a>
+<a name="ln415">    // Food is a little less predictable now. - bwr</a>
+<a name="ln416">    if (you.species == SP_GHOUL)</a>
+<a name="ln417">        type_wanted = FOOD_CHUNK;</a>
+<a name="ln418">    else</a>
+<a name="ln419">        type_wanted = FOOD_RATION;</a>
+<a name="ln420"> </a>
+<a name="ln421">    quantity = 3 + random2(5);</a>
+<a name="ln422"> </a>
+<a name="ln423">    // giving more of the lower food value items</a>
+<a name="ln424">    if (type_wanted == FOOD_CHUNK)</a>
+<a name="ln425">        quantity += 2 + random2avg(10, 2);</a>
+<a name="ln426"> </a>
+<a name="ln427">    return type_wanted;</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">/**</a>
+<a name="ln431"> * Randomly choose a class of weapons (those using a specific weapon skill)</a>
+<a name="ln432"> * for acquirement to give the player. Weight toward the player's skills.</a>
+<a name="ln433"> *</a>
+<a name="ln434"> * @param divine    Whether this is a god gift, which are less strongly</a>
+<a name="ln435"> *                  tailored to the player's skills.</a>
+<a name="ln436"> * @return          An appropriate weapon skill; e.g. SK_LONG_BLADES.</a>
+<a name="ln437"> */</a>
+<a name="ln438">static skill_type _acquirement_weapon_skill(bool divine, int agent)</a>
+<a name="ln439">{</a>
+<a name="ln440">    // reservoir sample.</a>
+<a name="ln441">    int count = 0;</a>
+<a name="ln442">    skill_type skill = SK_FIGHTING;</a>
+<a name="ln443">    for (skill_type sk = SK_FIRST_WEAPON;</a>
+<a name="ln444">         sk &lt;= (agent == GOD_TROG ? SK_LAST_MELEE_WEAPON : SK_LAST_WEAPON);</a>
+<a name="ln445">         ++sk)</a>
+<a name="ln446">    {</a>
+<a name="ln447">        // Adding a small constant allows for the occasional</a>
+<a name="ln448">        // weapon in an untrained skill.</a>
+<a name="ln449">        int weight = _skill_rdiv(sk) + 1;</a>
+<a name="ln450">        // Exaggerate the weighting if it's a scroll acquirement.</a>
+<a name="ln451">        if (!divine)</a>
+<a name="ln452">            weight = (weight + 1) * (weight + 2);</a>
+<a name="ln453">        count += weight;</a>
+<a name="ln454"> </a>
+<a name="ln455">        if (x_chance_in_y(weight, count))</a>
+<a name="ln456">            skill = sk;</a>
+<a name="ln457">    }</a>
+<a name="ln458"> </a>
+<a name="ln459">    return skill;</a>
+<a name="ln460">}</a>
+<a name="ln461"> </a>
+<a name="ln462">static int _acquirement_weapon_subtype(bool divine, int &amp; /*quantity*/, int agent)</a>
+<a name="ln463">{</a>
+<a name="ln464">    const skill_type skill = _acquirement_weapon_skill(divine, agent);</a>
+<a name="ln465"> </a>
+<a name="ln466">    int best_sk = 0;</a>
+<a name="ln467">    for (int i = SK_FIRST_WEAPON;</a>
+<a name="ln468">         i &lt;= (agent == GOD_TROG ? SK_LAST_MELEE_WEAPON : SK_LAST_WEAPON);</a>
+<a name="ln469">         i++)</a>
+<a name="ln470">    {</a>
+<a name="ln471">        best_sk = max(best_sk, _skill_rdiv((skill_type)i));</a>
+<a name="ln472">    }</a>
+<a name="ln473">    best_sk = max(best_sk, _skill_rdiv(SK_UNARMED_COMBAT));</a>
+<a name="ln474"> </a>
+<a name="ln475">    // Now choose a subtype which uses that skill.</a>
+<a name="ln476">    int result = OBJ_RANDOM;</a>
+<a name="ln477">    int count = 0;</a>
+<a name="ln478">    item_def item_considered;</a>
+<a name="ln479">    item_considered.base_type = OBJ_WEAPONS;</a>
+<a name="ln480">    // Let's guess the percentage of shield use the player did, this is</a>
+<a name="ln481">    // based on empirical data where pure-shield MDs get skills like 17 sh</a>
+<a name="ln482">    // 25 m&amp;f and pure-shield Spriggans 7 sh 18 m&amp;f. Pretend formicid</a>
+<a name="ln483">    // shield skill is 0 so they always weight towards 2H.</a>
+<a name="ln484">    const int shield_sk = you.species == SP_FORMICID</a>
+<a name="ln485">        ? 0</a>
+<a name="ln486">        : _skill_rdiv(SK_SHIELDS) * species_apt_factor(SK_SHIELDS);</a>
+<a name="ln487">    const int want_shield = min(2 * shield_sk, best_sk) + 10;</a>
+<a name="ln488">    const int dont_shield = max(best_sk - shield_sk, 0) + 10;</a>
+<a name="ln489">    // At XL 10, weapons of the handedness you want get weight *2, those of</a>
+<a name="ln490">    // opposite handedness 1/2, assuming your shields usage is respectively</a>
+<a name="ln491">    // 0% or 100% in the above formula. At skill 25 that's *3.5 .</a>
+<a name="ln492">    for (int i = 0; i &lt; NUM_WEAPONS; ++i)</a>
+<a name="ln493">    {</a>
+<a name="ln494">        const int wskill = item_attack_skill(OBJ_WEAPONS, i);</a>
+<a name="ln495"> </a>
+<a name="ln496">        if (wskill != skill)</a>
+<a name="ln497">            continue;</a>
+<a name="ln498">        item_considered.sub_type = i;</a>
+<a name="ln499"> </a>
+<a name="ln500">        int acqweight = property(item_considered, PWPN_ACQ_WEIGHT) * 100;</a>
+<a name="ln501"> </a>
+<a name="ln502">        if (!acqweight)</a>
+<a name="ln503">            continue;</a>
+<a name="ln504"> </a>
+<a name="ln505">        const bool two_handed = you.hands_reqd(item_considered) == HANDS_TWO;</a>
+<a name="ln506"> </a>
+<a name="ln507">        if (two_handed &amp;&amp; you.get_mutation_level(MUT_MISSING_HAND))</a>
+<a name="ln508">            continue;</a>
+<a name="ln509"> </a>
+<a name="ln510">        // For non-Trog/Okawaru acquirements, give a boost to high-end items.</a>
+<a name="ln511">        if (!divine &amp;&amp; !is_range_weapon(item_considered))</a>
+<a name="ln512">        {</a>
+<a name="ln513">            if (acqweight &lt; 500)</a>
+<a name="ln514">                acqweight = 500;</a>
+<a name="ln515">            // Quick blades get unproportionately hit by damage weighting.</a>
+<a name="ln516">            if (i == WPN_QUICK_BLADE)</a>
+<a name="ln517">                acqweight = acqweight * 25 / 9;</a>
+<a name="ln518">            int damage = property(item_considered, PWPN_DAMAGE);</a>
+<a name="ln519">            if (!two_handed)</a>
+<a name="ln520">                damage = damage * 3 / 2;</a>
+<a name="ln521">            damage *= damage * damage;</a>
+<a name="ln522">            acqweight *= damage / property(item_considered, PWPN_SPEED);</a>
+<a name="ln523">        }</a>
+<a name="ln524"> </a>
+<a name="ln525">        if (two_handed)</a>
+<a name="ln526">            acqweight = acqweight * dont_shield / want_shield;</a>
+<a name="ln527">        else</a>
+<a name="ln528">            acqweight = acqweight * want_shield / dont_shield;</a>
+<a name="ln529"> </a>
+<a name="ln530">        if (!you.seen_weapon[i])</a>
+<a name="ln531">            acqweight *= 5; // strong emphasis on type variety, brands go only second</a>
+<a name="ln532"> </a>
+<a name="ln533">        // reservoir sampling</a>
+<a name="ln534">        if (x_chance_in_y(acqweight, count += acqweight))</a>
+<a name="ln535">            result = i;</a>
+<a name="ln536">    }</a>
+<a name="ln537">    return result;</a>
+<a name="ln538">}</a>
+<a name="ln539"> </a>
+<a name="ln540">static int _acquirement_missile_subtype(bool /*divine*/, int &amp; /*quantity*/,</a>
+<a name="ln541">                                        int /*agent*/)</a>
+<a name="ln542">{</a>
+<a name="ln543">    int count = 0;</a>
+<a name="ln544">    int skill = SK_THROWING;</a>
+<a name="ln545"> </a>
+<a name="ln546">    for (int i = SK_SLINGS; i &lt;= SK_THROWING; i++)</a>
+<a name="ln547">    {</a>
+<a name="ln548">        const int sk = _skill_rdiv((skill_type)i);</a>
+<a name="ln549">        count += sk;</a>
+<a name="ln550">        if (x_chance_in_y(sk, count))</a>
+<a name="ln551">            skill = i;</a>
+<a name="ln552">    }</a>
+<a name="ln553"> </a>
+<a name="ln554">    missile_type result = MI_BOOMERANG;</a>
+<a name="ln555"> </a>
+<a name="ln556">    switch (skill)</a>
+<a name="ln557">    {</a>
+<a name="ln558">    case SK_SLINGS:    result = MI_SLING_BULLET; break;</a>
+<a name="ln559">    case SK_BOWS:      result = MI_ARROW; break;</a>
+<a name="ln560">    case SK_CROSSBOWS: result = MI_BOLT; break;</a>
+<a name="ln561"> </a>
+<a name="ln562">    case SK_THROWING:</a>
+<a name="ln563">        {</a>
+<a name="ln564">            // Choose from among all usable missile types.</a>
+<a name="ln565">            vector&lt;pair&lt;missile_type, int&gt; &gt; missile_weights;</a>
+<a name="ln566"> </a>
+<a name="ln567">            missile_weights.emplace_back(MI_BOOMERANG, 50);</a>
+<a name="ln568">            missile_weights.emplace_back(MI_DART, 75);</a>
+<a name="ln569"> </a>
+<a name="ln570">            if (you.body_size() &gt;= SIZE_MEDIUM)</a>
+<a name="ln571">                missile_weights.emplace_back(MI_JAVELIN, 100);</a>
+<a name="ln572"> </a>
+<a name="ln573">            if (you.can_throw_large_rocks())</a>
+<a name="ln574">                missile_weights.emplace_back(MI_LARGE_ROCK, 100);</a>
+<a name="ln575"> </a>
+<a name="ln576">            result = *random_choose_weighted(missile_weights);</a>
+<a name="ln577">        }</a>
+<a name="ln578">        break;</a>
+<a name="ln579"> </a>
+<a name="ln580">    default:</a>
+<a name="ln581">        break;</a>
+<a name="ln582">    }</a>
+<a name="ln583">    return result;</a>
+<a name="ln584">}</a>
+<a name="ln585"> </a>
+<a name="ln586">static int _acquirement_jewellery_subtype(bool /*divine*/, int &amp; /*quantity*/,</a>
+<a name="ln587">                                          int /*agent*/)</a>
+<a name="ln588">{</a>
+<a name="ln589">    int result = 0;</a>
+<a name="ln590"> </a>
+<a name="ln591">    // Rings are (number of usable rings) times as common as amulets.</a>
+<a name="ln592">    // XXX: unify this with the actual check for ring slots</a>
+<a name="ln593">    const int ring_num = (you.species == SP_OCTOPODE ? 8 : 2)</a>
+<a name="ln594">                       - (you.get_mutation_level(MUT_MISSING_HAND) ? 1 : 0);</a>
+<a name="ln595"> </a>
+<a name="ln596">    // Try ten times to give something the player hasn't seen.</a>
+<a name="ln597">    for (int i = 0; i &lt; 10; i++)</a>
+<a name="ln598">    {</a>
+<a name="ln599">        result = one_chance_in(ring_num + 1) ? get_random_amulet_type()</a>
+<a name="ln600">                                             : get_random_ring_type();</a>
+<a name="ln601"> </a>
+<a name="ln602">        // If we haven't seen this yet, we're done.</a>
+<a name="ln603">        if (!get_ident_type(OBJ_JEWELLERY, result))</a>
+<a name="ln604">            break;</a>
+<a name="ln605">    }</a>
+<a name="ln606"> </a>
+<a name="ln607">    return result;</a>
+<a name="ln608">}</a>
+<a name="ln609"> </a>
+<a name="ln610"> </a>
+<a name="ln611">static int _acquirement_staff_subtype(bool /*divine*/, int &amp; /*quantity*/,</a>
+<a name="ln612">                                      int /*agent*/)</a>
+<a name="ln613">{</a>
+<a name="ln614">    // Try to pick an enhancer staff matching the player's best skill.</a>
+<a name="ln615">    skill_type best_spell_skill = best_skill(SK_FIRST_MAGIC_SCHOOL,</a>
+<a name="ln616">                                             SK_LAST_MAGIC);</a>
+<a name="ln617">    bool found_enhancer = false;</a>
+<a name="ln618">    int result = 0;</a>
+<a name="ln619">    do</a>
+<a name="ln620">    {</a>
+<a name="ln621">        result = random2(NUM_STAVES);</a>
+<a name="ln622">    }</a>
+<a name="ln623">    while (item_type_removed(OBJ_STAVES, result));</a>
+<a name="ln624"> </a>
+<a name="ln625">    switch (best_spell_skill)</a>
+<a name="ln626">    {</a>
+<a name="ln627">#define TRY_GIVE(x) { if (!you.type_ids[OBJ_STAVES][x]) \</a>
+<a name="ln628">                      {result = x; found_enhancer = true;} }</a>
+<a name="ln629">    case SK_FIRE_MAGIC:   TRY_GIVE(STAFF_FIRE);        break;</a>
+<a name="ln630">    case SK_ICE_MAGIC:    TRY_GIVE(STAFF_COLD);        break;</a>
+<a name="ln631">    case SK_AIR_MAGIC:    TRY_GIVE(STAFF_AIR);         break;</a>
+<a name="ln632">    case SK_EARTH_MAGIC:  TRY_GIVE(STAFF_EARTH);       break;</a>
+<a name="ln633">    case SK_POISON_MAGIC: TRY_GIVE(STAFF_POISON);      break;</a>
+<a name="ln634">    case SK_NECROMANCY:   TRY_GIVE(STAFF_DEATH);       break;</a>
+<a name="ln635">    case SK_CONJURATIONS: TRY_GIVE(STAFF_CONJURATION); break;</a>
+<a name="ln636">    case SK_SUMMONINGS:   TRY_GIVE(STAFF_SUMMONING);   break;</a>
+<a name="ln637">#undef TRY_GIVE</a>
+<a name="ln638">    default:                                           break;</a>
+<a name="ln639">    }</a>
+<a name="ln640">    if (one_chance_in(found_enhancer ? 2 : 3))</a>
+<a name="ln641">        return result;</a>
+<a name="ln642"> </a>
+<a name="ln643">    // Otherwise pick a non-enhancer staff.</a>
+<a name="ln644">    return coinflip() ? STAFF_WIZARDRY : STAFF_ENERGY;</a>
+<a name="ln645">}</a>
+<a name="ln646"> </a>
+<a name="ln647">/**</a>
+<a name="ln648"> * Return a miscellaneous evokable item for acquirement.</a>
+<a name="ln649"> * @return   The item type chosen.</a>
+<a name="ln650"> */</a>
+<a name="ln651">static int _acquirement_misc_subtype(bool /*divine*/, int &amp; quantity,</a>
+<a name="ln652">                                     int /*agent*/)</a>
+<a name="ln653">{</a>
+<a name="ln654">    const bool NO_LOVE = you.get_mutation_level(MUT_NO_LOVE);</a>
+<a name="ln655"> </a>
+<a name="ln656">    const vector&lt;pair&lt;int, int&gt; &gt; choices =</a>
+<a name="ln657">    {</a>
+<a name="ln658">        // These have charges, so give them a constant weight.</a>
+<a name="ln659">        {MISC_BOX_OF_BEASTS,            (NO_LOVE ? 0 : 10)},</a>
+<a name="ln660">        {MISC_PHANTOM_MIRROR,           (NO_LOVE ? 0 : 10)},</a>
+<a name="ln661">        // Tremorstones are better for heavily armoured characters.</a>
+<a name="ln662">        {MISC_TIN_OF_TREMORSTONES, 5 + _skill_rdiv(SK_ARMOUR) / 3 },</a>
+<a name="ln663">        // The player never needs more than one.</a>
+<a name="ln664">        {MISC_LIGHTNING_ROD,</a>
+<a name="ln665">            (you.seen_misc[MISC_LIGHTNING_ROD] ?   0 : 20)},</a>
+<a name="ln666">        {MISC_PHIAL_OF_FLOODS,</a>
+<a name="ln667">            (you.seen_misc[MISC_PHIAL_OF_FLOODS] ? 0 : 20)},</a>
+<a name="ln668"> </a>
+<a name="ln669">    };</a>
+<a name="ln670"> </a>
+<a name="ln671">    const int * const choice = random_choose_weighted(choices);</a>
+<a name="ln672"> </a>
+<a name="ln673">    if (choice != nullptr &amp;&amp; *choice == MISC_TIN_OF_TREMORSTONES)</a>
+<a name="ln674">        quantity = 2; // not quite worth it alone</a>
+<a name="ln675"> </a>
+<a name="ln676">    return *choice;</a>
+<a name="ln677">}</a>
+<a name="ln678"> </a>
+<a name="ln679">/**</a>
+<a name="ln680"> * Choose a random type of wand to be generated via acquirement or god gifts.</a>
+<a name="ln681"> *</a>
+<a name="ln682"> * Heavily weighted toward more useful wands and wands the player hasn't yet</a>
+<a name="ln683"> * seen.</a>
+<a name="ln684"> *</a>
+<a name="ln685"> * @return          A random wand type.</a>
+<a name="ln686"> */</a>
+<a name="ln687">static int _acquirement_wand_subtype(bool /*divine*/, int &amp; /*quantity*/,</a>
+<a name="ln688">                                     int /*agent */)</a>
+<a name="ln689">{</a>
+<a name="ln690">    // basic total: 120</a>
+<a name="ln691">    vector&lt;pair&lt;wand_type, int&gt;&gt; weights = {</a>
+<a name="ln692">        { WAND_SCATTERSHOT,     25 },</a>
+<a name="ln693">        { WAND_CLOUDS,          25 },</a>
+<a name="ln694">        { WAND_ACID,            18 },</a>
+<a name="ln695">        { WAND_ICEBLAST,        18 },</a>
+<a name="ln696">        { WAND_ENSLAVEMENT,     you.get_mutation_level(MUT_NO_LOVE) ? 0 : 8 },</a>
+<a name="ln697">        { WAND_PARALYSIS,       8 },</a>
+<a name="ln698">        { WAND_DISINTEGRATION,  5 },</a>
+<a name="ln699">        { WAND_POLYMORPH,       5 },</a>
+<a name="ln700">        { WAND_DIGGING,         5 },</a>
+<a name="ln701">        { WAND_RANDOM_EFFECTS,  2 },</a>
+<a name="ln702">        { WAND_FLAME,           1 },</a>
+<a name="ln703">    };</a>
+<a name="ln704"> </a>
+<a name="ln705">    // Unknown wands get a huge weight bonus.</a>
+<a name="ln706">    for (auto &amp;weight : weights)</a>
+<a name="ln707">        if (!get_ident_type(OBJ_WANDS, weight.first))</a>
+<a name="ln708">            weight.second *= 2;</a>
+<a name="ln709"> </a>
+<a name="ln710">    const wand_type* wand = random_choose_weighted(weights);</a>
+<a name="ln711">    ASSERT(wand);</a>
+<a name="ln712">    return *wand;</a>
+<a name="ln713">}</a>
+<a name="ln714"> </a>
+<a name="ln715">static int _acquirement_book_subtype(bool /*divine*/, int &amp; /*quantity*/,</a>
+<a name="ln716">                                     int /*agent*/)</a>
+<a name="ln717">{</a>
+<a name="ln718">    return BOOK_MINOR_MAGIC;</a>
+<a name="ln719">    //this gets overwritten later, but needs to be a sane value</a>
+<a name="ln720">    //or asserts will get set off</a>
+<a name="ln721">}</a>
+<a name="ln722"> </a>
+<a name="ln723">typedef int (*acquirement_subtype_finder)(bool divine, int &amp;quantity, int agent);</a>
+<a name="ln724">static const acquirement_subtype_finder _subtype_finders[] =</a>
+<a name="ln725">{</a>
+<a name="ln726">    _acquirement_weapon_subtype,</a>
+<a name="ln727">    _acquirement_missile_subtype,</a>
+<a name="ln728">    _acquirement_armour_subtype,</a>
+<a name="ln729">    _acquirement_wand_subtype,</a>
+<a name="ln730">    _acquirement_food_subtype,</a>
+<a name="ln731">    0, // no scrolls</a>
+<a name="ln732">    _acquirement_jewellery_subtype,</a>
+<a name="ln733">    _acquirement_food_subtype, // potion acquirement = food for vampires</a>
+<a name="ln734">    _acquirement_book_subtype,</a>
+<a name="ln735">    _acquirement_staff_subtype,</a>
+<a name="ln736">    0, // no, you can't acquire the orb</a>
+<a name="ln737">    _acquirement_misc_subtype,</a>
+<a name="ln738">    0, // no corpses</a>
+<a name="ln739">    0, // gold handled elsewhere, and doesn't have subtypes anyway</a>
+<a name="ln740">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln741">    0, // no rods</a>
+<a name="ln742">#endif</a>
+<a name="ln743">    0, // no runes either</a>
+<a name="ln744">};</a>
+<a name="ln745"> </a>
+<a name="ln746">static int _find_acquirement_subtype(object_class_type &amp;class_wanted,</a>
+<a name="ln747">                                     int &amp;quantity, bool divine,</a>
+<a name="ln748">                                     int agent)</a>
+<a name="ln749">{</a>
+<a name="ln750">    COMPILE_CHECK(ARRAYSZ(_subtype_finders) == NUM_OBJECT_CLASSES);</a>
+<a name="ln751">    ASSERT(class_wanted != OBJ_RANDOM);</a>
+<a name="ln752"> </a>
+<a name="ln753">    if (class_wanted == OBJ_ARMOUR &amp;&amp; you.species == SP_FELID)</a>
+<a name="ln754">        return OBJ_RANDOM;</a>
+<a name="ln755"> </a>
+<a name="ln756">    int type_wanted = OBJ_RANDOM;</a>
+<a name="ln757"> </a>
+<a name="ln758">    int useless_count = 0;</a>
+<a name="ln759"> </a>
+<a name="ln760">    do</a>
+<a name="ln761">    {</a>
+<a name="ln762">        // Wands and misc have a common acquirement class.</a>
+<a name="ln763">        if (class_wanted == OBJ_MISCELLANY)</a>
+<a name="ln764">            class_wanted = random_choose(OBJ_WANDS, OBJ_MISCELLANY);</a>
+<a name="ln765"> </a>
+<a name="ln766">        if (_subtype_finders[class_wanted])</a>
+<a name="ln767">        {</a>
+<a name="ln768">            type_wanted =</a>
+<a name="ln769">                (*_subtype_finders[class_wanted])(divine, quantity, agent);</a>
+<a name="ln770">        }</a>
+<a name="ln771"> </a>
+<a name="ln772">        item_def dummy;</a>
+<a name="ln773">        dummy.base_type = class_wanted;</a>
+<a name="ln774">        dummy.sub_type = type_wanted;</a>
+<a name="ln775">        dummy.plus = 1; // empty wands would be useless</a>
+<a name="ln776">        dummy.flags |= ISFLAG_IDENT_MASK;</a>
+<a name="ln777"> </a>
+<a name="ln778">        if (!is_useless_item(dummy, false) &amp;&amp; !god_hates_item(dummy)</a>
+<a name="ln779">            &amp;&amp; (agent &gt;= NUM_GODS || god_likes_item_type(dummy,</a>
+<a name="ln780">                                                         (god_type)agent)))</a>
+<a name="ln781">        {</a>
+<a name="ln782">            break;</a>
+<a name="ln783">        }</a>
+<a name="ln784">    }</a>
+<a name="ln785">    while (useless_count++ &lt; 200);</a>
+<a name="ln786"> </a>
+<a name="ln787">    return type_wanted;</a>
+<a name="ln788">}</a>
+<a name="ln789"> </a>
+<a name="ln790">// The weight of a spell takes into account its disciplines' skill levels</a>
+<a name="ln791">// and the spell difficulty.</a>
+<a name="ln792">static int _spell_weight(spell_type spell)</a>
+<a name="ln793">{</a>
+<a name="ln794">    ASSERT(spell != SPELL_NO_SPELL);</a>
+<a name="ln795"> </a>
+<a name="ln796">    int weight = 0;</a>
+<a name="ln797">    spschools_type disciplines = get_spell_disciplines(spell);</a>
+<a name="ln798">    int count = 0;</a>
+<a name="ln799">    for (const auto disc : spschools_type::range())</a>
+<a name="ln800">    {</a>
+<a name="ln801">        if (disciplines &amp; disc)</a>
+<a name="ln802">        {</a>
+<a name="ln803">            weight += _skill_rdiv(spell_type2skill(disc));</a>
+<a name="ln804">            count++;</a>
+<a name="ln805">        }</a>
+<a name="ln806">    }</a>
+<a name="ln807">    ASSERT(count &gt; 0);</a>
+<a name="ln808"> </a>
+<a name="ln809">    // Particularly difficult spells _reduce_ the overall weight.</a>
+<a name="ln810">    int leveldiff = 5 - spell_difficulty(spell);</a>
+<a name="ln811"> </a>
+<a name="ln812">    return max(0, 2 * weight/count + leveldiff);</a>
+<a name="ln813">}</a>
+<a name="ln814"> </a>
+<a name="ln815">// When randomly picking a book for acquirement, use the sum of the</a>
+<a name="ln816">// weights of all unknown spells in the book.</a>
+<a name="ln817">static int _book_weight(book_type book)</a>
+<a name="ln818">{</a>
+<a name="ln819">    ASSERT_RANGE(book, 0, MAX_FIXED_BOOK + 1);</a>
+<a name="ln820"> </a>
+<a name="ln821">    int total_weight = 0;</a>
+<a name="ln822">    for (spell_type stype : spellbook_template(book))</a>
+<a name="ln823">    {</a>
+<a name="ln824">        // Skip over spells already in library.</a>
+<a name="ln825">        if (you.spell_library[stype])</a>
+<a name="ln826">            continue;</a>
+<a name="ln827">        if (god_hates_spell(stype, you.religion))</a>
+<a name="ln828">            continue;</a>
+<a name="ln829"> </a>
+<a name="ln830">        total_weight += _spell_weight(stype);</a>
+<a name="ln831">    }</a>
+<a name="ln832"> </a>
+<a name="ln833">    return total_weight;</a>
+<a name="ln834">}</a>
+<a name="ln835"> </a>
+<a name="ln836">static bool _is_magic_skill(int skill)</a>
+<a name="ln837">{</a>
+<a name="ln838">    return skill &gt;= SK_SPELLCASTING &amp;&amp; skill &lt; SK_INVOCATIONS;</a>
+<a name="ln839">}</a>
+<a name="ln840"> </a>
+<a name="ln841">static bool _skill_useless_with_god(int skill)</a>
+<a name="ln842">{</a>
+<a name="ln843">    if (skill == SK_INVOCATIONS)</a>
+<a name="ln844">    {</a>
+<a name="ln845">        // No active invocations, or uses a different skill.</a>
+<a name="ln846">        return invo_skill() != SK_INVOCATIONS</a>
+<a name="ln847">               || you_worship(GOD_XOM)</a>
+<a name="ln848">               || you_worship(GOD_VEHUMET)</a>
+<a name="ln849">               || you_worship(GOD_NO_GOD);</a>
+<a name="ln850">    }</a>
+<a name="ln851"> </a>
+<a name="ln852">    switch (you.religion)</a>
+<a name="ln853">    {</a>
+<a name="ln854">    case GOD_TROG:</a>
+<a name="ln855">        return _is_magic_skill(skill);</a>
+<a name="ln856">    case GOD_ZIN:</a>
+<a name="ln857">    case GOD_SHINING_ONE:</a>
+<a name="ln858">    case GOD_ELYVILON:</a>
+<a name="ln859">        return skill == SK_NECROMANCY;</a>
+<a name="ln860">    default:</a>
+<a name="ln861">        return false;</a>
+<a name="ln862">    }</a>
+<a name="ln863">}</a>
+<a name="ln864"> </a>
+<a name="ln865">/**</a>
+<a name="ln866"> * Randomly decide whether the player should get a manual from a given instance</a>
+<a name="ln867"> * of book acquirement.</a>
+<a name="ln868"> *</a>
+<a name="ln869"> * @param agent     The source of the acquirement (e.g. a god)</a>
+<a name="ln870"> * @return          Whether the player should get a manual from this book</a>
+<a name="ln871"> *                  acquirement.</a>
+<a name="ln872"> */</a>
+<a name="ln873">static bool _should_acquire_manual(int agent)</a>
+<a name="ln874">{</a>
+<a name="ln875">    // Manuals are too useful for Xom, and useless when gifted from Sif Muna.</a>
+<a name="ln876">    if (agent == GOD_XOM || agent == GOD_SIF_MUNA)</a>
+<a name="ln877">        return false;</a>
+<a name="ln878"> </a>
+<a name="ln879">    int magic_weights = 0;</a>
+<a name="ln880">    int other_weights = 0;</a>
+<a name="ln881"> </a>
+<a name="ln882">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln883">    {</a>
+<a name="ln884">        const int weight = _skill_rdiv(sk);</a>
+<a name="ln885"> </a>
+<a name="ln886">        if (_is_magic_skill(sk))</a>
+<a name="ln887">            magic_weights += weight;</a>
+<a name="ln888">        else</a>
+<a name="ln889">            other_weights += weight;</a>
+<a name="ln890">    }</a>
+<a name="ln891"> </a>
+<a name="ln892">    if (you_worship(GOD_TROG))</a>
+<a name="ln893">        magic_weights = 0;</a>
+<a name="ln894"> </a>
+<a name="ln895">    // If someone has 25% or more magic skills, never give manuals.</a>
+<a name="ln896">    // Otherwise, count magic skills double to bias against manuals</a>
+<a name="ln897">    // for magic users.</a>
+<a name="ln898">    return magic_weights * 3 &lt; other_weights</a>
+<a name="ln899">           &amp;&amp; x_chance_in_y(other_weights, 2*magic_weights + other_weights);</a>
+<a name="ln900">}</a>
+<a name="ln901"> </a>
+<a name="ln902">/**</a>
+<a name="ln903"> * Turn a given book into an acquirement-quality manual.</a>
+<a name="ln904"> *</a>
+<a name="ln905"> * @param book[out]     The book to be turned into a manual.</a>
+<a name="ln906"> * @return              Whether a manual was successfully created.</a>
+<a name="ln907"> */</a>
+<a name="ln908">static bool _acquire_manual(item_def &amp;book)</a>
+<a name="ln909">{</a>
+<a name="ln910">    int weights[NUM_SKILLS] = { 0 };</a>
+<a name="ln911">    int total_weights = 0;</a>
+<a name="ln912"> </a>
+<a name="ln913">    for (skill_type sk = SK_FIRST_SKILL; sk &lt; NUM_SKILLS; ++sk)</a>
+<a name="ln914">    {</a>
+<a name="ln915">        const int skl = _skill_rdiv(sk);</a>
+<a name="ln916"> </a>
+<a name="ln917">        if (skl == 27 || is_useless_skill(sk))</a>
+<a name="ln918">            continue;</a>
+<a name="ln919"> </a>
+<a name="ln920">        int w = (skl &lt; 12) ? skl + 3 : max(0, 25 - skl);</a>
+<a name="ln921"> </a>
+<a name="ln922">        // Greatly reduce the chances of getting a manual for a skill</a>
+<a name="ln923">        // you couldn't use unless you switched your religion.</a>
+<a name="ln924">        if (_skill_useless_with_god(sk))</a>
+<a name="ln925">            w /= 2;</a>
+<a name="ln926"> </a>
+<a name="ln927">        weights[sk] = w;</a>
+<a name="ln928">        total_weights += w;</a>
+<a name="ln929">    }</a>
+<a name="ln930"> </a>
+<a name="ln931">    // Are we too skilled to get any manuals?</a>
+<a name="ln932">    if (total_weights == 0)</a>
+<a name="ln933">        return false;</a>
+<a name="ln934"> </a>
+<a name="ln935">    book.sub_type = BOOK_MANUAL;</a>
+<a name="ln936">    book.skill = static_cast&lt;skill_type&gt;(</a>
+<a name="ln937">                    choose_random_weighted(weights, end(weights)));</a>
+<a name="ln938">    // Set number of bonus skill points.</a>
+<a name="ln939">    book.skill_points = random_range(2000, 3000);</a>
+<a name="ln940">    // Identify.</a>
+<a name="ln941">    set_ident_type(book, true);</a>
+<a name="ln942">    set_ident_flags(book, ISFLAG_IDENT_MASK);</a>
+<a name="ln943">    return true;</a>
+<a name="ln944">}</a>
+<a name="ln945"> </a>
+<a name="ln946">static bool _do_book_acquirement(item_def &amp;book, int agent)</a>
+<a name="ln947">{</a>
+<a name="ln948">    // items() shouldn't make book a randart for acquirement items.</a>
+<a name="ln949">    ASSERT(!is_random_artefact(book));</a>
+<a name="ln950"> </a>
+<a name="ln951">    if (_should_acquire_manual(agent))</a>
+<a name="ln952">        return _acquire_manual(book);</a>
+<a name="ln953">    const int choice = random_choose_weighted(</a>
+<a name="ln954">                                    30, BOOK_RANDART_THEME,</a>
+<a name="ln955">       agent == GOD_SIF_MUNA ? 10 : 40, NUM_BOOKS, // normal books</a>
+<a name="ln956">                                     1, BOOK_RANDART_LEVEL);</a>
+<a name="ln957"> </a>
+<a name="ln958">    switch (choice)</a>
+<a name="ln959">    {</a>
+<a name="ln960">    default:</a>
+<a name="ln961">    case NUM_BOOKS:</a>
+<a name="ln962">    {</a>
+<a name="ln963">        int total_weights = 0;</a>
+<a name="ln964"> </a>
+<a name="ln965">        // Pick a random spellbook according to unknown spells contained.</a>
+<a name="ln966">        int weights[MAX_FIXED_BOOK + 1] = { 0 };</a>
+<a name="ln967">        for (int bk = 0; bk &lt;= MAX_FIXED_BOOK; bk++)</a>
+<a name="ln968">        {</a>
+<a name="ln969">            const auto bkt = static_cast&lt;book_type&gt;(bk);</a>
+<a name="ln970"> </a>
+<a name="ln971">            if (is_rare_book(bkt) &amp;&amp; agent == GOD_SIF_MUNA</a>
+<a name="ln972">                || item_type_removed(OBJ_BOOKS, bk))</a>
+<a name="ln973">            {</a>
+<a name="ln974">                continue;</a>
+<a name="ln975">            }</a>
+<a name="ln976"> </a>
+<a name="ln977">            weights[bk]    = _book_weight(bkt);</a>
+<a name="ln978">            total_weights += weights[bk];</a>
+<a name="ln979">        }</a>
+<a name="ln980"> </a>
+<a name="ln981">        if (total_weights &gt; 0)</a>
+<a name="ln982">        {</a>
+<a name="ln983">            book.sub_type = choose_random_weighted(weights, end(weights));</a>
+<a name="ln984">            break;</a>
+<a name="ln985">        }</a>
+<a name="ln986">        acquire_themed_randbook(book, agent);</a>
+<a name="ln987">        break;</a>
+<a name="ln988">    }</a>
+<a name="ln989"> </a>
+<a name="ln990">    case BOOK_RANDART_THEME:</a>
+<a name="ln991">        acquire_themed_randbook(book, agent);</a>
+<a name="ln992">        break;</a>
+<a name="ln993"> </a>
+<a name="ln994">    case BOOK_RANDART_LEVEL:</a>
+<a name="ln995">    {</a>
+<a name="ln996">        const int level = agent == GOD_XOM ?</a>
+<a name="ln997">            random_range(1, 9) :</a>
+<a name="ln998">            max(1, (_skill_rdiv(SK_SPELLCASTING) + 2) / 3);</a>
+<a name="ln999"> </a>
+<a name="ln1000">        book.sub_type  = BOOK_RANDART_LEVEL;</a>
+<a name="ln1001">        if (!make_book_level_randart(book, level))</a>
+<a name="ln1002">            return false;</a>
+<a name="ln1003">        break;</a>
+<a name="ln1004">    }</a>
+<a name="ln1005">    } // switch book choice</a>
+<a name="ln1006"> </a>
+<a name="ln1007">    // If we couldn't make a useful book, try to make a manual instead.</a>
+<a name="ln1008">    // We have to temporarily identify the book for this.</a>
+<a name="ln1009">    if (agent != GOD_XOM &amp;&amp; agent != GOD_SIF_MUNA)</a>
+<a name="ln1010">    {</a>
+<a name="ln1011">        bool useless = false;</a>
+<a name="ln1012">        {</a>
+<a name="ln1013">            unwind_var&lt;iflags_t&gt; oldflags{book.flags};</a>
+<a name="ln1014">            book.flags |= ISFLAG_KNOW_TYPE;</a>
+<a name="ln1015">            useless = is_useless_item(book);</a>
+<a name="ln1016">        }</a>
+<a name="ln1017">        if (useless)</a>
+<a name="ln1018">        {</a>
+<a name="ln1019">            destroy_item(book);</a>
+<a name="ln1020">            book.base_type = OBJ_BOOKS;</a>
+<a name="ln1021">            book.quantity = 1;</a>
+<a name="ln1022">            return _acquire_manual(book);</a>
+<a name="ln1023">        }</a>
+<a name="ln1024">    }</a>
+<a name="ln1025"> </a>
+<a name="ln1026">    return true;</a>
+<a name="ln1027">}</a>
+<a name="ln1028"> </a>
+<a name="ln1029">static int _failed_acquirement(bool quiet)</a>
+<a name="ln1030">{</a>
+<a name="ln1031">    if (!quiet)</a>
+<a name="ln1032">        mpr(&quot;The demon of the infinite void smiles upon you.&quot;);</a>
+<a name="ln1033">    return NON_ITEM;</a>
+<a name="ln1034">}</a>
+<a name="ln1035"> </a>
+<a name="ln1036">static int _weapon_brand_quality(int brand, bool range)</a>
+<a name="ln1037">{</a>
+<a name="ln1038">    switch (brand)</a>
+<a name="ln1039">    {</a>
+<a name="ln1040">    case SPWPN_SPEED:</a>
+<a name="ln1041">        return range ? 3 : 5;</a>
+<a name="ln1042">    case SPWPN_PENETRATION:</a>
+<a name="ln1043">        return 4;</a>
+<a name="ln1044">    case SPWPN_ELECTROCUTION:</a>
+<a name="ln1045">    case SPWPN_DISTORTION:</a>
+<a name="ln1046">    case SPWPN_HOLY_WRATH:</a>
+<a name="ln1047">    case SPWPN_REAPING:</a>
+<a name="ln1048">        return 3;</a>
+<a name="ln1049">    case SPWPN_CHAOS:</a>
+<a name="ln1050">        return 2;</a>
+<a name="ln1051">    default:</a>
+<a name="ln1052">        return 1;</a>
+<a name="ln1053">    case SPWPN_NORMAL:</a>
+<a name="ln1054">        return 0;</a>
+<a name="ln1055">    case SPWPN_PAIN:</a>
+<a name="ln1056">        return _skill_rdiv(SK_NECROMANCY) / 2;</a>
+<a name="ln1057">    case SPWPN_VORPAL:</a>
+<a name="ln1058">        return range ? 5 : 1;</a>
+<a name="ln1059">    }</a>
+<a name="ln1060">}</a>
+<a name="ln1061"> </a>
+<a name="ln1062">static bool _armour_slot_seen(armour_type arm)</a>
+<a name="ln1063">{</a>
+<a name="ln1064">    item_def item;</a>
+<a name="ln1065">    item.base_type = OBJ_ARMOUR;</a>
+<a name="ln1066">    item.quantity = 1;</a>
+<a name="ln1067"> </a>
+<a name="ln1068">    for (int i = 0; i &lt; NUM_ARMOURS; i++)</a>
+<a name="ln1069">    {</a>
+<a name="ln1070">        if (get_armour_slot(arm) != get_armour_slot((armour_type)i))</a>
+<a name="ln1071">            continue;</a>
+<a name="ln1072">        item.sub_type = i;</a>
+<a name="ln1073"> </a>
+<a name="ln1074">        // having seen a helmet means nothing about your decision to go</a>
+<a name="ln1075">        // bare-headed if you have horns</a>
+<a name="ln1076">        if (!can_wear_armour(item, false, true))</a>
+<a name="ln1077">            continue;</a>
+<a name="ln1078"> </a>
+<a name="ln1079">        if (you.seen_armour[i])</a>
+<a name="ln1080">            return true;</a>
+<a name="ln1081">    }</a>
+<a name="ln1082">    return false;</a>
+<a name="ln1083">}</a>
+<a name="ln1084"> </a>
+<a name="ln1085">static bool _is_armour_plain(const item_def &amp;item)</a>
+<a name="ln1086">{</a>
+<a name="ln1087">    ASSERT(item.base_type == OBJ_ARMOUR);</a>
+<a name="ln1088">    if (is_artefact(item))</a>
+<a name="ln1089">        return false;</a>
+<a name="ln1090"> </a>
+<a name="ln1091">    if (armour_is_special(item))</a>
+<a name="ln1092">    {</a>
+<a name="ln1093">        // These are always interesting, even with no brand.</a>
+<a name="ln1094">        // May still be redundant, but that has another check.</a>
+<a name="ln1095">        return false;</a>
+<a name="ln1096">    }</a>
+<a name="ln1097"> </a>
+<a name="ln1098">    return get_armour_ego_type(item) == SPARM_NORMAL;</a>
+<a name="ln1099">}</a>
+<a name="ln1100"> </a>
+<a name="ln1101">/**</a>
+<a name="ln1102"> * Has the player already encountered an item with this brand?</a>
+<a name="ln1103"> *</a>
+<a name="ln1104"> * Only supports weapons &amp; armour.</a>
+<a name="ln1105"> *</a>
+<a name="ln1106"> * @param item      The item in question.</a>
+<a name="ln1107"> * @param           Whether the player has encountered another weapon or</a>
+<a name="ln1108"> *                  piece of armour with the same ego.</a>
+<a name="ln1109"> */</a>
+<a name="ln1110">static bool _brand_already_seen(const item_def &amp;item)</a>
+<a name="ln1111">{</a>
+<a name="ln1112">    switch (item.base_type)</a>
+<a name="ln1113">    {</a>
+<a name="ln1114">        case OBJ_WEAPONS:</a>
+<a name="ln1115">            return you.seen_weapon[item.sub_type]</a>
+<a name="ln1116">                   &amp; (1&lt;&lt;get_weapon_brand(item));</a>
+<a name="ln1117">        case OBJ_ARMOUR:</a>
+<a name="ln1118">            return you.seen_armour[item.sub_type]</a>
+<a name="ln1119">                   &amp; (1&lt;&lt;get_armour_ego_type(item));</a>
+<a name="ln1120">        default:</a>
+<a name="ln1121">            die(&quot;Unsupported item type!&quot;);</a>
+<a name="ln1122">    }</a>
+<a name="ln1123">}</a>
+<a name="ln1124"> </a>
+<a name="ln1125">// ugh</a>
+<a name="ln1126">#define ITEM_LEVEL (divine ? ISPEC_GIFT : ISPEC_GOOD_ITEM)</a>
+<a name="ln1127"> </a>
+<a name="ln1128">/**</a>
+<a name="ln1129"> * Take a newly-generated acquirement item, and adjust its brand if we don't</a>
+<a name="ln1130"> * like it.</a>
+<a name="ln1131"> *</a>
+<a name="ln1132"> * Specifically, when any of:</a>
+<a name="ln1133"> *   - The god doesn't like the brand (for divine gifts)</a>
+<a name="ln1134"> *   - We think the brand is too weak (for non-divine gifts)</a>
+<a name="ln1135"> *   - Sometimes if we've seen the brand before.</a>
+<a name="ln1136"> *</a>
+<a name="ln1137"> * @param item      The item which may have its brand adjusted. Not necessarily</a>
+<a name="ln1138"> *                  a weapon or piece of armour.</a>
+<a name="ln1139"> * @param divine    Whether the item is a god gift, rather than from</a>
+<a name="ln1140"> *                  acquirement proper.</a>
+<a name="ln1141"> * @param agent     The source of the acquirement. For god gifts, it's equal to</a>
+<a name="ln1142"> *                  the god.</a>
+<a name="ln1143"> */</a>
+<a name="ln1144">static void _adjust_brand(item_def &amp;item, bool divine, int agent)</a>
+<a name="ln1145">{</a>
+<a name="ln1146">    if (item.base_type != OBJ_WEAPONS &amp;&amp; item.base_type != OBJ_ARMOUR)</a>
+<a name="ln1147">        return; // don't reroll missile brands, I guess</a>
+<a name="ln1148"> </a>
+<a name="ln1149">    if (is_artefact(item))</a>
+<a name="ln1150">        return; // their own kettle of fish</a>
+<a name="ln1151"> </a>
+<a name="ln1152"> </a>
+<a name="ln1153">    // Trog has a restricted brand table.</a>
+<a name="ln1154">    if (agent == GOD_TROG &amp;&amp; item.base_type == OBJ_WEAPONS)</a>
+<a name="ln1155">    {</a>
+<a name="ln1156">        // 75% chance of a brand</a>
+<a name="ln1157">        item.brand = random_choose(SPWPN_NORMAL, SPWPN_VORPAL,</a>
+<a name="ln1158">                                   SPWPN_FLAMING, SPWPN_ANTIMAGIC);</a>
+<a name="ln1159">        return;</a>
+<a name="ln1160">    }</a>
+<a name="ln1161"> </a>
+<a name="ln1162">    // Not from a god, so we should prefer better brands.</a>
+<a name="ln1163">    if (!divine &amp;&amp; item.base_type == OBJ_WEAPONS)</a>
+<a name="ln1164">    {</a>
+<a name="ln1165">        while (_weapon_brand_quality(get_weapon_brand(item),</a>
+<a name="ln1166">                                     is_range_weapon(item)) &lt; random2(6))</a>
+<a name="ln1167">        {</a>
+<a name="ln1168">            reroll_brand(item, ITEM_LEVEL);</a>
+<a name="ln1169">        }</a>
+<a name="ln1170">    }</a>
+<a name="ln1171"> </a>
+<a name="ln1172">    // Try to not generate brands that were already seen, although unlike</a>
+<a name="ln1173">    // jewellery and books, this is not absolute.</a>
+<a name="ln1174">    while (_brand_already_seen(item) &amp;&amp; !one_chance_in(5))</a>
+<a name="ln1175">        reroll_brand(item, ITEM_LEVEL);</a>
+<a name="ln1176">}</a>
+<a name="ln1177"> </a>
+<a name="ln1178">/**</a>
+<a name="ln1179"> * Should the given item be rejected as an acquirement/god gift result &amp;</a>
+<a name="ln1180"> * rerolled? If so, why?</a>
+<a name="ln1181"> *</a>
+<a name="ln1182"> * @param item      The item in question.</a>
+<a name="ln1183"> * @param agent     The entity creating the item; possibly a god.</a>
+<a name="ln1184"> * @return          A reason why the item should be rejected, if it should be;</a>
+<a name="ln1185"> *                  otherwise, the empty string.</a>
+<a name="ln1186"> */</a>
+<a name="ln1187">static string _why_reject(const item_def &amp;item, int agent)</a>
+<a name="ln1188">{</a>
+<a name="ln1189">    if (agent != GOD_XOM</a>
+<a name="ln1190">        &amp;&amp; (item.base_type == OBJ_WEAPONS</a>
+<a name="ln1191">                &amp;&amp; !can_wield(&amp;item, false, true)</a>
+<a name="ln1192">            || item.base_type == OBJ_ARMOUR</a>
+<a name="ln1193">                &amp;&amp; !can_wear_armour(item, false, true)))</a>
+<a name="ln1194">    {</a>
+<a name="ln1195">        return &quot;Destroying unusable weapon or armour!&quot;;</a>
+<a name="ln1196">    }</a>
+<a name="ln1197"> </a>
+<a name="ln1198">    // Trog does not gift the Wrath of Trog.</a>
+<a name="ln1199">    if (agent == GOD_TROG &amp;&amp; is_unrandom_artefact(item, UNRAND_TROG))</a>
+<a name="ln1200">        return &quot;Destroying Trog-gifted Wrath of Trog!&quot;;</a>
+<a name="ln1201"> </a>
+<a name="ln1202">    // Pain brand is useless if you've sacrificed Necromacy.</a>
+<a name="ln1203">    if (you.get_mutation_level(MUT_NO_NECROMANCY_MAGIC)</a>
+<a name="ln1204">        &amp;&amp; get_weapon_brand(item) == SPWPN_PAIN)</a>
+<a name="ln1205">    {</a>
+<a name="ln1206">        return &quot;Destroying pain weapon after Necro sac!&quot;;</a>
+<a name="ln1207">    }</a>
+<a name="ln1208"> </a>
+<a name="ln1209">    // Sif Muna shouldn't gift special books.</a>
+<a name="ln1210">    // (The spells therein are still fair game for randart books.)</a>
+<a name="ln1211">    if (agent == GOD_SIF_MUNA</a>
+<a name="ln1212">        &amp;&amp; is_rare_book(static_cast&lt;book_type&gt;(item.sub_type)))</a>
+<a name="ln1213">    {</a>
+<a name="ln1214">        ASSERT(item.base_type == OBJ_BOOKS);</a>
+<a name="ln1215">        return &quot;Destroying sif-gifted rarebook!&quot;;</a>
+<a name="ln1216">    }</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    return &quot;&quot;; // all OK</a>
+<a name="ln1219">}</a>
+<a name="ln1220"> </a>
+<a name="ln1221">int acquirement_create_item(object_class_type class_wanted,</a>
+<a name="ln1222">                            int agent, bool quiet,</a>
+<a name="ln1223">                            const coord_def &amp;pos)</a>
+<a name="ln1224">{</a>
+<a name="ln1225">    ASSERT(class_wanted != OBJ_RANDOM);</a>
+<a name="ln1226"> </a>
+<a name="ln1227">    const bool divine = (agent == GOD_OKAWARU || agent == GOD_XOM</a>
+<a name="ln1228">                         || agent == GOD_TROG</a>
+<a name="ln1229">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1230">                         || agent == GOD_PAKELLAS</a>
+<a name="ln1231">#endif</a>
+<a name="ln1232">                        );</a>
+<a name="ln1233">    int thing_created = NON_ITEM;</a>
+<a name="ln1234">    int quant = 1;</a>
+<a name="ln1235">#define MAX_ACQ_TRIES 40</a>
+<a name="ln1236">    for (int item_tries = 0; item_tries &lt; MAX_ACQ_TRIES; item_tries++)</a>
+<a name="ln1237">    {</a>
+<a name="ln1238">        int type_wanted = -1;</a>
+<a name="ln1239">        if (agent == GOD_XOM &amp;&amp; class_wanted == OBJ_ARMOUR &amp;&amp; one_chance_in(20))</a>
+<a name="ln1240">            type_wanted = _useless_armour_type();</a>
+<a name="ln1241">        else</a>
+<a name="ln1242">        {</a>
+<a name="ln1243">            // This may clobber class_wanted (e.g. staves or vampire food)</a>
+<a name="ln1244">            type_wanted = _find_acquirement_subtype(class_wanted, quant,</a>
+<a name="ln1245">                                                    divine, agent);</a>
+<a name="ln1246">        }</a>
+<a name="ln1247">        ASSERT(type_wanted != -1);</a>
+<a name="ln1248"> </a>
+<a name="ln1249">        // Don't generate randart books in items(), we do that</a>
+<a name="ln1250">        // ourselves.</a>
+<a name="ln1251">        bool want_arts = (class_wanted != OBJ_BOOKS);</a>
+<a name="ln1252">        if (agent == GOD_TROG &amp;&amp; !one_chance_in(3))</a>
+<a name="ln1253">            want_arts = false;</a>
+<a name="ln1254"> </a>
+<a name="ln1255">        thing_created = items(want_arts, class_wanted, type_wanted,</a>
+<a name="ln1256">                              ITEM_LEVEL, 0, agent);</a>
+<a name="ln1257"> </a>
+<a name="ln1258">        if (thing_created == NON_ITEM)</a>
+<a name="ln1259">        {</a>
+<a name="ln1260">            if (!quiet)</a>
+<a name="ln1261">                dprf(&quot;Failed to make thing!&quot;);</a>
+<a name="ln1262">            continue;</a>
+<a name="ln1263">        }</a>
+<a name="ln1264"> </a>
+<a name="ln1265">        item_def &amp;acq_item(mitm[thing_created]);</a>
+<a name="ln1266">        _adjust_brand(acq_item, divine, agent);</a>
+<a name="ln1267"> </a>
+<a name="ln1268">        // For plain armour, try to change the subtype to something</a>
+<a name="ln1269">        // matching a currently unfilled equipment slot.</a>
+<a name="ln1270">        if (acq_item.base_type == OBJ_ARMOUR &amp;&amp; !is_artefact(acq_item))</a>
+<a name="ln1271">        {</a>
+<a name="ln1272">            const special_armour_type sparm = get_armour_ego_type(acq_item);</a>
+<a name="ln1273"> </a>
+<a name="ln1274">            if (agent != GOD_XOM</a>
+<a name="ln1275">                &amp;&amp; you.seen_armour[acq_item.sub_type] &amp; (1 &lt;&lt; sparm)</a>
+<a name="ln1276">                &amp;&amp; x_chance_in_y(MAX_ACQ_TRIES - item_tries, MAX_ACQ_TRIES + 5)</a>
+<a name="ln1277">                || !divine</a>
+<a name="ln1278">                &amp;&amp; you.seen_armour[acq_item.sub_type]</a>
+<a name="ln1279">                &amp;&amp; !one_chance_in(3)</a>
+<a name="ln1280">                &amp;&amp; item_tries &lt; 20)</a>
+<a name="ln1281">            {</a>
+<a name="ln1282">                // We have seen the exact item already, it's very unlikely</a>
+<a name="ln1283">                // extras will do any good.</a>
+<a name="ln1284">                // For scroll acquirement, prefer base items not seen before</a>
+<a name="ln1285">                // as well, even if you didn't see the exact brand yet.</a>
+<a name="ln1286">                destroy_item(thing_created, true);</a>
+<a name="ln1287">                thing_created = NON_ITEM;</a>
+<a name="ln1288">                if (!quiet)</a>
+<a name="ln1289">                    dprf(&quot;Destroying already-seen item!&quot;);</a>
+<a name="ln1290">                continue;</a>
+<a name="ln1291">            }</a>
+<a name="ln1292"> </a>
+<a name="ln1293">            // Try to fill empty slots.</a>
+<a name="ln1294">            if ((_is_armour_plain(acq_item)</a>
+<a name="ln1295">                 || get_armour_slot(acq_item) == EQ_BODY_ARMOUR &amp;&amp; coinflip())</a>
+<a name="ln1296">                &amp;&amp; _armour_slot_seen((armour_type)acq_item.sub_type))</a>
+<a name="ln1297">            {</a>
+<a name="ln1298">                armour_type at = _pick_unseen_armour();</a>
+<a name="ln1299">                if (at != NUM_ARMOURS)</a>
+<a name="ln1300">                {</a>
+<a name="ln1301">                    destroy_item(thing_created, true);</a>
+<a name="ln1302">                    thing_created = items(true, OBJ_ARMOUR, at,</a>
+<a name="ln1303">                                          ITEM_LEVEL, 0, agent);</a>
+<a name="ln1304">                }</a>
+<a name="ln1305">                else if (agent != GOD_XOM &amp;&amp; one_chance_in(3))</a>
+<a name="ln1306">                {</a>
+<a name="ln1307">                    // If the item is plain and there aren't any</a>
+<a name="ln1308">                    // unfilled slots, we might want to roll again.</a>
+<a name="ln1309">                    destroy_item(thing_created, true);</a>
+<a name="ln1310">                    thing_created = NON_ITEM;</a>
+<a name="ln1311">                    if (!quiet)</a>
+<a name="ln1312">                        dprf(&quot;Destroying plain item!&quot;);</a>
+<a name="ln1313">                    continue;</a>
+<a name="ln1314">                }</a>
+<a name="ln1315">            }</a>
+<a name="ln1316">        }</a>
+<a name="ln1317"> </a>
+<a name="ln1318">        const string rejection_reason = _why_reject(acq_item, agent);</a>
+<a name="ln1319">        if (!rejection_reason.empty())</a>
+<a name="ln1320">        {</a>
+<a name="ln1321">            if (!quiet)</a>
+<a name="ln1322">                dprf(&quot;%s&quot;, rejection_reason.c_str());</a>
+<a name="ln1323">            destroy_item(acq_item);</a>
+<a name="ln1324">            thing_created = NON_ITEM;</a>
+<a name="ln1325">            continue;</a>
+<a name="ln1326">        }</a>
+<a name="ln1327"> </a>
+<a name="ln1328">        ASSERT(acq_item.is_valid());</a>
+<a name="ln1329"> </a>
+<a name="ln1330">        if (class_wanted == OBJ_WANDS)</a>
+<a name="ln1331">            acq_item.plus = max(static_cast&lt;int&gt;(acq_item.plus), 3 + random2(3));</a>
+<a name="ln1332">        else if (class_wanted == OBJ_GOLD)</a>
+<a name="ln1333">        {</a>
+<a name="ln1334">            // New gold acquirement formula from dpeg.</a>
+<a name="ln1335">            // Min=220, Max=5520, Mean=1218, Std=911</a>
+<a name="ln1336">            int quantity_rnd = roll_dice(1, 8); // ensure rnd sequence points</a>
+<a name="ln1337">            quantity_rnd *= roll_dice(1, 8);</a>
+<a name="ln1338">            quantity_rnd *= roll_dice(1, 8);</a>
+<a name="ln1339">            acq_item.quantity = 10 * (20</a>
+<a name="ln1340">                                    + roll_dice(1, 20)</a>
+<a name="ln1341">                                    + quantity_rnd);</a>
+<a name="ln1342">        }</a>
+<a name="ln1343">        else if (class_wanted == OBJ_MISSILES &amp;&amp; !divine)</a>
+<a name="ln1344">            acq_item.quantity *= 5;</a>
+<a name="ln1345">        else if (quant &gt; 1)</a>
+<a name="ln1346">            acq_item.quantity = quant;</a>
+<a name="ln1347"> </a>
+<a name="ln1348">        // Remove curse flag from item, unless worshipping Ashenzari.</a>
+<a name="ln1349">        if (have_passive(passive_t::want_curses))</a>
+<a name="ln1350">            do_curse_item(acq_item, true);</a>
+<a name="ln1351">        else</a>
+<a name="ln1352">            do_uncurse_item(acq_item);</a>
+<a name="ln1353"> </a>
+<a name="ln1354">        if (acq_item.base_type == OBJ_BOOKS)</a>
+<a name="ln1355">        {</a>
+<a name="ln1356">            if (!_do_book_acquirement(acq_item, agent))</a>
+<a name="ln1357">            {</a>
+<a name="ln1358">                destroy_item(acq_item, true);</a>
+<a name="ln1359">                return _failed_acquirement(quiet);</a>
+<a name="ln1360">            }</a>
+<a name="ln1361">            // That might have changed the item's subtype.</a>
+<a name="ln1362">            item_colour(acq_item);</a>
+<a name="ln1363">        }</a>
+<a name="ln1364">        else if (acq_item.base_type == OBJ_JEWELLERY)</a>
+<a name="ln1365">        {</a>
+<a name="ln1366">            switch (acq_item.sub_type)</a>
+<a name="ln1367">            {</a>
+<a name="ln1368">            case RING_PROTECTION:</a>
+<a name="ln1369">            case RING_STRENGTH:</a>
+<a name="ln1370">            case RING_INTELLIGENCE:</a>
+<a name="ln1371">            case RING_DEXTERITY:</a>
+<a name="ln1372">            case RING_EVASION:</a>
+<a name="ln1373">            case RING_SLAYING:</a>
+<a name="ln1374">                // Make sure plus is &gt;= 1.</a>
+<a name="ln1375">                acq_item.plus = max(abs((int) acq_item.plus), 1);</a>
+<a name="ln1376">                break;</a>
+<a name="ln1377"> </a>
+<a name="ln1378">            case RING_ATTENTION:</a>
+<a name="ln1379">            case RING_TELEPORTATION:</a>
+<a name="ln1380">            case AMU_INACCURACY:</a>
+<a name="ln1381">                // These are the only truly bad pieces of jewellery.</a>
+<a name="ln1382">                if (!one_chance_in(9))</a>
+<a name="ln1383">                    make_item_randart(acq_item);</a>
+<a name="ln1384">                break;</a>
+<a name="ln1385"> </a>
+<a name="ln1386">            default:</a>
+<a name="ln1387">                break;</a>
+<a name="ln1388">            }</a>
+<a name="ln1389"> </a>
+<a name="ln1390">            // bump jewel acq power up a bit</a>
+<a name="ln1391">            if (one_chance_in(2) &amp;&amp; !is_artefact(acq_item))</a>
+<a name="ln1392">                make_item_randart(acq_item);</a>
+<a name="ln1393">        }</a>
+<a name="ln1394">        else if (acq_item.base_type == OBJ_WEAPONS</a>
+<a name="ln1395">                 &amp;&amp; !is_unrandom_artefact(acq_item))</a>
+<a name="ln1396">        {</a>
+<a name="ln1397">            // These can never get egos, and mundane versions are quite common,</a>
+<a name="ln1398">            // so guarantee artefact status. Rarity is a bit low to compensate.</a>
+<a name="ln1399">            // ...except actually, trog can give them antimagic brand, so...</a>
+<a name="ln1400">            if (is_giant_club_type(acq_item.sub_type)</a>
+<a name="ln1401">                &amp;&amp; get_weapon_brand(acq_item) == SPWPN_NORMAL</a>
+<a name="ln1402">                &amp;&amp; !one_chance_in(25))</a>
+<a name="ln1403">            {</a>
+<a name="ln1404">                make_item_randart(acq_item, true);</a>
+<a name="ln1405">            }</a>
+<a name="ln1406"> </a>
+<a name="ln1407">            if (agent == GOD_TROG)</a>
+<a name="ln1408">                acq_item.plus += random2(3);</a>
+<a name="ln1409">            // God gifts (except Xom's) never have a negative enchantment</a>
+<a name="ln1410">            if (divine &amp;&amp; agent != GOD_XOM)</a>
+<a name="ln1411">                acq_item.plus = max(static_cast&lt;int&gt;(acq_item.plus), 0);</a>
+<a name="ln1412">        }</a>
+<a name="ln1413"> </a>
+<a name="ln1414">        // Last check: don't acquire items your god hates.</a>
+<a name="ln1415">        // Temporarily mark the type as ID'd for the purpose of checking if</a>
+<a name="ln1416">        // it is a hated brand (this addresses, e.g., Elyvilon followers</a>
+<a name="ln1417">        // immediately identifying evil weapons).</a>
+<a name="ln1418">        // Note that Xom will happily give useless items!</a>
+<a name="ln1419">        int oldflags = acq_item.flags;</a>
+<a name="ln1420">        acq_item.flags |= ISFLAG_KNOW_TYPE;</a>
+<a name="ln1421">        if ((is_useless_item(acq_item, false) &amp;&amp; agent != GOD_XOM)</a>
+<a name="ln1422">            || god_hates_item(acq_item))</a>
+<a name="ln1423">        {</a>
+<a name="ln1424">            if (!quiet)</a>
+<a name="ln1425">                dprf(&quot;destroying useless item&quot;);</a>
+<a name="ln1426">            destroy_item(thing_created);</a>
+<a name="ln1427">            thing_created = NON_ITEM;</a>
+<a name="ln1428">            continue;</a>
+<a name="ln1429">        }</a>
+<a name="ln1430">        acq_item.flags = oldflags;</a>
+<a name="ln1431">        break;</a>
+<a name="ln1432">    }</a>
+<a name="ln1433"> </a>
+<a name="ln1434">    if (thing_created == NON_ITEM)</a>
+<a name="ln1435">        return _failed_acquirement(quiet);</a>
+<a name="ln1436"> </a>
+<a name="ln1437">    item_set_appearance(mitm[thing_created]); // cleanup</a>
+<a name="ln1438"> </a>
+<a name="ln1439">    if (thing_created != NON_ITEM)</a>
+<a name="ln1440">    {</a>
+<a name="ln1441">        ASSERT(mitm[thing_created].is_valid());</a>
+<a name="ln1442">        mitm[thing_created].props[ACQUIRE_KEY].get_int() = agent;</a>
+<a name="ln1443">    }</a>
+<a name="ln1444"> </a>
+<a name="ln1445">    ASSERT(!is_useless_item(mitm[thing_created], false) || agent == GOD_XOM);</a>
+<a name="ln1446">    ASSERT(!god_hates_item(mitm[thing_created]));</a>
+<a name="ln1447"> </a>
+<a name="ln1448">    // If we have a zero coord_def, don't move the item to the grid. Used for</a>
+<a name="ln1449">    // generating scroll of acquirement items.</a>
+<a name="ln1450">    if (pos.origin())</a>
+<a name="ln1451">        return thing_created;</a>
+<a name="ln1452"> </a>
+<a name="ln1453">    // Moving this above the move since it might not exist after falling.</a>
+<a name="ln1454">    if (thing_created != NON_ITEM &amp;&amp; !quiet)</a>
+<a name="ln1455">        canned_msg(MSG_SOMETHING_APPEARS);</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    // If a god wants to give you something but the floor doesn't want it,</a>
+<a name="ln1458">    // it counts as a failed acquirement - no piety, etc cost.</a>
+<a name="ln1459">    if (feat_destroys_items(grd(pos))</a>
+<a name="ln1460">        &amp;&amp; agent &gt; GOD_NO_GOD</a>
+<a name="ln1461">        &amp;&amp; agent &lt; NUM_GODS)</a>
+<a name="ln1462">    {</a>
+<a name="ln1463">        if (!quiet &amp;&amp; agent == GOD_XOM)</a>
+<a name="ln1464">            simple_god_message(&quot; snickers.&quot;, GOD_XOM);</a>
+<a name="ln1465">        else</a>
+<a name="ln1466">            return _failed_acquirement(quiet);</a>
+<a name="ln1467">    }</a>
+<a name="ln1468"> </a>
+<a name="ln1469">    move_item_to_grid(&amp;thing_created, pos, quiet);</a>
+<a name="ln1470"> </a>
+<a name="ln1471">    return thing_created;</a>
+<a name="ln1472">}</a>
+<a name="ln1473"> </a>
+<a name="ln1474">class AcquireMenu : public InvMenu</a>
+<a name="ln1475">{</a>
+<a name="ln1476">    friend class AcquireEntry;</a>
+<a name="ln1477"> </a>
+<a name="ln1478">    CrawlVector &amp;acq_items;</a>
+<a name="ln1479"> </a>
+<a name="ln1480">    void init_entries();</a>
+<a name="ln1481">    void update_help();</a>
+<a name="ln1482">    bool acquire_selected();</a>
+<a name="ln1483"> </a>
+<a name="ln1484">    virtual bool process_key(int keyin) override;</a>
+<a name="ln1485"> </a>
+<a name="ln1486">public:</a>
+<a name="ln1487">    AcquireMenu(CrawlVector &amp;aitems);</a>
+<a name="ln1488">};</a>
+<a name="ln1489"> </a>
+<a name="ln1490">class AcquireEntry : public InvEntry</a>
+<a name="ln1491">{</a>
+<a name="ln1492">    string get_text(bool need_cursor = false) const override</a>
+<a name="ln1493">    {</a>
+<a name="ln1494">        need_cursor = need_cursor &amp;&amp; show_cursor;</a>
+<a name="ln1495">        const colour_t keycol = LIGHTCYAN;</a>
+<a name="ln1496">        const string keystr = colour_to_str(keycol);</a>
+<a name="ln1497">        const string itemstr =</a>
+<a name="ln1498">            colour_to_str(menu_colour(text, item_prefix(*item), tag));</a>
+<a name="ln1499">        const string gold_text = item-&gt;base_type == OBJ_GOLD</a>
+<a name="ln1500">            ? make_stringf(&quot; (you have %d gold)&quot;, you.gold) : &quot;&quot;;</a>
+<a name="ln1501">        return make_stringf(&quot; &lt;%s&gt;%c%c%c%c&lt;/%s&gt;&lt;%s&gt;%s%s&lt;/%s&gt;&quot;,</a>
+<a name="ln1502">                            keystr.c_str(),</a>
+<a name="ln1503">                            hotkeys[0],</a>
+<a name="ln1504">                            need_cursor ? '[' : ' ',</a>
+<a name="ln1505">                            selected() ? '+' : '-',</a>
+<a name="ln1506">                            need_cursor ? ']' : ' ',</a>
+<a name="ln1507">                            keystr.c_str(),</a>
+<a name="ln1508">                            itemstr.c_str(),</a>
+<a name="ln1509">                            text.c_str(),</a>
+<a name="ln1510">                            gold_text.c_str(),</a>
+<a name="ln1511">                            itemstr.c_str());</a>
+<a name="ln1512">    }</a>
+<a name="ln1513"> </a>
+<a name="ln1514">public:</a>
+<a name="ln1515">    AcquireEntry(const item_def&amp; i) : InvEntry(i)</a>
+<a name="ln1516">    {</a>
+<a name="ln1517">        show_background = false;</a>
+<a name="ln1518">    }</a>
+<a name="ln1519">};</a>
+<a name="ln1520"> </a>
+<a name="ln1521">AcquireMenu::AcquireMenu(CrawlVector &amp;aitems)</a>
+<a name="ln1522">    : InvMenu(MF_SINGLESELECT | MF_NO_SELECT_QTY | MF_QUIET_SELECT</a>
+<a name="ln1523">              | MF_ALWAYS_SHOW_MORE | MF_ALLOW_FORMATTING | MF_UNCANCEL),</a>
+<a name="ln1524">      acq_items(aitems)</a>
+<a name="ln1525">{</a>
+<a name="ln1526">    menu_action = ACT_EXECUTE;</a>
+<a name="ln1527">    set_flags(get_flags() &amp; ~MF_USE_TWO_COLUMNS);</a>
+<a name="ln1528"> </a>
+<a name="ln1529">    set_tag(&quot;acquirement&quot;);</a>
+<a name="ln1530"> </a>
+<a name="ln1531">    init_entries();</a>
+<a name="ln1532"> </a>
+<a name="ln1533">    update_help();</a>
+<a name="ln1534"> </a>
+<a name="ln1535">    set_title(&quot;Choose an item to acquire.&quot;);</a>
+<a name="ln1536">}</a>
+<a name="ln1537"> </a>
+<a name="ln1538">void AcquireMenu::init_entries()</a>
+<a name="ln1539">{</a>
+<a name="ln1540">    menu_letter ckey = 'a';</a>
+<a name="ln1541">    for (item_def&amp; item : acq_items)</a>
+<a name="ln1542">    {</a>
+<a name="ln1543">        auto newentry = make_unique&lt;AcquireEntry&gt;(item);</a>
+<a name="ln1544">        newentry-&gt;hotkeys.clear();</a>
+<a name="ln1545">        newentry-&gt;add_hotkey(ckey++);</a>
+<a name="ln1546">        add_entry(move(newentry));</a>
+<a name="ln1547">    }</a>
+<a name="ln1548">}</a>
+<a name="ln1549"> </a>
+<a name="ln1550">static string _hyphenated_letters(int how_many, char first)</a>
+<a name="ln1551">{</a>
+<a name="ln1552">    string s = &quot;&lt;w&gt;&quot;;</a>
+<a name="ln1553">    s += first;</a>
+<a name="ln1554">    s += &quot;&lt;/w&gt;&quot;;</a>
+<a name="ln1555">    if (how_many &gt; 1)</a>
+<a name="ln1556">    {</a>
+<a name="ln1557">        s += &quot;-&lt;w&gt;&quot;;</a>
+<a name="ln1558">        s += first + how_many - 1;</a>
+<a name="ln1559">        s += &quot;&lt;/w&gt;&quot;;</a>
+<a name="ln1560">    }</a>
+<a name="ln1561">    return s;</a>
+<a name="ln1562">}</a>
+<a name="ln1563"> </a>
+<a name="ln1564">void AcquireMenu::update_help()</a>
+<a name="ln1565">{</a>
+<a name="ln1566">    string top_line = string(80, ' ') + '\n';</a>
+<a name="ln1567"> </a>
+<a name="ln1568">    set_more(formatted_string::parse_string(top_line + make_stringf(</a>
+<a name="ln1569">        //[!] acquire|examine item  [a-i] select item to acquire</a>
+<a name="ln1570">        //[$] show shopping list    [\] show identification knowledge</a>
+<a name="ln1571">        &quot;%s  [%s] %s\n&quot;</a>
+<a name="ln1572">        &quot;[$] show shopping list&quot; &quot;     &quot; &quot;[\\] show identification knowledge&quot;,</a>
+<a name="ln1573">        menu_action == ACT_EXECUTE ? &quot;[&lt;w&gt;!&lt;/w&gt;] &lt;w&gt;acquire&lt;/w&gt;|examine items&quot; :</a>
+<a name="ln1574">                                     &quot;[&lt;w&gt;!&lt;/w&gt;] acquire|&lt;w&gt;examine&lt;/w&gt; items&quot;,</a>
+<a name="ln1575">        _hyphenated_letters(item_count(), 'a').c_str(),</a>
+<a name="ln1576">        menu_action == ACT_EXECUTE ? &quot;select item for acquirement&quot;</a>
+<a name="ln1577">                                   : &quot;examine item&quot;)));</a>
+<a name="ln1578">}</a>
+<a name="ln1579"> </a>
+<a name="ln1580">static void _create_acquirement_item(item_def &amp;item)</a>
+<a name="ln1581">{</a>
+<a name="ln1582">    if (is_unrandom_artefact(item))</a>
+<a name="ln1583">        set_unique_item_status(item, UNIQ_EXISTS);</a>
+<a name="ln1584"> </a>
+<a name="ln1585">    if (copy_item_to_grid(item, you.pos()))</a>
+<a name="ln1586">        canned_msg(MSG_SOMETHING_APPEARS);</a>
+<a name="ln1587">    else</a>
+<a name="ln1588">        canned_msg(MSG_NOTHING_HAPPENS);</a>
+<a name="ln1589">}</a>
+<a name="ln1590"> </a>
+<a name="ln1591">bool AcquireMenu::acquire_selected()</a>
+<a name="ln1592">{</a>
+<a name="ln1593">    vector&lt;MenuEntry*&gt; selected = selected_entries();</a>
+<a name="ln1594">    ASSERT(selected.size() == 1);</a>
+<a name="ln1595">    auto&amp; entry = *selected[0];</a>
+<a name="ln1596"> </a>
+<a name="ln1597">    const string col = colour_to_str(channel_to_colour(MSGCH_PROMPT));</a>
+<a name="ln1598">    update_help();</a>
+<a name="ln1599">    const formatted_string old_more = more;</a>
+<a name="ln1600">    more = formatted_string::parse_string(make_stringf(</a>
+<a name="ln1601">               &quot;&lt;%s&gt;Acquire %s? (%s/N)&lt;/%s&gt;\n&quot;,</a>
+<a name="ln1602">               col.c_str(),</a>
+<a name="ln1603">               entry.text.c_str(),</a>
+<a name="ln1604">               Options.easy_confirm == easy_confirm_type::none ? &quot;Y&quot; : &quot;y&quot;,</a>
+<a name="ln1605">               col.c_str()));</a>
+<a name="ln1606">    more += old_more;</a>
+<a name="ln1607">    update_more();</a>
+<a name="ln1608"> </a>
+<a name="ln1609">    if (!yesno(nullptr, true, 'n', false, false, true))</a>
+<a name="ln1610">    {</a>
+<a name="ln1611">        deselect_all();</a>
+<a name="ln1612">        more = old_more;</a>
+<a name="ln1613">        update_more();</a>
+<a name="ln1614">        return true;</a>
+<a name="ln1615">    }</a>
+<a name="ln1616"> </a>
+<a name="ln1617">    item_def &amp;acq_item = *static_cast&lt;item_def*&gt;(entry.data);</a>
+<a name="ln1618">    _create_acquirement_item(acq_item);</a>
+<a name="ln1619"> </a>
+<a name="ln1620">    acq_items.clear();</a>
+<a name="ln1621">    return false;</a>
+<a name="ln1622">}</a>
+<a name="ln1623"> </a>
+<a name="ln1624">bool AcquireMenu::process_key(int keyin)</a>
+<a name="ln1625">{</a>
+<a name="ln1626">    switch (keyin)</a>
+<a name="ln1627">    {</a>
+<a name="ln1628">    case '!':</a>
+<a name="ln1629">    case '?':</a>
+<a name="ln1630">        if (menu_action == ACT_EXECUTE)</a>
+<a name="ln1631">            menu_action = ACT_EXAMINE;</a>
+<a name="ln1632">        else</a>
+<a name="ln1633">            menu_action = ACT_EXECUTE;</a>
+<a name="ln1634">        update_help();</a>
+<a name="ln1635">        update_more();</a>
+<a name="ln1636">        return true;</a>
+<a name="ln1637">    case '$':</a>
+<a name="ln1638">        shopping_list.display(true);</a>
+<a name="ln1639">        return true;</a>
+<a name="ln1640">    case '\\':</a>
+<a name="ln1641">        check_item_knowledge();</a>
+<a name="ln1642">        return true;</a>
+<a name="ln1643">    default:</a>
+<a name="ln1644">        break;</a>
+<a name="ln1645">    }</a>
+<a name="ln1646"> </a>
+<a name="ln1647">    if (keyin - 'a' &gt;= 0 &amp;&amp; keyin - 'a' &lt; (int)items.size())</a>
+<a name="ln1648">    {</a>
+<a name="ln1649">        if (menu_action == ACT_EXAMINE)</a>
+<a name="ln1650">        {</a>
+<a name="ln1651">            item_def&amp; item(*const_cast&lt;item_def*&gt;(dynamic_cast&lt;AcquireEntry*&gt;(</a>
+<a name="ln1652">                items[letter_to_index(keyin)])-&gt;item));</a>
+<a name="ln1653">            // A hack to make the description more useful.</a>
+<a name="ln1654">            // In theory, the user could kill the process at this</a>
+<a name="ln1655">            // point and end up with valid ID for the item.</a>
+<a name="ln1656">            // That's not very useful, though, because it doesn't set</a>
+<a name="ln1657">            // type-ID and once you can access the item (by buying it)</a>
+<a name="ln1658">            // you have its full ID anyway. Worst case, it won't get</a>
+<a name="ln1659">            // noted when you buy it.</a>
+<a name="ln1660">            {</a>
+<a name="ln1661">                unwind_var&lt;iflags_t&gt; old_flags(item.flags);</a>
+<a name="ln1662">                item.flags |= (ISFLAG_IDENT_MASK | ISFLAG_NOTED_ID</a>
+<a name="ln1663">                               | ISFLAG_NOTED_GET);</a>
+<a name="ln1664">                describe_item(item);</a>
+<a name="ln1665">            }</a>
+<a name="ln1666">            return true;</a>
+<a name="ln1667">        }</a>
+<a name="ln1668">        else</a>
+<a name="ln1669">        {</a>
+<a name="ln1670">            const unsigned int i = keyin - 'a';</a>
+<a name="ln1671">            select_item_index(i, 1, false);</a>
+<a name="ln1672">            return acquire_selected();</a>
+<a name="ln1673">        }</a>
+<a name="ln1674">    }</a>
+<a name="ln1675"> </a>
+<a name="ln1676">    return true;</a>
+<a name="ln1677">}</a>
+<a name="ln1678"> </a>
+<a name="ln1679">static item_def _acquirement_item_def(object_class_type item_type)</a>
+<a name="ln1680">{</a>
+<a name="ln1681">    item_def item;</a>
+<a name="ln1682"> </a>
+<a name="ln1683">    const int item_index = acquirement_create_item(item_type, AQ_SCROLL, true);</a>
+<a name="ln1684"> </a>
+<a name="ln1685">    if (item_index != NON_ITEM)</a>
+<a name="ln1686">    {</a>
+<a name="ln1687">        ASSERT(!god_hates_item(mitm[item_index]));</a>
+<a name="ln1688"> </a>
+<a name="ln1689">        // We make a copy of the item def, but we don't keep the real item.</a>
+<a name="ln1690">        item = mitm[item_index];</a>
+<a name="ln1691">        set_ident_flags(item, ISFLAG_IDENT_MASK);</a>
+<a name="ln1692">        destroy_item(item_index, true);</a>
+<a name="ln1693">    }</a>
+<a name="ln1694"> </a>
+<a name="ln1695">    return item;</a>
+<a name="ln1696">}</a>
+<a name="ln1697"> </a>
+<a name="ln1698">static void _make_acquirement_items()</a>
+<a name="ln1699">{</a>
+<a name="ln1700">    vector&lt;object_class_type&gt; rand_classes;</a>
+<a name="ln1701"> </a>
+<a name="ln1702">    if (you.species != SP_FELID)</a>
+<a name="ln1703">    {</a>
+<a name="ln1704">        rand_classes.emplace_back(OBJ_WEAPONS);</a>
+<a name="ln1705">        rand_classes.emplace_back(OBJ_ARMOUR);</a>
+<a name="ln1706">        rand_classes.emplace_back(OBJ_STAVES);</a>
+<a name="ln1707">    }</a>
+<a name="ln1708"> </a>
+<a name="ln1709">    rand_classes.emplace_back(OBJ_JEWELLERY);</a>
+<a name="ln1710">    rand_classes.emplace_back(OBJ_BOOKS);</a>
+<a name="ln1711"> </a>
+<a name="ln1712">    const int num_wanted = min(3, (int) rand_classes.size());</a>
+<a name="ln1713">    shuffle_array(rand_classes);</a>
+<a name="ln1714"> </a>
+<a name="ln1715">    CrawlVector &amp;acq_items = you.props[ACQUIRE_ITEMS_KEY].get_vector();</a>
+<a name="ln1716">    acq_items.empty();</a>
+<a name="ln1717"> </a>
+<a name="ln1718">    // Generate item defs until we have enough, skipping any random classes</a>
+<a name="ln1719">    // that fail to generate an item.</a>
+<a name="ln1720">    for (auto obj_type : rand_classes)</a>
+<a name="ln1721">    {</a>
+<a name="ln1722">        if (acq_items.size() == num_wanted)</a>
+<a name="ln1723">            break;</a>
+<a name="ln1724"> </a>
+<a name="ln1725">        auto item = _acquirement_item_def(obj_type);</a>
+<a name="ln1726">        if (item.defined())</a>
+<a name="ln1727">            acq_items.push_back(item);</a>
+<a name="ln1728">    }</a>
+<a name="ln1729"> </a>
+<a name="ln1730">    // Gold and food (for characters that eat) are guaranteed.</a>
+<a name="ln1731">    auto gold_item = _acquirement_item_def(OBJ_GOLD);</a>
+<a name="ln1732">    if (gold_item.defined())</a>
+<a name="ln1733">            acq_items.push_back(gold_item);</a>
+<a name="ln1734"> </a>
+<a name="ln1735">    if (!you_foodless(false))</a>
+<a name="ln1736">    {</a>
+<a name="ln1737">        auto food_item = _acquirement_item_def(OBJ_FOOD);</a>
+<a name="ln1738">        if (food_item.defined())</a>
+<a name="ln1739">            acq_items.push_back(food_item);</a>
+<a name="ln1740">    }</a>
+<a name="ln1741">}</a>
+<a name="ln1742"> </a>
+<a name="ln1743">bool acquirement_menu()</a>
+<a name="ln1744">{</a>
+<a name="ln1745">    ASSERT(!crawl_state.game_is_arena());</a>
+<a name="ln1746"> </a>
+<a name="ln1747">    if (!you.props.exists(ACQUIRE_ITEMS_KEY))</a>
+<a name="ln1748">        _make_acquirement_items();</a>
+<a name="ln1749"> </a>
+<a name="ln1750">    auto &amp;acq_items = you.props[ACQUIRE_ITEMS_KEY].get_vector();</a>
+<a name="ln1751"> </a>
+<a name="ln1752">#ifdef CLUA_BINDINGS</a>
+<a name="ln1753">    int index = 0;</a>
+<a name="ln1754">    if (!clua.callfn(&quot;c_choose_acquirement&quot;, &quot;&gt;d&quot;, &amp;index))</a>
+<a name="ln1755">    {</a>
+<a name="ln1756">        if (!clua.error.empty())</a>
+<a name="ln1757">            mprf(MSGCH_ERROR, &quot;Lua error: %s&quot;, clua.error.c_str());</a>
+<a name="ln1758">    }</a>
+<a name="ln1759">    else if (index &gt;= 1 &amp;&amp; index &lt;= acq_items.size())</a>
+<a name="ln1760">    {</a>
+<a name="ln1761">        _create_acquirement_item(acq_items[index - 1]);</a>
+<a name="ln1762"> </a>
+<a name="ln1763">        acq_items.clear();</a>
+<a name="ln1764">        you.props.erase(ACQUIRE_ITEMS_KEY);</a>
+<a name="ln1765">        return true;</a>
+<a name="ln1766">    }</a>
+<a name="ln1767">#endif</a>
+<a name="ln1768"> </a>
+<a name="ln1769">    AcquireMenu acq_menu(acq_items);</a>
+<a name="ln1770">    acq_menu.show();</a>
+<a name="ln1771"> </a>
+<a name="ln1772">    if (acq_items.empty())</a>
+<a name="ln1773">    {</a>
+<a name="ln1774">        you.props.erase(ACQUIRE_ITEMS_KEY);</a>
+<a name="ln1775">        return true;</a>
+<a name="ln1776">    }</a>
+<a name="ln1777">    else</a>
+<a name="ln1778">        return false;</a>
+<a name="ln1779">}</a>
+
+</code></pre>
+<div class="balloon" rel="676"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1004/" target="_blank">V1004</a> The 'choice' pointer was used unsafely after it was verified against nullptr. Check lines: 673, 676.</p></div>
+<div class="balloon" rel="1295"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1439"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'thing_created != 27000' is always true.</p></div>
+<div class="balloon" rel="1454"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: thing_created != 27000.</p></div>
+<div class="balloon" rel="1651"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

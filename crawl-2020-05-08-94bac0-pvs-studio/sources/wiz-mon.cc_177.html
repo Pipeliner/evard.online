@@ -1,0 +1,1226 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>wiz-mon.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Monster related debugging functions.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;wiz-mon.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;sstream&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;abyss.h&quot;</a>
+<a name="ln13">#include &quot;act-iter.h&quot;</a>
+<a name="ln14">#include &quot;areas.h&quot;</a>
+<a name="ln15">#include &quot;cloud.h&quot;</a>
+<a name="ln16">#include &quot;colour.h&quot;</a>
+<a name="ln17">#include &quot;dbg-util.h&quot;</a>
+<a name="ln18">#include &quot;delay.h&quot;</a>
+<a name="ln19">#include &quot;directn.h&quot;</a>
+<a name="ln20">#include &quot;dungeon.h&quot;</a>
+<a name="ln21">#include &quot;english.h&quot;</a>
+<a name="ln22">#include &quot;files.h&quot;</a>
+<a name="ln23">#include &quot;ghost.h&quot;</a>
+<a name="ln24">#include &quot;god-blessing.h&quot;</a>
+<a name="ln25">#include &quot;invent.h&quot;</a>
+<a name="ln26">#include &quot;item-prop.h&quot;</a>
+<a name="ln27">#include &quot;items.h&quot;</a>
+<a name="ln28">#include &quot;jobs.h&quot;</a>
+<a name="ln29">#include &quot;libutil.h&quot;</a>
+<a name="ln30">#include &quot;macro.h&quot;</a>
+<a name="ln31">#include &quot;message.h&quot;</a>
+<a name="ln32">#include &quot;mon-death.h&quot;</a>
+<a name="ln33">#include &quot;mon-pathfind.h&quot;</a>
+<a name="ln34">#include &quot;mon-place.h&quot;</a>
+<a name="ln35">#include &quot;mon-poly.h&quot;</a>
+<a name="ln36">#include &quot;mon-speak.h&quot;</a>
+<a name="ln37">#include &quot;output.h&quot;</a>
+<a name="ln38">#include &quot;prompt.h&quot;</a>
+<a name="ln39">#include &quot;religion.h&quot;</a>
+<a name="ln40">#include &quot;shout.h&quot;</a>
+<a name="ln41">#include &quot;spl-miscast.h&quot;</a>
+<a name="ln42">#include &quot;state.h&quot;</a>
+<a name="ln43">#include &quot;stringutil.h&quot;</a>
+<a name="ln44">#include &quot;terrain.h&quot;</a>
+<a name="ln45">#include &quot;view.h&quot;</a>
+<a name="ln46">#include &quot;viewmap.h&quot;</a>
+<a name="ln47"> </a>
+<a name="ln48">#ifdef WIZARD</a>
+<a name="ln49"> </a>
+<a name="ln50">// Creates a specific monster by name. Uses the same patterns as</a>
+<a name="ln51">// map definitions.</a>
+<a name="ln52">void wizard_create_spec_monster_name()</a>
+<a name="ln53">{</a>
+<a name="ln54">    char specs[1024];</a>
+<a name="ln55">    mprf(MSGCH_PROMPT, &quot;Enter monster name (or MONS spec): &quot;);</a>
+<a name="ln56">    if (cancellable_get_line_autohist(specs, sizeof specs) || !*specs)</a>
+<a name="ln57">    {</a>
+<a name="ln58">        canned_msg(MSG_OK);</a>
+<a name="ln59">        return;</a>
+<a name="ln60">    }</a>
+<a name="ln61"> </a>
+<a name="ln62">    mons_list mlist;</a>
+<a name="ln63">    string err = mlist.add_mons(specs);</a>
+<a name="ln64"> </a>
+<a name="ln65">    if (!err.empty())</a>
+<a name="ln66">    {</a>
+<a name="ln67">        string newerr = &quot;yes&quot;;</a>
+<a name="ln68">        // Try for a partial match, but not if the user accidentally entered</a>
+<a name="ln69">        // only a few letters.</a>
+<a name="ln70">        monster_type partial = get_monster_by_name(specs, true);</a>
+<a name="ln71">        if (strlen(specs) &gt;= 3 &amp;&amp; partial != MONS_PROGRAM_BUG)</a>
+<a name="ln72">        {</a>
+<a name="ln73">            mlist.clear();</a>
+<a name="ln74">            newerr = mlist.add_mons(mons_type_name(partial, DESC_PLAIN));</a>
+<a name="ln75">        }</a>
+<a name="ln76"> </a>
+<a name="ln77">        if (!newerr.empty())</a>
+<a name="ln78">        {</a>
+<a name="ln79">            mpr(err);</a>
+<a name="ln80">            return;</a>
+<a name="ln81">        }</a>
+<a name="ln82">    }</a>
+<a name="ln83"> </a>
+<a name="ln84">    mons_spec mspec = mlist.get_monster(0);</a>
+<a name="ln85">    if (mspec.type == MONS_NO_MONSTER)</a>
+<a name="ln86">    {</a>
+<a name="ln87">        mprf(MSGCH_DIAGNOSTICS, &quot;Such a monster couldn't be found.&quot;);</a>
+<a name="ln88">        return;</a>
+<a name="ln89">    }</a>
+<a name="ln90"> </a>
+<a name="ln91">    monster_type type =</a>
+<a name="ln92">        fixup_zombie_type(static_cast&lt;monster_type&gt;(mspec.type),</a>
+<a name="ln93">                          mspec.monbase);</a>
+<a name="ln94"> </a>
+<a name="ln95">    coord_def place = find_newmons_square(type, you.pos());</a>
+<a name="ln96">    if (!in_bounds(place))</a>
+<a name="ln97">    {</a>
+<a name="ln98">        // Try again with habitat HT_LAND.</a>
+<a name="ln99">        // (Will be changed to the necessary terrain type in dgn_place_monster.)</a>
+<a name="ln100">        place = find_newmons_square(MONS_NO_MONSTER, you.pos());</a>
+<a name="ln101">    }</a>
+<a name="ln102"> </a>
+<a name="ln103">    if (!in_bounds(place))</a>
+<a name="ln104">    {</a>
+<a name="ln105">        mprf(MSGCH_DIAGNOSTICS, &quot;Found no space to place monster.&quot;);</a>
+<a name="ln106">        return;</a>
+<a name="ln107">    }</a>
+<a name="ln108"> </a>
+<a name="ln109">    // Wizmode users should be able to conjure up uniques even if they</a>
+<a name="ln110">    // were already created. Yay, you can meet 3 Sigmunds at once! :p</a>
+<a name="ln111">    if (mons_is_unique(type) &amp;&amp; you.unique_creatures[type])</a>
+<a name="ln112">        you.unique_creatures.set(type, false);</a>
+<a name="ln113"> </a>
+<a name="ln114">    if (!dgn_place_monster(mspec, place, true, false))</a>
+<a name="ln115">    {</a>
+<a name="ln116">        mprf(MSGCH_DIAGNOSTICS, &quot;Unable to place monster.&quot;);</a>
+<a name="ln117">        return;</a>
+<a name="ln118">    }</a>
+<a name="ln119"> </a>
+<a name="ln120">    // FIXME: This is a bit useless, seeing how you cannot set the</a>
+<a name="ln121">    // ghost's stats, brand or level, among other things.</a>
+<a name="ln122">    if (mspec.type == MONS_PLAYER_GHOST)</a>
+<a name="ln123">    {</a>
+<a name="ln124">        unsigned short idx = mgrd(place);</a>
+<a name="ln125"> </a>
+<a name="ln126">        if (idx &gt;= MAX_MONSTERS || menv[idx].type != MONS_PLAYER_GHOST)</a>
+<a name="ln127">        {</a>
+<a name="ln128">            for (idx = 0; idx &lt; MAX_MONSTERS; idx++)</a>
+<a name="ln129">            {</a>
+<a name="ln130">                if (menv[idx].type == MONS_PLAYER_GHOST</a>
+<a name="ln131">                    &amp;&amp; menv[idx].alive())</a>
+<a name="ln132">                {</a>
+<a name="ln133">                    break;</a>
+<a name="ln134">                }</a>
+<a name="ln135">            }</a>
+<a name="ln136">        }</a>
+<a name="ln137"> </a>
+<a name="ln138">        if (idx &gt;= MAX_MONSTERS)</a>
+<a name="ln139">        {</a>
+<a name="ln140">            mpr(&quot;Couldn't find player ghost, probably going to crash.&quot;);</a>
+<a name="ln141">            more();</a>
+<a name="ln142">            return;</a>
+<a name="ln143">        }</a>
+<a name="ln144"> </a>
+<a name="ln145">        monster    &amp;mon = menv[idx];</a>
+<a name="ln146">        ghost_demon ghost;</a>
+<a name="ln147"> </a>
+<a name="ln148">        ghost.name = &quot;John Doe&quot;;</a>
+<a name="ln149"> </a>
+<a name="ln150">        char input_str[80];</a>
+<a name="ln151">        msgwin_get_line(&quot;Make player ghost which species? (case-sensitive) &quot;,</a>
+<a name="ln152">                        input_str, sizeof(input_str));</a>
+<a name="ln153"> </a>
+<a name="ln154">        species_type sp_id = get_species_by_abbrev(input_str);</a>
+<a name="ln155">        if (sp_id == SP_UNKNOWN)</a>
+<a name="ln156">            sp_id = str_to_species(input_str);</a>
+<a name="ln157">        if (sp_id == SP_UNKNOWN)</a>
+<a name="ln158">        {</a>
+<a name="ln159">            mpr(&quot;No such species, making it Human.&quot;);</a>
+<a name="ln160">            sp_id = SP_HUMAN;</a>
+<a name="ln161">        }</a>
+<a name="ln162">        ghost.species = static_cast&lt;species_type&gt;(sp_id);</a>
+<a name="ln163"> </a>
+<a name="ln164">        msgwin_get_line(&quot;Give player ghost which background? &quot;,</a>
+<a name="ln165">                        input_str, sizeof(input_str));</a>
+<a name="ln166"> </a>
+<a name="ln167">        int job_id = get_job_by_abbrev(input_str);</a>
+<a name="ln168"> </a>
+<a name="ln169">        if (job_id == JOB_UNKNOWN)</a>
+<a name="ln170">            job_id = get_job_by_name(input_str);</a>
+<a name="ln171"> </a>
+<a name="ln172">        if (job_id == JOB_UNKNOWN)</a>
+<a name="ln173">        {</a>
+<a name="ln174">            mpr(&quot;No such background, making it a Fighter.&quot;);</a>
+<a name="ln175">            job_id = JOB_FIGHTER;</a>
+<a name="ln176">        }</a>
+<a name="ln177">        ghost.job = static_cast&lt;job_type&gt;(job_id);</a>
+<a name="ln178">        ghost.xl = 7;</a>
+<a name="ln179">        ghost.max_hp = 20;</a>
+<a name="ln180">        ASSERT(debug_check_ghost(ghost));</a>
+<a name="ln181"> </a>
+<a name="ln182">        mon.set_ghost(ghost);</a>
+<a name="ln183">    }</a>
+<a name="ln184">}</a>
+<a name="ln185"> </a>
+<a name="ln186">static bool _sort_monster_list(int a, int b)</a>
+<a name="ln187">{</a>
+<a name="ln188">    const monster* m1 = &amp;menv[a];</a>
+<a name="ln189">    const monster* m2 = &amp;menv[b];</a>
+<a name="ln190"> </a>
+<a name="ln191">    if (m1-&gt;alive() != m2-&gt;alive())</a>
+<a name="ln192">        return m1-&gt;alive();</a>
+<a name="ln193">    else if (!m1-&gt;alive())</a>
+<a name="ln194">        return a &lt; b;</a>
+<a name="ln195"> </a>
+<a name="ln196">    if (m1-&gt;type == m2-&gt;type)</a>
+<a name="ln197">    {</a>
+<a name="ln198">        if (!m1-&gt;alive() || !m2-&gt;alive())</a>
+<a name="ln199">            return false;</a>
+<a name="ln200"> </a>
+<a name="ln201">        return m1-&gt;name(DESC_PLAIN, true) &lt; m2-&gt;name(DESC_PLAIN, true);</a>
+<a name="ln202">    }</a>
+<a name="ln203"> </a>
+<a name="ln204">    const unsigned glyph1 = mons_char(m1-&gt;type);</a>
+<a name="ln205">    const unsigned glyph2 = mons_char(m2-&gt;type);</a>
+<a name="ln206">    if (glyph1 != glyph2)</a>
+<a name="ln207">        return glyph1 &lt; glyph2;</a>
+<a name="ln208"> </a>
+<a name="ln209">    return m1-&gt;type &lt; m2-&gt;type;</a>
+<a name="ln210">}</a>
+<a name="ln211"> </a>
+<a name="ln212">void debug_list_monsters()</a>
+<a name="ln213">{</a>
+<a name="ln214">    vector&lt;string&gt; mons;</a>
+<a name="ln215">    int nfound = 0;</a>
+<a name="ln216"> </a>
+<a name="ln217">    int mon_nums[MAX_MONSTERS];</a>
+<a name="ln218"> </a>
+<a name="ln219">    for (int i = 0; i &lt; MAX_MONSTERS; ++i)</a>
+<a name="ln220">        mon_nums[i] = i;</a>
+<a name="ln221"> </a>
+<a name="ln222">    sort(mon_nums, mon_nums + MAX_MONSTERS, _sort_monster_list);</a>
+<a name="ln223"> </a>
+<a name="ln224">    int total_exp = 0, total_adj_exp = 0, total_nonuniq_exp = 0;</a>
+<a name="ln225"> </a>
+<a name="ln226">    string prev_name = &quot;&quot;;</a>
+<a name="ln227">    int    count     = 0;</a>
+<a name="ln228"> </a>
+<a name="ln229">    for (int i = 0; i &lt; MAX_MONSTERS; ++i)</a>
+<a name="ln230">    {</a>
+<a name="ln231">        const int idx = mon_nums[i];</a>
+<a name="ln232">        if (invalid_monster_index(idx))</a>
+<a name="ln233">            continue;</a>
+<a name="ln234"> </a>
+<a name="ln235">        const monster* mi(&amp;menv[idx]);</a>
+<a name="ln236">        if (!mi-&gt;alive())</a>
+<a name="ln237">            continue;</a>
+<a name="ln238"> </a>
+<a name="ln239">        string name = mi-&gt;name(DESC_PLAIN, true);</a>
+<a name="ln240"> </a>
+<a name="ln241">        if (prev_name != name &amp;&amp; count &gt; 0)</a>
+<a name="ln242">        {</a>
+<a name="ln243">            char buf[80];</a>
+<a name="ln244">            if (count &gt; 1)</a>
+<a name="ln245">            {</a>
+<a name="ln246">                snprintf(buf, sizeof(buf), &quot;%d %s&quot;, count,</a>
+<a name="ln247">                         pluralise_monster(prev_name).c_str());</a>
+<a name="ln248">            }</a>
+<a name="ln249">            else</a>
+<a name="ln250">                snprintf(buf, sizeof(buf), &quot;%s&quot;, prev_name.c_str());</a>
+<a name="ln251">            mons.push_back(buf);</a>
+<a name="ln252"> </a>
+<a name="ln253">            count = 0;</a>
+<a name="ln254">        }</a>
+<a name="ln255">        nfound++;</a>
+<a name="ln256">        count++;</a>
+<a name="ln257">        prev_name = name;</a>
+<a name="ln258"> </a>
+<a name="ln259">        int exp = exper_value(*mi);</a>
+<a name="ln260">        total_exp += exp;</a>
+<a name="ln261">        if (!mons_is_unique(mi-&gt;type))</a>
+<a name="ln262">            total_nonuniq_exp += exp;</a>
+<a name="ln263"> </a>
+<a name="ln264">        if ((mi-&gt;flags &amp; (MF_WAS_NEUTRAL | MF_NO_REWARD))</a>
+<a name="ln265">            || mi-&gt;has_ench(ENCH_ABJ))</a>
+<a name="ln266">        {</a>
+<a name="ln267">            continue;</a>
+<a name="ln268">        }</a>
+<a name="ln269">        if (mi-&gt;flags &amp; MF_PACIFIED)</a>
+<a name="ln270">            exp /= 2;</a>
+<a name="ln271"> </a>
+<a name="ln272">        total_adj_exp += exp;</a>
+<a name="ln273">    }</a>
+<a name="ln274"> </a>
+<a name="ln275">    char buf[80];</a>
+<a name="ln276">    if (count &gt; 1)</a>
+<a name="ln277">    {</a>
+<a name="ln278">        snprintf(buf, sizeof(buf), &quot;%d %s&quot;, count,</a>
+<a name="ln279">                 pluralise_monster(prev_name).c_str());</a>
+<a name="ln280">    }</a>
+<a name="ln281">    else</a>
+<a name="ln282">        snprintf(buf, sizeof(buf), &quot;%s&quot;, prev_name.c_str());</a>
+<a name="ln283">    mons.emplace_back(buf);</a>
+<a name="ln284"> </a>
+<a name="ln285">    mpr_comma_separated_list(&quot;Monsters: &quot;, mons);</a>
+<a name="ln286"> </a>
+<a name="ln287">    if (total_adj_exp == total_exp)</a>
+<a name="ln288">    {</a>
+<a name="ln289">        mprf(&quot;%d monsters, %d total exp value (%d non-uniq)&quot;,</a>
+<a name="ln290">             nfound, total_exp, total_nonuniq_exp);</a>
+<a name="ln291">    }</a>
+<a name="ln292">    else</a>
+<a name="ln293">    {</a>
+<a name="ln294">        mprf(&quot;%d monsters, %d total exp value (%d non-uniq, %d adjusted)&quot;,</a>
+<a name="ln295">             nfound, total_exp, total_nonuniq_exp, total_adj_exp);</a>
+<a name="ln296">    }</a>
+<a name="ln297">}</a>
+<a name="ln298"> </a>
+<a name="ln299">void wizard_spawn_control()</a>
+<a name="ln300">{</a>
+<a name="ln301">    mprf(MSGCH_PROMPT, &quot;(c)hange spawn rate or (s)pawn monsters? &quot;);</a>
+<a name="ln302">    const int c = toalower(getchm());</a>
+<a name="ln303"> </a>
+<a name="ln304">    char specs[256];</a>
+<a name="ln305">    bool done = false;</a>
+<a name="ln306"> </a>
+<a name="ln307">    if (c == 'c')</a>
+<a name="ln308">    {</a>
+<a name="ln309">        mprf(MSGCH_PROMPT, &quot;Set monster spawn rate to what? (now %d, lower value = higher rate) &quot;,</a>
+<a name="ln310">             env.spawn_random_rate);</a>
+<a name="ln311"> </a>
+<a name="ln312">        if (!cancellable_get_line(specs, sizeof(specs)))</a>
+<a name="ln313">        {</a>
+<a name="ln314">            const int rate = atoi(specs);</a>
+<a name="ln315">            if (rate || specs[0] == '0')</a>
+<a name="ln316">            {</a>
+<a name="ln317">                mprf(&quot;Setting monster spawn rate to %i.&quot;, rate);</a>
+<a name="ln318">                env.spawn_random_rate = rate;</a>
+<a name="ln319">                done = true;</a>
+<a name="ln320">            }</a>
+<a name="ln321">        }</a>
+<a name="ln322">    }</a>
+<a name="ln323">    else if (c == 's')</a>
+<a name="ln324">    {</a>
+<a name="ln325">        // 50 spots are reserved for non-wandering monsters.</a>
+<a name="ln326">        int max_spawn = MAX_MONSTERS - 50;</a>
+<a name="ln327">        for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln328">            if (mi-&gt;alive())</a>
+<a name="ln329">                max_spawn--;</a>
+<a name="ln330"> </a>
+<a name="ln331">        if (max_spawn &lt;= 0)</a>
+<a name="ln332">        {</a>
+<a name="ln333">            mprf(MSGCH_PROMPT, &quot;Level already filled with monsters, &quot;</a>
+<a name="ln334">                               &quot;get rid of some of them first.&quot;);</a>
+<a name="ln335">            return;</a>
+<a name="ln336">        }</a>
+<a name="ln337"> </a>
+<a name="ln338">        mprf(MSGCH_PROMPT, &quot;Spawn how many random monsters (max %d)? &quot;,</a>
+<a name="ln339">             max_spawn);</a>
+<a name="ln340"> </a>
+<a name="ln341">        if (!cancellable_get_line(specs, sizeof(specs)))</a>
+<a name="ln342">        {</a>
+<a name="ln343">            const int num = min(atoi(specs), max_spawn);</a>
+<a name="ln344">            if (num &gt; 0)</a>
+<a name="ln345">            {</a>
+<a name="ln346">                mprf(&quot;Spawning %i monster%s.&quot;, num, num == 1 ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln347">                int curr_rate = env.spawn_random_rate;</a>
+<a name="ln348">                // Each call to spawn_random_monsters() will spawn one with</a>
+<a name="ln349">                // the rate at 5 or less.</a>
+<a name="ln350">                env.spawn_random_rate = 5;</a>
+<a name="ln351"> </a>
+<a name="ln352">                for (int i = 0; i &lt; num; ++i)</a>
+<a name="ln353">                    spawn_random_monsters();</a>
+<a name="ln354"> </a>
+<a name="ln355">                env.spawn_random_rate = curr_rate;</a>
+<a name="ln356">                done = true;</a>
+<a name="ln357">            }</a>
+<a name="ln358">        }</a>
+<a name="ln359">    }</a>
+<a name="ln360"> </a>
+<a name="ln361">    if (!done)</a>
+<a name="ln362">        canned_msg(MSG_OK);</a>
+<a name="ln363">}</a>
+<a name="ln364"> </a>
+<a name="ln365">static const char* ht_names[] =</a>
+<a name="ln366">{</a>
+<a name="ln367">    &quot;land&quot;,</a>
+<a name="ln368">    &quot;amphibious&quot;,</a>
+<a name="ln369">    &quot;water&quot;,</a>
+<a name="ln370">    &quot;lava&quot;,</a>
+<a name="ln371">    &quot;amphibious_lava&quot;,</a>
+<a name="ln372">};</a>
+<a name="ln373"> </a>
+<a name="ln374">// Prints a number of useful (for debugging, that is) stats on monsters.</a>
+<a name="ln375">void debug_stethoscope(int mon)</a>
+<a name="ln376">{</a>
+<a name="ln377">    dist stth;</a>
+<a name="ln378">    coord_def stethpos;</a>
+<a name="ln379"> </a>
+<a name="ln380">    int i;</a>
+<a name="ln381"> </a>
+<a name="ln382">    if (mon != RANDOM_MONSTER)</a>
+<a name="ln383">        i = mon;</a>
+<a name="ln384">    else</a>
+<a name="ln385">    {</a>
+<a name="ln386">        mprf(MSGCH_PROMPT, &quot;Which monster?&quot;);</a>
+<a name="ln387"> </a>
+<a name="ln388">        direction(stth, direction_chooser_args());</a>
+<a name="ln389"> </a>
+<a name="ln390">        if (!stth.isValid)</a>
+<a name="ln391">            return;</a>
+<a name="ln392"> </a>
+<a name="ln393">        if (stth.isTarget)</a>
+<a name="ln394">            stethpos = stth.target;</a>
+<a name="ln395">        else</a>
+<a name="ln396">            stethpos = you.pos() + stth.delta;</a>
+<a name="ln397"> </a>
+<a name="ln398">        if (cloud_struct* cloud = cloud_at(stethpos))</a>
+<a name="ln399">        {</a>
+<a name="ln400">            mprf(MSGCH_DIAGNOSTICS, &quot;cloud type: %d delay: %d&quot;,</a>
+<a name="ln401">                 cloud-&gt;type, cloud-&gt;decay);</a>
+<a name="ln402">        }</a>
+<a name="ln403"> </a>
+<a name="ln404">        if (!monster_at(stethpos))</a>
+<a name="ln405">        {</a>
+<a name="ln406">            mprf(MSGCH_DIAGNOSTICS, &quot;item grid = %d&quot;, igrd(stethpos));</a>
+<a name="ln407">            return;</a>
+<a name="ln408">        }</a>
+<a name="ln409"> </a>
+<a name="ln410">        i = mgrd(stethpos);</a>
+<a name="ln411">    }</a>
+<a name="ln412"> </a>
+<a name="ln413">    monster&amp; mons(menv[i]);</a>
+<a name="ln414"> </a>
+<a name="ln415">    // Print type of monster.</a>
+<a name="ln416">    mprf(MSGCH_DIAGNOSTICS, &quot;%s (id #%d; type=%d loc=(%d,%d) align=%s)&quot;,</a>
+<a name="ln417">         mons.name(DESC_THE, true).c_str(),</a>
+<a name="ln418">         i, mons.type, mons.pos().x, mons.pos().y,</a>
+<a name="ln419">         ((mons.attitude == ATT_HOSTILE)        ? &quot;hostile&quot; :</a>
+<a name="ln420">          (mons.attitude == ATT_FRIENDLY)       ? &quot;friendly&quot; :</a>
+<a name="ln421">          (mons.attitude == ATT_NEUTRAL)        ? &quot;neutral&quot; :</a>
+<a name="ln422">          (mons.attitude == ATT_GOOD_NEUTRAL)   ? &quot;good neutral&quot;:</a>
+<a name="ln423">          (mons.attitude == ATT_STRICT_NEUTRAL) ? &quot;strictly neutral&quot;</a>
+<a name="ln424">                                                : &quot;unknown alignment&quot;));</a>
+<a name="ln425"> </a>
+<a name="ln426">    // Print stats and other info.</a>
+<a name="ln427">    mprf(MSGCH_DIAGNOSTICS,</a>
+<a name="ln428">         &quot;HD=%d/%d (%u) HP=%d/%d AC=%d(%d) EV=%d(%d) MR=%d XP=%d SP=%d &quot;</a>
+<a name="ln429">         &quot;energy=%d%s%s mid=%u num=%d stealth=%d flags=%04&quot; PRIx64,</a>
+<a name="ln430">         mons.get_hit_dice(),</a>
+<a name="ln431">         mons.get_experience_level(),</a>
+<a name="ln432">         mons.experience,</a>
+<a name="ln433">         mons.hit_points, mons.max_hit_points,</a>
+<a name="ln434">         mons.base_armour_class(), mons.armour_class(),</a>
+<a name="ln435">         mons.base_evasion(), mons.evasion(),</a>
+<a name="ln436">         mons.res_magic(),</a>
+<a name="ln437">         exper_value(mons),</a>
+<a name="ln438">         mons.speed, mons.speed_increment,</a>
+<a name="ln439">         mons.base_monster != MONS_NO_MONSTER ? &quot; base=&quot; : &quot;&quot;,</a>
+<a name="ln440">         mons.base_monster != MONS_NO_MONSTER ?</a>
+<a name="ln441">         get_monster_data(mons.base_monster)-&gt;name : &quot;&quot;,</a>
+<a name="ln442">         mons.mid, mons.number, mons.stealth(), mons.flags.flags);</a>
+<a name="ln443"> </a>
+<a name="ln444">    if (mons.damage_total)</a>
+<a name="ln445">    {</a>
+<a name="ln446">        mprf(MSGCH_DIAGNOSTICS,</a>
+<a name="ln447">             &quot;pdam=%1.1f/%d (%d%%)&quot;,</a>
+<a name="ln448">             0.5 * mons.damage_friendly, mons.damage_total,</a>
+<a name="ln449">             50 * mons.damage_friendly / mons.damage_total);</a>
+<a name="ln450">    }</a>
+<a name="ln451"> </a>
+<a name="ln452">    // Print habitat and behaviour information.</a>
+<a name="ln453">    const habitat_type hab = mons_habitat(mons);</a>
+<a name="ln454"> </a>
+<a name="ln455">    COMPILE_CHECK(ARRAYSZ(ht_names) == NUM_HABITATS);</a>
+<a name="ln456">    const actor * const summoner = actor_by_mid(mons.summoner);</a>
+<a name="ln457">    mprf(MSGCH_DIAGNOSTICS,</a>
+<a name="ln458">         &quot;hab=%s beh=%s(%d) foe=%s(%d) mem=%d target=(%d,%d) &quot;</a>
+<a name="ln459">         &quot;firing_pos=(%d,%d) patrol_point=(%d,%d) god=%s%s&quot;,</a>
+<a name="ln460">         (hab &gt;= 0 &amp;&amp; hab &lt; NUM_HABITATS) ? ht_names[hab] : &quot;INVALID&quot;,</a>
+<a name="ln461">         mons.asleep()                    ? &quot;sleep&quot;</a>
+<a name="ln462">         : mons_is_wandering(mons)       ? &quot;wander&quot;</a>
+<a name="ln463">         : mons_is_seeking(mons)         ? &quot;seek&quot;</a>
+<a name="ln464">         : mons_is_fleeing(mons)         ? &quot;flee&quot;</a>
+<a name="ln465">         : mons.behaviour == BEH_RETREAT  ? &quot;retreat&quot;</a>
+<a name="ln466">         : mons_is_cornered(mons)        ? &quot;cornered&quot;</a>
+<a name="ln467">         : mons.behaviour == BEH_WITHDRAW ? &quot;withdraw&quot;</a>
+<a name="ln468">         :                                  &quot;unknown&quot;,</a>
+<a name="ln469">         mons.behaviour,</a>
+<a name="ln470">         mons.foe == MHITYOU                      ? &quot;you&quot;</a>
+<a name="ln471">         : mons.foe == MHITNOT                    ? &quot;none&quot;</a>
+<a name="ln472">         : menv[mons.foe].type == MONS_NO_MONSTER ? &quot;unassigned monster&quot;</a>
+<a name="ln473">         : menv[mons.foe].name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln474">         mons.foe,</a>
+<a name="ln475">         mons.foe_memory,</a>
+<a name="ln476">         mons.target.x, mons.target.y,</a>
+<a name="ln477">         mons.firing_pos.x, mons.firing_pos.y,</a>
+<a name="ln478">         mons.patrol_point.x, mons.patrol_point.y,</a>
+<a name="ln479">         god_name(mons.god).c_str(),</a>
+<a name="ln480">         (summoner ? make_stringf(&quot; summoner=%s(%d)&quot;,</a>
+<a name="ln481">                                  summoner-&gt;name(DESC_PLAIN, true).c_str(),</a>
+<a name="ln482">                                  summoner-&gt;mindex()).c_str()</a>
+<a name="ln483">                   : &quot;&quot;));</a>
+<a name="ln484"> </a>
+<a name="ln485">    // Print resistances.</a>
+<a name="ln486">    mprf(MSGCH_DIAGNOSTICS, &quot;resist: fire=%d cold=%d elec=%d pois=%d neg=%d &quot;</a>
+<a name="ln487">                            &quot;acid=%d sticky=%s rot=%s&quot;,</a>
+<a name="ln488">         mons.res_fire(),</a>
+<a name="ln489">         mons.res_cold(),</a>
+<a name="ln490">         mons.res_elec(),</a>
+<a name="ln491">         mons.res_poison(),</a>
+<a name="ln492">         mons.res_negative_energy(),</a>
+<a name="ln493">         mons.res_acid(),</a>
+<a name="ln494">         mons.res_sticky_flame() ? &quot;yes&quot; : &quot;no&quot;,</a>
+<a name="ln495">         mons.res_rotting() ? &quot;yes&quot; : &quot;no&quot;);</a>
+<a name="ln496"> </a>
+<a name="ln497">    mprf(MSGCH_DIAGNOSTICS, &quot;ench: %s&quot;,</a>
+<a name="ln498">         mons.describe_enchantments().c_str());</a>
+<a name="ln499"> </a>
+<a name="ln500">    mprf(MSGCH_DIAGNOSTICS, &quot;props: %s&quot;,</a>
+<a name="ln501">         mons.describe_props().c_str());</a>
+<a name="ln502"> </a>
+<a name="ln503">    ostringstream spl;</a>
+<a name="ln504">    const monster_spells &amp;hspell_pass = mons.spells;</a>
+<a name="ln505">    bool found_spell = false;</a>
+<a name="ln506">    for (unsigned int k = 0; k &lt; hspell_pass.size(); ++k)</a>
+<a name="ln507">    {</a>
+<a name="ln508">        if (found_spell)</a>
+<a name="ln509">            spl &lt;&lt; &quot;, &quot;;</a>
+<a name="ln510"> </a>
+<a name="ln511">        found_spell = true;</a>
+<a name="ln512"> </a>
+<a name="ln513">        spl &lt;&lt; k &lt;&lt; &quot;: &quot;;</a>
+<a name="ln514"> </a>
+<a name="ln515">        if (hspell_pass[k].spell &gt;= NUM_SPELLS)</a>
+<a name="ln516">            spl &lt;&lt; &quot;buggy spell&quot;;</a>
+<a name="ln517">        else</a>
+<a name="ln518">            spl &lt;&lt; spell_title(hspell_pass[k].spell);</a>
+<a name="ln519"> </a>
+<a name="ln520">        spl &lt;&lt; &quot;.&quot; &lt;&lt; (int)hspell_pass[k].freq;</a>
+<a name="ln521">        for (const auto flag : mon_spell_slot_flags::range())</a>
+<a name="ln522">        {</a>
+<a name="ln523">            if (!(hspell_pass[k].flags &amp; flag))</a>
+<a name="ln524">                continue;</a>
+<a name="ln525"> </a>
+<a name="ln526">            // this is arguably redundant with mons_list::parse_mons_spells</a>
+<a name="ln527">            // specificially the bit that turns names into flags</a>
+<a name="ln528">            static const map&lt;mon_spell_slot_flag, string&gt; flagnames = {</a>
+<a name="ln529">                { MON_SPELL_EMERGENCY,  &quot;E&quot; },</a>
+<a name="ln530">                { MON_SPELL_NATURAL,    &quot;N&quot; },</a>
+<a name="ln531">                { MON_SPELL_MAGICAL,    &quot;M&quot; },</a>
+<a name="ln532">                { MON_SPELL_WIZARD,     &quot;W&quot; },</a>
+<a name="ln533">                { MON_SPELL_PRIEST,     &quot;P&quot; },</a>
+<a name="ln534">                { MON_SPELL_BREATH,     &quot;br&quot; },</a>
+<a name="ln535">                { MON_SPELL_NO_SILENT,  &quot;ns&quot; },</a>
+<a name="ln536">                { MON_SPELL_INSTANT,    &quot;in&quot; },</a>
+<a name="ln537">                { MON_SPELL_NOISY,      &quot;noi&quot; },</a>
+<a name="ln538">            };</a>
+<a name="ln539">            spl &lt;&lt; &quot;.&quot; &lt;&lt; lookup(flagnames, flag, &quot;bug&quot;);</a>
+<a name="ln540">        }</a>
+<a name="ln541"> </a>
+<a name="ln542">        spl &lt;&lt; &quot; (#&quot; &lt;&lt; static_cast&lt;int&gt;(hspell_pass[k].spell) &lt;&lt; &quot;)&quot;;</a>
+<a name="ln543">    }</a>
+<a name="ln544">    if (found_spell)</a>
+<a name="ln545">        mprf(MSGCH_DIAGNOSTICS, &quot;spells: %s&quot;, spl.str().c_str());</a>
+<a name="ln546"> </a>
+<a name="ln547">    ostringstream inv;</a>
+<a name="ln548">    bool found_item = false;</a>
+<a name="ln549">    for (mon_inv_iterator ii(mons); ii; ++ii)</a>
+<a name="ln550">    {</a>
+<a name="ln551">        if (found_item)</a>
+<a name="ln552">            inv &lt;&lt; &quot;, &quot;;</a>
+<a name="ln553"> </a>
+<a name="ln554">        found_item = true;</a>
+<a name="ln555"> </a>
+<a name="ln556">        inv &lt;&lt; ii.slot() &lt;&lt; &quot;: &quot;;</a>
+<a name="ln557"> </a>
+<a name="ln558">        inv &lt;&lt; item_base_name(*ii);</a>
+<a name="ln559"> </a>
+<a name="ln560">        inv &lt;&lt; &quot; (&quot; &lt;&lt; static_cast&lt;int&gt;(ii-&gt;index()) &lt;&lt; &quot;)&quot;;</a>
+<a name="ln561">    }</a>
+<a name="ln562">    if (found_item)</a>
+<a name="ln563">        mprf(MSGCH_DIAGNOSTICS, &quot;inv: %s&quot;, inv.str().c_str());</a>
+<a name="ln564"> </a>
+<a name="ln565">    if (mons_is_ghost_demon(mons.type))</a>
+<a name="ln566">    {</a>
+<a name="ln567">        ASSERT(mons.ghost);</a>
+<a name="ln568">        const ghost_demon &amp;ghost = *mons.ghost;</a>
+<a name="ln569">        mprf(MSGCH_DIAGNOSTICS, &quot;Ghost damage: %d; brand: %d; att_type: %d; &quot;</a>
+<a name="ln570">                                &quot;att_flav: %d&quot;,</a>
+<a name="ln571">             ghost.damage, ghost.brand, ghost.att_type, ghost.att_flav);</a>
+<a name="ln572">    }</a>
+<a name="ln573">}</a>
+<a name="ln574"> </a>
+<a name="ln575">// Detects all monsters on the level, using their exact positions.</a>
+<a name="ln576">void wizard_detect_creatures()</a>
+<a name="ln577">{</a>
+<a name="ln578">    int count = 0;</a>
+<a name="ln579">    for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln580">    {</a>
+<a name="ln581">        env.map_knowledge(mi-&gt;pos()).set_monster(monster_info(*mi));</a>
+<a name="ln582">        env.map_knowledge(mi-&gt;pos()).set_detected_monster(mi-&gt;type);</a>
+<a name="ln583">#ifdef USE_TILE</a>
+<a name="ln584">        tiles.update_minimap(mi-&gt;pos());</a>
+<a name="ln585">#endif</a>
+<a name="ln586">        count++;</a>
+<a name="ln587">    }</a>
+<a name="ln588">    mprf(&quot;Detected %i monster%s.&quot;, count, count == 1 ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln589">}</a>
+<a name="ln590"> </a>
+<a name="ln591">// Dismisses all monsters on the level or all monsters that match a user</a>
+<a name="ln592">// specified regex.</a>
+<a name="ln593">void wizard_dismiss_all_monsters(bool force_all)</a>
+<a name="ln594">{</a>
+<a name="ln595">    char buf[1024] = &quot;&quot;;</a>
+<a name="ln596">    if (!force_all)</a>
+<a name="ln597">    {</a>
+<a name="ln598">        mprf(MSGCH_PROMPT, &quot;What monsters to dismiss (ENTER for all, &quot;</a>
+<a name="ln599">                           &quot;\&quot;harmful\&quot;, \&quot;mobile\&quot;, \&quot;los\&quot; or a regex, &quot;</a>
+<a name="ln600">                           &quot;\&quot;keepitem\&quot; to leave items)? &quot;);</a>
+<a name="ln601">        bool validline = !cancellable_get_line_autohist(buf, sizeof buf);</a>
+<a name="ln602"> </a>
+<a name="ln603">        if (!validline)</a>
+<a name="ln604">        {</a>
+<a name="ln605">            canned_msg(MSG_OK);</a>
+<a name="ln606">            return;</a>
+<a name="ln607">        }</a>
+<a name="ln608">    }</a>
+<a name="ln609"> </a>
+<a name="ln610">    int count = dismiss_monsters(buf);</a>
+<a name="ln611">    mprf(&quot;Dismissed %i monster%s.&quot;, count, count == 1 ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln612">    // If it was turned off turn autopickup back on if all monsters went away.</a>
+<a name="ln613">    if (!*buf)</a>
+<a name="ln614">        autotoggle_autopickup(false);</a>
+<a name="ln615">}</a>
+<a name="ln616"> </a>
+<a name="ln617">void debug_make_monster_shout(monster* mon)</a>
+<a name="ln618">{</a>
+<a name="ln619">    mprf(MSGCH_PROMPT, &quot;Make the monster (S)hout or (T)alk? &quot;);</a>
+<a name="ln620"> </a>
+<a name="ln621">    char type = (char) getchm(KMC_DEFAULT);</a>
+<a name="ln622">    type = toalower(type);</a>
+<a name="ln623"> </a>
+<a name="ln624">    if (type != 's' &amp;&amp; type != 't')</a>
+<a name="ln625">    {</a>
+<a name="ln626">        canned_msg(MSG_OK);</a>
+<a name="ln627">        return;</a>
+<a name="ln628">    }</a>
+<a name="ln629"> </a>
+<a name="ln630">    int num_times = prompt_for_int(&quot;How many times? &quot;, false);</a>
+<a name="ln631"> </a>
+<a name="ln632">    if (num_times &lt;= 0)</a>
+<a name="ln633">    {</a>
+<a name="ln634">        canned_msg(MSG_OK);</a>
+<a name="ln635">        return;</a>
+<a name="ln636">    }</a>
+<a name="ln637"> </a>
+<a name="ln638">    if (type == 's')</a>
+<a name="ln639">        for (int i = 0; i &lt; num_times; ++i)</a>
+<a name="ln640">            monster_shout(mon, mons_shouts(mon-&gt;type, false));</a>
+<a name="ln641">    else</a>
+<a name="ln642">    {</a>
+<a name="ln643">        if (mon-&gt;invisible())</a>
+<a name="ln644">            mpr(&quot;The monster is invisible and likely won't speak.&quot;);</a>
+<a name="ln645"> </a>
+<a name="ln646">        if (silenced(you.pos()) &amp;&amp; !silenced(mon-&gt;pos()))</a>
+<a name="ln647">        {</a>
+<a name="ln648">            mpr(&quot;You are silenced but the monster isn't; you will &quot;</a>
+<a name="ln649">                &quot;probably hear/see nothing.&quot;);</a>
+<a name="ln650">        }</a>
+<a name="ln651">        else if (!silenced(you.pos()) &amp;&amp; silenced(mon-&gt;pos()))</a>
+<a name="ln652">            mpr(&quot;The monster is silenced and likely won't say anything.&quot;);</a>
+<a name="ln653">        else if (silenced(you.pos()) &amp;&amp; silenced(mon-&gt;pos()))</a>
+<a name="ln654">        {</a>
+<a name="ln655">            mpr(&quot;Both you and the monster are silenced, so you likely &quot;</a>
+<a name="ln656">                &quot;won't hear anything.&quot;);</a>
+<a name="ln657">        }</a>
+<a name="ln658"> </a>
+<a name="ln659">        for (int i = 0; i&lt; num_times; ++i)</a>
+<a name="ln660">            mons_speaks(mon);</a>
+<a name="ln661">    }</a>
+<a name="ln662"> </a>
+<a name="ln663">    mpr(&quot;== Done ==&quot;);</a>
+<a name="ln664">}</a>
+<a name="ln665"> </a>
+<a name="ln666">void wizard_gain_monster_level(monster* mon)</a>
+<a name="ln667">{</a>
+<a name="ln668">    // Give monster as much experience as it can hold,</a>
+<a name="ln669">    // but cap the levels gained to just 1.</a>
+<a name="ln670">    bool worked = mon-&gt;gain_exp(INT_MAX - mon-&gt;experience, 1);</a>
+<a name="ln671">    if (!worked)</a>
+<a name="ln672">        simple_monster_message(*mon, &quot; seems unable to mature further.&quot;, MSGCH_WARN);</a>
+<a name="ln673"> </a>
+<a name="ln674">    // (The gain_exp() method will chop the monster's experience down</a>
+<a name="ln675">    // to half-way between its new level and the next, so we needn't</a>
+<a name="ln676">    // worry about it being left with too much experience.)</a>
+<a name="ln677">}</a>
+<a name="ln678"> </a>
+<a name="ln679">void wizard_apply_monster_blessing(monster* mon)</a>
+<a name="ln680">{</a>
+<a name="ln681">    mprf(MSGCH_PROMPT, &quot;Apply blessing of (B)eogh, The (S)hining One, or (R)andomly? &quot;);</a>
+<a name="ln682"> </a>
+<a name="ln683">    char type = (char) getchm(KMC_DEFAULT);</a>
+<a name="ln684">    type = toalower(type);</a>
+<a name="ln685"> </a>
+<a name="ln686">    if (type != 'b' &amp;&amp; type != 's' &amp;&amp; type != 'r')</a>
+<a name="ln687">    {</a>
+<a name="ln688">        canned_msg(MSG_OK);</a>
+<a name="ln689">        return;</a>
+<a name="ln690">    }</a>
+<a name="ln691">    god_type god = GOD_NO_GOD;</a>
+<a name="ln692">    if (type == 'b' || type == 'r' &amp;&amp; coinflip())</a>
+<a name="ln693">        god = GOD_BEOGH;</a>
+<a name="ln694">    else</a>
+<a name="ln695">        god = GOD_SHINING_ONE;</a>
+<a name="ln696"> </a>
+<a name="ln697">    if (!bless_follower(mon, god, true))</a>
+<a name="ln698">        mprf(&quot;%s won't bless this monster for you!&quot;, god_name(god).c_str());</a>
+<a name="ln699">}</a>
+<a name="ln700"> </a>
+<a name="ln701">void wizard_give_monster_item(monster* mon)</a>
+<a name="ln702">{</a>
+<a name="ln703">    mon_itemuse_type item_use = mons_itemuse(*mon);</a>
+<a name="ln704">    if (item_use &lt; MONUSE_STARTING_EQUIPMENT)</a>
+<a name="ln705">    {</a>
+<a name="ln706">        mpr(&quot;That type of monster can't use any items.&quot;);</a>
+<a name="ln707">        return;</a>
+<a name="ln708">    }</a>
+<a name="ln709"> </a>
+<a name="ln710">    int player_slot = prompt_invent_item(&quot;Give which item to monster?&quot;,</a>
+<a name="ln711">                                          menu_type::drop, OSEL_ANY);</a>
+<a name="ln712"> </a>
+<a name="ln713">    if (prompt_failed(player_slot))</a>
+<a name="ln714">        return;</a>
+<a name="ln715"> </a>
+<a name="ln716">    item_def &amp;item = you.inv[player_slot];</a>
+<a name="ln717"> </a>
+<a name="ln718">    if (item_is_equipped(item))</a>
+<a name="ln719">    {</a>
+<a name="ln720">        mpr(&quot;Can't give equipped items to a monster.&quot;);</a>
+<a name="ln721">        return;</a>
+<a name="ln722">    }</a>
+<a name="ln723"> </a>
+<a name="ln724">    mon_inv_type mon_slot = item_to_mslot(item);</a>
+<a name="ln725"> </a>
+<a name="ln726">    if (mon_slot == NUM_MONSTER_SLOTS)</a>
+<a name="ln727">    {</a>
+<a name="ln728">        mpr(&quot;You can't give that type of item to a monster.&quot;);</a>
+<a name="ln729">        return;</a>
+<a name="ln730">    }</a>
+<a name="ln731"> </a>
+<a name="ln732">    if (mon_slot == MSLOT_WEAPON</a>
+<a name="ln733">        &amp;&amp; item.inscription.find(&quot;alt&quot;) != string::npos)</a>
+<a name="ln734">    {</a>
+<a name="ln735">        mon_slot = MSLOT_ALT_WEAPON;</a>
+<a name="ln736">    }</a>
+<a name="ln737"> </a>
+<a name="ln738">    if (!mon-&gt;take_item(player_slot, mon_slot))</a>
+<a name="ln739">        mpr(&quot;Error: monster failed to take item.&quot;);</a>
+<a name="ln740">}</a>
+<a name="ln741"> </a>
+<a name="ln742">static void _move_player(const coord_def&amp; where)</a>
+<a name="ln743">{</a>
+<a name="ln744">    if (!you.can_pass_through_feat(grd(where)))</a>
+<a name="ln745">    {</a>
+<a name="ln746">        grd(where) = DNGN_FLOOR;</a>
+<a name="ln747">        set_terrain_changed(where);</a>
+<a name="ln748">    }</a>
+<a name="ln749">    move_player_to_grid(where, false);</a>
+<a name="ln750">    // If necessary, update the Abyss.</a>
+<a name="ln751">    if (player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln752">        maybe_shift_abyss_around_player();</a>
+<a name="ln753">}</a>
+<a name="ln754"> </a>
+<a name="ln755">static void _move_monster(const coord_def&amp; where, int idx1)</a>
+<a name="ln756">{</a>
+<a name="ln757">    dist moves;</a>
+<a name="ln758">    direction_chooser_args args;</a>
+<a name="ln759">    args.unrestricted = true;</a>
+<a name="ln760">    args.top_prompt = &quot;Move monster to where?&quot;;</a>
+<a name="ln761">    args.default_place = where;</a>
+<a name="ln762">    direction(moves, args);</a>
+<a name="ln763"> </a>
+<a name="ln764">    if (!moves.isValid || !in_bounds(moves.target))</a>
+<a name="ln765">        return;</a>
+<a name="ln766"> </a>
+<a name="ln767">    monster* mon1 = &amp;menv[idx1];</a>
+<a name="ln768"> </a>
+<a name="ln769">    const int idx2 = mgrd(moves.target);</a>
+<a name="ln770">    monster* mon2 = monster_at(moves.target);</a>
+<a name="ln771"> </a>
+<a name="ln772">    mon1-&gt;moveto(moves.target);</a>
+<a name="ln773">    mgrd(moves.target) = idx1;</a>
+<a name="ln774">    mon1-&gt;check_redraw(moves.target);</a>
+<a name="ln775"> </a>
+<a name="ln776">    mgrd(where) = idx2;</a>
+<a name="ln777"> </a>
+<a name="ln778">    if (mon2 != nullptr)</a>
+<a name="ln779">    {</a>
+<a name="ln780">        mon2-&gt;moveto(where);</a>
+<a name="ln781">        mon1-&gt;check_redraw(where);</a>
+<a name="ln782">    }</a>
+<a name="ln783">    if (!you.see_cell(moves.target))</a>
+<a name="ln784">    {</a>
+<a name="ln785">        mon1-&gt;flags &amp;= ~(MF_WAS_IN_VIEW | MF_SEEN);</a>
+<a name="ln786">        mon1-&gt;seen_context = SC_NONE;</a>
+<a name="ln787">    }</a>
+<a name="ln788">}</a>
+<a name="ln789"> </a>
+<a name="ln790">void wizard_move_player_or_monster(const coord_def&amp; where)</a>
+<a name="ln791">{</a>
+<a name="ln792">    crawl_state.cancel_cmd_again();</a>
+<a name="ln793">    crawl_state.cancel_cmd_repeat();</a>
+<a name="ln794"> </a>
+<a name="ln795">    static bool already_moving = false;</a>
+<a name="ln796"> </a>
+<a name="ln797">    if (already_moving)</a>
+<a name="ln798">    {</a>
+<a name="ln799">        mpr(&quot;Already doing a move command.&quot;);</a>
+<a name="ln800">        return;</a>
+<a name="ln801">    }</a>
+<a name="ln802"> </a>
+<a name="ln803">    already_moving = true;</a>
+<a name="ln804"> </a>
+<a name="ln805">    int idx = mgrd(where);</a>
+<a name="ln806"> </a>
+<a name="ln807">    if (idx == NON_MONSTER)</a>
+<a name="ln808">    {</a>
+<a name="ln809">        if (crawl_state.arena_suspended)</a>
+<a name="ln810">        {</a>
+<a name="ln811">            mpr(&quot;You can't move yourself into the arena.&quot;);</a>
+<a name="ln812">            more();</a>
+<a name="ln813">            return;</a>
+<a name="ln814">        }</a>
+<a name="ln815">        _move_player(where);</a>
+<a name="ln816">    }</a>
+<a name="ln817">    else</a>
+<a name="ln818">        _move_monster(where, idx);</a>
+<a name="ln819"> </a>
+<a name="ln820">    already_moving = false;</a>
+<a name="ln821">}</a>
+<a name="ln822"> </a>
+<a name="ln823">void wizard_make_monster_summoned(monster* mon)</a>
+<a name="ln824">{</a>
+<a name="ln825">    int summon_type = 0;</a>
+<a name="ln826">    if (mon-&gt;is_summoned(nullptr, &amp;summon_type) || summon_type != 0)</a>
+<a name="ln827">    {</a>
+<a name="ln828">        mprf(MSGCH_PROMPT, &quot;Monster is already summoned.&quot;);</a>
+<a name="ln829">        return;</a>
+<a name="ln830">    }</a>
+<a name="ln831"> </a>
+<a name="ln832">    int dur = prompt_for_int(&quot;What summon longevity (1 to 6)? &quot;, true);</a>
+<a name="ln833"> </a>
+<a name="ln834">    if (dur &lt; 1 || dur &gt; 6)</a>
+<a name="ln835">    {</a>
+<a name="ln836">        canned_msg(MSG_OK);</a>
+<a name="ln837">        return;</a>
+<a name="ln838">    }</a>
+<a name="ln839"> </a>
+<a name="ln840">    mprf(MSGCH_PROMPT, &quot;[a] clone [b] animated [c] chaos [d] miscast [e] zot&quot;);</a>
+<a name="ln841">    mprf(MSGCH_PROMPT, &quot;[f] wrath [h] aid   [m] misc    [s] spell&quot;);</a>
+<a name="ln842"> </a>
+<a name="ln843">    mprf(MSGCH_PROMPT, &quot;Which summon type? &quot;);</a>
+<a name="ln844"> </a>
+<a name="ln845">    char choice = toalower(getchm());</a>
+<a name="ln846"> </a>
+<a name="ln847">    if (!(choice &gt;= 'a' &amp;&amp; choice &lt;= 'h') &amp;&amp; choice != 'm' &amp;&amp; choice != 's')</a>
+<a name="ln848">    {</a>
+<a name="ln849">        canned_msg(MSG_OK);</a>
+<a name="ln850">        return;</a>
+<a name="ln851">    }</a>
+<a name="ln852"> </a>
+<a name="ln853">    int type = 0;</a>
+<a name="ln854"> </a>
+<a name="ln855">    switch (choice)</a>
+<a name="ln856">    {</a>
+<a name="ln857">        case 'a': type = MON_SUMM_CLONE; break;</a>
+<a name="ln858">        case 'b': type = MON_SUMM_ANIMATE; break;</a>
+<a name="ln859">        case 'c': type = MON_SUMM_CHAOS; break;</a>
+<a name="ln860">        case 'd': type = MON_SUMM_MISCAST; break;</a>
+<a name="ln861">        case 'e': type = MON_SUMM_ZOT; break;</a>
+<a name="ln862">        case 'f': type = MON_SUMM_WRATH; break;</a>
+<a name="ln863">        case 'h': type = MON_SUMM_AID; break;</a>
+<a name="ln864">        case 'm': type = 0; break;</a>
+<a name="ln865"> </a>
+<a name="ln866">        case 's':</a>
+<a name="ln867">        {</a>
+<a name="ln868">            char specs[80];</a>
+<a name="ln869"> </a>
+<a name="ln870">            msgwin_get_line(&quot;Cast which spell by name? &quot;,</a>
+<a name="ln871">                            specs, sizeof(specs));</a>
+<a name="ln872"> </a>
+<a name="ln873">            if (specs[0] == '\0')</a>
+<a name="ln874">            {</a>
+<a name="ln875">                canned_msg(MSG_OK);</a>
+<a name="ln876">                return;</a>
+<a name="ln877">            }</a>
+<a name="ln878"> </a>
+<a name="ln879">            spell_type spell = spell_by_name(specs, true);</a>
+<a name="ln880">            if (spell == SPELL_NO_SPELL)</a>
+<a name="ln881">            {</a>
+<a name="ln882">                mprf(MSGCH_PROMPT, &quot;No such spell.&quot;);</a>
+<a name="ln883">                return;</a>
+<a name="ln884">            }</a>
+<a name="ln885">            type = (int) spell;</a>
+<a name="ln886">            break;</a>
+<a name="ln887">        }</a>
+<a name="ln888"> </a>
+<a name="ln889">        default:</a>
+<a name="ln890">            die(&quot;Invalid summon type choice.&quot;);</a>
+<a name="ln891">            break;</a>
+<a name="ln892">    }</a>
+<a name="ln893"> </a>
+<a name="ln894">    mon-&gt;mark_summoned(dur, true, type);</a>
+<a name="ln895">    mpr(&quot;Monster is now summoned.&quot;);</a>
+<a name="ln896">}</a>
+<a name="ln897"> </a>
+<a name="ln898">void wizard_polymorph_monster(monster* mon)</a>
+<a name="ln899">{</a>
+<a name="ln900">    monster_type old_type =  mon-&gt;type;</a>
+<a name="ln901">    monster_type type     = debug_prompt_for_monster();</a>
+<a name="ln902"> </a>
+<a name="ln903">    if (type == NUM_MONSTERS)</a>
+<a name="ln904">    {</a>
+<a name="ln905">        canned_msg(MSG_OK);</a>
+<a name="ln906">        return;</a>
+<a name="ln907">    }</a>
+<a name="ln908"> </a>
+<a name="ln909">    if (invalid_monster_type(type))</a>
+<a name="ln910">    {</a>
+<a name="ln911">        mprf(MSGCH_PROMPT, &quot;Invalid monster type.&quot;);</a>
+<a name="ln912">        return;</a>
+<a name="ln913">    }</a>
+<a name="ln914"> </a>
+<a name="ln915">    if (type == old_type)</a>
+<a name="ln916">    {</a>
+<a name="ln917">        mpr(&quot;Old type and new type are the same, not polymorphing.&quot;);</a>
+<a name="ln918">        return;</a>
+<a name="ln919">    }</a>
+<a name="ln920"> </a>
+<a name="ln921">    if (mons_species(type) == mons_species(old_type))</a>
+<a name="ln922">    {</a>
+<a name="ln923">        mpr(&quot;Target species must be different from current species.&quot;);</a>
+<a name="ln924">        return;</a>
+<a name="ln925">    }</a>
+<a name="ln926"> </a>
+<a name="ln927">    monster_polymorph(mon, type, PPT_SAME, true);</a>
+<a name="ln928"> </a>
+<a name="ln929">    if (!mon-&gt;alive())</a>
+<a name="ln930">    {</a>
+<a name="ln931">        mprf(MSGCH_ERROR, &quot;Polymorph killed monster?&quot;);</a>
+<a name="ln932">        return;</a>
+<a name="ln933">    }</a>
+<a name="ln934"> </a>
+<a name="ln935">    mon-&gt;check_redraw(mon-&gt;pos());</a>
+<a name="ln936"> </a>
+<a name="ln937">    if (mon-&gt;type == old_type)</a>
+<a name="ln938">    {</a>
+<a name="ln939">        mpr(&quot;Trying harder&quot;);</a>
+<a name="ln940">        change_monster_type(mon, type);</a>
+<a name="ln941">        if (!mon-&gt;alive())</a>
+<a name="ln942">        {</a>
+<a name="ln943">            mprf(MSGCH_ERROR, &quot;Polymorph killed monster?&quot;);</a>
+<a name="ln944">            return;</a>
+<a name="ln945">        }</a>
+<a name="ln946"> </a>
+<a name="ln947">        mon-&gt;check_redraw(mon-&gt;pos());</a>
+<a name="ln948">    }</a>
+<a name="ln949"> </a>
+<a name="ln950">    if (mon-&gt;type == old_type)</a>
+<a name="ln951">        mpr(&quot;Polymorph failed.&quot;);</a>
+<a name="ln952">    else if (mon-&gt;type != type)</a>
+<a name="ln953">        mpr(&quot;Monster turned into something other than the desired type.&quot;);</a>
+<a name="ln954">}</a>
+<a name="ln955"> </a>
+<a name="ln956">void debug_pathfind(int idx)</a>
+<a name="ln957">{</a>
+<a name="ln958">    if (idx == NON_MONSTER)</a>
+<a name="ln959">        return;</a>
+<a name="ln960"> </a>
+<a name="ln961">    mpr(&quot;Choose a destination!&quot;);</a>
+<a name="ln962">#ifndef USE_TILE_LOCAL</a>
+<a name="ln963">    more();</a>
+<a name="ln964">#endif</a>
+<a name="ln965">    coord_def dest;</a>
+<a name="ln966">    level_pos ldest;</a>
+<a name="ln967">    bool chose = show_map(ldest, false, false);</a>
+<a name="ln968">    dest = ldest.pos;</a>
+<a name="ln969">    redraw_screen();</a>
+<a name="ln970">    if (!chose)</a>
+<a name="ln971">    {</a>
+<a name="ln972">        canned_msg(MSG_OK);</a>
+<a name="ln973">        return;</a>
+<a name="ln974">    }</a>
+<a name="ln975"> </a>
+<a name="ln976">    monster&amp; mon = menv[idx];</a>
+<a name="ln977">    mprf(&quot;Attempting to calculate a path from (%d, %d) to (%d, %d)...&quot;,</a>
+<a name="ln978">         mon.pos().x, mon.pos().y, dest.x, dest.y);</a>
+<a name="ln979">    monster_pathfind mp;</a>
+<a name="ln980">    bool success = mp.init_pathfind(&amp;mon, dest, true, true);</a>
+<a name="ln981">    if (success)</a>
+<a name="ln982">    {</a>
+<a name="ln983">        vector&lt;coord_def&gt; path = mp.backtrack();</a>
+<a name="ln984">        env.travel_trail = path;</a>
+<a name="ln985">#ifdef USE_TILE_WEB</a>
+<a name="ln986">        for (coord_def pos : env.travel_trail)</a>
+<a name="ln987">            tiles.update_minimap(pos);</a>
+<a name="ln988">#endif</a>
+<a name="ln989">        string path_str;</a>
+<a name="ln990">        mpr(&quot;Here's the shortest path: &quot;);</a>
+<a name="ln991">        for (coord_def pos : path)</a>
+<a name="ln992">            path_str += make_stringf(&quot;(%d, %d)  &quot;, pos.x, pos.y);</a>
+<a name="ln993">        mpr(path_str);</a>
+<a name="ln994">        mprf(&quot;-&gt; path length: %u&quot;, (unsigned int)path.size());</a>
+<a name="ln995"> </a>
+<a name="ln996">        mpr(&quot;&quot;);</a>
+<a name="ln997">        path = mp.calc_waypoints();</a>
+<a name="ln998">        path_str = &quot;&quot;;</a>
+<a name="ln999">        mpr(&quot;&quot;);</a>
+<a name="ln1000">        mpr(&quot;And here are the needed waypoints: &quot;);</a>
+<a name="ln1001">        for (coord_def pos : path)</a>
+<a name="ln1002">            path_str += make_stringf(&quot;(%d, %d)  &quot;, pos.x, pos.y);</a>
+<a name="ln1003">        mpr(path_str);</a>
+<a name="ln1004">        mprf(&quot;-&gt; #waypoints: %u&quot;, (unsigned int)path.size());</a>
+<a name="ln1005">    }</a>
+<a name="ln1006">}</a>
+<a name="ln1007"> </a>
+<a name="ln1008">static void _miscast_screen_update()</a>
+<a name="ln1009">{</a>
+<a name="ln1010">    viewwindow();</a>
+<a name="ln1011"> </a>
+<a name="ln1012">    you.redraw_status_lights = true;</a>
+<a name="ln1013">    print_stats();</a>
+<a name="ln1014"> </a>
+<a name="ln1015">#ifndef USE_TILE_LOCAL</a>
+<a name="ln1016">    update_monster_pane();</a>
+<a name="ln1017">#endif</a>
+<a name="ln1018">}</a>
+<a name="ln1019"> </a>
+<a name="ln1020">void debug_miscast(int target_index)</a>
+<a name="ln1021">{</a>
+<a name="ln1022">    crawl_state.cancel_cmd_repeat();</a>
+<a name="ln1023"> </a>
+<a name="ln1024">    actor* target;</a>
+<a name="ln1025">    if (target_index == NON_MONSTER)</a>
+<a name="ln1026">        target = &amp;you;</a>
+<a name="ln1027">    else</a>
+<a name="ln1028">        target = &amp;menv[target_index];</a>
+<a name="ln1029"> </a>
+<a name="ln1030">    if (!target-&gt;alive())</a>
+<a name="ln1031">    {</a>
+<a name="ln1032">        mpr(&quot;Can't make already dead target miscast.&quot;);</a>
+<a name="ln1033">        return;</a>
+<a name="ln1034">    }</a>
+<a name="ln1035"> </a>
+<a name="ln1036">    char specs[100];</a>
+<a name="ln1037">    mprf(MSGCH_PROMPT, &quot;Miscast which school or spell, by name? &quot;);</a>
+<a name="ln1038">    if (cancellable_get_line_autohist(specs, sizeof specs) || !*specs)</a>
+<a name="ln1039">    {</a>
+<a name="ln1040">        canned_msg(MSG_OK);</a>
+<a name="ln1041">        return;</a>
+<a name="ln1042">    }</a>
+<a name="ln1043"> </a>
+<a name="ln1044">    spell_type spell  = spell_by_name(specs, true);</a>
+<a name="ln1045">    spschool school   = school_by_name(specs);</a>
+<a name="ln1046"> </a>
+<a name="ln1047">    // Prefer exact matches for school name over partial matches for</a>
+<a name="ln1048">    // spell name.</a>
+<a name="ln1049">    if (school != spschool::none</a>
+<a name="ln1050">        &amp;&amp; (strcasecmp(specs, spelltype_short_name(school)) == 0</a>
+<a name="ln1051">            || strcasecmp(specs, spelltype_long_name(school)) == 0))</a>
+<a name="ln1052">    {</a>
+<a name="ln1053">        spell = SPELL_NO_SPELL;</a>
+<a name="ln1054">    }</a>
+<a name="ln1055"> </a>
+<a name="ln1056">    if (spell == SPELL_NO_SPELL &amp;&amp; school == spschool::none)</a>
+<a name="ln1057">    {</a>
+<a name="ln1058">        mpr(&quot;No matching spell or spell school.&quot;);</a>
+<a name="ln1059">        return;</a>
+<a name="ln1060">    }</a>
+<a name="ln1061">    else if (spell != SPELL_NO_SPELL &amp;&amp; school != spschool::none)</a>
+<a name="ln1062">    {</a>
+<a name="ln1063">        mprf(&quot;Ambiguous: can be spell '%s' or school '%s'.&quot;,</a>
+<a name="ln1064">            spell_title(spell), spelltype_short_name(school));</a>
+<a name="ln1065">        return;</a>
+<a name="ln1066">    }</a>
+<a name="ln1067"> </a>
+<a name="ln1068">    spschools_type disciplines = spschool::none;</a>
+<a name="ln1069">    if (spell != SPELL_NO_SPELL)</a>
+<a name="ln1070">    {</a>
+<a name="ln1071">        disciplines = get_spell_disciplines(spell);</a>
+<a name="ln1072"> </a>
+<a name="ln1073">        if (!disciplines)</a>
+<a name="ln1074">        {</a>
+<a name="ln1075">            mprf(&quot;Spell '%s' has no disciplines.&quot;, spell_title(spell));</a>
+<a name="ln1076">            return;</a>
+<a name="ln1077">        }</a>
+<a name="ln1078">    }</a>
+<a name="ln1079"> </a>
+<a name="ln1080">    if (spell != SPELL_NO_SPELL)</a>
+<a name="ln1081">        mprf(&quot;Miscasting spell %s.&quot;, spell_title(spell));</a>
+<a name="ln1082">    else</a>
+<a name="ln1083">        mprf(&quot;Miscasting school %s.&quot;, spelltype_long_name(school));</a>
+<a name="ln1084"> </a>
+<a name="ln1085">    if (spell != SPELL_NO_SPELL)</a>
+<a name="ln1086">        mprf(MSGCH_PROMPT, &quot;Enter fail: &quot;);</a>
+<a name="ln1087">    else</a>
+<a name="ln1088">        mprf(MSGCH_PROMPT, &quot;Enter level, fail: &quot;);</a>
+<a name="ln1089"> </a>
+<a name="ln1090">    if (cancellable_get_line_autohist(specs, sizeof specs) || !*specs)</a>
+<a name="ln1091">    {</a>
+<a name="ln1092">        canned_msg(MSG_OK);</a>
+<a name="ln1093">        return;</a>
+<a name="ln1094">    }</a>
+<a name="ln1095"> </a>
+<a name="ln1096">    int level = -1, fail = -1;</a>
+<a name="ln1097"> </a>
+<a name="ln1098">    if (strchr(specs, ','))</a>
+<a name="ln1099">    {</a>
+<a name="ln1100">        vector&lt;string&gt; nums = split_string(&quot;,&quot;, specs);</a>
+<a name="ln1101">        level  = atoi(nums[0].c_str());</a>
+<a name="ln1102">        fail = atoi(nums[1].c_str());</a>
+<a name="ln1103"> </a>
+<a name="ln1104">        if (level &lt;= 0 || fail &lt;= 0)</a>
+<a name="ln1105">        {</a>
+<a name="ln1106">            canned_msg(MSG_OK);</a>
+<a name="ln1107">            return;</a>
+<a name="ln1108">        }</a>
+<a name="ln1109">    }</a>
+<a name="ln1110">    else</a>
+<a name="ln1111">    {</a>
+<a name="ln1112">        if (spell != SPELL_NO_SPELL)</a>
+<a name="ln1113">        {</a>
+<a name="ln1114">            mpr(&quot;Can only enter spell level for schools, not spells.&quot;);</a>
+<a name="ln1115">            return;</a>
+<a name="ln1116">        }</a>
+<a name="ln1117"> </a>
+<a name="ln1118">        level = atoi(specs);</a>
+<a name="ln1119">        if (level &lt; 0)</a>
+<a name="ln1120">        {</a>
+<a name="ln1121">            canned_msg(MSG_OK);</a>
+<a name="ln1122">            return;</a>
+<a name="ln1123">        }</a>
+<a name="ln1124">        else if (level &gt; 9)</a>
+<a name="ln1125">        {</a>
+<a name="ln1126">            mpr(&quot;Spell level can be at most 9.&quot;);</a>
+<a name="ln1127">            return;</a>
+<a name="ln1128">        }</a>
+<a name="ln1129">    }</a>
+<a name="ln1130"> </a>
+<a name="ln1131">    // Handle repeats ourselves since miscasts are likely to interrupt</a>
+<a name="ln1132">    // command repetions, especially if the player is the target.</a>
+<a name="ln1133">    int repeats = prompt_for_int(&quot;Number of repetitions? &quot;, true);</a>
+<a name="ln1134">    if (repeats &lt; 1)</a>
+<a name="ln1135">    {</a>
+<a name="ln1136">        canned_msg(MSG_OK);</a>
+<a name="ln1137">        return;</a>
+<a name="ln1138">    }</a>
+<a name="ln1139"> </a>
+<a name="ln1140">    while (target-&gt;alive() &amp;&amp; repeats-- &gt; 0)</a>
+<a name="ln1141">    {</a>
+<a name="ln1142">        if (kbhit())</a>
+<a name="ln1143">        {</a>
+<a name="ln1144">            mpr(&quot;Key pressed, interrupting miscast testing.&quot;);</a>
+<a name="ln1145">            getchm();</a>
+<a name="ln1146">            break;</a>
+<a name="ln1147">        }</a>
+<a name="ln1148"> </a>
+<a name="ln1149">        if (spell != SPELL_NO_SPELL)</a>
+<a name="ln1150">            miscast_effect(spell, fail);</a>
+<a name="ln1151">        else</a>
+<a name="ln1152">        {</a>
+<a name="ln1153">            miscast_effect(*target, target, {miscast_source::wizard}, school,</a>
+<a name="ln1154">                           level, fail, &quot;testing miscast&quot;);</a>
+<a name="ln1155">        }</a>
+<a name="ln1156"> </a>
+<a name="ln1157">        _miscast_screen_update();</a>
+<a name="ln1158">    }</a>
+<a name="ln1159">}</a>
+<a name="ln1160"> </a>
+<a name="ln1161">#ifdef DEBUG_BONES</a>
+<a name="ln1162">void debug_ghosts()</a>
+<a name="ln1163">{</a>
+<a name="ln1164">    mprf(MSGCH_PROMPT, &quot;(C)reate, create (T)emporary, or (L)oad bones file?&quot;);</a>
+<a name="ln1165">    const char c = toalower(getchm());</a>
+<a name="ln1166"> </a>
+<a name="ln1167">    if (c == 'c')</a>
+<a name="ln1168">        save_ghosts(ghost_demon::find_ghosts(), true, true);</a>
+<a name="ln1169">    else if (c == 't')</a>
+<a name="ln1170">        save_ghosts(ghost_demon::find_ghosts(), true, false);</a>
+<a name="ln1171">    else if (c == 'l')</a>
+<a name="ln1172">        load_ghosts(MAX_GHOSTS, false);</a>
+<a name="ln1173">    else</a>
+<a name="ln1174">        canned_msg(MSG_OK);</a>
+<a name="ln1175">}</a>
+<a name="ln1176">#endif</a>
+<a name="ln1177"> </a>
+<a name="ln1178">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="406"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v510/" target="_blank">V510</a> The 'mprf' function is not expected to receive class-type variable as third actual argument.</p></div>
+<div class="balloon" rel="460"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1016/" target="_blank">V1016</a> Expression 'hab >= 0' is always true.</p></div>
+<div class="balloon" rel="692"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation. Consider inspecting the 'type == 'b' || type == 'r' && coinflip()' expression.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1109 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>mon-movetarget.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#include &quot;mon-movetarget.h&quot;</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &quot;act-iter.h&quot;</a>
+<a name="ln6">#include &quot;coord.h&quot;</a>
+<a name="ln7">#include &quot;coordit.h&quot;</a>
+<a name="ln8">#include &quot;env.h&quot;</a>
+<a name="ln9">#include &quot;fprop.h&quot;</a>
+<a name="ln10">#include &quot;item-prop.h&quot;</a>
+<a name="ln11">#include &quot;items.h&quot;</a>
+<a name="ln12">#include &quot;libutil.h&quot;</a>
+<a name="ln13">#include &quot;los-def.h&quot;</a>
+<a name="ln14">#include &quot;losglobal.h&quot;</a>
+<a name="ln15">#include &quot;mon-behv.h&quot;</a>
+<a name="ln16">#include &quot;mon-pathfind.h&quot;</a>
+<a name="ln17">#include &quot;mon-place.h&quot;</a>
+<a name="ln18">#include &quot;state.h&quot;</a>
+<a name="ln19">#include &quot;terrain.h&quot;</a>
+<a name="ln20">#include &quot;traps.h&quot;</a>
+<a name="ln21"> </a>
+<a name="ln22">// If a monster can see but not directly reach the target, and then fails to</a>
+<a name="ln23">// find a path to get there, mark all surrounding (in a radius of 2) monsters</a>
+<a name="ln24">// of the same (or greater) movement restrictions as also being unable to</a>
+<a name="ln25">// find a path, so we won't need to calculate again.</a>
+<a name="ln26">// Should there be a direct path to the target for a monster thus marked, it</a>
+<a name="ln27">// will still be able to come nearer (and the mark will then be cleared).</a>
+<a name="ln28">static void _mark_neighbours_target_unreachable(monster* mon)</a>
+<a name="ln29">{</a>
+<a name="ln30">    const mon_intel_type intel = mons_intel(*mon);</a>
+<a name="ln31">    const bool flies         = mon-&gt;airborne();</a>
+<a name="ln32">    const bool amphibious    = (mons_habitat(*mon) == HT_AMPHIBIOUS);</a>
+<a name="ln33">    const bool amph_lava     = (mons_habitat(*mon) == HT_AMPHIBIOUS_LAVA);</a>
+<a name="ln34">    const habitat_type habit = mons_primary_habitat(*mon);</a>
+<a name="ln35"> </a>
+<a name="ln36">    for (radius_iterator ri(mon-&gt;pos(), 2, C_SQUARE); ri; ++ri)</a>
+<a name="ln37">    {</a>
+<a name="ln38">        if (*ri == mon-&gt;pos())</a>
+<a name="ln39">            continue;</a>
+<a name="ln40"> </a>
+<a name="ln41">        // Don't alert monsters out of sight (e.g. on the other side of</a>
+<a name="ln42">        // a wall).</a>
+<a name="ln43">        if (!mon-&gt;see_cell(*ri))</a>
+<a name="ln44">            continue;</a>
+<a name="ln45"> </a>
+<a name="ln46">        monster* const m = monster_at(*ri);</a>
+<a name="ln47">        if (m == nullptr)</a>
+<a name="ln48">            continue;</a>
+<a name="ln49"> </a>
+<a name="ln50">        // Don't restrict smarter monsters as they might find a path</a>
+<a name="ln51">        // a dumber monster wouldn't.</a>
+<a name="ln52">        if (mons_intel(*m) &gt; intel)</a>
+<a name="ln53">            continue;</a>
+<a name="ln54"> </a>
+<a name="ln55">        // Monsters of differing habitats might prefer different routes.</a>
+<a name="ln56">        if (mons_primary_habitat(*m) != habit)</a>
+<a name="ln57">            continue;</a>
+<a name="ln58"> </a>
+<a name="ln59">        // A flying monster has an advantage over a non-flying one.</a>
+<a name="ln60">        // Same for a swimming one.</a>
+<a name="ln61">        if (!flies &amp;&amp; m-&gt;airborne()</a>
+<a name="ln62">            || !amphibious &amp;&amp; mons_habitat(*m) == HT_AMPHIBIOUS</a>
+<a name="ln63">            || !amph_lava  &amp;&amp; mons_habitat(*m) == HT_AMPHIBIOUS_LAVA)</a>
+<a name="ln64">        {</a>
+<a name="ln65">            continue;</a>
+<a name="ln66">        }</a>
+<a name="ln67"> </a>
+<a name="ln68">        // If the monster is trying to reach the same foe, consider their</a>
+<a name="ln69">        // foe also unreachable.</a>
+<a name="ln70">        if (m-&gt;travel_target == MTRAV_NONE &amp;&amp; m-&gt;foe == mon-&gt;foe)</a>
+<a name="ln71">            m-&gt;travel_target = MTRAV_UNREACHABLE;</a>
+<a name="ln72">    }</a>
+<a name="ln73">}</a>
+<a name="ln74"> </a>
+<a name="ln75">static void _set_no_path_found(monster* mon)</a>
+<a name="ln76">{</a>
+<a name="ln77">#ifdef DEBUG_PATHFIND</a>
+<a name="ln78">    mpr(&quot;No path found!&quot;);</a>
+<a name="ln79">#endif</a>
+<a name="ln80"> </a>
+<a name="ln81">    mon-&gt;travel_target = MTRAV_UNREACHABLE;</a>
+<a name="ln82">    // Pass information on to nearby monsters.</a>
+<a name="ln83">    _mark_neighbours_target_unreachable(mon);</a>
+<a name="ln84">}</a>
+<a name="ln85"> </a>
+<a name="ln86">bool target_is_unreachable(monster* mon)</a>
+<a name="ln87">{</a>
+<a name="ln88">    return mon-&gt;travel_target == MTRAV_UNREACHABLE</a>
+<a name="ln89">           || mon-&gt;travel_target == MTRAV_KNOWN_UNREACHABLE;</a>
+<a name="ln90">}</a>
+<a name="ln91"> </a>
+<a name="ln92">//#define DEBUG_PATHFIND</a>
+<a name="ln93"> </a>
+<a name="ln94">// Check whether there's an unobstructed path to our foe,</a>
+<a name="ln95">// either by using an existing travel_path or calculating a new one.</a>
+<a name="ln96">// Returns true if no further handling necessary, else false.</a>
+<a name="ln97">bool try_pathfind(monster* mon)</a>
+<a name="ln98">{</a>
+<a name="ln99">    // Just because we can *see* our target, that doesn't mean</a>
+<a name="ln100">    // we can actually get there.</a>
+<a name="ln101">    // If no path is found (too far away, perhaps) set a</a>
+<a name="ln102">    // flag, so we don't directly calculate the whole thing again</a>
+<a name="ln103">    // next turn, and even extend that flag to neighbouring</a>
+<a name="ln104">    // monsters of similar movement restrictions.</a>
+<a name="ln105"> </a>
+<a name="ln106">    const actor* foe = (mon-&gt;friendly() &amp;&amp; mon-&gt;foe == MHITYOU ? &amp;you</a>
+<a name="ln107">                                                               : mon-&gt;get_foe());</a>
+<a name="ln108"> </a>
+<a name="ln109">    // Trying to pathfind towards nothing in particular; bail out.</a>
+<a name="ln110">    if (!foe)</a>
+<a name="ln111">        return false;</a>
+<a name="ln112"> </a>
+<a name="ln113">    const coord_def targpos = foe-&gt;pos();</a>
+<a name="ln114"> </a>
+<a name="ln115">    bool need_pathfind = !can_go_straight(mon, mon-&gt;pos(), targpos);</a>
+<a name="ln116"> </a>
+<a name="ln117">    // Smart monsters that can fire through obstacles won't use</a>
+<a name="ln118">    // pathfinding.</a>
+<a name="ln119">    if (need_pathfind</a>
+<a name="ln120">        &amp;&amp; !mon-&gt;friendly()</a>
+<a name="ln121">        &amp;&amp; mon-&gt;can_see(*foe)</a>
+<a name="ln122">        &amp;&amp; mons_has_los_ability(mon-&gt;type))</a>
+<a name="ln123">    {</a>
+<a name="ln124">        need_pathfind = false;</a>
+<a name="ln125">    }</a>
+<a name="ln126"> </a>
+<a name="ln127">    // Also don't use pathfinding if the monster can shoot</a>
+<a name="ln128">    // across the blocking terrain, and is smart enough to</a>
+<a name="ln129">    // realise that.</a>
+<a name="ln130">    if (need_pathfind</a>
+<a name="ln131">        &amp;&amp; !mon-&gt;friendly()</a>
+<a name="ln132">        &amp;&amp; mons_has_ranged_attack(*mon)</a>
+<a name="ln133">        &amp;&amp; cell_see_cell(mon-&gt;pos(), targpos, LOS_SOLID_SEE))</a>
+<a name="ln134">    {</a>
+<a name="ln135">        need_pathfind = false;</a>
+<a name="ln136">    }</a>
+<a name="ln137"> </a>
+<a name="ln138">    if (!need_pathfind)</a>
+<a name="ln139">    {</a>
+<a name="ln140">        // The target is easily reachable.</a>
+<a name="ln141">        // Clear travel path and target, if necessary.</a>
+<a name="ln142">        if (mon-&gt;travel_target != MTRAV_PATROL</a>
+<a name="ln143">            &amp;&amp; mon-&gt;travel_target != MTRAV_NONE)</a>
+<a name="ln144">        {</a>
+<a name="ln145">            if (mon-&gt;is_travelling())</a>
+<a name="ln146">                mon-&gt;travel_path.clear();</a>
+<a name="ln147">            mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln148">        }</a>
+<a name="ln149">        return false;</a>
+<a name="ln150">    }</a>
+<a name="ln151"> </a>
+<a name="ln152">    // If the target is &quot;unreachable&quot; (the monster already tried,</a>
+<a name="ln153">    // and failed, to find a path), there's a chance of trying again.</a>
+<a name="ln154">    // Retreating monsters retry every turn.</a>
+<a name="ln155">    if (target_is_unreachable(mon) &amp;&amp; !one_chance_in(12))</a>
+<a name="ln156">        return false;</a>
+<a name="ln157"> </a>
+<a name="ln158">#ifdef DEBUG_PATHFIND</a>
+<a name="ln159">    mprf(&quot;%s: Target out of reach! What now?&quot;,</a>
+<a name="ln160">         mon-&gt;name(DESC_PLAIN).c_str());</a>
+<a name="ln161">#endif</a>
+<a name="ln162">    // If we're already on our way, do nothing.</a>
+<a name="ln163">    if (mon-&gt;is_travelling() &amp;&amp; mon-&gt;travel_target == MTRAV_FOE)</a>
+<a name="ln164">    {</a>
+<a name="ln165">        const int len = mon-&gt;travel_path.size();</a>
+<a name="ln166">        const coord_def targ = mon-&gt;travel_path[len - 1];</a>
+<a name="ln167"> </a>
+<a name="ln168">        // Current target still valid?</a>
+<a name="ln169">        if (can_go_straight(mon, targ, targpos))</a>
+<a name="ln170">        {</a>
+<a name="ln171">            // Did we reach the target?</a>
+<a name="ln172">            if (mon-&gt;pos() == mon-&gt;travel_path[0])</a>
+<a name="ln173">            {</a>
+<a name="ln174">                // Get next waypoint.</a>
+<a name="ln175">                mon-&gt;travel_path.erase(mon-&gt;travel_path.begin());</a>
+<a name="ln176"> </a>
+<a name="ln177">                if (!mon-&gt;travel_path.empty())</a>
+<a name="ln178">                {</a>
+<a name="ln179">                    mon-&gt;target = mon-&gt;travel_path[0];</a>
+<a name="ln180">                    return true;</a>
+<a name="ln181">                }</a>
+<a name="ln182">            }</a>
+<a name="ln183">            else if (can_go_straight(mon, mon-&gt;pos(), mon-&gt;travel_path[0]))</a>
+<a name="ln184">            {</a>
+<a name="ln185">                mon-&gt;target = mon-&gt;travel_path[0];</a>
+<a name="ln186">                return true;</a>
+<a name="ln187">            }</a>
+<a name="ln188">        }</a>
+<a name="ln189">    }</a>
+<a name="ln190"> </a>
+<a name="ln191">    // Use pathfinding to find a (new) path to the target.</a>
+<a name="ln192">    const int dist = grid_distance(mon-&gt;pos(), targpos);</a>
+<a name="ln193"> </a>
+<a name="ln194">#ifdef DEBUG_PATHFIND</a>
+<a name="ln195">    mprf(&quot;Need to calculate a path... (dist = %d)&quot;, dist);</a>
+<a name="ln196">#endif</a>
+<a name="ln197">    const int range = mon-&gt;friendly() ? 1000 : mons_tracking_range(mon);</a>
+<a name="ln198"> </a>
+<a name="ln199">    if (range &gt; 0 &amp;&amp; dist &gt; range)</a>
+<a name="ln200">    {</a>
+<a name="ln201">        mon-&gt;travel_target = MTRAV_UNREACHABLE;</a>
+<a name="ln202">#ifdef DEBUG_PATHFIND</a>
+<a name="ln203">        mprf(&quot;Distance too great, don't attempt pathfinding! (%s)&quot;,</a>
+<a name="ln204">             mon-&gt;name(DESC_PLAIN).c_str());</a>
+<a name="ln205">#endif</a>
+<a name="ln206">        return false;</a>
+<a name="ln207">    }</a>
+<a name="ln208"> </a>
+<a name="ln209">#ifdef DEBUG_PATHFIND</a>
+<a name="ln210">    mprf(&quot;Need a path for %s from (%d, %d) to (%d, %d), max. dist = %d&quot;,</a>
+<a name="ln211">         mon-&gt;name(DESC_PLAIN).c_str(), mon-&gt;pos().x, mon-&gt;pos().y,</a>
+<a name="ln212">         targpos.x, targpos.y, range);</a>
+<a name="ln213">#endif</a>
+<a name="ln214">    monster_pathfind mp;</a>
+<a name="ln215">    if (range &gt; 0)</a>
+<a name="ln216">        mp.set_range(range);</a>
+<a name="ln217"> </a>
+<a name="ln218">    if (mp.init_pathfind(mon, targpos))</a>
+<a name="ln219">    {</a>
+<a name="ln220">        mon-&gt;travel_path = mp.calc_waypoints();</a>
+<a name="ln221">        if (!mon-&gt;travel_path.empty())</a>
+<a name="ln222">        {</a>
+<a name="ln223">            // Okay then, we found a path. Let's use it!</a>
+<a name="ln224">            mon-&gt;target = mon-&gt;travel_path[0];</a>
+<a name="ln225">            mon-&gt;travel_target = MTRAV_FOE;</a>
+<a name="ln226">            return true;</a>
+<a name="ln227">        }</a>
+<a name="ln228">    }</a>
+<a name="ln229"> </a>
+<a name="ln230">    // We didn't find a path.</a>
+<a name="ln231">    _set_no_path_found(mon);</a>
+<a name="ln232">    return false;</a>
+<a name="ln233">}</a>
+<a name="ln234"> </a>
+<a name="ln235">static bool _is_level_exit(const coord_def&amp; pos)</a>
+<a name="ln236">{</a>
+<a name="ln237">    // All types of stairs.</a>
+<a name="ln238">    if (feat_is_stair(grd(pos)))</a>
+<a name="ln239">        return true;</a>
+<a name="ln240"> </a>
+<a name="ln241">    // Teleportation and shaft traps.</a>
+<a name="ln242">    const trap_type tt = get_trap_type(pos);</a>
+<a name="ln243">    if (tt == TRAP_TELEPORT || tt == TRAP_TELEPORT_PERMANENT</a>
+<a name="ln244">        || tt == TRAP_SHAFT)</a>
+<a name="ln245">    {</a>
+<a name="ln246">        return true;</a>
+<a name="ln247">    }</a>
+<a name="ln248"> </a>
+<a name="ln249">    return false;</a>
+<a name="ln250">}</a>
+<a name="ln251"> </a>
+<a name="ln252">// Returns true if a monster left the level.</a>
+<a name="ln253">bool pacified_leave_level(monster* mon, vector&lt;level_exit&gt; e, int e_index)</a>
+<a name="ln254">{</a>
+<a name="ln255">    // If a pacified monster is leaving the level, and has reached an</a>
+<a name="ln256">    // exit (whether that exit was its target or not), handle it here.</a>
+<a name="ln257">    // Likewise, if a pacified monster is far enough away from the</a>
+<a name="ln258">    // player, make it leave the level.</a>
+<a name="ln259">    if (_is_level_exit(mon-&gt;pos())</a>
+<a name="ln260">        || (e_index != -1 &amp;&amp; mon-&gt;pos() == e[e_index].target)</a>
+<a name="ln261">        || grid_distance(mon-&gt;pos(), you.pos()) &gt;= LOS_DEFAULT_RANGE * 3)</a>
+<a name="ln262">    {</a>
+<a name="ln263">        make_mons_leave_level(mon);</a>
+<a name="ln264">        return true;</a>
+<a name="ln265">    }</a>
+<a name="ln266"> </a>
+<a name="ln267">    return false;</a>
+<a name="ln268">}</a>
+<a name="ln269"> </a>
+<a name="ln270">// Assesses how desirable a spot is to a merfolk avatar (preferring spaces</a>
+<a name="ln271">// surrounded by water, at least one of which is deep, and with at least one</a>
+<a name="ln272">// neighbour which is inhabitable without swimming or flight)</a>
+<a name="ln273">static int _merfolk_avatar_water_score(coord_def p, bool&amp; deep)</a>
+<a name="ln274">{</a>
+<a name="ln275">    int score = 0;</a>
+<a name="ln276">    bool near_floor = false;</a>
+<a name="ln277">    deep = false;</a>
+<a name="ln278"> </a>
+<a name="ln279">    for (adjacent_iterator ai(p); ai; ++ai)</a>
+<a name="ln280">    {</a>
+<a name="ln281">        if (grd(*ai) == DNGN_SHALLOW_WATER)</a>
+<a name="ln282">        {</a>
+<a name="ln283">            score++;</a>
+<a name="ln284">            near_floor = true;</a>
+<a name="ln285">        }</a>
+<a name="ln286">        else if (grd(*ai) == DNGN_DEEP_WATER)</a>
+<a name="ln287">        {</a>
+<a name="ln288">            score++;</a>
+<a name="ln289">            deep = true;</a>
+<a name="ln290">        }</a>
+<a name="ln291">        else if (feat_has_solid_floor(grd(*ai)))</a>
+<a name="ln292">            near_floor = true;</a>
+<a name="ln293">    }</a>
+<a name="ln294"> </a>
+<a name="ln295">    // Don't prefer any locations non-adjacent to either shallow water or land</a>
+<a name="ln296">    if (!near_floor)</a>
+<a name="ln297">        return 0;</a>
+<a name="ln298"> </a>
+<a name="ln299">    // Greatly prefer at least one tile of neighbouring deep water</a>
+<a name="ln300">    if (deep)</a>
+<a name="ln301">        score += 6;</a>
+<a name="ln302"> </a>
+<a name="ln303">    // Slightly prefer standing in deep water, if possible</a>
+<a name="ln304">    if (grd(p) == DNGN_DEEP_WATER)</a>
+<a name="ln305">        score++;</a>
+<a name="ln306"> </a>
+<a name="ln307">    return score;</a>
+<a name="ln308">}</a>
+<a name="ln309"> </a>
+<a name="ln310">// Pick the nearest water grid that is surrounded by the most</a>
+<a name="ln311">// water squares within LoS.</a>
+<a name="ln312">bool find_merfolk_avatar_water_target(monster* mon)</a>
+<a name="ln313">{</a>
+<a name="ln314">    ASSERT(mon-&gt;type == MONS_MERFOLK_AVATAR);</a>
+<a name="ln315"> </a>
+<a name="ln316">    // Moving away could break the entrancement, so don't do this.</a>
+<a name="ln317">    if (grid_distance(mon-&gt;pos(), you.pos()) &gt;= 5)</a>
+<a name="ln318">    {</a>
+<a name="ln319">        mon-&gt;firing_pos.reset();</a>
+<a name="ln320">        return false;</a>
+<a name="ln321">    }</a>
+<a name="ln322"> </a>
+<a name="ln323">    bool deep;</a>
+<a name="ln324"> </a>
+<a name="ln325">    // If our current location is good enough, don't bother moving towards</a>
+<a name="ln326">    // some other spot which might be somewhat better</a>
+<a name="ln327">    if (_merfolk_avatar_water_score(mon-&gt;pos(), deep) &gt;= 12 &amp;&amp; deep</a>
+<a name="ln328">        &amp;&amp; grd(mon-&gt;pos()) == DNGN_DEEP_WATER)</a>
+<a name="ln329">    {</a>
+<a name="ln330">        mon-&gt;firing_pos = mon-&gt;pos();</a>
+<a name="ln331">        return true;</a>
+<a name="ln332">    }</a>
+<a name="ln333"> </a>
+<a name="ln334">    if (mon-&gt;travel_target == MTRAV_MERFOLK_AVATAR)</a>
+<a name="ln335">    {</a>
+<a name="ln336">        coord_def targ_pos(mon-&gt;travel_path[mon-&gt;travel_path.size() - 1]);</a>
+<a name="ln337">#ifdef DEBUG_PATHFIND</a>
+<a name="ln338">        mprf(&quot;merfolk avatar target is (%d, %d), dist = %d&quot;,</a>
+<a name="ln339">             targ_pos.x, targ_pos.y, (int) (mon-&gt;pos() - targ_pos).rdist());</a>
+<a name="ln340">#endif</a>
+<a name="ln341">        if ((mon-&gt;pos() - targ_pos).rdist() &gt; 2)</a>
+<a name="ln342">            return true;</a>
+<a name="ln343">    }</a>
+<a name="ln344"> </a>
+<a name="ln345">    int best_water_count = 0;</a>
+<a name="ln346">    coord_def best_target;</a>
+<a name="ln347"> </a>
+<a name="ln348">    deep = false;</a>
+<a name="ln349"> </a>
+<a name="ln350">    // Try two iterations, the second more relaxed than the first. But if</a>
+<a name="ln351">    // we find deep water on the first pass, don't bother with the second.</a>
+<a name="ln352">    for (int iteration = 0; iteration &lt; 2 &amp;&amp; !deep; ++iteration)</a>
+<a name="ln353">    {</a>
+<a name="ln354">        int best_num = 0;</a>
+<a name="ln355">        for (radius_iterator ri(mon-&gt;pos(), LOS_NO_TRANS); ri; ++ri)</a>
+<a name="ln356">        {</a>
+<a name="ln357">            if (!feat_is_water(grd(*ri)))</a>
+<a name="ln358">                continue;</a>
+<a name="ln359"> </a>
+<a name="ln360">            const int dist = grid_distance(mon-&gt;pos(), *ri);</a>
+<a name="ln361"> </a>
+<a name="ln362">            // In the first iteration only count water grids that are</a>
+<a name="ln363">            // not closer to the player than to the merfolk avatar.</a>
+<a name="ln364">            if (iteration == 0 &amp;&amp; dist &gt; grid_distance(you.pos(), *ri))</a>
+<a name="ln365">                continue;</a>
+<a name="ln366"> </a>
+<a name="ln367">            // Counts deep water twice.</a>
+<a name="ln368">            const int water_count = _merfolk_avatar_water_score(*ri, deep);</a>
+<a name="ln369">            if (water_count &gt; best_water_count)</a>
+<a name="ln370">            {</a>
+<a name="ln371">                best_water_count = water_count;</a>
+<a name="ln372">                best_target = *ri;</a>
+<a name="ln373">                best_num = 1;</a>
+<a name="ln374">            }</a>
+<a name="ln375">            else if (water_count == best_water_count)</a>
+<a name="ln376">            {</a>
+<a name="ln377">                const int old_dist = best_target.origin() ? INFINITE_DISTANCE</a>
+<a name="ln378">                                   : grid_distance(mon-&gt;pos(), best_target);</a>
+<a name="ln379">                if (dist &lt; old_dist)</a>
+<a name="ln380">                {</a>
+<a name="ln381">                    best_target = *ri;</a>
+<a name="ln382">                    best_num = 1;</a>
+<a name="ln383">                }</a>
+<a name="ln384">                else if (dist == old_dist &amp;&amp; one_chance_in(++best_num))</a>
+<a name="ln385">                    best_target = *ri;</a>
+<a name="ln386">            }</a>
+<a name="ln387">        }</a>
+<a name="ln388">    }</a>
+<a name="ln389"> </a>
+<a name="ln390">    if (!best_water_count)</a>
+<a name="ln391">        return false;</a>
+<a name="ln392"> </a>
+<a name="ln393">    // We're already optimally placed.</a>
+<a name="ln394">    if (best_target == mon-&gt;pos())</a>
+<a name="ln395">    {</a>
+<a name="ln396">        mon-&gt;firing_pos = mon-&gt;pos();</a>
+<a name="ln397">        return true;</a>
+<a name="ln398">    }</a>
+<a name="ln399"> </a>
+<a name="ln400">    monster_pathfind mp;</a>
+<a name="ln401">#ifdef WIZARD</a>
+<a name="ln402">    // Remove old highlighted areas to make place for the new ones.</a>
+<a name="ln403">    if (you.wizard)</a>
+<a name="ln404">        for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln405">            env.pgrid(*ri) &amp;= ~(FPROP_HIGHLIGHT);</a>
+<a name="ln406">#endif</a>
+<a name="ln407"> </a>
+<a name="ln408">    if (mp.init_pathfind(mon, best_target))</a>
+<a name="ln409">    {</a>
+<a name="ln410">        mon-&gt;travel_path = mp.calc_waypoints();</a>
+<a name="ln411"> </a>
+<a name="ln412">        if (!mon-&gt;travel_path.empty())</a>
+<a name="ln413">        {</a>
+<a name="ln414">#ifdef WIZARD</a>
+<a name="ln415">            if (you.wizard)</a>
+<a name="ln416">            {</a>
+<a name="ln417">                for (coord_def pos : mon-&gt;travel_path)</a>
+<a name="ln418">                    env.pgrid(pos) |= FPROP_HIGHLIGHT;</a>
+<a name="ln419">            }</a>
+<a name="ln420">#endif</a>
+<a name="ln421">#ifdef DEBUG_PATHFIND</a>
+<a name="ln422">            mprf(&quot;Found a path to (%d, %d) with %d surrounding water squares&quot;,</a>
+<a name="ln423">                 best_target.x, best_target.y, best_water_count);</a>
+<a name="ln424">#endif</a>
+<a name="ln425">            // Okay then, we found a path. Let's use it!</a>
+<a name="ln426">            mon-&gt;firing_pos = mon-&gt;travel_path[0];</a>
+<a name="ln427">            mon-&gt;travel_target = MTRAV_MERFOLK_AVATAR;</a>
+<a name="ln428">            return true;</a>
+<a name="ln429">        }</a>
+<a name="ln430">    }</a>
+<a name="ln431"> </a>
+<a name="ln432">    return false;</a>
+<a name="ln433">}</a>
+<a name="ln434"> </a>
+<a name="ln435">// Returns true if further handling neeeded.</a>
+<a name="ln436">static bool _handle_monster_travelling(monster* mon)</a>
+<a name="ln437">{</a>
+<a name="ln438">#ifdef DEBUG_PATHFIND</a>
+<a name="ln439">    mprf(&quot;Monster %s reached target (%d, %d)&quot;,</a>
+<a name="ln440">         mon-&gt;name(DESC_PLAIN).c_str(), mon-&gt;target.x, mon-&gt;target.y);</a>
+<a name="ln441">#endif</a>
+<a name="ln442"> </a>
+<a name="ln443">    // Hey, we reached our first waypoint!</a>
+<a name="ln444">    if (mon-&gt;pos() == mon-&gt;travel_path[0])</a>
+<a name="ln445">    {</a>
+<a name="ln446">#ifdef DEBUG_PATHFIND</a>
+<a name="ln447">        mpr(&quot;Arrived at first waypoint.&quot;);</a>
+<a name="ln448">#endif</a>
+<a name="ln449">        mon-&gt;travel_path.erase(mon-&gt;travel_path.begin());</a>
+<a name="ln450">        if (mon-&gt;travel_path.empty())</a>
+<a name="ln451">        {</a>
+<a name="ln452">#ifdef DEBUG_PATHFIND</a>
+<a name="ln453">            mpr(&quot;We reached the end of our path: stop travelling.&quot;);</a>
+<a name="ln454">#endif</a>
+<a name="ln455">            mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln456">            return true;</a>
+<a name="ln457">        }</a>
+<a name="ln458">        else</a>
+<a name="ln459">        {</a>
+<a name="ln460">            mon-&gt;target = mon-&gt;travel_path[0];</a>
+<a name="ln461">#ifdef DEBUG_PATHFIND</a>
+<a name="ln462">            mprf(&quot;Next waypoint: (%d, %d)&quot;, mon-&gt;target.x, mon-&gt;target.y);</a>
+<a name="ln463">#endif</a>
+<a name="ln464">            return false;</a>
+<a name="ln465">        }</a>
+<a name="ln466">    }</a>
+<a name="ln467"> </a>
+<a name="ln468">    // Can we still see our next waypoint?</a>
+<a name="ln469">    if (!can_go_straight(mon, mon-&gt;pos(), mon-&gt;travel_path[0]))</a>
+<a name="ln470">    {</a>
+<a name="ln471">#ifdef DEBUG_PATHFIND</a>
+<a name="ln472">        mpr(&quot;Can't see waypoint grid.&quot;);</a>
+<a name="ln473">#endif</a>
+<a name="ln474">        // Apparently we got sidetracked a bit.</a>
+<a name="ln475">        // Check the waypoints vector backwards and pick the first waypoint</a>
+<a name="ln476">        // we can see.</a>
+<a name="ln477"> </a>
+<a name="ln478">        // XXX: Note that this might still not be the best thing to do</a>
+<a name="ln479">        // since another path might be even *closer* to our actual target now.</a>
+<a name="ln480">        // Not by much, though, since the original path was optimal (A*) and</a>
+<a name="ln481">        // the distance between the waypoints is rather small.</a>
+<a name="ln482"> </a>
+<a name="ln483">        int erase = -1;  // Erase how many waypoints?</a>
+<a name="ln484">        const int size = mon-&gt;travel_path.size();</a>
+<a name="ln485">        for (int i = size - 1; i &gt;= 0; --i)</a>
+<a name="ln486">        {</a>
+<a name="ln487">            if (can_go_straight(mon, mon-&gt;pos(), mon-&gt;travel_path[i]))</a>
+<a name="ln488">            {</a>
+<a name="ln489">                mon-&gt;target = mon-&gt;travel_path[i];</a>
+<a name="ln490">                erase = i;</a>
+<a name="ln491">                break;</a>
+<a name="ln492">            }</a>
+<a name="ln493">        }</a>
+<a name="ln494"> </a>
+<a name="ln495">        if (erase &gt; 0)</a>
+<a name="ln496">        {</a>
+<a name="ln497">#ifdef DEBUG_PATHFIND</a>
+<a name="ln498">            mprf(&quot;Need to erase %d of %d waypoints.&quot;,</a>
+<a name="ln499">                 erase, size);</a>
+<a name="ln500">#endif</a>
+<a name="ln501">            // Erase all waypoints that came earlier:</a>
+<a name="ln502">            // we don't need them anymore.</a>
+<a name="ln503">            while (0 &lt; erase--)</a>
+<a name="ln504">                mon-&gt;travel_path.erase(mon-&gt;travel_path.begin());</a>
+<a name="ln505">        }</a>
+<a name="ln506">        else</a>
+<a name="ln507">        {</a>
+<a name="ln508">            // We can't reach our old path from our current</a>
+<a name="ln509">            // position, so calculate a new path instead.</a>
+<a name="ln510">            monster_pathfind mp;</a>
+<a name="ln511"> </a>
+<a name="ln512">            // The last coordinate in the path vector is our destination.</a>
+<a name="ln513">            const int len = mon-&gt;travel_path.size();</a>
+<a name="ln514">            if (mp.init_pathfind(mon, mon-&gt;travel_path[len-1]))</a>
+<a name="ln515">            {</a>
+<a name="ln516">                mon-&gt;travel_path = mp.calc_waypoints();</a>
+<a name="ln517">                if (!mon-&gt;travel_path.empty())</a>
+<a name="ln518">                {</a>
+<a name="ln519">                    mon-&gt;target = mon-&gt;travel_path[0];</a>
+<a name="ln520">#ifdef DEBUG_PATHFIND</a>
+<a name="ln521">                    mprf(&quot;Next waypoint: (%d, %d)&quot;,</a>
+<a name="ln522">                         mon-&gt;target.x, mon-&gt;target.y);</a>
+<a name="ln523">#endif</a>
+<a name="ln524">                }</a>
+<a name="ln525">                else</a>
+<a name="ln526">                {</a>
+<a name="ln527">                    mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln528">                    return true;</a>
+<a name="ln529">                }</a>
+<a name="ln530">            }</a>
+<a name="ln531">            else</a>
+<a name="ln532">            {</a>
+<a name="ln533">                // Or just forget about the whole thing.</a>
+<a name="ln534">                mon-&gt;travel_path.clear();</a>
+<a name="ln535">                mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln536">                return true;</a>
+<a name="ln537">            }</a>
+<a name="ln538">        }</a>
+<a name="ln539">    }</a>
+<a name="ln540"> </a>
+<a name="ln541">    // Else, we can see the next waypoint and are making good progress.</a>
+<a name="ln542">    // Carry on, then!</a>
+<a name="ln543">    return false;</a>
+<a name="ln544">}</a>
+<a name="ln545"> </a>
+<a name="ln546">static bool _choose_random_patrol_target_grid(monster* mon)</a>
+<a name="ln547">{</a>
+<a name="ln548">    const mon_intel_type intel = mons_intel(*mon);</a>
+<a name="ln549"> </a>
+<a name="ln550">    // Zombies will occasionally just stand around.</a>
+<a name="ln551">    // This does not mean that they don't move every second turn. Rather,</a>
+<a name="ln552">    // once they reach their chosen target, there's a 50% chance they'll</a>
+<a name="ln553">    // just remain there until next turn when this function is called</a>
+<a name="ln554">    // again.</a>
+<a name="ln555">    if (intel == I_BRAINLESS &amp;&amp; coinflip())</a>
+<a name="ln556">        return true;</a>
+<a name="ln557"> </a>
+<a name="ln558">    // If there's no chance we'll find the patrol point, quit right away.</a>
+<a name="ln559">    if (grid_distance(mon-&gt;pos(), mon-&gt;patrol_point) &gt; 2 * LOS_DEFAULT_RANGE)</a>
+<a name="ln560">        return false;</a>
+<a name="ln561"> </a>
+<a name="ln562">    // Can the monster see the patrol point from its current position?</a>
+<a name="ln563">    const bool patrol_seen = mon-&gt;see_cell(mon-&gt;patrol_point);</a>
+<a name="ln564"> </a>
+<a name="ln565">    if (intel == I_BRAINLESS &amp;&amp; !patrol_seen)</a>
+<a name="ln566">    {</a>
+<a name="ln567">        // Really stupid monsters won't even try to get back into the</a>
+<a name="ln568">        // patrol zone.</a>
+<a name="ln569">        return false;</a>
+<a name="ln570">    }</a>
+<a name="ln571"> </a>
+<a name="ln572">    // While the patrol point is in easy reach, monsters of brainless</a>
+<a name="ln573">    // intelligence will only use a range of 4 (distance from the patrol point).</a>
+<a name="ln574">    // Otherwise, try to get back using the full LOS.</a>
+<a name="ln575">    const int  rad = (intel &gt; I_BRAINLESS || !patrol_seen) ? LOS_DEFAULT_RANGE</a>
+<a name="ln576">                                                           : 4;</a>
+<a name="ln577">    const bool is_smart = (intel &gt;= I_HUMAN);</a>
+<a name="ln578"> </a>
+<a name="ln579">    los_def patrol(mon-&gt;patrol_point, opacity_monmove(*mon),</a>
+<a name="ln580">                   circle_def(rad, C_SQUARE));</a>
+<a name="ln581">    patrol.update();</a>
+<a name="ln582">    los_def lm(mon-&gt;pos(), opacity_monmove(*mon));</a>
+<a name="ln583">    if (is_smart || !patrol_seen)</a>
+<a name="ln584">    {</a>
+<a name="ln585">        // For stupid monsters, don't bother if the patrol point is in sight.</a>
+<a name="ln586">        lm.update();</a>
+<a name="ln587">    }</a>
+<a name="ln588"> </a>
+<a name="ln589">    int count_grids = 0;</a>
+<a name="ln590">    // Don't bother for the current position. If everything fails,</a>
+<a name="ln591">    // we'll stay here anyway.</a>
+<a name="ln592">    for (radius_iterator ri(mon-&gt;patrol_point, you.current_vision, C_SQUARE, true);</a>
+<a name="ln593">         ri; ++ri)</a>
+<a name="ln594">    {</a>
+<a name="ln595">        if (!in_bounds(*ri) || !mon-&gt;can_pass_through_feat(grd(*ri)))</a>
+<a name="ln596">            continue;</a>
+<a name="ln597"> </a>
+<a name="ln598">        // Don't bother moving to squares (currently) occupied by a</a>
+<a name="ln599">        // monster. We'll usually be able to find other target squares</a>
+<a name="ln600">        // (and if we're not, we couldn't move anyway), and this avoids</a>
+<a name="ln601">        // monsters trying to move onto a grid occupied by a plant or</a>
+<a name="ln602">        // sleeping monster.</a>
+<a name="ln603">        if (monster_at(*ri))</a>
+<a name="ln604">            continue;</a>
+<a name="ln605"> </a>
+<a name="ln606">        if (patrol_seen)</a>
+<a name="ln607">        {</a>
+<a name="ln608">            // If the patrol point can be easily (within LOS) reached</a>
+<a name="ln609">            // from the current position, it suffices if the target is</a>
+<a name="ln610">            // within reach of the patrol point OR the current position:</a>
+<a name="ln611">            // we can easily get there.</a>
+<a name="ln612">            // Only smart monsters will even attempt to move out of the</a>
+<a name="ln613">            // patrol area.</a>
+<a name="ln614">            // NOTE: Either of these can take us into a position where the</a>
+<a name="ln615">            // target cannot be easily reached (e.g. blocked by a wall)</a>
+<a name="ln616">            // and the patrol point is out of sight, too. Such a case</a>
+<a name="ln617">            // will be handled below, though it might take a while until</a>
+<a name="ln618">            // a monster gets out of a deadlock. (5% chance per turn.)</a>
+<a name="ln619">            if (!patrol.see_cell(*ri)</a>
+<a name="ln620">                &amp;&amp; (!is_smart || !lm.see_cell(*ri)))</a>
+<a name="ln621">            {</a>
+<a name="ln622">                continue;</a>
+<a name="ln623">            }</a>
+<a name="ln624">        }</a>
+<a name="ln625">        else</a>
+<a name="ln626">        {</a>
+<a name="ln627">            // If, however, the patrol point is out of reach, we have to</a>
+<a name="ln628">            // make sure the new target brings us into reach of it.</a>
+<a name="ln629">            // This means that the target must be reachable BOTH from</a>
+<a name="ln630">            // the patrol point AND the current position.</a>
+<a name="ln631">            if (!patrol.see_cell(*ri)</a>
+<a name="ln632">                || !lm.see_cell(*ri))</a>
+<a name="ln633">            {</a>
+<a name="ln634">                continue;</a>
+<a name="ln635">            }</a>
+<a name="ln636"> </a>
+<a name="ln637">            // If this fails for all surrounding squares (probably because</a>
+<a name="ln638">            // we're too far away), we fall back to heading directly for</a>
+<a name="ln639">            // the patrol point.</a>
+<a name="ln640">        }</a>
+<a name="ln641"> </a>
+<a name="ln642">        bool set_target = false;</a>
+<a name="ln643">        if (intel == I_BRAINLESS &amp;&amp; *ri == mon-&gt;patrol_point)</a>
+<a name="ln644">        {</a>
+<a name="ln645">            // Slightly greater chance to simply head for the centre.</a>
+<a name="ln646">            count_grids += 3;</a>
+<a name="ln647">            if (x_chance_in_y(3, count_grids))</a>
+<a name="ln648">                set_target = true;</a>
+<a name="ln649">        }</a>
+<a name="ln650">        else if (one_chance_in(++count_grids))</a>
+<a name="ln651">            set_target = true;</a>
+<a name="ln652"> </a>
+<a name="ln653">        if (set_target)</a>
+<a name="ln654">            mon-&gt;target = *ri;</a>
+<a name="ln655">    }</a>
+<a name="ln656"> </a>
+<a name="ln657">    return count_grids;</a>
+<a name="ln658">}// Returns true if further handling neeeded.</a>
+<a name="ln659">static bool _handle_monster_patrolling(monster* mon)</a>
+<a name="ln660">{</a>
+<a name="ln661">    if (!_choose_random_patrol_target_grid(mon))</a>
+<a name="ln662">    {</a>
+<a name="ln663">        // If we couldn't find a target that is within easy reach</a>
+<a name="ln664">        // of the monster and close to the patrol point, head back</a>
+<a name="ln665">        // to patrol point.</a>
+<a name="ln666"> </a>
+<a name="ln667">        // Other than for tracking the player, there's currently</a>
+<a name="ln668">        // no distinction between smart and stupid monsters when</a>
+<a name="ln669">        // it comes to travelling back to the patrol point. This</a>
+<a name="ln670">        // is in part due to the flavour of e.g. bees finding</a>
+<a name="ln671">        // their way back to the Hive (and patrolling should</a>
+<a name="ln672">        // really be restricted to cases like this), and for the</a>
+<a name="ln673">        // other part it's not all that important because we</a>
+<a name="ln674">        // calculate the path once and then follow it home, and</a>
+<a name="ln675">        // the player won't ever see the orderly fashion the</a>
+<a name="ln676">        // bees will trudge along.</a>
+<a name="ln677">        // What he will see is them swarming back to the Hive</a>
+<a name="ln678">        // entrance after some time, and that is what matters.</a>
+<a name="ln679">        monster_pathfind mp;</a>
+<a name="ln680">        if (mp.init_pathfind(mon, mon-&gt;patrol_point))</a>
+<a name="ln681">        {</a>
+<a name="ln682">            mon-&gt;travel_path = mp.calc_waypoints();</a>
+<a name="ln683">            if (!mon-&gt;travel_path.empty())</a>
+<a name="ln684">            {</a>
+<a name="ln685">                mon-&gt;target = mon-&gt;travel_path[0];</a>
+<a name="ln686">                mon-&gt;travel_target = MTRAV_PATROL;</a>
+<a name="ln687">            }</a>
+<a name="ln688">            else</a>
+<a name="ln689">            {</a>
+<a name="ln690">                // We're so close we don't even need a path.</a>
+<a name="ln691">                mon-&gt;target = mon-&gt;patrol_point;</a>
+<a name="ln692">            }</a>
+<a name="ln693">        }</a>
+<a name="ln694">        else</a>
+<a name="ln695">        {</a>
+<a name="ln696">            // Stop patrolling.</a>
+<a name="ln697">            mon-&gt;patrol_point.reset();</a>
+<a name="ln698">            mon-&gt;travel_target = MTRAV_NONE;</a>
+<a name="ln699">            return true;</a>
+<a name="ln700">        }</a>
+<a name="ln701">    }</a>
+<a name="ln702">    else</a>
+<a name="ln703">    {</a>
+<a name="ln704">#ifdef DEBUG_PATHFIND</a>
+<a name="ln705">        mprf(&quot;Monster %s (pp: %d, %d) is now patrolling to (%d, %d)&quot;,</a>
+<a name="ln706">             mon-&gt;name(DESC_PLAIN).c_str(),</a>
+<a name="ln707">             mon-&gt;patrol_point.x, mon-&gt;patrol_point.y,</a>
+<a name="ln708">             mon-&gt;target.x, mon-&gt;target.y);</a>
+<a name="ln709">#endif</a>
+<a name="ln710">    }</a>
+<a name="ln711"> </a>
+<a name="ln712">    return false;</a>
+<a name="ln713">}</a>
+<a name="ln714"> </a>
+<a name="ln715">void set_random_target(monster* mon)</a>
+<a name="ln716">{</a>
+<a name="ln717">    mon-&gt;target = random_in_bounds(); // If we don't find anything better.</a>
+<a name="ln718">    for (int tries = 0; tries &lt; 150; ++tries)</a>
+<a name="ln719">    {</a>
+<a name="ln720">        coord_def delta;</a>
+<a name="ln721">        delta.x = random2(13) - 6;</a>
+<a name="ln722">        delta.y = random2(13) - 6;</a>
+<a name="ln723">        if (delta.origin())</a>
+<a name="ln724">            continue;</a>
+<a name="ln725"> </a>
+<a name="ln726">        const coord_def newtarget = delta + mon-&gt;pos();</a>
+<a name="ln727">        if (!in_bounds(newtarget))</a>
+<a name="ln728">            continue;</a>
+<a name="ln729"> </a>
+<a name="ln730">        if (!summon_can_attack(mon, newtarget))</a>
+<a name="ln731">            continue;</a>
+<a name="ln732"> </a>
+<a name="ln733">        if (!mon-&gt;is_location_safe(newtarget))</a>
+<a name="ln734">            continue;</a>
+<a name="ln735"> </a>
+<a name="ln736">        mon-&gt;target = newtarget;</a>
+<a name="ln737">        break;</a>
+<a name="ln738">    }</a>
+<a name="ln739">}</a>
+<a name="ln740"> </a>
+<a name="ln741">// Try to find a band leader for the given monster</a>
+<a name="ln742">static monster * _active_band_leader(monster * mon)</a>
+<a name="ln743">{</a>
+<a name="ln744">    // Not a band member</a>
+<a name="ln745">    if (!mon-&gt;props.exists(&quot;band_leader&quot;))</a>
+<a name="ln746">        return nullptr;</a>
+<a name="ln747"> </a>
+<a name="ln748">    // Try to find our fearless leader.</a>
+<a name="ln749">    unsigned leader_mid = mon-&gt;props[&quot;band_leader&quot;].get_int();</a>
+<a name="ln750"> </a>
+<a name="ln751">    return monster_by_mid(leader_mid);</a>
+<a name="ln752">}</a>
+<a name="ln753"> </a>
+<a name="ln754">// Return true if a target still needs to be set. If returns false, mon-&gt;target</a>
+<a name="ln755">// was set.</a>
+<a name="ln756">static bool _band_wander_target(monster * mon)</a>
+<a name="ln757">{</a>
+<a name="ln758">    int dist_thresh = LOS_DEFAULT_RANGE + HERD_COMFORT_RANGE;</a>
+<a name="ln759">    monster * band_leader = _active_band_leader(mon);</a>
+<a name="ln760">    if (band_leader == nullptr)</a>
+<a name="ln761">        return true;</a>
+<a name="ln762"> </a>
+<a name="ln763">    int leader_dist = grid_distance(mon-&gt;pos(), band_leader-&gt;pos());</a>
+<a name="ln764">    if (leader_dist &gt; dist_thresh)</a>
+<a name="ln765">    {</a>
+<a name="ln766">        monster_pathfind mp;</a>
+<a name="ln767">        mp.set_range(1000);</a>
+<a name="ln768"> </a>
+<a name="ln769">        if (mp.init_pathfind(mon, band_leader-&gt;pos()))</a>
+<a name="ln770">        {</a>
+<a name="ln771">            mon-&gt;travel_path = mp.calc_waypoints();</a>
+<a name="ln772">            if (!mon-&gt;travel_path.empty())</a>
+<a name="ln773">            {</a>
+<a name="ln774">                // Okay then, we found a path. Let's use it!</a>
+<a name="ln775">                mon-&gt;target = mon-&gt;travel_path[0];</a>
+<a name="ln776">                mon-&gt;travel_target = MTRAV_PATROL;</a>
+<a name="ln777">                return false;</a>
+<a name="ln778">            }</a>
+<a name="ln779">            else</a>
+<a name="ln780">                return true;</a>
+<a name="ln781">        }</a>
+<a name="ln782"> </a>
+<a name="ln783">        return true;</a>
+<a name="ln784">    }</a>
+<a name="ln785"> </a>
+<a name="ln786">    vector&lt;coord_def&gt; positions;</a>
+<a name="ln787"> </a>
+<a name="ln788">    for (radius_iterator r_it(mon-&gt;pos(), LOS_NO_TRANS, true); r_it; ++r_it)</a>
+<a name="ln789">    {</a>
+<a name="ln790">        if (!in_bounds(*r_it))</a>
+<a name="ln791">            continue;</a>
+<a name="ln792"> </a>
+<a name="ln793">        if (!band_leader-&gt;is_location_safe(*r_it))</a>
+<a name="ln794">            continue;</a>
+<a name="ln795"> </a>
+<a name="ln796">        int dist = grid_distance(*r_it, band_leader-&gt;pos());</a>
+<a name="ln797">        if (dist &lt; HERD_COMFORT_RANGE)</a>
+<a name="ln798">            positions.push_back(*r_it);</a>
+<a name="ln799">    }</a>
+<a name="ln800"> </a>
+<a name="ln801">    if (positions.empty())</a>
+<a name="ln802">        return true;</a>
+<a name="ln803"> </a>
+<a name="ln804">    mon-&gt;target = positions[random2(positions.size())];</a>
+<a name="ln805"> </a>
+<a name="ln806">    ASSERT_IN_BOUNDS(mon-&gt;target);</a>
+<a name="ln807">    return false;</a>
+<a name="ln808">}</a>
+<a name="ln809"> </a>
+<a name="ln810">// Returns true if a movement target still needs to be set</a>
+<a name="ln811">static bool _herd_wander_target(monster * mon)</a>
+<a name="ln812">{</a>
+<a name="ln813">    vector&lt;monster_iterator&gt; friends;</a>
+<a name="ln814">    map&lt;int, vector&lt;coord_def&gt; &gt; distance_positions;</a>
+<a name="ln815"> </a>
+<a name="ln816">    int dist_thresh = LOS_DEFAULT_RANGE + HERD_COMFORT_RANGE;</a>
+<a name="ln817"> </a>
+<a name="ln818">    for (monster_iterator mit; mit; ++mit)</a>
+<a name="ln819">    {</a>
+<a name="ln820">        if (*mit == mon</a>
+<a name="ln821">            || mons_genus(mit-&gt;type) != mons_genus(mon-&gt;type)</a>
+<a name="ln822">            || grid_distance(mit-&gt;pos(), mon-&gt;pos()) &gt; dist_thresh)</a>
+<a name="ln823">        {</a>
+<a name="ln824">            continue;</a>
+<a name="ln825">        }</a>
+<a name="ln826"> </a>
+<a name="ln827">        friends.push_back(mit);</a>
+<a name="ln828">    }</a>
+<a name="ln829"> </a>
+<a name="ln830">    if (friends.empty())</a>
+<a name="ln831">        return true;</a>
+<a name="ln832"> </a>
+<a name="ln833">    for (radius_iterator r_it(mon-&gt;pos(), LOS_NO_TRANS, true); r_it; ++r_it)</a>
+<a name="ln834">    {</a>
+<a name="ln835">        if (!in_bounds(*r_it))</a>
+<a name="ln836">            continue;</a>
+<a name="ln837"> </a>
+<a name="ln838">        if (!mon-&gt;is_location_safe(*r_it))</a>
+<a name="ln839">            continue;</a>
+<a name="ln840"> </a>
+<a name="ln841">        int count = 0;</a>
+<a name="ln842">        for (monster_iterator &amp;fr_it : friends)</a>
+<a name="ln843">        {</a>
+<a name="ln844">            if (grid_distance(fr_it-&gt;pos(), *r_it) &lt; HERD_COMFORT_RANGE</a>
+<a name="ln845">                &amp;&amp; fr_it-&gt;see_cell_no_trans(*r_it))</a>
+<a name="ln846">            {</a>
+<a name="ln847">                count++;</a>
+<a name="ln848">            }</a>
+<a name="ln849">        }</a>
+<a name="ln850">        if (count &gt; 0)</a>
+<a name="ln851">            distance_positions[count].push_back(*r_it);</a>
+<a name="ln852">    }</a>
+<a name="ln853">    map&lt;int, vector&lt;coord_def&gt; &gt;::reverse_iterator back =</a>
+<a name="ln854">        distance_positions.rbegin();</a>
+<a name="ln855"> </a>
+<a name="ln856">    if (back == distance_positions.rend())</a>
+<a name="ln857">        return true;</a>
+<a name="ln858"> </a>
+<a name="ln859">    mon-&gt;target = back-&gt;second[random2(back-&gt;second.size())];</a>
+<a name="ln860">    return false;</a>
+<a name="ln861">}</a>
+<a name="ln862"> </a>
+<a name="ln863">static bool _herd_ok(monster * mon)</a>
+<a name="ln864">{</a>
+<a name="ln865">    bool in_bounds = false;</a>
+<a name="ln866">    bool intermediate_range = false;</a>
+<a name="ln867">    int intermediate_thresh = LOS_DEFAULT_RANGE + HERD_COMFORT_RANGE;</a>
+<a name="ln868"> </a>
+<a name="ln869">    // herdlings magically know others even out of LOS</a>
+<a name="ln870">    for (monster_iterator mit; mit; ++mit)</a>
+<a name="ln871">    {</a>
+<a name="ln872">        if (*mit == mon)</a>
+<a name="ln873">            continue;</a>
+<a name="ln874"> </a>
+<a name="ln875">        if (mons_genus(mit-&gt;type) == mons_genus(mon-&gt;type))</a>
+<a name="ln876">        {</a>
+<a name="ln877">            int g_dist = grid_distance(mit-&gt;pos(), mon-&gt;pos());</a>
+<a name="ln878">            if (g_dist &lt; HERD_COMFORT_RANGE</a>
+<a name="ln879">                &amp;&amp; mon-&gt;see_cell_no_trans(mit-&gt;pos()))</a>
+<a name="ln880">            {</a>
+<a name="ln881">                in_bounds = true;</a>
+<a name="ln882">                break;</a>
+<a name="ln883">            }</a>
+<a name="ln884">            else if (g_dist &lt; intermediate_thresh)</a>
+<a name="ln885">                intermediate_range = true;</a>
+<a name="ln886">        }</a>
+<a name="ln887">    }</a>
+<a name="ln888"> </a>
+<a name="ln889">    return in_bounds || !intermediate_range;</a>
+<a name="ln890">}</a>
+<a name="ln891"> </a>
+<a name="ln892">// Return true if we don't have to do anything to keep within an ok distance</a>
+<a name="ln893">// of our band leader. (If no leader exists we don't have to do anything).</a>
+<a name="ln894">static bool _band_ok(monster * mon)</a>
+<a name="ln895">{</a>
+<a name="ln896">    // Don't have to worry about being close to the leader if no leader can be</a>
+<a name="ln897">    // found.</a>
+<a name="ln898">    monster * leader = _active_band_leader(mon);</a>
+<a name="ln899"> </a>
+<a name="ln900">    if (!leader)</a>
+<a name="ln901">        return true;</a>
+<a name="ln902"> </a>
+<a name="ln903">    int g_dist = grid_distance(leader-&gt;pos(), mon-&gt;pos());</a>
+<a name="ln904"> </a>
+<a name="ln905">    // If in range, or sufficiently out of range we can just wander around for</a>
+<a name="ln906">    // a while longer.</a>
+<a name="ln907">    if (g_dist &lt; HERD_COMFORT_RANGE &amp;&amp; mon-&gt;see_cell_no_trans(leader-&gt;pos())</a>
+<a name="ln908">        || g_dist &gt;= (LOS_DEFAULT_RANGE + HERD_COMFORT_RANGE))</a>
+<a name="ln909">    {</a>
+<a name="ln910">        return true;</a>
+<a name="ln911">    }</a>
+<a name="ln912"> </a>
+<a name="ln913">    return false;</a>
+<a name="ln914">}</a>
+<a name="ln915"> </a>
+<a name="ln916">void check_wander_target(monster* mon, bool isPacified)</a>
+<a name="ln917">{</a>
+<a name="ln918">    // default wander behaviour</a>
+<a name="ln919">    if (mon-&gt;pos() == mon-&gt;target</a>
+<a name="ln920">        || mons_is_batty(*mon)</a>
+<a name="ln921">        || (!isPacified &amp;&amp; !mons_is_avatar(mon-&gt;type) &amp;&amp; one_chance_in(20))</a>
+<a name="ln922">        || herd_monster(*mon) &amp;&amp; !_herd_ok(mon)</a>
+<a name="ln923">        || !_band_ok(mon))</a>
+<a name="ln924">    {</a>
+<a name="ln925">        bool need_target = true;</a>
+<a name="ln926"> </a>
+<a name="ln927">        if (mon-&gt;is_travelling())</a>
+<a name="ln928">            need_target = _handle_monster_travelling(mon);</a>
+<a name="ln929"> </a>
+<a name="ln930">        // If we still need a target because we're not travelling</a>
+<a name="ln931">        // (any more), check for patrol routes instead.</a>
+<a name="ln932">        if (need_target &amp;&amp; mon-&gt;is_patrolling())</a>
+<a name="ln933">            need_target = _handle_monster_patrolling(mon);</a>
+<a name="ln934"> </a>
+<a name="ln935">        if (need_target &amp;&amp; herd_monster(*mon))</a>
+<a name="ln936">            need_target = _herd_wander_target(mon);</a>
+<a name="ln937"> </a>
+<a name="ln938">        if (need_target</a>
+<a name="ln939">            &amp;&amp; _active_band_leader(mon) != nullptr)</a>
+<a name="ln940">        {</a>
+<a name="ln941">            need_target = _band_wander_target(mon);</a>
+<a name="ln942">        }</a>
+<a name="ln943"> </a>
+<a name="ln944">        // XXX: This is really dumb wander behaviour... instead of</a>
+<a name="ln945">        // changing the goal square every turn, better would be to</a>
+<a name="ln946">        // have the monster store a direction and have the monster</a>
+<a name="ln947">        // head in that direction for a while, then shift the</a>
+<a name="ln948">        // direction to the left or right. We're changing this so</a>
+<a name="ln949">        // wandering monsters at least appear to have some sort of</a>
+<a name="ln950">        // attention span.  -- bwr</a>
+<a name="ln951">        if (need_target)</a>
+<a name="ln952">            set_random_target(mon);</a>
+<a name="ln953">    }</a>
+<a name="ln954">}</a>
+<a name="ln955"> </a>
+<a name="ln956">static void _find_all_level_exits(vector&lt;level_exit&gt; &amp;e)</a>
+<a name="ln957">{</a>
+<a name="ln958">    e.clear();</a>
+<a name="ln959"> </a>
+<a name="ln960">    for (rectangle_iterator ri(1); ri; ++ri)</a>
+<a name="ln961">    {</a>
+<a name="ln962">        if (!in_bounds(*ri))</a>
+<a name="ln963">            continue;</a>
+<a name="ln964"> </a>
+<a name="ln965">        if (_is_level_exit(*ri))</a>
+<a name="ln966">            e.push_back(level_exit(*ri, false));</a>
+<a name="ln967">    }</a>
+<a name="ln968">}</a>
+<a name="ln969"> </a>
+<a name="ln970">int mons_find_nearest_level_exit(const monster* mon, vector&lt;level_exit&gt; &amp;e,</a>
+<a name="ln971">                                 bool reset)</a>
+<a name="ln972">{</a>
+<a name="ln973">    if (e.empty() || reset)</a>
+<a name="ln974">        _find_all_level_exits(e);</a>
+<a name="ln975"> </a>
+<a name="ln976">    int retval = -1;</a>
+<a name="ln977">    int old_dist = -1;</a>
+<a name="ln978"> </a>
+<a name="ln979">    for (unsigned int i = 0; i &lt; e.size(); ++i)</a>
+<a name="ln980">    {</a>
+<a name="ln981">        if (e[i].unreachable)</a>
+<a name="ln982">            continue;</a>
+<a name="ln983"> </a>
+<a name="ln984">        int dist = grid_distance(mon-&gt;pos(), e[i].target);</a>
+<a name="ln985"> </a>
+<a name="ln986">        if (old_dist == -1 || old_dist &gt;= dist)</a>
+<a name="ln987">        {</a>
+<a name="ln988">            retval = i;</a>
+<a name="ln989">            old_dist = dist;</a>
+<a name="ln990">        }</a>
+<a name="ln991">    }</a>
+<a name="ln992"> </a>
+<a name="ln993">    return retval;</a>
+<a name="ln994">}</a>
+<a name="ln995">void set_random_slime_target(monster* mon)</a>
+<a name="ln996">{</a>
+<a name="ln997">    // Strictly neutral slimes will go for the nearest item.</a>
+<a name="ln998">    for (distance_iterator ri(mon-&gt;pos(), true, false, you.current_vision);</a>
+<a name="ln999">                              ri; ++ri)</a>
+<a name="ln1000">    {</a>
+<a name="ln1001">        if (!in_bounds(*ri) || !mon-&gt;see_cell(*ri))</a>
+<a name="ln1002">            continue;</a>
+<a name="ln1003">        if (testbits(env.pgrid(*ri), FPROP_NO_JIYVA))</a>
+<a name="ln1004">            continue;</a>
+<a name="ln1005">        for (stack_iterator si(*ri); si; ++si)</a>
+<a name="ln1006">        {</a>
+<a name="ln1007">            item_def&amp; item(*si);</a>
+<a name="ln1008"> </a>
+<a name="ln1009">            if (item_is_jelly_edible(item))</a>
+<a name="ln1010">            {</a>
+<a name="ln1011">                mon-&gt;target = *ri;</a>
+<a name="ln1012">                goto end;</a>
+<a name="ln1013">            }</a>
+<a name="ln1014">        }</a>
+<a name="ln1015">    }</a>
+<a name="ln1016">end:</a>
+<a name="ln1017">    if (mon-&gt;target == mon-&gt;pos() || mon-&gt;target == you.pos())</a>
+<a name="ln1018">        set_random_target(mon);</a>
+<a name="ln1019">}</a>
+<a name="ln1020"> </a>
+<a name="ln1021">static bool _can_safely_go_through(const monster * mon, const coord_def p)</a>
+<a name="ln1022">{</a>
+<a name="ln1023">    ASSERT(map_bounds(p));</a>
+<a name="ln1024"> </a>
+<a name="ln1025">    if (!monster_habitable_grid(mon, grd(p)))</a>
+<a name="ln1026">        return false;</a>
+<a name="ln1027"> </a>
+<a name="ln1028">    // Stupid monsters don't pathfind around shallow water</a>
+<a name="ln1029">    if (mon-&gt;floundering_at(p) &amp;&amp; (mons_intel(*mon) &gt;= I_HUMAN))</a>
+<a name="ln1030">        return false;</a>
+<a name="ln1031"> </a>
+<a name="ln1032">    return true;</a>
+<a name="ln1033">}</a>
+<a name="ln1034"> </a>
+<a name="ln1035">// Checks whether there is a straight path from p1 to p2 that monster can</a>
+<a name="ln1036">// safely passes through.</a>
+<a name="ln1037">// If it exists, such a path may be missed; on the other hand, it</a>
+<a name="ln1038">// is not guaranteed that p2 is visible from p1 according to LOS rules.</a>
+<a name="ln1039">// Not symmetric.</a>
+<a name="ln1040">// FIXME: This is used for monster movement. It should instead be</a>
+<a name="ln1041">//        something like exists_ray(p1, p2, opacity_monmove(mons)),</a>
+<a name="ln1042">//        where opacity_monmove() is fixed to include opacity_immob.</a>
+<a name="ln1043">bool can_go_straight(const monster* mon, const coord_def&amp; p1,</a>
+<a name="ln1044">                     const coord_def&amp; p2)</a>
+<a name="ln1045">{</a>
+<a name="ln1046">    // If no distance, then trivially true</a>
+<a name="ln1047">    if (p1 == p2)</a>
+<a name="ln1048">        return true;</a>
+<a name="ln1049"> </a>
+<a name="ln1050">    if (grid_distance(p1, p2) &gt; get_los_radius())</a>
+<a name="ln1051">        return false;</a>
+<a name="ln1052"> </a>
+<a name="ln1053">    // XXX: Hack to improve results for now. See FIXME above.</a>
+<a name="ln1054">    ray_def ray;</a>
+<a name="ln1055">    if (!find_ray(p1, p2, ray, opacity_mons_immob(mon)))</a>
+<a name="ln1056">        return false;</a>
+<a name="ln1057"> </a>
+<a name="ln1058">    while (ray.advance() &amp;&amp; ray.pos() != p2)</a>
+<a name="ln1059">        if (!_can_safely_go_through(mon, ray.pos()))</a>
+<a name="ln1060">            return false;</a>
+<a name="ln1061"> </a>
+<a name="ln1062">    return true;</a>
+<a name="ln1063">}</a>
+
+</code></pre>
+<div class="balloon" rel="922"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

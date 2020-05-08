@@ -1,0 +1,849 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>l-moninf.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*** Monster information.</a>
+<a name="ln2"> * @module monster</a>
+<a name="ln3"> */</a>
+<a name="ln4">#include &quot;AppHdr.h&quot;</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;l-libs.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &lt;algorithm&gt;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;cluautil.h&quot;</a>
+<a name="ln11">#include &quot;coord.h&quot;</a>
+<a name="ln12">#include &quot;env.h&quot;</a>
+<a name="ln13">#include &quot;l-defs.h&quot;</a>
+<a name="ln14">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln15">#include &quot;mon-book.h&quot;</a>
+<a name="ln16">#include &quot;mon-pick.h&quot;</a>
+<a name="ln17">#include &quot;spl-util.h&quot;</a>
+<a name="ln18">#include &quot;stringutil.h&quot;</a>
+<a name="ln19">#include &quot;transform.h&quot;</a>
+<a name="ln20">#include &quot;math.h&quot; // ceil</a>
+<a name="ln21">#include &quot;spl-zap.h&quot; // calc_spell_power</a>
+<a name="ln22">#include &quot;evoke.h&quot; // wand_mp_cost</a>
+<a name="ln23">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln24">#include &quot;god-abil.h&quot; // pakellas_effective_hex_power</a>
+<a name="ln25">#endif</a>
+<a name="ln26">#include &quot;describe.h&quot; // describe_info, get_monster_db_desc</a>
+<a name="ln27"> </a>
+<a name="ln28">#define MONINF_METATABLE &quot;monster.info&quot;</a>
+<a name="ln29"> </a>
+<a name="ln30">void lua_push_moninf(lua_State *ls, monster_info *mi)</a>
+<a name="ln31">{</a>
+<a name="ln32">    monster_info **miref =</a>
+<a name="ln33">        clua_new_userdata&lt;monster_info *&gt;(ls, MONINF_METATABLE);</a>
+<a name="ln34">    *miref = new monster_info(*mi);</a>
+<a name="ln35">}</a>
+<a name="ln36"> </a>
+<a name="ln37">#define MONINF(ls, n, var) \</a>
+<a name="ln38">    monster_info *var = *(monster_info **) \</a>
+<a name="ln39">        luaL_checkudata(ls, n, MONINF_METATABLE); \</a>
+<a name="ln40">    if (!var) \</a>
+<a name="ln41">        return 0</a>
+<a name="ln42"> </a>
+<a name="ln43">#define MIRET1(type, field, cfield) \</a>
+<a name="ln44">    static int moninf_get_##field(lua_State *ls) \</a>
+<a name="ln45">    { \</a>
+<a name="ln46">        MONINF(ls, 1, mi); \</a>
+<a name="ln47">        lua_push##type(ls, mi-&gt;cfield); \</a>
+<a name="ln48">        return 1; \</a>
+<a name="ln49">    }</a>
+<a name="ln50"> </a>
+<a name="ln51">#define MIREG(field) { #field, moninf_get_##field }</a>
+<a name="ln52"> </a>
+<a name="ln53">/*** Monster information class.</a>
+<a name="ln54"> * @type monster.info</a>
+<a name="ln55"> */</a>
+<a name="ln56">/*** How hurt is this monster?</a>
+<a name="ln57"> * Numeric representation of the level of damage sustained by the monster.</a>
+<a name="ln58"> * Return value ranges from 0 (full HP) to 6 (dead).</a>
+<a name="ln59"> * @treturn boolean</a>
+<a name="ln60"> * @function damage_level</a>
+<a name="ln61"> */</a>
+<a name="ln62">MIRET1(number, damage_level, dam)</a>
+<a name="ln63">/*** Is this monster safe by default?</a>
+<a name="ln64"> * Check if this monster is thought of as safe by crawl internally. Does not</a>
+<a name="ln65"> * check @{Hooks.ch_mon_is_safe}, so this can be used there without causing an</a>
+<a name="ln66"> * infinite loop.</a>
+<a name="ln67"> * @treturn boolean</a>
+<a name="ln68"> * @function is_safe</a>
+<a name="ln69"> */</a>
+<a name="ln70">MIRET1(boolean, is_safe, is(MB_SAFE))</a>
+<a name="ln71">/*** Is this monster firewood.</a>
+<a name="ln72"> * Plants and fungi. Immobile things that give no exp.</a>
+<a name="ln73"> * @treturn boolean</a>
+<a name="ln74"> * @function is_firewood</a>
+<a name="ln75"> */</a>
+<a name="ln76">MIRET1(boolean, is_firewood, is(MB_FIREWOOD))</a>
+<a name="ln77">/*** The monster's current attitude.</a>
+<a name="ln78"> * A numerical value representing the monster's attitude. Possible values:</a>
+<a name="ln79"> *</a>
+<a name="ln80"> * - 0 hostile</a>
+<a name="ln81"> * - 1 neutral</a>
+<a name="ln82"> * - 2 strict neutral (neutral but won't attack the player)</a>
+<a name="ln83"> * - 3 good neutral (neutral but won't attack friendlies)</a>
+<a name="ln84"> * - 4 friendly (created friendly, not enslavement)</a>
+<a name="ln85"> *</a>
+<a name="ln86"> * @treturn int</a>
+<a name="ln87"> * @function attitude</a>
+<a name="ln88"> */</a>
+<a name="ln89">MIRET1(number, attitude, attitude)</a>
+<a name="ln90">/*** The monster's threat level.</a>
+<a name="ln91"> * A numeric representation of the the threat level in the monster list.</a>
+<a name="ln92"> *</a>
+<a name="ln93"> * - 0 dark grey threat (trivial)</a>
+<a name="ln94"> * - 1 light grey threat (easy)</a>
+<a name="ln95"> * - 2 yellow threat (dangerous)</a>
+<a name="ln96"> * - 3 red threat (extremely dangerous)</a>
+<a name="ln97"> *</a>
+<a name="ln98"> * @treturn int</a>
+<a name="ln99"> * @function threat</a>
+<a name="ln100"> */</a>
+<a name="ln101">MIRET1(number, threat, threat)</a>
+<a name="ln102">/*** Simple monster name.</a>
+<a name="ln103"> * Returns the name of the monster.</a>
+<a name="ln104"> * @treturn string</a>
+<a name="ln105"> * @see name</a>
+<a name="ln106"> * @function mname</a>
+<a name="ln107"> */</a>
+<a name="ln108">MIRET1(string, mname, mname.c_str())</a>
+<a name="ln109">/*** Monster type enum value as in monster_type.h.</a>
+<a name="ln110"> * @treturn int</a>
+<a name="ln111"> * @function type</a>
+<a name="ln112"> */</a>
+<a name="ln113">MIRET1(number, type, type)</a>
+<a name="ln114">/*** Monster base type as in monster_type.h.</a>
+<a name="ln115"> * @treturn int</a>
+<a name="ln116"> * @function base_type</a>
+<a name="ln117"> */</a>
+<a name="ln118">MIRET1(number, base_type, base_type)</a>
+<a name="ln119">/*** Monster number field.</a>
+<a name="ln120"> * Contains hydra heads or slime size. Meaningless for all others.</a>
+<a name="ln121"> * @treturn int</a>
+<a name="ln122"> * @function number</a>
+<a name="ln123"> */</a>
+<a name="ln124">MIRET1(number, number, number)</a>
+<a name="ln125">/*** Does this monster have a ranged attack we know about?</a>
+<a name="ln126"> * This refers to ranged weapons. Ranged spells and abilities are not included</a>
+<a name="ln127"> * in this check.</a>
+<a name="ln128"> * @treturn boolean</a>
+<a name="ln129"> * @function has_ranged_attack</a>
+<a name="ln130"> */</a>
+<a name="ln131">MIRET1(boolean, has_known_ranged_attack, is(MB_RANGED_ATTACK))</a>
+<a name="ln132">/*** A string describing monster speed.</a>
+<a name="ln133"> * Possible values are: &quot;very slow&quot;, &quot;slow&quot;, &quot;normal&quot;, &quot;fast&quot;, &quot;very fast&quot;, and</a>
+<a name="ln134"> * &quot;extremely fast&quot;.</a>
+<a name="ln135"> * @treturn string</a>
+<a name="ln136"> * @function speed_description</a>
+<a name="ln137"> */</a>
+<a name="ln138">MIRET1(string, speed_description, speed_description().c_str())</a>
+<a name="ln139">/*** The monster's x coordinate in player centered coordinates.</a>
+<a name="ln140"> * @treturn int</a>
+<a name="ln141"> * @function x_pos</a>
+<a name="ln142"> */</a>
+<a name="ln143">MIRET1(number, x_pos, pos.x - you.pos().x)</a>
+<a name="ln144">/*** The monster's y coordinate in player centered coordinates.</a>
+<a name="ln145"> * @treturn int</a>
+<a name="ln146"> * @function y_pos</a>
+<a name="ln147"> */</a>
+<a name="ln148">MIRET1(number, y_pos, pos.y - you.pos().y)</a>
+<a name="ln149"> </a>
+<a name="ln150">/*** Monster glyph colour.</a>
+<a name="ln151"> * Return is a crawl colour number.</a>
+<a name="ln152"> * @treturn int</a>
+<a name="ln153"> * @function colour</a>
+<a name="ln154"> */</a>
+<a name="ln155">static int moninf_get_colour(lua_State *ls)</a>
+<a name="ln156">{</a>
+<a name="ln157">    MONINF(ls, 1, mi);</a>
+<a name="ln158">    lua_pushnumber(ls, mi-&gt;colour());</a>
+<a name="ln159">    return 1;</a>
+<a name="ln160">}</a>
+<a name="ln161"> </a>
+<a name="ln162">/*** The x,y coordinates of the monster in player centered coordinates.</a>
+<a name="ln163"> * @treturn int</a>
+<a name="ln164"> * @treturn int</a>
+<a name="ln165"> * @function pos</a>
+<a name="ln166"> */</a>
+<a name="ln167">static int moninf_get_pos(lua_State *ls)</a>
+<a name="ln168">{</a>
+<a name="ln169">    MONINF(ls, 1, mi);</a>
+<a name="ln170">    lua_pushnumber(ls, mi-&gt;pos.x - you.pos().x);</a>
+<a name="ln171">    lua_pushnumber(ls, mi-&gt;pos.y - you.pos().y);</a>
+<a name="ln172">    return 2;</a>
+<a name="ln173">}</a>
+<a name="ln174"> </a>
+<a name="ln175">#define MIRES1(field, resist) \</a>
+<a name="ln176">    static int moninf_get_##field(lua_State *ls) \</a>
+<a name="ln177">    { \</a>
+<a name="ln178">        MONINF(ls, 1, mi); \</a>
+<a name="ln179">        lua_pushnumber(ls, get_resist(mi-&gt;resists(), resist)); \</a>
+<a name="ln180">        return 1; \</a>
+<a name="ln181">    }</a>
+<a name="ln182"> </a>
+<a name="ln183">// Named for consistency with the player resists.</a>
+<a name="ln184">/*** Does the monster resist poison?</a>
+<a name="ln185"> * Returns a value ranging from -1 (vulnerable) to 3 (immune).</a>
+<a name="ln186"> * @treturn int resistance level</a>
+<a name="ln187"> * @function res_poison</a>
+<a name="ln188"> */</a>
+<a name="ln189">MIRES1(res_poison, MR_RES_POISON)</a>
+<a name="ln190">/*** Does the monster resist fire?</a>
+<a name="ln191"> * Returns a value ranging from -1 (vulnerable) to 3 (immune).</a>
+<a name="ln192"> * @treturn int resistance level</a>
+<a name="ln193"> * @function res_fire</a>
+<a name="ln194"> */</a>
+<a name="ln195">MIRES1(res_fire, MR_RES_FIRE)</a>
+<a name="ln196">/*** Does the monster resist cold?</a>
+<a name="ln197"> * Returns a value ranging from -1 (vulnerable) to 3 (immune).</a>
+<a name="ln198"> * @treturn int resistance level</a>
+<a name="ln199"> * @function res_cold</a>
+<a name="ln200"> */</a>
+<a name="ln201">MIRES1(res_cold, MR_RES_COLD)</a>
+<a name="ln202">/*** Does the monster resist negative energy?</a>
+<a name="ln203"> * Returns a value ranging from -1 (vulnerable) to 3 (immune).</a>
+<a name="ln204"> * @treturn int resistance level</a>
+<a name="ln205"> * @function res_draining</a>
+<a name="ln206"> */</a>
+<a name="ln207">MIRES1(res_draining, MR_RES_NEG)</a>
+<a name="ln208">/*** Does the monster resist electricity?</a>
+<a name="ln209"> * Returns a value ranging from -1 (vulnerable) to 3 (immune).</a>
+<a name="ln210"> * @treturn int resistance level</a>
+<a name="ln211"> * @function res_shock</a>
+<a name="ln212"> */</a>
+<a name="ln213">MIRES1(res_shock, MR_RES_ELEC)</a>
+<a name="ln214">/*** Does the monster resist corrosion?</a>
+<a name="ln215"> * Returns a value ranging from -1 (vulnerable) to 3 (immune).</a>
+<a name="ln216"> * @treturn int resistance level</a>
+<a name="ln217"> * @function res_corr</a>
+<a name="ln218"> */</a>
+<a name="ln219">MIRES1(res_corr, MR_RES_ACID)</a>
+<a name="ln220">/*** Can the monster currently be frenzied?</a>
+<a name="ln221"> * Is it possible to affect the monster with the discord spell or a datura</a>
+<a name="ln222"> * dart?</a>
+<a name="ln223"> * @treturn boolean</a>
+<a name="ln224"> * @function can_go_frenzy</a>
+<a name="ln225"> */</a>
+<a name="ln226">MIRET1(boolean, can_go_frenzy, can_go_frenzy)</a>
+<a name="ln227"> </a>
+<a name="ln228">/*** The monster's max HP given in its description.</a>
+<a name="ln229"> * @treturn string describing the max HP (usually &quot;about X&quot;).</a>
+<a name="ln230"> * @function max_hp</a>
+<a name="ln231"> */</a>
+<a name="ln232">static int moninf_get_max_hp(lua_State *ls)</a>
+<a name="ln233">{</a>
+<a name="ln234">    MONINF(ls, 1, mi);</a>
+<a name="ln235">    lua_pushstring(ls, mi-&gt;get_max_hp_desc().c_str());</a>
+<a name="ln236">    return 1;</a>
+<a name="ln237">}</a>
+<a name="ln238"> </a>
+<a name="ln239">/*** The monster's MR level, in &quot;pips&quot; (number of +'s shown on its description).</a>
+<a name="ln240"> * Returns a value ranging from 0 to 125 (immune).</a>
+<a name="ln241"> * @treturn int MR level</a>
+<a name="ln242"> * @function mr</a>
+<a name="ln243"> */</a>
+<a name="ln244">static int moninf_get_mr(lua_State *ls)</a>
+<a name="ln245">{</a>
+<a name="ln246">    MONINF(ls, 1, mi);</a>
+<a name="ln247">    lua_pushnumber(ls, ceil(1.0*mi-&gt;res_magic()/MR_PIP));</a>
+<a name="ln248">    return 1;</a>
+<a name="ln249">}</a>
+<a name="ln250"> </a>
+<a name="ln251">/*** Your probability of defeating the monster's MR with a given spell or zap.</a>
+<a name="ln252"> * Returns a value ranging from 0 (no chance) to 100 (guaranteed success).</a>
+<a name="ln253"> *    Returns nil if MR does not apply or the spell can't be cast.</a>
+<a name="ln254"> * @tparam string spell name</a>
+<a name="ln255"> * @tparam[opt] boolean true if this spell is evoked rather than cast;</a>
+<a name="ln256"> *    defaults to false</a>
+<a name="ln257"> * @treturn int|string|nil percent chance of success (0-100);</a>
+<a name="ln258"> *     returns &quot;magic immune&quot; if monster is immune;</a>
+<a name="ln259"> *     returns nil if MR does not apply.</a>
+<a name="ln260"> * @function defeat_mr</a>
+<a name="ln261"> */</a>
+<a name="ln262">static int moninf_get_defeat_mr(lua_State *ls)</a>
+<a name="ln263">{</a>
+<a name="ln264">    MONINF(ls, 1, mi);</a>
+<a name="ln265">    spell_type spell = spell_by_name(luaL_checkstring(ls, 2), false);</a>
+<a name="ln266">    bool is_evoked = lua_isboolean(ls, 3) ? lua_toboolean(ls, 3) : false;</a>
+<a name="ln267">    int power = is_evoked ?</a>
+<a name="ln268">        (15 + you.skill(SK_EVOCATIONS, 7) / 2) * (wand_mp_cost() + 9) / 9 :</a>
+<a name="ln269">        calc_spell_power(spell, true);</a>
+<a name="ln270">    spell_flags flags = get_spell_flags(spell);</a>
+<a name="ln271">    bool mr_check = testbits(flags, spflag::MR_check)</a>
+<a name="ln272">        &amp;&amp; testbits(flags, spflag::dir_or_target)</a>
+<a name="ln273">        &amp;&amp; !testbits(flags, spflag::helpful);</a>
+<a name="ln274">    if (power &lt;= 0 || !mr_check)</a>
+<a name="ln275">    {</a>
+<a name="ln276">        lua_pushnil(ls);</a>
+<a name="ln277">        return 1;</a>
+<a name="ln278">    }</a>
+<a name="ln279">    int mr = mi-&gt;res_magic();</a>
+<a name="ln280">    if (mr == MAG_IMMUNE)</a>
+<a name="ln281">    {</a>
+<a name="ln282">        lua_pushstring(ls, &quot;magic immune&quot;);</a>
+<a name="ln283">        return 1;</a>
+<a name="ln284">    }</a>
+<a name="ln285">    zap_type zap = spell_to_zap(spell);</a>
+<a name="ln286">    int eff_power = zap == NUM_ZAPS ? power : zap_ench_power(zap, power, false);</a>
+<a name="ln287">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln288">    int adj_power = is_evoked ? pakellas_effective_hex_power(eff_power) : eff_power;</a>
+<a name="ln289">    int success = hex_success_chance(mr, adj_power, 100);</a>
+<a name="ln290">#else</a>
+<a name="ln291">    int success = hex_success_chance(mr, eff_power, 100);</a>
+<a name="ln292">#endif</a>
+<a name="ln293">    lua_pushnumber(ls, success);</a>
+<a name="ln294">    return 1;</a>
+<a name="ln295">}</a>
+<a name="ln296"> </a>
+<a name="ln297">/*** The monster's AC value, in &quot;pips&quot; (number of +'s shown on its description).</a>
+<a name="ln298"> * Returns a value ranging from 0 to 5 (highest).</a>
+<a name="ln299"> * @treturn int AC level</a>
+<a name="ln300"> * @function ac</a>
+<a name="ln301"> */</a>
+<a name="ln302">static int moninf_get_ac(lua_State *ls)</a>
+<a name="ln303">{</a>
+<a name="ln304">    MONINF(ls, 1, mi);</a>
+<a name="ln305">    lua_pushnumber(ls, ceil(mi-&gt;ac/5.0));</a>
+<a name="ln306">    return 1;</a>
+<a name="ln307">}</a>
+<a name="ln308">/*** The monster's EV value, in &quot;pips&quot; (number of +'s shown on its description).</a>
+<a name="ln309"> * Returns a value ranging from 0 to 5 (highest).</a>
+<a name="ln310"> * @treturn int evasion level</a>
+<a name="ln311"> * @function ev</a>
+<a name="ln312"> */</a>
+<a name="ln313">static int moninf_get_ev(lua_State *ls)</a>
+<a name="ln314">{</a>
+<a name="ln315">    MONINF(ls, 1, mi);</a>
+<a name="ln316">    int value = mi-&gt;ev;</a>
+<a name="ln317">    if (!value &amp;&amp; mi-&gt;base_ev != INT_MAX)</a>
+<a name="ln318">        value = mi-&gt;base_ev;</a>
+<a name="ln319">    lua_pushnumber(ls, ceil(value/5.0));</a>
+<a name="ln320">    return 1;</a>
+<a name="ln321">}</a>
+<a name="ln322"> </a>
+<a name="ln323">/*** Get the monster's holiness.</a>
+<a name="ln324"> * If passed a holiness, returns a boolean test of whether the monster has the</a>
+<a name="ln325"> * given holiness. Otherwise returns a string describing the monster's</a>
+<a name="ln326"> * holiness.</a>
+<a name="ln327"> *</a>
+<a name="ln328"> * Possible holinesses: &quot;holy&quot;, &quot;natural&quot;, &quot;undead&quot;, &quot;demonic&quot;,</a>
+<a name="ln329"> * &quot;nonliving&quot;, &quot;plant&quot;, &quot;evil&quot;. Evil is a pseudo-holiness given to natural,</a>
+<a name="ln330"> * nonliving, or plant monsters that are hated by the good gods for the spells</a>
+<a name="ln331"> * they cast or gods they worship.</a>
+<a name="ln332"> * @tparam[opt] string holiness</a>
+<a name="ln333"> * @treturn string|boolean</a>
+<a name="ln334"> * @function holiness</a>
+<a name="ln335"> */</a>
+<a name="ln336">LUAFN(moninf_get_holiness)</a>
+<a name="ln337">{</a>
+<a name="ln338">    MONINF(ls, 1, mi);</a>
+<a name="ln339"> </a>
+<a name="ln340">    string holi = luaL_checkstring(ls, 2);</a>
+<a name="ln341">    lowercase(holi);</a>
+<a name="ln342">    mon_holy_type arg = holiness_by_name(holi);</a>
+<a name="ln343">    if (!holi.empty() &amp;&amp; arg == MH_NONE)</a>
+<a name="ln344">    {</a>
+<a name="ln345">        luaL_argerror(ls, 2, (string(&quot;no such holiness: '&quot;)</a>
+<a name="ln346">                              + holi + &quot;'&quot;).c_str());</a>
+<a name="ln347">        return 0;</a>
+<a name="ln348">    }</a>
+<a name="ln349"> </a>
+<a name="ln350">    if (!holi.empty())</a>
+<a name="ln351">        PLUARET(boolean, bool(mi-&gt;holi &amp; arg));</a>
+<a name="ln352">    else</a>
+<a name="ln353">        PLUARET(string, holiness_description(mi-&gt;holi).c_str());</a>
+<a name="ln354">}</a>
+<a name="ln355"> </a>
+<a name="ln356">/*** Get the monster's average depth of (random) generation in the current branch</a>
+<a name="ln357"> * Returns -1 if the monster is not generated in this branch. Does not handle</a>
+<a name="ln358"> * fish or zombies.</a>
+<a name="ln359"> * @treturn number</a>
+<a name="ln360"> * @function avg_local_depth</a>
+<a name="ln361"> */</a>
+<a name="ln362">LUAFN(moninf_get_avg_local_depth)</a>
+<a name="ln363">{</a>
+<a name="ln364">    MONINF(ls, 1, mi);</a>
+<a name="ln365">    PLUARET(number, monster_pop_depth_avg(you.where_are_you, mi-&gt;type));</a>
+<a name="ln366">}</a>
+<a name="ln367"> </a>
+<a name="ln368">/*** Get the monster's probability of randomly generating on the current floor</a>
+<a name="ln369"> * This can be used to estimate difficulty, but keep in mind that it is highly</a>
+<a name="ln370"> * dependent on the branch's generation table.</a>
+<a name="ln371"> * Returns -1 if the monster is not generated in this branch. Does not handle</a>
+<a name="ln372"> * fish or zombies.</a>
+<a name="ln373"> * @treturn number</a>
+<a name="ln374"> * @function avg_local_prob</a>
+<a name="ln375"> */</a>
+<a name="ln376">LUAFN(moninf_get_avg_local_prob)</a>
+<a name="ln377">{</a>
+<a name="ln378">    MONINF(ls, 1, mi);</a>
+<a name="ln379">    PLUARET(number, monster_probability(level_id::current(), mi-&gt;type));</a>
+<a name="ln380">}</a>
+<a name="ln381"> </a>
+<a name="ln382"> </a>
+<a name="ln383">// const char* here would save a tiny bit of memory, but every map</a>
+<a name="ln384">// for an unique pair of types costs 35KB of code. We have</a>
+<a name="ln385">// map&lt;string, int&gt; elsewhere.</a>
+<a name="ln386">static map&lt;string, int&gt; mi_flags;</a>
+<a name="ln387">static void _init_mi_flags()</a>
+<a name="ln388">{</a>
+<a name="ln389">    int f = 0;</a>
+<a name="ln390">#define MI_FLAG(x) mi_flags[x] = f++;</a>
+<a name="ln391">#include &quot;mi-enum.h&quot;</a>
+<a name="ln392">#undef MI_FLAG</a>
+<a name="ln393">}</a>
+<a name="ln394"> </a>
+<a name="ln395">/*** Test a monster flag.</a>
+<a name="ln396"> * Check if a monster has a flag set. See `mi-flag.h` for a list of flags.</a>
+<a name="ln397"> * @tparam string flagname</a>
+<a name="ln398"> * @treturn boolean</a>
+<a name="ln399"> * @function is</a>
+<a name="ln400"> */</a>
+<a name="ln401">LUAFN(moninf_get_is)</a>
+<a name="ln402">{</a>
+<a name="ln403">    MONINF(ls, 1, mi);</a>
+<a name="ln404">    int num = -1;</a>
+<a name="ln405">    if (lua_isnumber(ls, 2)) // legacy scripts</a>
+<a name="ln406">        num = lua_tonumber(ls, 2);</a>
+<a name="ln407">    else</a>
+<a name="ln408">    {</a>
+<a name="ln409">        if (mi_flags.empty())</a>
+<a name="ln410">            _init_mi_flags();</a>
+<a name="ln411">        string flag = luaL_checkstring(ls, 2);</a>
+<a name="ln412">        if (int *flagnum = map_find(mi_flags, lowercase(flag)))</a>
+<a name="ln413">            num = *flagnum;</a>
+<a name="ln414">        else</a>
+<a name="ln415">        {</a>
+<a name="ln416">            luaL_argerror(ls, 2, (string(&quot;no such moninf flag: '&quot;)</a>
+<a name="ln417">                                  + flag + &quot;'&quot;).c_str());</a>
+<a name="ln418">            return 0;</a>
+<a name="ln419">        }</a>
+<a name="ln420">    }</a>
+<a name="ln421">    if (num &lt; 0 || num &gt;= NUM_MB_FLAGS)</a>
+<a name="ln422">    {</a>
+<a name="ln423">        luaL_argerror(ls, 2, &quot;mb:is() out of bounds&quot;);</a>
+<a name="ln424">        return 0;</a>
+<a name="ln425">    }</a>
+<a name="ln426">    lua_pushboolean(ls, mi-&gt;is(num));</a>
+<a name="ln427">    return 1;</a>
+<a name="ln428">}</a>
+<a name="ln429"> </a>
+<a name="ln430">/*** Get the monster's possible spells.</a>
+<a name="ln431"> * Returns a list of the monster's possible spellbooks. Each spellbook is given</a>
+<a name="ln432"> * as a list of spell names.</a>
+<a name="ln433"> * @treturn array</a>
+<a name="ln434"> * @function spells</a>
+<a name="ln435"> */</a>
+<a name="ln436">LUAFN(moninf_get_spells)</a>
+<a name="ln437">{</a>
+<a name="ln438">    MONINF(ls, 1, mi);</a>
+<a name="ln439"> </a>
+<a name="ln440">    lua_newtable(ls);</a>
+<a name="ln441"> </a>
+<a name="ln442">    if (!mi-&gt;has_spells())</a>
+<a name="ln443">        return 1;</a>
+<a name="ln444"> </a>
+<a name="ln445">    unique_books books = get_unique_spells(*mi);</a>
+<a name="ln446">    const size_t num_books = books.size();</a>
+<a name="ln447"> </a>
+<a name="ln448">    for (size_t i = 0; i &lt; num_books; ++i)</a>
+<a name="ln449">    {</a>
+<a name="ln450">        const vector&lt;mon_spell_slot&gt; &amp;unique_slots = books[i];</a>
+<a name="ln451">        vector&lt;string&gt; spell_titles;</a>
+<a name="ln452"> </a>
+<a name="ln453">        for (const auto&amp; slot : unique_slots)</a>
+<a name="ln454">            spell_titles.emplace_back(spell_title(slot.spell));</a>
+<a name="ln455"> </a>
+<a name="ln456">        clua_stringtable(ls, spell_titles);</a>
+<a name="ln457">        lua_rawseti(ls, -2, i+1);</a>
+<a name="ln458">    }</a>
+<a name="ln459"> </a>
+<a name="ln460">    return 1;</a>
+<a name="ln461">}</a>
+<a name="ln462"> </a>
+<a name="ln463">static bool cant_see_you(const monster_info *mi)</a>
+<a name="ln464">{</a>
+<a name="ln465">    if (mons_class_flag(mi-&gt;type, M_SEE_INVIS))</a>
+<a name="ln466">        return false;</a>
+<a name="ln467">    if (you.in_water())</a>
+<a name="ln468">        return false;</a>
+<a name="ln469">    return you.invisible() || mi-&gt;is(MB_BLIND);</a>
+<a name="ln470">}</a>
+<a name="ln471"> </a>
+<a name="ln472">/*** What quality of stab can you get on this monster?</a>
+<a name="ln473"> * The return value is a number representing the percentage of a top-tier stab</a>
+<a name="ln474"> * you can currently get by attacking the monster. Possible values are:</a>
+<a name="ln475"> *</a>
+<a name="ln476"> * - 1.0 Sleep and paralysis stabs.</a>
+<a name="ln477"> * - 0.5 Net, web, and petrification stabs.</a>
+<a name="ln478"> * - 0.25 Confusion, fear, and invisibility stabs.</a>
+<a name="ln479"> * - 0.166666666 Distraction stabs.</a>
+<a name="ln480"> * - 0.0 No stab bonus.</a>
+<a name="ln481"> *</a>
+<a name="ln482"> * @treturn number</a>
+<a name="ln483"> * @function stabbability</a>
+<a name="ln484"> */</a>
+<a name="ln485">LUAFN(moninf_get_stabbability)</a>
+<a name="ln486">{</a>
+<a name="ln487">    MONINF(ls, 1, mi);</a>
+<a name="ln488">    if (mi-&gt;is(MB_DORMANT) || mi-&gt;is(MB_SLEEPING) || mi-&gt;is(MB_PARALYSED))</a>
+<a name="ln489">        lua_pushnumber(ls, 1.0);</a>
+<a name="ln490">    else if (mi-&gt;is(MB_CAUGHT) || mi-&gt;is(MB_WEBBED) || mi-&gt;is(MB_PETRIFYING)</a>
+<a name="ln491">             || mi-&gt;is(MB_PETRIFIED))</a>
+<a name="ln492">    {</a>
+<a name="ln493">        lua_pushnumber(ls, 0.5);</a>
+<a name="ln494">    }</a>
+<a name="ln495">    else if (mi-&gt;is(MB_CONFUSED) || mi-&gt;is(MB_FLEEING) || cant_see_you(mi))</a>
+<a name="ln496">        lua_pushnumber(ls, 0.25);</a>
+<a name="ln497">    else if (mi-&gt;is(MB_DISTRACTED))</a>
+<a name="ln498">        lua_pushnumber(ls, 0.16666666);</a>
+<a name="ln499">    else</a>
+<a name="ln500">        lua_pushnumber(ls, 0);</a>
+<a name="ln501"> </a>
+<a name="ln502">    return 1;</a>
+<a name="ln503">}</a>
+<a name="ln504"> </a>
+<a name="ln505">/*** Is the monster caught in something?</a>
+<a name="ln506"> * Tests for nets or webs.</a>
+<a name="ln507"> * @treturn boolean</a>
+<a name="ln508"> * @function is_caught</a>
+<a name="ln509"> */</a>
+<a name="ln510">LUAFN(moninf_get_is_caught)</a>
+<a name="ln511">{</a>
+<a name="ln512">    MONINF(ls, 1, mi);</a>
+<a name="ln513">    lua_pushboolean(ls, mi-&gt;is(MB_CAUGHT) || mi-&gt;is(MB_WEBBED));</a>
+<a name="ln514">    return 1;</a>
+<a name="ln515">}</a>
+<a name="ln516"> </a>
+<a name="ln517">/*** Is the monster constricted?</a>
+<a name="ln518"> * @treturn boolean</a>
+<a name="ln519"> * @function is_constricted</a>
+<a name="ln520"> */</a>
+<a name="ln521">LUAFN(moninf_get_is_constricted)</a>
+<a name="ln522">{</a>
+<a name="ln523">    MONINF(ls, 1, mi);</a>
+<a name="ln524">    lua_pushboolean(ls, (mi-&gt;constrictor_name.find(&quot;constricted by&quot;) == 0)</a>
+<a name="ln525">                     || (mi-&gt;constrictor_name.find(&quot;held by&quot;) == 0));</a>
+<a name="ln526">    return 1;</a>
+<a name="ln527">}</a>
+<a name="ln528"> </a>
+<a name="ln529">/*** Is the monster constricting something?</a>
+<a name="ln530"> * @treturn boolean</a>
+<a name="ln531"> * @function is_constricting</a>
+<a name="ln532"> */</a>
+<a name="ln533">LUAFN(moninf_get_is_constricting)</a>
+<a name="ln534">{</a>
+<a name="ln535">    MONINF(ls, 1, mi);</a>
+<a name="ln536">    lua_pushboolean(ls, !mi-&gt;constricting_name.empty());</a>
+<a name="ln537">    return 1;</a>
+<a name="ln538">}</a>
+<a name="ln539"> </a>
+<a name="ln540">/*** Is the monster constricting you in particular?</a>
+<a name="ln541"> * @treturn boolean</a>
+<a name="ln542"> * @function is_constricting_you</a>
+<a name="ln543"> */</a>
+<a name="ln544">LUAFN(moninf_get_is_constricting_you)</a>
+<a name="ln545">{</a>
+<a name="ln546">    MONINF(ls, 1, mi);</a>
+<a name="ln547">    if (!you.is_constricted())</a>
+<a name="ln548">    {</a>
+<a name="ln549">        lua_pushboolean(ls, false);</a>
+<a name="ln550">        return 1;</a>
+<a name="ln551">    }</a>
+<a name="ln552"> </a>
+<a name="ln553">    // yay the interface</a>
+<a name="ln554">    lua_pushboolean(ls, (find(mi-&gt;constricting_name.begin(),</a>
+<a name="ln555">                              mi-&gt;constricting_name.end(), &quot;constricting you&quot;)</a>
+<a name="ln556">                         != mi-&gt;constricting_name.end())</a>
+<a name="ln557">                     || (find(mi-&gt;constricting_name.begin(),</a>
+<a name="ln558">                              mi-&gt;constricting_name.end(), &quot;holding you&quot;)</a>
+<a name="ln559">                         != mi-&gt;constricting_name.end()));</a>
+<a name="ln560">    return 1;</a>
+<a name="ln561">}</a>
+<a name="ln562"> </a>
+<a name="ln563">/*** Can this monster be constricted?</a>
+<a name="ln564"> * @treturn boolean</a>
+<a name="ln565"> * @function can_be_constricted</a>
+<a name="ln566"> */</a>
+<a name="ln567">LUAFN(moninf_get_can_be_constricted)</a>
+<a name="ln568">{</a>
+<a name="ln569">    MONINF(ls, 1, mi);</a>
+<a name="ln570">    if (!mi-&gt;constrictor_name.empty()</a>
+<a name="ln571">        || !form_keeps_mutations()</a>
+<a name="ln572">        || (you.species != SP_NAGA</a>
+<a name="ln573">            || you.experience_level &lt;= 12</a>
+<a name="ln574">            || you.is_constricting())</a>
+<a name="ln575">         &amp;&amp; (you.species != SP_OCTOPODE || !you.has_usable_tentacle()))</a>
+<a name="ln576">    {</a>
+<a name="ln577">        lua_pushboolean(ls, false);</a>
+<a name="ln578">    }</a>
+<a name="ln579">    else</a>
+<a name="ln580">    {</a>
+<a name="ln581">        monster dummy;</a>
+<a name="ln582">        dummy.type = mi-&gt;type;</a>
+<a name="ln583">        dummy.base_monster = mi-&gt;base_type;</a>
+<a name="ln584">        lua_pushboolean(ls, dummy.res_constrict() &lt; 3);</a>
+<a name="ln585">    }</a>
+<a name="ln586">    return 1;</a>
+<a name="ln587">}</a>
+<a name="ln588"> </a>
+<a name="ln589">/*** How far can the monster reach with their melee weapon?</a>
+<a name="ln590"> * @treturn int</a>
+<a name="ln591"> * @function reach_range</a>
+<a name="ln592"> */</a>
+<a name="ln593">LUAFN(moninf_get_reach_range)</a>
+<a name="ln594">{</a>
+<a name="ln595">    MONINF(ls, 1, mi);</a>
+<a name="ln596"> </a>
+<a name="ln597">    lua_pushnumber(ls, mi-&gt;reach_range());</a>
+<a name="ln598">    return 1;</a>
+<a name="ln599">}</a>
+<a name="ln600"> </a>
+<a name="ln601">/*** Is this monster a unique?</a>
+<a name="ln602"> * @treturn boolean</a>
+<a name="ln603"> * @function is_unique</a>
+<a name="ln604"> */</a>
+<a name="ln605">LUAFN(moninf_get_is_unique)</a>
+<a name="ln606">{</a>
+<a name="ln607">    MONINF(ls, 1, mi);</a>
+<a name="ln608">    lua_pushboolean(ls, mons_is_unique(mi-&gt;type));</a>
+<a name="ln609">    return 1;</a>
+<a name="ln610">}</a>
+<a name="ln611"> </a>
+<a name="ln612">/*** Can this monster move?</a>
+<a name="ln613"> * @treturn boolean</a>
+<a name="ln614"> * @function is_stationary</a>
+<a name="ln615"> */</a>
+<a name="ln616">LUAFN(moninf_get_is_stationary)</a>
+<a name="ln617">{</a>
+<a name="ln618">    MONINF(ls, 1, mi);</a>
+<a name="ln619">    lua_pushboolean(ls, mons_class_is_stationary(mi-&gt;type));</a>
+<a name="ln620">    return 1;</a>
+<a name="ln621">}</a>
+<a name="ln622"> </a>
+<a name="ln623">/*** Get a string describing how injured this monster is.</a>
+<a name="ln624"> * @treturn string</a>
+<a name="ln625"> * @function damage_desc</a>
+<a name="ln626"> */</a>
+<a name="ln627">LUAFN(moninf_get_damage_desc)</a>
+<a name="ln628">{</a>
+<a name="ln629">    MONINF(ls, 1, mi);</a>
+<a name="ln630">    string s = mi-&gt;damage_desc();</a>
+<a name="ln631">    lua_pushstring(ls, s.c_str());</a>
+<a name="ln632">    return 1;</a>
+<a name="ln633">}</a>
+<a name="ln634"> </a>
+<a name="ln635">/*** A description of this monster.</a>
+<a name="ln636"> * @tparam[opt] boolean set true to get the description information body</a>
+<a name="ln637"> *     displayed when examining the monster; if false (default) returns</a>
+<a name="ln638"> *     a short description.</a>
+<a name="ln639"> * @treturn string</a>
+<a name="ln640"> * @function desc</a>
+<a name="ln641"> */</a>
+<a name="ln642">LUAFN(moninf_get_desc)</a>
+<a name="ln643">{</a>
+<a name="ln644">    MONINF(ls, 1, mi);</a>
+<a name="ln645">    if (lua_isboolean(ls, 2) &amp;&amp; lua_toboolean(ls, 2))</a>
+<a name="ln646">    {</a>
+<a name="ln647">        // full description</a>
+<a name="ln648">        describe_info inf;</a>
+<a name="ln649">        bool has_stat_desc;</a>
+<a name="ln650">        get_monster_db_desc(*mi, inf, has_stat_desc);</a>
+<a name="ln651">        lua_pushstring(ls, inf.body.str().c_str());</a>
+<a name="ln652">    }</a>
+<a name="ln653">    else</a>
+<a name="ln654">    {</a>
+<a name="ln655">        // short description</a>
+<a name="ln656">        string desc;</a>
+<a name="ln657">        int col;</a>
+<a name="ln658">        mi-&gt;to_string(1, desc, col);</a>
+<a name="ln659">        lua_pushstring(ls, desc.c_str());</a>
+<a name="ln660">    }</a>
+<a name="ln661">    return 1;</a>
+<a name="ln662">}</a>
+<a name="ln663"> </a>
+<a name="ln664">/*** What statuses is this monster under?</a>
+<a name="ln665"> * If passed a string parameter, returns a boolean indicating if the monster</a>
+<a name="ln666"> * has that status. Otherwise returns a comma separated string with all the</a>
+<a name="ln667"> * statuses the monster has.</a>
+<a name="ln668"> * @tparam[opt] string statusname</a>
+<a name="ln669"> * @treturn string|boolean</a>
+<a name="ln670"> * @function status</a>
+<a name="ln671"> */</a>
+<a name="ln672">LUAFN(moninf_get_status)</a>
+<a name="ln673">{</a>
+<a name="ln674">    MONINF(ls, 1, mi);</a>
+<a name="ln675">    const char* which = nullptr;</a>
+<a name="ln676">    if (lua_gettop(ls) &gt;= 2)</a>
+<a name="ln677">        which = luaL_checkstring(ls, 2);</a>
+<a name="ln678"> </a>
+<a name="ln679">    vector&lt;string&gt; status = mi-&gt;attributes();</a>
+<a name="ln680">    if (!which)</a>
+<a name="ln681">    {</a>
+<a name="ln682">        PLUARET(string, comma_separated_line(status.begin(),</a>
+<a name="ln683">                                             status.end(), &quot;, &quot;).c_str());</a>
+<a name="ln684">    }</a>
+<a name="ln685">    for (const auto &amp;st : status)</a>
+<a name="ln686">        if (st == which)</a>
+<a name="ln687">            PLUARET(boolean, true);</a>
+<a name="ln688"> </a>
+<a name="ln689">    PLUARET(boolean, false);</a>
+<a name="ln690">}</a>
+<a name="ln691"> </a>
+<a name="ln692">/*** The monster's full name.</a>
+<a name="ln693"> * Includes any vault defined names, the uniques name, name changes induced by</a>
+<a name="ln694"> * polymorph, &amp;c.</a>
+<a name="ln695"> * @treturn string</a>
+<a name="ln696"> * @see mname</a>
+<a name="ln697"> * @function name</a>
+<a name="ln698"> */</a>
+<a name="ln699">LUAFN(moninf_get_name)</a>
+<a name="ln700">{</a>
+<a name="ln701">    MONINF(ls, 1, mi);</a>
+<a name="ln702">    string s = mi-&gt;full_name();</a>
+<a name="ln703">    lua_pushstring(ls, s.c_str());</a>
+<a name="ln704">    return 1;</a>
+<a name="ln705">}</a>
+<a name="ln706"> </a>
+<a name="ln707">static const struct luaL_reg moninf_lib[] =</a>
+<a name="ln708">{</a>
+<a name="ln709">    MIREG(type),</a>
+<a name="ln710">    MIREG(base_type),</a>
+<a name="ln711">    MIREG(number),</a>
+<a name="ln712">    MIREG(colour),</a>
+<a name="ln713">    MIREG(mname),</a>
+<a name="ln714">    MIREG(is),</a>
+<a name="ln715">    MIREG(is_safe),</a>
+<a name="ln716">    MIREG(is_firewood),</a>
+<a name="ln717">    MIREG(stabbability),</a>
+<a name="ln718">    MIREG(holiness),</a>
+<a name="ln719">    MIREG(attitude),</a>
+<a name="ln720">    MIREG(threat),</a>
+<a name="ln721">    MIREG(is_caught),</a>
+<a name="ln722">    MIREG(is_constricted),</a>
+<a name="ln723">    MIREG(is_constricting),</a>
+<a name="ln724">    MIREG(is_constricting_you),</a>
+<a name="ln725">    MIREG(can_be_constricted),</a>
+<a name="ln726">    MIREG(reach_range),</a>
+<a name="ln727">    MIREG(is_unique),</a>
+<a name="ln728">    MIREG(is_stationary),</a>
+<a name="ln729">    MIREG(damage_level),</a>
+<a name="ln730">    MIREG(damage_desc),</a>
+<a name="ln731">    MIREG(desc),</a>
+<a name="ln732">    MIREG(status),</a>
+<a name="ln733">    MIREG(name),</a>
+<a name="ln734">    MIREG(has_known_ranged_attack),</a>
+<a name="ln735">    MIREG(speed_description),</a>
+<a name="ln736">    MIREG(spells),</a>
+<a name="ln737">    MIREG(res_poison),</a>
+<a name="ln738">    MIREG(res_fire),</a>
+<a name="ln739">    MIREG(res_cold),</a>
+<a name="ln740">    MIREG(res_draining),</a>
+<a name="ln741">    MIREG(res_shock),</a>
+<a name="ln742">    MIREG(res_corr),</a>
+<a name="ln743">    MIREG(can_go_frenzy),</a>
+<a name="ln744">    MIREG(max_hp),</a>
+<a name="ln745">    MIREG(mr),</a>
+<a name="ln746">    MIREG(defeat_mr),</a>
+<a name="ln747">    MIREG(ac),</a>
+<a name="ln748">    MIREG(ev),</a>
+<a name="ln749">    MIREG(x_pos),</a>
+<a name="ln750">    MIREG(y_pos),</a>
+<a name="ln751">    MIREG(pos),</a>
+<a name="ln752">    MIREG(avg_local_depth),</a>
+<a name="ln753">    MIREG(avg_local_prob),</a>
+<a name="ln754"> </a>
+<a name="ln755">    { nullptr, nullptr }</a>
+<a name="ln756">};</a>
+<a name="ln757">/*** @section end</a>
+<a name="ln758"> */</a>
+<a name="ln759"> </a>
+<a name="ln760">// XXX: unify with directn.cc/h</a>
+<a name="ln761">// This uses relative coordinates with origin the player.</a>
+<a name="ln762">bool in_show_bounds(const coord_def &amp;s)</a>
+<a name="ln763">{</a>
+<a name="ln764">    return s.rdist() &lt;= ENV_SHOW_OFFSET;</a>
+<a name="ln765">}</a>
+<a name="ln766"> </a>
+<a name="ln767">/*** Get information about a monster at a cell.</a>
+<a name="ln768"> * Returns a monster.info object of a monster at the specified coordinates.</a>
+<a name="ln769"> * Uses player coordinates</a>
+<a name="ln770"> * @tparam int x</a>
+<a name="ln771"> * @tparam int y</a>
+<a name="ln772"> * @treturn monster.info|nil</a>
+<a name="ln773"> * @function get_monster_at</a>
+<a name="ln774"> */</a>
+<a name="ln775">LUAFN(mi_get_monster_at)</a>
+<a name="ln776">{</a>
+<a name="ln777">    COORDSHOW(s, 1, 2)</a>
+<a name="ln778">    coord_def p = player2grid(s);</a>
+<a name="ln779">    if (!you.see_cell(p))</a>
+<a name="ln780">        return 0;</a>
+<a name="ln781">    if (env.mgrid(p) == NON_MONSTER)</a>
+<a name="ln782">        return 0;</a>
+<a name="ln783">    monster* m = &amp;env.mons[env.mgrid(p)];</a>
+<a name="ln784">    if (!m-&gt;visible_to(&amp;you))</a>
+<a name="ln785">        return 0;</a>
+<a name="ln786">    monster_info mi(m);</a>
+<a name="ln787">    lua_push_moninf(ls, &amp;mi);</a>
+<a name="ln788">    return 1;</a>
+<a name="ln789">}</a>
+<a name="ln790"> </a>
+<a name="ln791">static const struct luaL_reg mon_lib[] =</a>
+<a name="ln792">{</a>
+<a name="ln793">    { &quot;get_monster_at&quot;, mi_get_monster_at },</a>
+<a name="ln794"> </a>
+<a name="ln795">    { nullptr, nullptr }</a>
+<a name="ln796">};</a>
+<a name="ln797"> </a>
+<a name="ln798">void cluaopen_moninf(lua_State *ls)</a>
+<a name="ln799">{</a>
+<a name="ln800">    clua_register_metatable(ls, MONINF_METATABLE, moninf_lib,</a>
+<a name="ln801">                            lua_object_gc&lt;monster_info&gt;);</a>
+<a name="ln802">    luaL_openlib(ls, &quot;monster&quot;, mon_lib, 0);</a>
+<a name="ln803">}</a>
+
+</code></pre>
+<div class="balloon" rel="572"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,582 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>tilereg-doll.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;AppHdr.h&quot;</a>
+<a name="ln2"> </a>
+<a name="ln3">#ifdef USE_TILE_LOCAL</a>
+<a name="ln4"> </a>
+<a name="ln5">#include &quot;tilereg-doll.h&quot;</a>
+<a name="ln6"> </a>
+<a name="ln7">#include &quot;macro.h&quot;</a>
+<a name="ln8">#include &quot;player.h&quot;</a>
+<a name="ln9">#include &quot;state.h&quot;</a>
+<a name="ln10">#include &quot;stringutil.h&quot;</a>
+<a name="ln11">#include &quot;rltiles/tiledef-player.h&quot;</a>
+<a name="ln12">#include &quot;tilefont.h&quot;</a>
+<a name="ln13">#include &quot;tilepick-p.h&quot;</a>
+<a name="ln14">#include &quot;ui.h&quot;</a>
+<a name="ln15"> </a>
+<a name="ln16">using namespace ui;</a>
+<a name="ln17"> </a>
+<a name="ln18">DollEditRegion::DollEditRegion(ImageManager *im, FontWrapper *font) :</a>
+<a name="ln19">    m_font_buf(font),</a>
+<a name="ln20">    m_tile_buf(&amp;im-&gt;m_textures[TEX_PLAYER], 17),</a>
+<a name="ln21">    m_cur_buf(&amp;im-&gt;m_textures[TEX_PLAYER], 17)</a>
+<a name="ln22">{</a>
+<a name="ln23">    sx = sy = 0;</a>
+<a name="ln24">    dx = dy = 32;</a>
+<a name="ln25">    mx = my = 1;</a>
+<a name="ln26"> </a>
+<a name="ln27">    m_font = font;</a>
+<a name="ln28"> </a>
+<a name="ln29">    m_doll_idx = 0;</a>
+<a name="ln30">    m_cat_idx = TILEP_PART_BASE;</a>
+<a name="ln31">    m_copy_valid = false;</a>
+<a name="ln32">}</a>
+<a name="ln33"> </a>
+<a name="ln34">void DollEditRegion::clear()</a>
+<a name="ln35">{</a>
+<a name="ln36">    m_shape_buf.clear();</a>
+<a name="ln37">    m_tile_buf.clear();</a>
+<a name="ln38">    m_cur_buf.clear();</a>
+<a name="ln39">    m_font_buf.clear();</a>
+<a name="ln40">}</a>
+<a name="ln41"> </a>
+<a name="ln42">static int _get_next_part(int cat, int part, int inc)</a>
+<a name="ln43">{</a>
+<a name="ln44">    // Can't increment or decrement on show equip.</a>
+<a name="ln45">    if (part == TILEP_SHOW_EQUIP)</a>
+<a name="ln46">        return part;</a>
+<a name="ln47"> </a>
+<a name="ln48">    // Increment max_part by 1 to include the special value of &quot;none&quot;.</a>
+<a name="ln49">    // (Except for the base, for which &quot;none&quot; is disallowed.)</a>
+<a name="ln50">    int max_part = tile_player_part_count[cat] + 1;</a>
+<a name="ln51">    int offset   = tile_player_part_start[cat];</a>
+<a name="ln52"> </a>
+<a name="ln53">    if (cat == TILEP_PART_BASE)</a>
+<a name="ln54">    {</a>
+<a name="ln55">        offset   = tilep_species_to_base_tile(you.species, you.experience_level);</a>
+<a name="ln56">        max_part = tile_player_count(offset);</a>
+<a name="ln57">    }</a>
+<a name="ln58"> </a>
+<a name="ln59">    ASSERT(inc &gt; -max_part || inc == -1);</a>
+<a name="ln60"> </a>
+<a name="ln61">    // Translate the &quot;none&quot; value into something we can do modulo math with.</a>
+<a name="ln62">    if (part == 0)</a>
+<a name="ln63">    {</a>
+<a name="ln64">        part = offset;</a>
+<a name="ln65">        inc--;</a>
+<a name="ln66">    }</a>
+<a name="ln67"> </a>
+<a name="ln68">    // Valid part numbers are in the range [offset, offset + max_part - 1].</a>
+<a name="ln69">    int ret = (part + max_part + inc - offset) % (max_part);</a>
+<a name="ln70"> </a>
+<a name="ln71">    if (cat != TILEP_PART_BASE &amp;&amp; ret == max_part - 1)</a>
+<a name="ln72">    {</a>
+<a name="ln73">        // &quot;none&quot; value.</a>
+<a name="ln74">        return 0;</a>
+<a name="ln75">    }</a>
+<a name="ln76">    else</a>
+<a name="ln77">    {</a>
+<a name="ln78">        // Otherwise, valid part number.</a>
+<a name="ln79">        return ret + offset;</a>
+<a name="ln80">    }</a>
+<a name="ln81">}</a>
+<a name="ln82"> </a>
+<a name="ln83">void DollEditRegion::render()</a>
+<a name="ln84">{</a>
+<a name="ln85">#ifdef DEBUG_TILES_REDRAW</a>
+<a name="ln86">    cprintf(&quot;rendering DollEditRegion\n&quot;);</a>
+<a name="ln87">#endif</a>
+<a name="ln88">    VColour grey(128, 128, 128, 255);</a>
+<a name="ln89"> </a>
+<a name="ln90">    m_cur_buf.clear();</a>
+<a name="ln91">    m_tile_buf.clear();</a>
+<a name="ln92">    m_shape_buf.clear();</a>
+<a name="ln93">    m_font_buf.clear();</a>
+<a name="ln94"> </a>
+<a name="ln95">    // Max items to show at once.</a>
+<a name="ln96">    const int max_show = 9;</a>
+<a name="ln97"> </a>
+<a name="ln98">    // Layout options (units are in 32x32 squares)</a>
+<a name="ln99">    const int left_gutter    = 0;</a>
+<a name="ln100">    const int item_line      = 0;</a>
+<a name="ln101">    const int edit_doll_line = 2;</a>
+<a name="ln102">    const int doll_line      = 6;</a>
+<a name="ln103">    const int info_offset = left_gutter + max(max_show, (int)NUM_MAX_DOLLS) + 1;</a>
+<a name="ln104"> </a>
+<a name="ln105">    const int center_x = left_gutter + max_show / 2;</a>
+<a name="ln106"> </a>
+<a name="ln107">    // Pack current doll separately so it can be drawn repeatedly.</a>
+<a name="ln108">    {</a>
+<a name="ln109">        dolls_data temp = m_dolls[m_doll_idx];</a>
+<a name="ln110">        fill_doll_equipment(temp);</a>
+<a name="ln111">        pack_doll_buf(m_cur_buf, temp, 0, 0, false, false);</a>
+<a name="ln112">    }</a>
+<a name="ln113"> </a>
+<a name="ln114">    // Draw set of dolls.</a>
+<a name="ln115">    for (int i = 0; i &lt; NUM_MAX_DOLLS; i++)</a>
+<a name="ln116">    {</a>
+<a name="ln117">        int x = left_gutter + i;</a>
+<a name="ln118">        int y = doll_line;</a>
+<a name="ln119"> </a>
+<a name="ln120">        if (m_mode == TILEP_MODE_LOADING &amp;&amp; m_doll_idx == i)</a>
+<a name="ln121">            m_tile_buf.add(TILEP_CURSOR, x, y);</a>
+<a name="ln122"> </a>
+<a name="ln123">        dolls_data temp = m_dolls[i];</a>
+<a name="ln124">        fill_doll_equipment(temp);</a>
+<a name="ln125">        pack_doll_buf(m_tile_buf, temp, x, y, false, false);</a>
+<a name="ln126"> </a>
+<a name="ln127">        m_shape_buf.add(x, y, x + 1, y + 1, grey);</a>
+<a name="ln128">    }</a>
+<a name="ln129"> </a>
+<a name="ln130">    // Draw current category of parts.</a>
+<a name="ln131">    int max_part = tile_player_part_count[m_cat_idx];</a>
+<a name="ln132">    if (m_cat_idx == TILEP_PART_BASE)</a>
+<a name="ln133">    {</a>
+<a name="ln134">        tileidx_t idx = tilep_species_to_base_tile(you.species, you.experience_level);</a>
+<a name="ln135">        max_part = tile_player_count(idx) - 1;</a>
+<a name="ln136">    }</a>
+<a name="ln137"> </a>
+<a name="ln138">    int show = min(max_show, max_part);</a>
+<a name="ln139">    int half_show = show / 2;</a>
+<a name="ln140">    for (int i = -half_show; i &lt;= show - half_show; i++)</a>
+<a name="ln141">    {</a>
+<a name="ln142">        int x = center_x + i;</a>
+<a name="ln143">        int y = item_line;</a>
+<a name="ln144"> </a>
+<a name="ln145">        if (i == 0)</a>
+<a name="ln146">            m_tile_buf.add(TILEP_CURSOR, x, y);</a>
+<a name="ln147"> </a>
+<a name="ln148">        int part = _get_next_part(m_cat_idx, m_part_idx, i);</a>
+<a name="ln149">        ASSERT(part != TILEP_SHOW_EQUIP);</a>
+<a name="ln150">        if (part)</a>
+<a name="ln151">            m_tile_buf.add(part, x, y);</a>
+<a name="ln152"> </a>
+<a name="ln153">        m_shape_buf.add(x, y, x + 1, y + 1, grey);</a>
+<a name="ln154">    }</a>
+<a name="ln155"> </a>
+<a name="ln156">    m_shape_buf.add(left_gutter, edit_doll_line, left_gutter + 2, edit_doll_line + 2, grey);</a>
+<a name="ln157">    m_shape_buf.add(left_gutter + 3, edit_doll_line, left_gutter + 4, edit_doll_line + 1, grey);</a>
+<a name="ln158">    m_shape_buf.add(left_gutter + 5, edit_doll_line, left_gutter + 6, edit_doll_line + 1, grey);</a>
+<a name="ln159">    m_shape_buf.add(left_gutter + 7, edit_doll_line, left_gutter + 8, edit_doll_line + 1, grey);</a>
+<a name="ln160">    {</a>
+<a name="ln161">        // Describe the three middle tiles.</a>
+<a name="ln162">        float tile_name_x = (left_gutter + 2.7) * 32.0f;</a>
+<a name="ln163">        float tile_name_y = (edit_doll_line + 1) * 32.0f;</a>
+<a name="ln164">        m_font_buf.add(&quot;Custom&quot;, VColour::white, tile_name_x, tile_name_y);</a>
+<a name="ln165">        tile_name_x = (left_gutter + 4.7) * 32.0f;</a>
+<a name="ln166">        tile_name_y = (edit_doll_line + 1) * 32.0f;</a>
+<a name="ln167">        m_font_buf.add(&quot;Default&quot;, VColour::white, tile_name_x, tile_name_y);</a>
+<a name="ln168">        tile_name_x = (left_gutter + 7) * 32.0f;</a>
+<a name="ln169">        tile_name_y = (edit_doll_line + 1) * 32.0f;</a>
+<a name="ln170">        m_font_buf.add(&quot;Equip&quot;, VColour::white, tile_name_x, tile_name_y);</a>
+<a name="ln171">    }</a>
+<a name="ln172"> </a>
+<a name="ln173">    set_transform();</a>
+<a name="ln174">    m_shape_buf.draw();</a>
+<a name="ln175">    m_tile_buf.draw();</a>
+<a name="ln176"> </a>
+<a name="ln177">    {</a>
+<a name="ln178">        GLW_3VF trans(sx + 32 * left_gutter, sy + 32 * edit_doll_line, 0);</a>
+<a name="ln179">        GLW_3VF scale(64, 64, 1);</a>
+<a name="ln180">        glmanager-&gt;set_transform(trans, scale);</a>
+<a name="ln181">    }</a>
+<a name="ln182"> </a>
+<a name="ln183">    m_cur_buf.draw();</a>
+<a name="ln184"> </a>
+<a name="ln185">    {</a>
+<a name="ln186">        dolls_data temp;</a>
+<a name="ln187">        temp = m_job_default;</a>
+<a name="ln188">        fill_doll_equipment(temp);</a>
+<a name="ln189">        pack_doll_buf(m_cur_buf, temp, 2, 0, false, false);</a>
+<a name="ln190"> </a>
+<a name="ln191">        for (unsigned int i = 0; i &lt; TILEP_PART_MAX; ++i)</a>
+<a name="ln192">            temp.parts[i] = TILEP_SHOW_EQUIP;</a>
+<a name="ln193">        fill_doll_equipment(temp);</a>
+<a name="ln194">        pack_doll_buf(m_cur_buf, temp, 4, 0, false, false);</a>
+<a name="ln195"> </a>
+<a name="ln196">        if (m_mode == TILEP_MODE_LOADING)</a>
+<a name="ln197">            m_cur_buf.add(TILEP_CURSOR, 0, 0);</a>
+<a name="ln198">        else if (m_mode == TILEP_MODE_DEFAULT)</a>
+<a name="ln199">            m_cur_buf.add(TILEP_CURSOR, 2, 0);</a>
+<a name="ln200">        else if (m_mode == TILEP_MODE_EQUIP)</a>
+<a name="ln201">            m_cur_buf.add(TILEP_CURSOR, 4, 0);</a>
+<a name="ln202">    }</a>
+<a name="ln203"> </a>
+<a name="ln204">    {</a>
+<a name="ln205">        GLW_3VF trans(sx + 32 * (left_gutter + 3), sy + 32 * edit_doll_line, 0);</a>
+<a name="ln206">        GLW_3VF scale(32, 32, 1);</a>
+<a name="ln207">        glmanager-&gt;set_transform(trans, scale);</a>
+<a name="ln208">    }</a>
+<a name="ln209"> </a>
+<a name="ln210">    m_cur_buf.draw();</a>
+<a name="ln211"> </a>
+<a name="ln212">    // Add text.</a>
+<a name="ln213">    const char *part_name = &quot;(none)&quot;;</a>
+<a name="ln214">    if (m_part_idx == TILEP_SHOW_EQUIP)</a>
+<a name="ln215">        part_name = &quot;(show equip)&quot;;</a>
+<a name="ln216">    else if (m_part_idx)</a>
+<a name="ln217">        part_name = tile_player_name(m_part_idx);</a>
+<a name="ln218"> </a>
+<a name="ln219">    {</a>
+<a name="ln220">        GLW_3VF trans(sx, sy);</a>
+<a name="ln221">        GLW_3VF scale(1, 1, 1);</a>
+<a name="ln222">        glmanager-&gt;set_transform(trans, scale);</a>
+<a name="ln223">    }</a>
+<a name="ln224"> </a>
+<a name="ln225">    string item_str = part_name;</a>
+<a name="ln226">    float item_name_x = left_gutter * 32.0f;</a>
+<a name="ln227">    float item_name_y = (item_line + 1) * 32.0f;</a>
+<a name="ln228">    m_font_buf.add(item_str, VColour::white, item_name_x, item_name_y);</a>
+<a name="ln229"> </a>
+<a name="ln230">    string doll_name;</a>
+<a name="ln231">    doll_name = make_stringf(&quot;Doll index %d / %d&quot;, m_doll_idx, NUM_MAX_DOLLS - 1);</a>
+<a name="ln232">    float doll_name_x = left_gutter * 32.0f;</a>
+<a name="ln233">    float doll_name_y = (doll_line + 1) * 32.0f;</a>
+<a name="ln234">    m_font_buf.add(doll_name, VColour::white, doll_name_x, doll_name_y);</a>
+<a name="ln235"> </a>
+<a name="ln236">    const char *mode_name[TILEP_MODE_MAX] =</a>
+<a name="ln237">    {</a>
+<a name="ln238">        &quot;Current Equipment&quot;,</a>
+<a name="ln239">        &quot;Custom Doll&quot;,</a>
+<a name="ln240">        &quot;Job Defaults&quot;</a>
+<a name="ln241">    };</a>
+<a name="ln242">    doll_name = make_stringf(&quot;Doll Mode: %s&quot;, mode_name[m_mode]);</a>
+<a name="ln243">    doll_name_y += m_font-&gt;char_height() * 2.0f;</a>
+<a name="ln244">    m_font_buf.add(doll_name, VColour::white, doll_name_x, doll_name_y);</a>
+<a name="ln245"> </a>
+<a name="ln246">    // FIXME - this should be generated in rltiles</a>
+<a name="ln247">    const char *cat_name[TILEP_PART_MAX] =</a>
+<a name="ln248">    {</a>
+<a name="ln249">        &quot;Base&quot;,</a>
+<a name="ln250">        &quot;Shadow&quot;,</a>
+<a name="ln251">        &quot;Halo&quot;,</a>
+<a name="ln252">        &quot;Ench&quot;,</a>
+<a name="ln253">        &quot;Cloak&quot;,</a>
+<a name="ln254">        &quot;Boots&quot;,</a>
+<a name="ln255">        &quot;Legs&quot;,</a>
+<a name="ln256">        &quot;Body&quot;,</a>
+<a name="ln257">        &quot;Gloves&quot;,</a>
+<a name="ln258">        &quot;LHand&quot;,</a>
+<a name="ln259">        &quot;RHand&quot;,</a>
+<a name="ln260">        &quot;Hair&quot;,</a>
+<a name="ln261">        &quot;Beard&quot;,</a>
+<a name="ln262">        &quot;Helm&quot;,</a>
+<a name="ln263">        &quot;DrcWing&quot;,</a>
+<a name="ln264">        &quot;DrcHead&quot;</a>
+<a name="ln265">    };</a>
+<a name="ln266"> </a>
+<a name="ln267">    // Add current doll information:</a>
+<a name="ln268">    string info_str;</a>
+<a name="ln269">    float info_x = info_offset * 32.0f;</a>
+<a name="ln270">    float info_y = 0.0f;</a>
+<a name="ln271"> </a>
+<a name="ln272">    for (int i = 0 ; i &lt; TILEP_PART_MAX; i++)</a>
+<a name="ln273">    {</a>
+<a name="ln274">        int part = m_dolls[m_doll_idx].parts[i];</a>
+<a name="ln275">        int disp = part;</a>
+<a name="ln276">        if (disp)</a>
+<a name="ln277">            disp = disp - tile_player_part_start[i] + 1;</a>
+<a name="ln278">        int maxp = tile_player_part_count[i];</a>
+<a name="ln279"> </a>
+<a name="ln280">        const char *sel = (m_cat_idx == i) ? &quot;-&gt;&quot; : &quot;  &quot;;</a>
+<a name="ln281"> </a>
+<a name="ln282">        if (part == TILEP_SHOW_EQUIP)</a>
+<a name="ln283">            info_str = make_stringf(&quot;%2s%9s: (show equip)&quot;, sel, cat_name[i]);</a>
+<a name="ln284">        else if (!part)</a>
+<a name="ln285">            info_str = make_stringf(&quot;%2s%9s: (none)&quot;, sel, cat_name[i]);</a>
+<a name="ln286">        else</a>
+<a name="ln287">            info_str = make_stringf(&quot;%2s%9s: %3d/%3d&quot;, sel, cat_name[i], disp, maxp);</a>
+<a name="ln288">        m_font_buf.add(info_str, VColour::white, info_x, info_y);</a>
+<a name="ln289">        info_y += m_font-&gt;char_height();</a>
+<a name="ln290">    }</a>
+<a name="ln291"> </a>
+<a name="ln292">    // List the most important commands. (Hopefully the rest will be</a>
+<a name="ln293">    // self-explanatory.)</a>
+<a name="ln294">    {</a>
+<a name="ln295">        const int height = m_font-&gt;char_height();</a>
+<a name="ln296">        const float start_y = doll_name_y + height * 3;</a>
+<a name="ln297">        const float start_x = 0;</a>
+<a name="ln298">        m_font_buf.add(</a>
+<a name="ln299">            &quot;Change parts       left/right              Confirm choice      Enter&quot;,</a>
+<a name="ln300">            VColour::white, start_x, start_y);</a>
+<a name="ln301">        m_font_buf.add(</a>
+<a name="ln302">            &quot;Change category    up/down                 Copy doll           Ctrl-C&quot;,</a>
+<a name="ln303">            VColour::white, start_x, start_y + height * 1);</a>
+<a name="ln304">        m_font_buf.add(</a>
+<a name="ln305">            &quot;Change doll        0-9, Shift + arrows     Paste copied doll   Ctrl-V&quot;,</a>
+<a name="ln306">            VColour::white, start_x, start_y + height * 2);</a>
+<a name="ln307">        m_font_buf.add(</a>
+<a name="ln308">            &quot;Change doll mode   m                       Randomise doll      Ctrl-R&quot;,</a>
+<a name="ln309">            VColour::white, start_x, start_y + height * 3);</a>
+<a name="ln310">        m_font_buf.add(</a>
+<a name="ln311">            &quot;Save menu          Escape, Ctrl-S          Toggle equipment    *&quot;,</a>
+<a name="ln312">            VColour::white, start_x, start_y + height * 4);</a>
+<a name="ln313">        m_font_buf.add(</a>
+<a name="ln314">            &quot;Quit menu          q, Ctrl-Q&quot;,</a>
+<a name="ln315">            VColour::white, start_x, start_y + height * 5);</a>
+<a name="ln316">    }</a>
+<a name="ln317"> </a>
+<a name="ln318">    m_font_buf.draw();</a>
+<a name="ln319">    glmanager-&gt;reset_transform();</a>
+<a name="ln320">}</a>
+<a name="ln321"> </a>
+<a name="ln322">int DollEditRegion::handle_mouse(wm_mouse_event &amp;/*event*/)</a>
+<a name="ln323">{</a>
+<a name="ln324">    return 0;</a>
+<a name="ln325">}</a>
+<a name="ln326"> </a>
+<a name="ln327">class UIDollEditor : public Widget</a>
+<a name="ln328">{</a>
+<a name="ln329">public:</a>
+<a name="ln330">    UIDollEditor(DollEditRegion *_reg) : reg(_reg) {};</a>
+<a name="ln331">    ~UIDollEditor() {};</a>
+<a name="ln332"> </a>
+<a name="ln333">    virtual void _render() override;</a>
+<a name="ln334">    virtual SizeReq _get_preferred_size(Direction dim, int prosp_width) override;</a>
+<a name="ln335">    virtual void _allocate_region() override;</a>
+<a name="ln336">private:</a>
+<a name="ln337">    DollEditRegion *reg;</a>
+<a name="ln338">};</a>
+<a name="ln339"> </a>
+<a name="ln340">SizeReq UIDollEditor::_get_preferred_size(Direction dim, int /*prosp_width*/)</a>
+<a name="ln341">{</a>
+<a name="ln342">    if (!dim)</a>
+<a name="ln343">        return { 552, 552 };</a>
+<a name="ln344">    else</a>
+<a name="ln345">        return { 411, 411 };</a>
+<a name="ln346">}</a>
+<a name="ln347"> </a>
+<a name="ln348">void UIDollEditor::_render()</a>
+<a name="ln349">{</a>
+<a name="ln350">    reg-&gt;render();</a>
+<a name="ln351">}</a>
+<a name="ln352"> </a>
+<a name="ln353">void UIDollEditor::_allocate_region()</a>
+<a name="ln354">{</a>
+<a name="ln355">    reg-&gt;sx = m_region.x;</a>
+<a name="ln356">    reg-&gt;sy = m_region.y;</a>
+<a name="ln357">}</a>
+<a name="ln358"> </a>
+<a name="ln359">void DollEditRegion::run()</a>
+<a name="ln360">{</a>
+<a name="ln361">    // Initialise equipment setting.</a>
+<a name="ln362">    dolls_data equip_doll;</a>
+<a name="ln363">    for (unsigned int i = 0; i &lt; TILEP_PART_MAX; ++i)</a>
+<a name="ln364">         equip_doll.parts[i] = TILEP_SHOW_EQUIP;</a>
+<a name="ln365"> </a>
+<a name="ln366">    // Initialise job default.</a>
+<a name="ln367">    m_job_default = equip_doll;</a>
+<a name="ln368">    tilep_race_default(you.species, you.experience_level, &amp;m_job_default);</a>
+<a name="ln369">    tilep_job_default(you.char_class, &amp;m_job_default);</a>
+<a name="ln370"> </a>
+<a name="ln371">    // Read predefined dolls from file.</a>
+<a name="ln372">    for (dolls_data &amp;doll : m_dolls)</a>
+<a name="ln373">         doll = equip_doll;</a>
+<a name="ln374"> </a>
+<a name="ln375">    m_mode = TILEP_MODE_LOADING;</a>
+<a name="ln376">    m_doll_idx = -1;</a>
+<a name="ln377"> </a>
+<a name="ln378">    if (!load_doll_data(&quot;dolls.txt&quot;, m_dolls, NUM_MAX_DOLLS,</a>
+<a name="ln379">                        &amp;m_mode, &amp;m_doll_idx))</a>
+<a name="ln380">    {</a>
+<a name="ln381">        m_doll_idx = 0;</a>
+<a name="ln382">    }</a>
+<a name="ln383"> </a>
+<a name="ln384">    bool update_part_idx = true;</a>
+<a name="ln385"> </a>
+<a name="ln386">    bool done = false;</a>
+<a name="ln387">    auto doll_ui = make_shared&lt;UIDollEditor&gt;(this);</a>
+<a name="ln388"> </a>
+<a name="ln389">    auto vbox = make_shared&lt;Box&gt;(Widget::VERT);</a>
+<a name="ln390">    vbox-&gt;set_cross_alignment(Widget::CENTER);</a>
+<a name="ln391">    auto title = make_shared&lt;Text&gt;(formatted_string(&quot;Doll Editor&quot;, YELLOW));</a>
+<a name="ln392">    title-&gt;set_margin_for_sdl(0, 0, 20, 0);</a>
+<a name="ln393">    vbox-&gt;add_child(move(title));</a>
+<a name="ln394">    vbox-&gt;add_child(doll_ui);</a>
+<a name="ln395">    auto popup = make_shared&lt;ui::Popup&gt;(move(vbox));</a>
+<a name="ln396"> </a>
+<a name="ln397">    popup-&gt;on_keydown_event([this, &amp;done, &amp;doll_ui, &amp;update_part_idx](const KeyEvent&amp; ev) {</a>
+<a name="ln398">        const auto key = ev.key();</a>
+<a name="ln399">        command_type cmd = key_to_command(key, KMC_DOLL);</a>
+<a name="ln400"> </a>
+<a name="ln401">        switch (cmd)</a>
+<a name="ln402">        {</a>
+<a name="ln403">        case CMD_DOLL_QUIT:</a>
+<a name="ln404">            return done = true;</a>
+<a name="ln405">        case CMD_DOLL_RANDOMIZE:</a>
+<a name="ln406">            create_random_doll(m_dolls[m_doll_idx]);</a>
+<a name="ln407">            break;</a>
+<a name="ln408">        case CMD_DOLL_SELECT_NEXT_DOLL:</a>
+<a name="ln409">        case CMD_DOLL_SELECT_PREV_DOLL:</a>
+<a name="ln410">        {</a>
+<a name="ln411">            const int bonus = (cmd == CMD_DOLL_SELECT_NEXT_DOLL ? 1</a>
+<a name="ln412">                                        : NUM_MAX_DOLLS - 1);</a>
+<a name="ln413"> </a>
+<a name="ln414">            m_doll_idx = (m_doll_idx + bonus) % NUM_MAX_DOLLS;</a>
+<a name="ln415">            update_part_idx = true;</a>
+<a name="ln416">            if (m_mode != TILEP_MODE_LOADING)</a>
+<a name="ln417">                m_mode = TILEP_MODE_LOADING;</a>
+<a name="ln418">            break;</a>
+<a name="ln419">        }</a>
+<a name="ln420">        case CMD_DOLL_SELECT_NEXT_PART:</a>
+<a name="ln421">        case CMD_DOLL_SELECT_PREV_PART:</a>
+<a name="ln422">        {</a>
+<a name="ln423">            const int bonus = (cmd == CMD_DOLL_SELECT_NEXT_PART ? 1</a>
+<a name="ln424">                                        : TILEP_PART_MAX - 1);</a>
+<a name="ln425"> </a>
+<a name="ln426">            m_cat_idx = (m_cat_idx + bonus) % TILEP_PART_MAX;</a>
+<a name="ln427">            update_part_idx = true;</a>
+<a name="ln428">            break;</a>
+<a name="ln429">        }</a>
+<a name="ln430">        case CMD_DOLL_CHANGE_PART_NEXT:</a>
+<a name="ln431">        case CMD_DOLL_CHANGE_PART_PREV:</a>
+<a name="ln432">            if (m_part_idx != TILEP_SHOW_EQUIP)</a>
+<a name="ln433">            {</a>
+<a name="ln434">                const int dir = (cmd == CMD_DOLL_CHANGE_PART_NEXT ? 1 : -1);</a>
+<a name="ln435">                m_part_idx = _get_next_part(m_cat_idx, m_part_idx, dir);</a>
+<a name="ln436">            }</a>
+<a name="ln437">            m_dolls[m_doll_idx].parts[m_cat_idx] = m_part_idx;</a>
+<a name="ln438">            break;</a>
+<a name="ln439">        case CMD_DOLL_TOGGLE_EQUIP:</a>
+<a name="ln440">            if (m_dolls[m_doll_idx].parts[m_cat_idx] == TILEP_SHOW_EQUIP)</a>
+<a name="ln441">                m_dolls[m_doll_idx].parts[m_cat_idx] = m_part_idx;</a>
+<a name="ln442">            else</a>
+<a name="ln443">                m_dolls[m_doll_idx].parts[m_cat_idx] = TILEP_SHOW_EQUIP;</a>
+<a name="ln444">            break;</a>
+<a name="ln445">        case CMD_DOLL_CONFIRM_CHOICE:</a>
+<a name="ln446">            if (m_mode != TILEP_MODE_LOADING)</a>
+<a name="ln447">                m_mode = TILEP_MODE_LOADING;</a>
+<a name="ln448">            break;</a>
+<a name="ln449">        case CMD_DOLL_COPY:</a>
+<a name="ln450">            m_doll_copy  = m_dolls[m_doll_idx];</a>
+<a name="ln451">            m_copy_valid = true;</a>
+<a name="ln452">            break;</a>
+<a name="ln453">        case CMD_DOLL_PASTE:</a>
+<a name="ln454">            if (m_copy_valid)</a>
+<a name="ln455">                m_dolls[m_doll_idx] = m_doll_copy;</a>
+<a name="ln456">            break;</a>
+<a name="ln457">        case CMD_DOLL_TAKE_OFF:</a>
+<a name="ln458">            m_part_idx = 0;</a>
+<a name="ln459">            m_dolls[m_doll_idx].parts[m_cat_idx] = 0;</a>
+<a name="ln460">            break;</a>
+<a name="ln461">        case CMD_DOLL_TAKE_OFF_ALL:</a>
+<a name="ln462">            for (int i = 0; i &lt; TILEP_PART_MAX; i++)</a>
+<a name="ln463">            {</a>
+<a name="ln464">                switch (i)</a>
+<a name="ln465">                {</a>
+<a name="ln466">                case TILEP_PART_BASE:</a>
+<a name="ln467">                case TILEP_PART_SHADOW:</a>
+<a name="ln468">                case TILEP_PART_HALO:</a>
+<a name="ln469">                case TILEP_PART_ENCH:</a>
+<a name="ln470">                case TILEP_PART_DRCWING:</a>
+<a name="ln471">                case TILEP_PART_DRCHEAD:</a>
+<a name="ln472">                    break;</a>
+<a name="ln473">                default:</a>
+<a name="ln474">                    m_dolls[m_doll_idx].parts[i] = 0;</a>
+<a name="ln475">                };</a>
+<a name="ln476">            }</a>
+<a name="ln477">            break;</a>
+<a name="ln478">        case CMD_DOLL_TOGGLE_EQUIP_ALL:</a>
+<a name="ln479">            for (int i = 0; i &lt; TILEP_PART_MAX; i++)</a>
+<a name="ln480">                m_dolls[m_doll_idx].parts[i] = TILEP_SHOW_EQUIP;</a>
+<a name="ln481">            break;</a>
+<a name="ln482">        case CMD_DOLL_JOB_DEFAULT:</a>
+<a name="ln483">            m_dolls[m_doll_idx] = m_job_default;</a>
+<a name="ln484">            break;</a>
+<a name="ln485">        case CMD_DOLL_CHANGE_MODE:</a>
+<a name="ln486">            m_mode = (tile_doll_mode)(((int)m_mode + 1) % TILEP_MODE_MAX);</a>
+<a name="ln487">        default:</a>
+<a name="ln488">            if (key == '0')</a>
+<a name="ln489">                m_doll_idx = 0;</a>
+<a name="ln490">            else if (key &gt;= '1' &amp;&amp; key &lt;= '9')</a>
+<a name="ln491">                m_doll_idx = key - '1' + 1;</a>
+<a name="ln492">            else</a>
+<a name="ln493">                break;</a>
+<a name="ln494"> </a>
+<a name="ln495">            if (m_mode != TILEP_MODE_LOADING)</a>
+<a name="ln496">                m_mode = TILEP_MODE_LOADING;</a>
+<a name="ln497">            ASSERT(m_doll_idx &lt; NUM_MAX_DOLLS);</a>
+<a name="ln498">            break;</a>
+<a name="ln499">        }</a>
+<a name="ln500">        done = cmd == CMD_DOLL_SAVE;</a>
+<a name="ln501">        doll_ui-&gt;_expose();</a>
+<a name="ln502">        return true;</a>
+<a name="ln503">    });</a>
+<a name="ln504"> </a>
+<a name="ln505">    ui::push_layout(move(popup), KMC_DOLL);</a>
+<a name="ln506">    while (!done &amp;&amp; !crawl_state.seen_hups)</a>
+<a name="ln507">    {</a>
+<a name="ln508">        if (update_part_idx)</a>
+<a name="ln509">        {</a>
+<a name="ln510">            m_part_idx = m_dolls[m_doll_idx].parts[m_cat_idx];</a>
+<a name="ln511">            if (m_part_idx == TILEP_SHOW_EQUIP)</a>
+<a name="ln512">                m_part_idx = 0;</a>
+<a name="ln513">            update_part_idx = false;</a>
+<a name="ln514">        }</a>
+<a name="ln515">        ui::pump_events();</a>
+<a name="ln516">    }</a>
+<a name="ln517">    ui::pop_layout();</a>
+<a name="ln518"> </a>
+<a name="ln519">    save_doll_data(m_mode, m_doll_idx, &amp;m_dolls[0]);</a>
+<a name="ln520"> </a>
+<a name="ln521">    // Update player with the current doll.</a>
+<a name="ln522">    switch (m_mode)</a>
+<a name="ln523">    {</a>
+<a name="ln524">    case TILEP_MODE_LOADING:</a>
+<a name="ln525">        player_doll = m_dolls[m_doll_idx];</a>
+<a name="ln526">        break;</a>
+<a name="ln527">    case TILEP_MODE_DEFAULT:</a>
+<a name="ln528">        player_doll = m_job_default;</a>
+<a name="ln529">        break;</a>
+<a name="ln530">    default:</a>
+<a name="ln531">    case TILEP_MODE_EQUIP:</a>
+<a name="ln532">        player_doll = equip_doll;</a>
+<a name="ln533">    }</a>
+<a name="ln534">}</a>
+<a name="ln535"> </a>
+<a name="ln536">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="18"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v730/" target="_blank">V730</a> Not all members of a class are initialized inside the constructor. Consider inspecting: m_part_idx, m_mode.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

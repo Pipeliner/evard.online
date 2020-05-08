@@ -1,0 +1,2038 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>stash.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Classes tracking player stashes</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;stash.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cctype&gt;</a>
+<a name="ln12">#include &lt;cstdio&gt;</a>
+<a name="ln13">#include &lt;sstream&gt;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &quot;chardump.h&quot;</a>
+<a name="ln16">#include &quot;clua.h&quot;</a>
+<a name="ln17">#include &quot;cluautil.h&quot;</a>
+<a name="ln18">#include &quot;command.h&quot;</a>
+<a name="ln19">#include &quot;coordit.h&quot;</a>
+<a name="ln20">#include &quot;describe.h&quot;</a>
+<a name="ln21">#include &quot;describe-spells.h&quot;</a>
+<a name="ln22">#include &quot;directn.h&quot;</a>
+<a name="ln23">#include &quot;env.h&quot;</a>
+<a name="ln24">#include &quot;files.h&quot;</a>
+<a name="ln25">#include &quot;feature.h&quot;</a>
+<a name="ln26">#include &quot;god-passive.h&quot;</a>
+<a name="ln27">#include &quot;hints.h&quot;</a>
+<a name="ln28">#include &quot;invent.h&quot;</a>
+<a name="ln29">#include &quot;item-prop.h&quot;</a>
+<a name="ln30">#include &quot;item-status-flag-type.h&quot;</a>
+<a name="ln31">#include &quot;items.h&quot;</a>
+<a name="ln32">#include &quot;libutil.h&quot; // map_find</a>
+<a name="ln33">#include &quot;menu.h&quot;</a>
+<a name="ln34">#include &quot;message.h&quot;</a>
+<a name="ln35">#include &quot;notes.h&quot;</a>
+<a name="ln36">#include &quot;output.h&quot;</a>
+<a name="ln37">#include &quot;religion.h&quot;</a>
+<a name="ln38">#include &quot;rot.h&quot;</a>
+<a name="ln39">#include &quot;spl-book.h&quot;</a>
+<a name="ln40">#include &quot;state.h&quot;</a>
+<a name="ln41">#include &quot;stringutil.h&quot;</a>
+<a name="ln42">#include &quot;syscalls.h&quot;</a>
+<a name="ln43">#include &quot;terrain.h&quot;</a>
+<a name="ln44">#include &quot;traps.h&quot;</a>
+<a name="ln45">#include &quot;travel.h&quot;</a>
+<a name="ln46">#include &quot;unicode.h&quot;</a>
+<a name="ln47">#include &quot;unwind.h&quot;</a>
+<a name="ln48">#include &quot;viewmap.h&quot;</a>
+<a name="ln49">#ifdef USE_TILE</a>
+<a name="ln50"># include &quot;tilepick.h&quot;</a>
+<a name="ln51">#endif</a>
+<a name="ln52"> </a>
+<a name="ln53">// Global</a>
+<a name="ln54">StashTracker StashTrack;</a>
+<a name="ln55"> </a>
+<a name="ln56">string userdef_annotate_item(const char *s, const item_def *item)</a>
+<a name="ln57">{</a>
+<a name="ln58">#ifdef CLUA_BINDINGS</a>
+<a name="ln59">    lua_stack_cleaner cleaner(clua);</a>
+<a name="ln60">    clua_push_item(clua, const_cast&lt;item_def*&gt;(item));</a>
+<a name="ln61">    if (!clua.callfn(s, 1, 1) &amp;&amp; !clua.error.empty())</a>
+<a name="ln62">        mprf(MSGCH_ERROR, &quot;Lua error: %s&quot;, clua.error.c_str());</a>
+<a name="ln63">    string ann;</a>
+<a name="ln64">    if (lua_isstring(clua, -1))</a>
+<a name="ln65">        ann = luaL_checkstring(clua, -1);</a>
+<a name="ln66">    return ann;</a>
+<a name="ln67">#else</a>
+<a name="ln68">    return &quot;&quot;;</a>
+<a name="ln69">#endif</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">string stash_annotate_item(const char *s, const item_def *item)</a>
+<a name="ln73">{</a>
+<a name="ln74">    string text = userdef_annotate_item(s, item);</a>
+<a name="ln75"> </a>
+<a name="ln76">    if (item-&gt;has_spells())</a>
+<a name="ln77">    {</a>
+<a name="ln78">        formatted_string fs;</a>
+<a name="ln79">        describe_spellset(item_spellset(*item), item, fs);</a>
+<a name="ln80">        text += &quot;\n&quot;;</a>
+<a name="ln81">        text += fs.tostring();</a>
+<a name="ln82">    }</a>
+<a name="ln83"> </a>
+<a name="ln84">    // Include singular form (slice of pizza vs slices of pizza).</a>
+<a name="ln85">    if (item-&gt;quantity &gt; 1)</a>
+<a name="ln86">    {</a>
+<a name="ln87">        text += &quot; {&quot;;</a>
+<a name="ln88">        text += item-&gt;name(DESC_QUALNAME);</a>
+<a name="ln89">        text += &quot;}&quot;;</a>
+<a name="ln90">    }</a>
+<a name="ln91"> </a>
+<a name="ln92">    // note that we can't add this in stash.lua (where most other annotations</a>
+<a name="ln93">    // are added) because that is shared between stash search annotations and</a>
+<a name="ln94">    // autopickup configuration annotations, and annotating an item based on</a>
+<a name="ln95">    // item_needs_autopickup while trying to decide if the item needs to be</a>
+<a name="ln96">    // autopickedup leads to infinite recursion</a>
+<a name="ln97">    if (Options.autopickup_search &amp;&amp; item_needs_autopickup(*item))</a>
+<a name="ln98">        text += &quot; {autopickup}&quot;;</a>
+<a name="ln99"> </a>
+<a name="ln100">    return text;</a>
+<a name="ln101">}</a>
+<a name="ln102"> </a>
+<a name="ln103">void maybe_update_stashes()</a>
+<a name="ln104">{</a>
+<a name="ln105">    if (!crawl_state.game_is_arena())</a>
+<a name="ln106">        StashTrack.update_visible_stashes();</a>
+<a name="ln107">}</a>
+<a name="ln108"> </a>
+<a name="ln109">bool is_stash(const coord_def&amp; c)</a>
+<a name="ln110">{</a>
+<a name="ln111">    LevelStashes *ls = StashTrack.find_current_level();</a>
+<a name="ln112">    return ls &amp;&amp; ls-&gt;find_stash(c);</a>
+<a name="ln113">}</a>
+<a name="ln114"> </a>
+<a name="ln115">string get_stash_desc(const coord_def&amp; c)</a>
+<a name="ln116">{</a>
+<a name="ln117">    LevelStashes *ls = StashTrack.find_current_level();</a>
+<a name="ln118">    if (ls)</a>
+<a name="ln119">    {</a>
+<a name="ln120">        Stash *s = ls-&gt;find_stash(c);</a>
+<a name="ln121">        if (s)</a>
+<a name="ln122">        {</a>
+<a name="ln123">            const string desc = s-&gt;description();</a>
+<a name="ln124">            if (!desc.empty())</a>
+<a name="ln125">                return &quot;[Stash: &quot; + desc + &quot;]&quot;;</a>
+<a name="ln126">        }</a>
+<a name="ln127">    }</a>
+<a name="ln128">    return &quot;&quot;;</a>
+<a name="ln129">}</a>
+<a name="ln130"> </a>
+<a name="ln131">void describe_stash(const coord_def&amp; c)</a>
+<a name="ln132">{</a>
+<a name="ln133">    string desc = get_stash_desc(c);</a>
+<a name="ln134">    if (!desc.empty())</a>
+<a name="ln135">        mprf(MSGCH_EXAMINE_FILTER, &quot;%s&quot;, desc.c_str());</a>
+<a name="ln136">}</a>
+<a name="ln137"> </a>
+<a name="ln138">vector&lt;item_def&gt; Stash::get_items() const</a>
+<a name="ln139">{</a>
+<a name="ln140">    return items;</a>
+<a name="ln141">}</a>
+<a name="ln142"> </a>
+<a name="ln143">vector&lt;item_def&gt; item_list_in_stash(const coord_def&amp; pos)</a>
+<a name="ln144">{</a>
+<a name="ln145">    vector&lt;item_def&gt; ret;</a>
+<a name="ln146"> </a>
+<a name="ln147">    LevelStashes *ls = StashTrack.find_current_level();</a>
+<a name="ln148">    if (ls)</a>
+<a name="ln149">    {</a>
+<a name="ln150">        Stash *s = ls-&gt;find_stash(pos);</a>
+<a name="ln151">        if (s)</a>
+<a name="ln152">            ret = s-&gt;get_items();</a>
+<a name="ln153">    }</a>
+<a name="ln154"> </a>
+<a name="ln155">    return ret;</a>
+<a name="ln156">}</a>
+<a name="ln157"> </a>
+<a name="ln158">static void _fully_identify_item(item_def *item)</a>
+<a name="ln159">{</a>
+<a name="ln160">    if (!item || !item-&gt;defined())</a>
+<a name="ln161">        return;</a>
+<a name="ln162"> </a>
+<a name="ln163">    set_ident_flags(*item, ISFLAG_IDENT_MASK);</a>
+<a name="ln164">    if (item-&gt;base_type != OBJ_WEAPONS)</a>
+<a name="ln165">        set_ident_type(*item, true);</a>
+<a name="ln166">}</a>
+<a name="ln167"> </a>
+<a name="ln168">// ----------------------------------------------------------------------</a>
+<a name="ln169">// Stash</a>
+<a name="ln170">// ----------------------------------------------------------------------</a>
+<a name="ln171"> </a>
+<a name="ln172">Stash::Stash(coord_def pos_) : items()</a>
+<a name="ln173">{</a>
+<a name="ln174">    // First, fix what square we're interested in</a>
+<a name="ln175">    if (pos_.origin())</a>
+<a name="ln176">        pos_ = you.pos();</a>
+<a name="ln177">    pos = pos_;</a>
+<a name="ln178"> </a>
+<a name="ln179">    update();</a>
+<a name="ln180">}</a>
+<a name="ln181"> </a>
+<a name="ln182">bool Stash::are_items_same(const item_def &amp;a, const item_def &amp;b, bool exact)</a>
+<a name="ln183">{</a>
+<a name="ln184">    const bool same = a.is_type(b.base_type, b.sub_type)</a>
+<a name="ln185">        // Ignore Gozag's gold flag.</a>
+<a name="ln186">        &amp;&amp; (a.plus == b.plus || a.base_type == OBJ_GOLD &amp;&amp; !exact)</a>
+<a name="ln187">        &amp;&amp; a.plus2 == b.plus2</a>
+<a name="ln188">        &amp;&amp; a.special == b.special</a>
+<a name="ln189">        &amp;&amp; a.get_colour() == b.get_colour() // ????????</a>
+<a name="ln190">        &amp;&amp; a.flags == b.flags</a>
+<a name="ln191">        &amp;&amp; a.quantity == b.quantity;</a>
+<a name="ln192"> </a>
+<a name="ln193">    return same</a>
+<a name="ln194">           || (!exact &amp;&amp; a.base_type == b.base_type</a>
+<a name="ln195">               &amp;&amp; (a.base_type == OBJ_CORPSES</a>
+<a name="ln196">                   || (a.is_type(OBJ_FOOD, FOOD_CHUNK)</a>
+<a name="ln197">                       &amp;&amp; b.sub_type == FOOD_CHUNK))</a>
+<a name="ln198">               &amp;&amp; a.plus == b.plus);</a>
+<a name="ln199">}</a>
+<a name="ln200"> </a>
+<a name="ln201">bool Stash::unverified() const</a>
+<a name="ln202">{</a>
+<a name="ln203">    return !verified;</a>
+<a name="ln204">}</a>
+<a name="ln205"> </a>
+<a name="ln206">bool Stash::pickup_eligible() const</a>
+<a name="ln207">{</a>
+<a name="ln208">    for (const item_def &amp;item : items)</a>
+<a name="ln209">        if (item_needs_autopickup(item))</a>
+<a name="ln210">            return true;</a>
+<a name="ln211"> </a>
+<a name="ln212">    return false;</a>
+<a name="ln213">}</a>
+<a name="ln214"> </a>
+<a name="ln215">bool Stash::needs_stop() const</a>
+<a name="ln216">{</a>
+<a name="ln217">    for (const item_def &amp;item : items)</a>
+<a name="ln218">        if (!item_needs_autopickup(item))</a>
+<a name="ln219">            return true;</a>
+<a name="ln220"> </a>
+<a name="ln221">    return false;</a>
+<a name="ln222">}</a>
+<a name="ln223"> </a>
+<a name="ln224">bool Stash::is_boring_feature(dungeon_feature_type feature)</a>
+<a name="ln225">{</a>
+<a name="ln226">    // Count shops as boring features, because they are handled separately.</a>
+<a name="ln227">    return !is_notable_terrain(feature) &amp;&amp; !feat_is_trap(feature)</a>
+<a name="ln228">        || feature == DNGN_ENTER_SHOP;</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">static bool _grid_has_perceived_item(const coord_def&amp; pos)</a>
+<a name="ln232">{</a>
+<a name="ln233">    return you.visible_igrd(pos) != NON_ITEM;</a>
+<a name="ln234">}</a>
+<a name="ln235"> </a>
+<a name="ln236">static bool _grid_has_perceived_multiple_items(const coord_def&amp; pos)</a>
+<a name="ln237">{</a>
+<a name="ln238">    int count = 0;</a>
+<a name="ln239"> </a>
+<a name="ln240">    for (stack_iterator si(pos, true); si &amp;&amp; count &lt; 2; ++si)</a>
+<a name="ln241">        ++count;</a>
+<a name="ln242"> </a>
+<a name="ln243">    return count &gt; 1;</a>
+<a name="ln244">}</a>
+<a name="ln245"> </a>
+<a name="ln246">bool Stash::unmark_trapping_nets()</a>
+<a name="ln247">{</a>
+<a name="ln248">    bool changed = false;</a>
+<a name="ln249">    for (auto &amp;item : items)</a>
+<a name="ln250">        if (item_is_stationary_net(item))</a>
+<a name="ln251">            item.net_placed = false, changed = true;</a>
+<a name="ln252">    return changed;</a>
+<a name="ln253">}</a>
+<a name="ln254"> </a>
+<a name="ln255">void Stash::update()</a>
+<a name="ln256">{</a>
+<a name="ln257">    feat = grd(pos);</a>
+<a name="ln258">    trap = NUM_TRAPS;</a>
+<a name="ln259"> </a>
+<a name="ln260">    if (is_boring_feature(feat))</a>
+<a name="ln261">        feat = DNGN_FLOOR;</a>
+<a name="ln262"> </a>
+<a name="ln263">    if (feat_is_trap(feat))</a>
+<a name="ln264">    {</a>
+<a name="ln265">        trap = get_trap_type(pos);</a>
+<a name="ln266">        if (trap == TRAP_WEB)</a>
+<a name="ln267">            feat = DNGN_FLOOR, trap = TRAP_UNASSIGNED;</a>
+<a name="ln268">    }</a>
+<a name="ln269"> </a>
+<a name="ln270">    if (feat == DNGN_FLOOR)</a>
+<a name="ln271">        feat_desc = &quot;&quot;;</a>
+<a name="ln272">    else</a>
+<a name="ln273">        feat_desc = feature_description_at(pos, false, DESC_A);</a>
+<a name="ln274"> </a>
+<a name="ln275">    // If this is your position, you know what's on this square</a>
+<a name="ln276">    if (pos == you.pos())</a>
+<a name="ln277">    {</a>
+<a name="ln278">        // Zap existing items</a>
+<a name="ln279">        items.clear();</a>
+<a name="ln280"> </a>
+<a name="ln281">        // Now, grab all items on that square and fill our vector</a>
+<a name="ln282">        for (stack_iterator si(pos, true); si; ++si)</a>
+<a name="ln283">        {</a>
+<a name="ln284">            god_id_item(*si);</a>
+<a name="ln285">            add_item(*si);</a>
+<a name="ln286">        }</a>
+<a name="ln287"> </a>
+<a name="ln288">        verified = true;</a>
+<a name="ln289">    }</a>
+<a name="ln290">    // If this is not your position, the only thing we can do is verify that</a>
+<a name="ln291">    // what the player sees on the square is the first item in this vector.</a>
+<a name="ln292">    else</a>
+<a name="ln293">    {</a>
+<a name="ln294">        if (!_grid_has_perceived_item(pos))</a>
+<a name="ln295">        {</a>
+<a name="ln296">            items.clear();</a>
+<a name="ln297">            verified = true;</a>
+<a name="ln298">            return;</a>
+<a name="ln299">        }</a>
+<a name="ln300"> </a>
+<a name="ln301">        // There's something on this square. Take a squint at it.</a>
+<a name="ln302">        item_def *pitem = &amp;mitm[you.visible_igrd(pos)];</a>
+<a name="ln303">        hints_first_item(*pitem);</a>
+<a name="ln304"> </a>
+<a name="ln305">        god_id_item(*pitem);</a>
+<a name="ln306">        maybe_identify_base_type(*pitem);</a>
+<a name="ln307">        const item_def&amp; item = *pitem;</a>
+<a name="ln308"> </a>
+<a name="ln309">        if (!_grid_has_perceived_multiple_items(pos))</a>
+<a name="ln310">            items.clear();</a>
+<a name="ln311"> </a>
+<a name="ln312">        // We knew of nothing on this square, so we'll assume this is the</a>
+<a name="ln313">        // only item here, but mark it as unverified unless we can see nothing</a>
+<a name="ln314">        // under the item.</a>
+<a name="ln315">        if (items.empty())</a>
+<a name="ln316">        {</a>
+<a name="ln317">            if (!(item.flags &amp; ISFLAG_UNOBTAINABLE))</a>
+<a name="ln318">                add_item(item);</a>
+<a name="ln319">            // Note that we could be lying here, since we can have</a>
+<a name="ln320">            // a verified falsehood (if there's a mimic.)</a>
+<a name="ln321">            verified = !_grid_has_perceived_multiple_items(pos);</a>
+<a name="ln322">            return;</a>
+<a name="ln323">        }</a>
+<a name="ln324"> </a>
+<a name="ln325">        // There's more than one item in this pile. Check to see if</a>
+<a name="ln326">        // the top item matches what we remember.</a>
+<a name="ln327">        const item_def &amp;first = items[0];</a>
+<a name="ln328">        // Compare these items</a>
+<a name="ln329">        if (are_items_same(first, item))</a>
+<a name="ln330">        {</a>
+<a name="ln331">            // Replace the item to reflect seen recharging, etc.</a>
+<a name="ln332">            if (!are_items_same(first, item, true))</a>
+<a name="ln333">            {</a>
+<a name="ln334">                items.erase(items.begin());</a>
+<a name="ln335">                add_item(item, true);</a>
+<a name="ln336">            }</a>
+<a name="ln337">        }</a>
+<a name="ln338">        else</a>
+<a name="ln339">        {</a>
+<a name="ln340">            // See if 'item' matches any of the items we have. If it does,</a>
+<a name="ln341">            // we'll just make that the first item and leave 'verified'</a>
+<a name="ln342">            // unchanged.</a>
+<a name="ln343"> </a>
+<a name="ln344">            // Start from 1 because we've already checked items[0]</a>
+<a name="ln345">            for (int i = 1, count = items.size(); i &lt; count; ++i)</a>
+<a name="ln346">            {</a>
+<a name="ln347">                if (are_items_same(items[i], item))</a>
+<a name="ln348">                {</a>
+<a name="ln349">                    // Found it. Swap it to the front of the vector.</a>
+<a name="ln350">                    swap(items[i], items[0]);</a>
+<a name="ln351"> </a>
+<a name="ln352">                    // We don't set verified to true. If this stash was</a>
+<a name="ln353">                    // already unverified, it remains so.</a>
+<a name="ln354">                    return;</a>
+<a name="ln355">                }</a>
+<a name="ln356">            }</a>
+<a name="ln357"> </a>
+<a name="ln358">            // If this is unverified, forget last item on stack. This isn't</a>
+<a name="ln359">            // terribly clever, but it prevents the vector swelling forever.</a>
+<a name="ln360">            if (!verified)</a>
+<a name="ln361">                items.pop_back();</a>
+<a name="ln362"> </a>
+<a name="ln363">            // Items are different. We'll put this item in the front of our</a>
+<a name="ln364">            // vector, and mark this as unverified</a>
+<a name="ln365">            add_item(item, true);</a>
+<a name="ln366">            verified = false;</a>
+<a name="ln367">        }</a>
+<a name="ln368">    }</a>
+<a name="ln369">}</a>
+<a name="ln370"> </a>
+<a name="ln371">static bool _is_rottable(const item_def &amp;item)</a>
+<a name="ln372">{</a>
+<a name="ln373">    if (is_shop_item(item))</a>
+<a name="ln374">        return false;</a>
+<a name="ln375">    return item.base_type == OBJ_CORPSES || item.is_type(OBJ_FOOD, FOOD_CHUNK);</a>
+<a name="ln376">}</a>
+<a name="ln377"> </a>
+<a name="ln378">static short _min_rot(const item_def &amp;item)</a>
+<a name="ln379">{</a>
+<a name="ln380">    if (item.base_type == OBJ_FOOD)</a>
+<a name="ln381">        return 0;</a>
+<a name="ln382"> </a>
+<a name="ln383">    if (item.is_type(OBJ_CORPSES, CORPSE_SKELETON))</a>
+<a name="ln384">        return 0;</a>
+<a name="ln385"> </a>
+<a name="ln386">    if (!mons_skeleton(item.mon_type))</a>
+<a name="ln387">        return 0;</a>
+<a name="ln388">    else</a>
+<a name="ln389">        return -(FRESHEST_CORPSE);</a>
+<a name="ln390">}</a>
+<a name="ln391"> </a>
+<a name="ln392">// Returns the item name for a given item, with any appropriate</a>
+<a name="ln393">// stash-tracking pre/suffixes.</a>
+<a name="ln394">string Stash::stash_item_name(const item_def &amp;item)</a>
+<a name="ln395">{</a>
+<a name="ln396">    string name = item.name(DESC_A);</a>
+<a name="ln397"> </a>
+<a name="ln398">    if (in_inventory(item))</a>
+<a name="ln399">    {</a>
+<a name="ln400">        name.insert(0, &quot; (carried) &quot;);</a>
+<a name="ln401">        return name;</a>
+<a name="ln402">    }</a>
+<a name="ln403"> </a>
+<a name="ln404">    if (!_is_rottable(item))</a>
+<a name="ln405">        return name;</a>
+<a name="ln406"> </a>
+<a name="ln407">    if (item.stash_freshness &lt;= _min_rot(item))</a>
+<a name="ln408">    {</a>
+<a name="ln409">        name += &quot; (gone by now)&quot;;</a>
+<a name="ln410">        return name;</a>
+<a name="ln411">    }</a>
+<a name="ln412"> </a>
+<a name="ln413">    // Skeletons show no signs of rotting before they're gone</a>
+<a name="ln414">    if (item.is_type(OBJ_CORPSES, CORPSE_SKELETON))</a>
+<a name="ln415">        return name;</a>
+<a name="ln416"> </a>
+<a name="ln417">    if (item.stash_freshness &lt;= 0)</a>
+<a name="ln418">        name += &quot; (skeletalised by now)&quot;;</a>
+<a name="ln419"> </a>
+<a name="ln420">    return name;</a>
+<a name="ln421">}</a>
+<a name="ln422"> </a>
+<a name="ln423">string Stash::description() const</a>
+<a name="ln424">{</a>
+<a name="ln425">    if (items.empty())</a>
+<a name="ln426">        return &quot;&quot;;</a>
+<a name="ln427"> </a>
+<a name="ln428">    const item_def &amp;item = items[0];</a>
+<a name="ln429">    string desc = stash_item_name(item);</a>
+<a name="ln430"> </a>
+<a name="ln431">    size_t sz = items.size();</a>
+<a name="ln432">    if (sz &gt; 1)</a>
+<a name="ln433">    {</a>
+<a name="ln434">        char additionals[50];</a>
+<a name="ln435">        snprintf(additionals, sizeof additionals,</a>
+<a name="ln436">                &quot; (...%u)&quot;,</a>
+<a name="ln437">                 (unsigned int) (sz - 1));</a>
+<a name="ln438">        desc += additionals;</a>
+<a name="ln439">    }</a>
+<a name="ln440">    return desc;</a>
+<a name="ln441">}</a>
+<a name="ln442"> </a>
+<a name="ln443">string Stash::feature_description() const</a>
+<a name="ln444">{</a>
+<a name="ln445">    return feat_desc;</a>
+<a name="ln446">}</a>
+<a name="ln447"> </a>
+<a name="ln448">vector&lt;stash_search_result&gt; Stash::matches_search(</a>
+<a name="ln449">    const string &amp;prefix, const base_pattern &amp;search) const</a>
+<a name="ln450">{</a>
+<a name="ln451">    vector&lt;stash_search_result&gt; results;</a>
+<a name="ln452">    if (empty())</a>
+<a name="ln453">        return results;</a>
+<a name="ln454"> </a>
+<a name="ln455">    for (const item_def &amp;item : items)</a>
+<a name="ln456">    {</a>
+<a name="ln457">        const string s   = stash_item_name(item);</a>
+<a name="ln458">        const string ann = stash_annotate_item(STASH_LUA_SEARCH_ANNOTATE, &amp;item);</a>
+<a name="ln459">        if (search.matches(prefix + &quot; &quot; + ann + &quot; &quot; + s)</a>
+<a name="ln460">            || is_dumpable_artefact(item) &amp;&amp; search.matches(chardump_desc(item)))</a>
+<a name="ln461">        {</a>
+<a name="ln462">            stash_search_result res;</a>
+<a name="ln463">            res.match_type = MATCH_ITEM;</a>
+<a name="ln464">            res.match = s;</a>
+<a name="ln465">            res.primary_sort = item.name(DESC_QUALNAME);</a>
+<a name="ln466">            res.item = item;</a>
+<a name="ln467">            results.push_back(res);</a>
+<a name="ln468">        }</a>
+<a name="ln469">    }</a>
+<a name="ln470"> </a>
+<a name="ln471">    if (feat != DNGN_FLOOR)</a>
+<a name="ln472">    {</a>
+<a name="ln473">        const string fdesc = feature_description();</a>
+<a name="ln474">        if (!fdesc.empty() &amp;&amp; search.matches(prefix + &quot; &quot; + fdesc))</a>
+<a name="ln475">        {</a>
+<a name="ln476">            stash_search_result res;</a>
+<a name="ln477">            res.match_type = MATCH_FEATURE;</a>
+<a name="ln478">            res.match = fdesc;</a>
+<a name="ln479">            res.primary_sort = fdesc;</a>
+<a name="ln480">            res.feat = feat;</a>
+<a name="ln481">            res.trap = trap;</a>
+<a name="ln482">            results.push_back(res);</a>
+<a name="ln483">        }</a>
+<a name="ln484">    }</a>
+<a name="ln485"> </a>
+<a name="ln486">    for (auto &amp;res : results)</a>
+<a name="ln487">        res.pos.pos = pos;</a>
+<a name="ln488"> </a>
+<a name="ln489">    return results;</a>
+<a name="ln490">}</a>
+<a name="ln491"> </a>
+<a name="ln492">void Stash::_update_corpses(int rot_time)</a>
+<a name="ln493">{</a>
+<a name="ln494">    for (int i = items.size() - 1; i &gt;= 0; i--)</a>
+<a name="ln495">    {</a>
+<a name="ln496">        item_def &amp;item = items[i];</a>
+<a name="ln497"> </a>
+<a name="ln498">        if (!_is_rottable(item))</a>
+<a name="ln499">            continue;</a>
+<a name="ln500"> </a>
+<a name="ln501">        int new_rot = static_cast&lt;int&gt;(item.stash_freshness) - rot_time;</a>
+<a name="ln502"> </a>
+<a name="ln503">        if (new_rot &lt;= _min_rot(item))</a>
+<a name="ln504">        {</a>
+<a name="ln505">            items.erase(items.begin() + i);</a>
+<a name="ln506">            continue;</a>
+<a name="ln507">        }</a>
+<a name="ln508">        item.stash_freshness = static_cast&lt;short&gt;(new_rot);</a>
+<a name="ln509">    }</a>
+<a name="ln510">}</a>
+<a name="ln511"> </a>
+<a name="ln512">void Stash::_update_identification()</a>
+<a name="ln513">{</a>
+<a name="ln514">    for (int i = items.size() - 1; i &gt;= 0; i--)</a>
+<a name="ln515">    {</a>
+<a name="ln516">        god_id_item(items[i]);</a>
+<a name="ln517">        maybe_identify_base_type(items[i]);</a>
+<a name="ln518">    }</a>
+<a name="ln519">}</a>
+<a name="ln520"> </a>
+<a name="ln521">void Stash::add_item(const item_def &amp;item, bool add_to_front)</a>
+<a name="ln522">{</a>
+<a name="ln523">    if (_is_rottable(item))</a>
+<a name="ln524">        StashTrack.update_corpses();</a>
+<a name="ln525"> </a>
+<a name="ln526">    if (add_to_front)</a>
+<a name="ln527">        items.insert(items.begin(), item);</a>
+<a name="ln528">    else</a>
+<a name="ln529">        items.push_back(item);</a>
+<a name="ln530"> </a>
+<a name="ln531">    seen_item(item);</a>
+<a name="ln532"> </a>
+<a name="ln533">    if (!_is_rottable(item))</a>
+<a name="ln534">        return;</a>
+<a name="ln535"> </a>
+<a name="ln536">    // item.freshness remains unchanged in the stash, to show how fresh it</a>
+<a name="ln537">    // was when last seen. It's stash_freshness that's decayed over time.</a>
+<a name="ln538">    item_def &amp;it = add_to_front ? items.front() : items.back();</a>
+<a name="ln539">    it.stash_freshness     = it.freshness;</a>
+<a name="ln540">}</a>
+<a name="ln541"> </a>
+<a name="ln542">void Stash::write(FILE *f, coord_def refpos, string place, bool identify) const</a>
+<a name="ln543">{</a>
+<a name="ln544">    if (items.empty() &amp;&amp; verified)</a>
+<a name="ln545">        return;</a>
+<a name="ln546"> </a>
+<a name="ln547">    no_notes nx;</a>
+<a name="ln548"> </a>
+<a name="ln549">    fprintf(f, &quot;(%d, %d%s%s)\n&quot;, pos.x - refpos.x, pos.y - refpos.y,</a>
+<a name="ln550">            place.empty() ? &quot;&quot; : &quot;, &quot;, OUTS(place));</a>
+<a name="ln551"> </a>
+<a name="ln552">    for (int i = 0; i &lt; (int) items.size(); ++i)</a>
+<a name="ln553">    {</a>
+<a name="ln554">        item_def item = items[i];</a>
+<a name="ln555"> </a>
+<a name="ln556">        if (identify)</a>
+<a name="ln557">            _fully_identify_item(&amp;item);</a>
+<a name="ln558"> </a>
+<a name="ln559">        string s = stash_item_name(item);</a>
+<a name="ln560"> </a>
+<a name="ln561">        string ann = userdef_annotate_item(STASH_LUA_DUMP_ANNOTATE, &amp;item);</a>
+<a name="ln562"> </a>
+<a name="ln563">        if (!ann.empty())</a>
+<a name="ln564">        {</a>
+<a name="ln565">            trim_string(ann);</a>
+<a name="ln566">            ann = &quot; &quot; + ann;</a>
+<a name="ln567">        }</a>
+<a name="ln568"> </a>
+<a name="ln569">        fprintf(f, &quot;  %s%s%s\n&quot;, OUTS(s), OUTS(ann),</a>
+<a name="ln570">            (!verified &amp;&amp; (items.size() &gt; 1 || i) ? &quot; (still there?)&quot; : &quot;&quot;));</a>
+<a name="ln571"> </a>
+<a name="ln572">        if (is_dumpable_artefact(item))</a>
+<a name="ln573">        {</a>
+<a name="ln574">            string desc = chardump_desc(item);</a>
+<a name="ln575"> </a>
+<a name="ln576">            // Kill leading and trailing whitespace</a>
+<a name="ln577">            desc.erase(desc.find_last_not_of(&quot; \n\t&quot;) + 1);</a>
+<a name="ln578">            desc.erase(0, desc.find_first_not_of(&quot; \n\t&quot;));</a>
+<a name="ln579">            // If string is not-empty, pad out to a neat indent</a>
+<a name="ln580">            if (!desc.empty())</a>
+<a name="ln581">            {</a>
+<a name="ln582">                // Walk backwards and prepend indenting spaces to \n characters.</a>
+<a name="ln583">                for (int j = desc.length() - 1; j &gt;= 0; --j)</a>
+<a name="ln584">                    if (desc[j] == '\n')</a>
+<a name="ln585">                        desc.insert(j + 1, &quot; &quot;);</a>
+<a name="ln586"> </a>
+<a name="ln587">                fprintf(f, &quot;    %s\n&quot;, OUTS(desc));</a>
+<a name="ln588">            }</a>
+<a name="ln589">        }</a>
+<a name="ln590">    }</a>
+<a name="ln591"> </a>
+<a name="ln592">    if (items.size() &lt;= 1 &amp;&amp; !verified)</a>
+<a name="ln593">        fprintf(f, &quot;  (unseen)\n&quot;);</a>
+<a name="ln594">}</a>
+<a name="ln595"> </a>
+<a name="ln596">void Stash::save(writer&amp; outf) const</a>
+<a name="ln597">{</a>
+<a name="ln598">    // How many items on this square?</a>
+<a name="ln599">    marshallShort(outf, (short) items.size());</a>
+<a name="ln600"> </a>
+<a name="ln601">    marshallByte(outf, pos.x);</a>
+<a name="ln602">    marshallByte(outf, pos.y);</a>
+<a name="ln603"> </a>
+<a name="ln604">    marshallByte(outf, feat);</a>
+<a name="ln605">    marshallByte(outf, trap);</a>
+<a name="ln606"> </a>
+<a name="ln607">    marshallString(outf, feat_desc);</a>
+<a name="ln608"> </a>
+<a name="ln609">    marshallByte(outf, verified? 1 : 0);</a>
+<a name="ln610"> </a>
+<a name="ln611">    // And dump the items individually. We don't bother saving fields we're</a>
+<a name="ln612">    // not interested in (and don't anticipate being interested in).</a>
+<a name="ln613">    for (const item_def &amp;item : items)</a>
+<a name="ln614">        marshallItem(outf, item, true);</a>
+<a name="ln615">}</a>
+<a name="ln616"> </a>
+<a name="ln617">void Stash::load(reader&amp; inf)</a>
+<a name="ln618">{</a>
+<a name="ln619">    // How many items?</a>
+<a name="ln620">    int count = unmarshallShort(inf);</a>
+<a name="ln621"> </a>
+<a name="ln622">    pos.x = unmarshallByte(inf);</a>
+<a name="ln623">    pos.y = unmarshallByte(inf);</a>
+<a name="ln624"> </a>
+<a name="ln625">    feat =  static_cast&lt;dungeon_feature_type&gt;(unmarshallUByte(inf));</a>
+<a name="ln626">    trap =  static_cast&lt;trap_type&gt;(unmarshallUByte(inf));</a>
+<a name="ln627">    feat_desc = unmarshallString(inf);</a>
+<a name="ln628"> </a>
+<a name="ln629">    uint8_t flags = unmarshallUByte(inf);</a>
+<a name="ln630">    verified = (flags &amp; 1) != 0;</a>
+<a name="ln631"> </a>
+<a name="ln632">    // Zap out item vector, in case it's in use (however unlikely)</a>
+<a name="ln633">    items.clear();</a>
+<a name="ln634">    // Read in the items</a>
+<a name="ln635">    for (int i = 0; i &lt; count; ++i)</a>
+<a name="ln636">    {</a>
+<a name="ln637">        item_def item;</a>
+<a name="ln638">        unmarshallItem(inf, item);</a>
+<a name="ln639"> </a>
+<a name="ln640">        items.push_back(item);</a>
+<a name="ln641">    }</a>
+<a name="ln642">}</a>
+<a name="ln643"> </a>
+<a name="ln644">ShopInfo::ShopInfo(const shop_struct&amp; shop_)</a>
+<a name="ln645">    : shop(shop_)</a>
+<a name="ln646">{</a>
+<a name="ln647">}</a>
+<a name="ln648"> </a>
+<a name="ln649">string ShopInfo::shop_item_name(const item_def &amp;it) const</a>
+<a name="ln650">{</a>
+<a name="ln651">    return make_stringf(&quot;%s%s (%d gold)&quot;,</a>
+<a name="ln652">                        Stash::stash_item_name(it).c_str(),</a>
+<a name="ln653">                        shop_item_unknown(it) ? &quot; (unknown)&quot; : &quot;&quot;,</a>
+<a name="ln654">                        item_price(it, shop));</a>
+<a name="ln655">}</a>
+<a name="ln656"> </a>
+<a name="ln657">string ShopInfo::shop_item_desc(const item_def &amp;it) const</a>
+<a name="ln658">{</a>
+<a name="ln659">    string desc;</a>
+<a name="ln660"> </a>
+<a name="ln661">    item_def&amp; item(const_cast&lt;item_def&amp;&gt;(it));</a>
+<a name="ln662">    unwind_var&lt;iflags_t&gt;(item.flags);</a>
+<a name="ln663"> </a>
+<a name="ln664">    if (shoptype_identifies_stock(shop.type))</a>
+<a name="ln665">        item.flags |= ISFLAG_IDENT_MASK;</a>
+<a name="ln666"> </a>
+<a name="ln667">    if (is_dumpable_artefact(item))</a>
+<a name="ln668">    {</a>
+<a name="ln669">        desc = chardump_desc(item);</a>
+<a name="ln670">        trim_string(desc);</a>
+<a name="ln671"> </a>
+<a name="ln672">        // Walk backwards and prepend indenting spaces to \n characters</a>
+<a name="ln673">        for (int i = desc.length() - 1; i &gt;= 0; --i)</a>
+<a name="ln674">            if (desc[i] == '\n')</a>
+<a name="ln675">                desc.insert(i + 1, &quot; &quot;);</a>
+<a name="ln676">    }</a>
+<a name="ln677"> </a>
+<a name="ln678">    return desc;</a>
+<a name="ln679">}</a>
+<a name="ln680"> </a>
+<a name="ln681">void ShopInfo::show_menu(const level_pos&amp; pos) const</a>
+<a name="ln682">{</a>
+<a name="ln683">    if (!is_visited())</a>
+<a name="ln684">        return;</a>
+<a name="ln685">    // ShopMenu shouldn't actually modify the shop, since it only does so if</a>
+<a name="ln686">    // you buy something.</a>
+<a name="ln687">    ::shop(const_cast&lt;shop_struct&amp;&gt;(shop), pos);</a>
+<a name="ln688">}</a>
+<a name="ln689"> </a>
+<a name="ln690">vector&lt;stash_search_result&gt; ShopInfo::matches_search(</a>
+<a name="ln691">    const string &amp;prefix, const base_pattern &amp;search) const</a>
+<a name="ln692">{</a>
+<a name="ln693">    vector&lt;stash_search_result&gt; results;</a>
+<a name="ln694"> </a>
+<a name="ln695">    no_notes nx;</a>
+<a name="ln696"> </a>
+<a name="ln697">    const string shoptitle = shop_name(shop) + (shop.stock.empty() ? &quot;*&quot; : &quot;&quot;);</a>
+<a name="ln698">    if (search.matches(shoptitle + &quot; &quot; + prefix + &quot; {shop}&quot;))</a>
+<a name="ln699">    {</a>
+<a name="ln700">        stash_search_result res;</a>
+<a name="ln701">        res.match = shoptitle;</a>
+<a name="ln702">        res.primary_sort = shoptitle;</a>
+<a name="ln703">        res.match_type = MATCH_SHOP;</a>
+<a name="ln704">        res.shop = this;</a>
+<a name="ln705">        res.pos.pos = shop.pos;</a>
+<a name="ln706">        results.push_back(res);</a>
+<a name="ln707">        // if the player is just searching for shops, don't show contents</a>
+<a name="ln708">        if (search.matches(prefix + &quot; {shop}&quot;)</a>
+<a name="ln709">            &amp;&amp; search.tostring() != &quot;.&quot; &amp;&amp; search.tostring() != &quot;..&quot;)</a>
+<a name="ln710">        {</a>
+<a name="ln711">            return results;</a>
+<a name="ln712">        }</a>
+<a name="ln713">    }</a>
+<a name="ln714"> </a>
+<a name="ln715">    for (const item_def &amp;item : shop.stock)</a>
+<a name="ln716">    {</a>
+<a name="ln717">        const string sname = shop_item_name(item);</a>
+<a name="ln718">        const string ann   = stash_annotate_item(STASH_LUA_SEARCH_ANNOTATE,</a>
+<a name="ln719">                                                 &amp;item);</a>
+<a name="ln720"> </a>
+<a name="ln721">        if (search.matches(prefix + &quot; &quot; + ann + &quot; &quot; + sname +</a>
+<a name="ln722">                                                    &quot; {&quot; + shoptitle + &quot;}&quot;)</a>
+<a name="ln723">            || search.matches(shop_item_desc(item)))</a>
+<a name="ln724">        {</a>
+<a name="ln725">            stash_search_result res;</a>
+<a name="ln726">            res.match_type = MATCH_ITEM;</a>
+<a name="ln727">            res.match = sname;</a>
+<a name="ln728">            res.primary_sort = item.name(DESC_QUALNAME);</a>
+<a name="ln729">            res.item = item;</a>
+<a name="ln730">            res.pos.pos = shop.pos;</a>
+<a name="ln731">            results.push_back(res);</a>
+<a name="ln732">        }</a>
+<a name="ln733">    }</a>
+<a name="ln734"> </a>
+<a name="ln735">    return results;</a>
+<a name="ln736">}</a>
+<a name="ln737"> </a>
+<a name="ln738">void ShopInfo::write(FILE *f, bool identify) const</a>
+<a name="ln739">{</a>
+<a name="ln740">    no_notes nx;</a>
+<a name="ln741">    fprintf(f, &quot;[Shop] %s\n&quot;, OUTS(shop_name(shop)));</a>
+<a name="ln742">    if (!shop.stock.empty())</a>
+<a name="ln743">    {</a>
+<a name="ln744">        for (item_def item : shop.stock) // intentional copy</a>
+<a name="ln745">        {</a>
+<a name="ln746">            if (identify)</a>
+<a name="ln747">                _fully_identify_item(&amp;item);</a>
+<a name="ln748"> </a>
+<a name="ln749">            fprintf(f, &quot;  %s\n&quot;, OUTS(shop_item_name(item)));</a>
+<a name="ln750">            string desc = shop_item_desc(item);</a>
+<a name="ln751">            if (!desc.empty())</a>
+<a name="ln752">                fprintf(f, &quot;    %s\n&quot;, OUTS(desc));</a>
+<a name="ln753">        }</a>
+<a name="ln754">    }</a>
+<a name="ln755">    else</a>
+<a name="ln756">        fprintf(f, &quot;  (Shop contents are unknown)\n&quot;);</a>
+<a name="ln757">}</a>
+<a name="ln758"> </a>
+<a name="ln759">LevelStashes::LevelStashes()</a>
+<a name="ln760">    : m_place(level_id::current()),</a>
+<a name="ln761">      m_stashes(),</a>
+<a name="ln762">      m_shops()</a>
+<a name="ln763">{</a>
+<a name="ln764">}</a>
+<a name="ln765"> </a>
+<a name="ln766">level_id LevelStashes::where() const</a>
+<a name="ln767">{</a>
+<a name="ln768">    return m_place;</a>
+<a name="ln769">}</a>
+<a name="ln770"> </a>
+<a name="ln771">Stash *LevelStashes::find_stash(coord_def c)</a>
+<a name="ln772">{</a>
+<a name="ln773">    return map_find(m_stashes, c);</a>
+<a name="ln774">}</a>
+<a name="ln775"> </a>
+<a name="ln776">const Stash *LevelStashes::find_stash(coord_def c) const</a>
+<a name="ln777">{</a>
+<a name="ln778">    return map_find(m_stashes, c);</a>
+<a name="ln779">}</a>
+<a name="ln780"> </a>
+<a name="ln781">const ShopInfo *LevelStashes::find_shop(const coord_def&amp; c) const</a>
+<a name="ln782">{</a>
+<a name="ln783">    for (const ShopInfo &amp;shop : m_shops)</a>
+<a name="ln784">        if (shop.is_at(c))</a>
+<a name="ln785">            return &amp;shop;</a>
+<a name="ln786"> </a>
+<a name="ln787">    return nullptr;</a>
+<a name="ln788">}</a>
+<a name="ln789"> </a>
+<a name="ln790">bool LevelStashes::shop_needs_visit(const coord_def&amp; c) const</a>
+<a name="ln791">{</a>
+<a name="ln792">    const ShopInfo *shop = find_shop(c);</a>
+<a name="ln793">    return shop &amp;&amp; !shop-&gt;is_visited();</a>
+<a name="ln794">}</a>
+<a name="ln795"> </a>
+<a name="ln796">bool LevelStashes::needs_visit(const coord_def&amp; c, bool autopickup) const</a>
+<a name="ln797">{</a>
+<a name="ln798">    const Stash *s = find_stash(c);</a>
+<a name="ln799">    if (s &amp;&amp; (s-&gt;unverified()</a>
+<a name="ln800">              || autopickup &amp;&amp; s-&gt;pickup_eligible()))</a>
+<a name="ln801">    {</a>
+<a name="ln802">        return true;</a>
+<a name="ln803">    }</a>
+<a name="ln804">    return shop_needs_visit(c);</a>
+<a name="ln805">}</a>
+<a name="ln806"> </a>
+<a name="ln807">bool LevelStashes::needs_stop(const coord_def &amp;c) const</a>
+<a name="ln808">{</a>
+<a name="ln809">    const Stash *s = find_stash(c);</a>
+<a name="ln810">    return s &amp;&amp; s-&gt;unverified() &amp;&amp; s-&gt;needs_stop();</a>
+<a name="ln811">}</a>
+<a name="ln812"> </a>
+<a name="ln813">ShopInfo &amp;LevelStashes::get_shop(const coord_def&amp; c)</a>
+<a name="ln814">{</a>
+<a name="ln815">    for (ShopInfo &amp;shop : m_shops)</a>
+<a name="ln816">        if (shop.is_at(c))</a>
+<a name="ln817">            return shop;</a>
+<a name="ln818"> </a>
+<a name="ln819">    shop_struct shop = *shop_at(c);</a>
+<a name="ln820">    shop.stock.clear(); // You can't see it from afar.</a>
+<a name="ln821">    m_shops.emplace_back(shop);</a>
+<a name="ln822">    return m_shops.back();</a>
+<a name="ln823">}</a>
+<a name="ln824"> </a>
+<a name="ln825">// Updates the stash at p. Returns true if there was a stash at p, false</a>
+<a name="ln826">// otherwise.</a>
+<a name="ln827">bool LevelStashes::update_stash(const coord_def&amp; c)</a>
+<a name="ln828">{</a>
+<a name="ln829">    Stash *s = find_stash(c);</a>
+<a name="ln830">    if (!s)</a>
+<a name="ln831">        return false;</a>
+<a name="ln832"> </a>
+<a name="ln833">    s-&gt;update();</a>
+<a name="ln834">    if (s-&gt;empty())</a>
+<a name="ln835">        kill_stash(*s);</a>
+<a name="ln836">    return true;</a>
+<a name="ln837">}</a>
+<a name="ln838"> </a>
+<a name="ln839">bool LevelStashes::unmark_trapping_nets(const coord_def &amp;c)</a>
+<a name="ln840">{</a>
+<a name="ln841">    if (Stash *s = find_stash(c))</a>
+<a name="ln842">        return s-&gt;unmark_trapping_nets();</a>
+<a name="ln843">    else</a>
+<a name="ln844">        return false;</a>
+<a name="ln845">}</a>
+<a name="ln846"> </a>
+<a name="ln847">void LevelStashes::move_stash(const coord_def&amp; from, const coord_def&amp; to)</a>
+<a name="ln848">{</a>
+<a name="ln849">    ASSERT(from != to);</a>
+<a name="ln850"> </a>
+<a name="ln851">    Stash *s = find_stash(from);</a>
+<a name="ln852">    if (!s)</a>
+<a name="ln853">        return;</a>
+<a name="ln854"> </a>
+<a name="ln855">    coord_def old_pos = s-&gt;pos;</a>
+<a name="ln856">    s-&gt;pos = to;</a>
+<a name="ln857">    m_stashes[s-&gt;pos] = *s;</a>
+<a name="ln858">    m_stashes.erase(old_pos);</a>
+<a name="ln859">}</a>
+<a name="ln860"> </a>
+<a name="ln861">// Removes a Stash from the level.</a>
+<a name="ln862">void LevelStashes::kill_stash(const Stash &amp;s)</a>
+<a name="ln863">{</a>
+<a name="ln864">    m_stashes.erase(s.pos);</a>
+<a name="ln865">}</a>
+<a name="ln866"> </a>
+<a name="ln867">void LevelStashes::add_stash(coord_def p)</a>
+<a name="ln868">{</a>
+<a name="ln869">    Stash *s = find_stash(p);</a>
+<a name="ln870">    if (s)</a>
+<a name="ln871">    {</a>
+<a name="ln872">        s-&gt;update();</a>
+<a name="ln873">        if (s-&gt;empty())</a>
+<a name="ln874">            kill_stash(*s);</a>
+<a name="ln875">    }</a>
+<a name="ln876">    else</a>
+<a name="ln877">    {</a>
+<a name="ln878">        Stash new_stash(p);</a>
+<a name="ln879">        if (!new_stash.empty())</a>
+<a name="ln880">            m_stashes[new_stash.pos] = new_stash;</a>
+<a name="ln881">    }</a>
+<a name="ln882">}</a>
+<a name="ln883"> </a>
+<a name="ln884">bool LevelStashes::is_current() const</a>
+<a name="ln885">{</a>
+<a name="ln886">    return m_place == level_id::current();</a>
+<a name="ln887">}</a>
+<a name="ln888"> </a>
+<a name="ln889">string LevelStashes::level_name() const</a>
+<a name="ln890">{</a>
+<a name="ln891">    return m_place.describe(true, true);</a>
+<a name="ln892">}</a>
+<a name="ln893"> </a>
+<a name="ln894">string LevelStashes::short_level_name() const</a>
+<a name="ln895">{</a>
+<a name="ln896">    return m_place.describe();</a>
+<a name="ln897">}</a>
+<a name="ln898"> </a>
+<a name="ln899">void LevelStashes::_waypoint_search(</a>
+<a name="ln900">        int n,</a>
+<a name="ln901">        vector&lt;stash_search_result&gt; &amp;results) const</a>
+<a name="ln902">{</a>
+<a name="ln903">    level_pos waypoint = travel_cache.get_waypoint(n);</a>
+<a name="ln904">    if (!waypoint.is_valid() || waypoint.id != m_place)</a>
+<a name="ln905">        return;</a>
+<a name="ln906">    const Stash* stash = find_stash(waypoint.pos);</a>
+<a name="ln907">    if (!stash)</a>
+<a name="ln908">        return;</a>
+<a name="ln909">    vector&lt;stash_search_result&gt; new_results =</a>
+<a name="ln910">        stash-&gt;matches_search(&quot;&quot;, text_pattern(&quot;.*&quot;));</a>
+<a name="ln911">    for (auto &amp;res : new_results)</a>
+<a name="ln912">    {</a>
+<a name="ln913">        res.pos.id = m_place;</a>
+<a name="ln914">        results.push_back(res);</a>
+<a name="ln915">    }</a>
+<a name="ln916">}</a>
+<a name="ln917"> </a>
+<a name="ln918">void LevelStashes::get_matching_stashes(</a>
+<a name="ln919">        const base_pattern &amp;search,</a>
+<a name="ln920">        vector&lt;stash_search_result&gt; &amp;results) const</a>
+<a name="ln921">{</a>
+<a name="ln922">    string lplace = &quot;{&quot; + m_place.describe() + &quot;}&quot;;</a>
+<a name="ln923"> </a>
+<a name="ln924">    // a single digit or * means we're searching for waypoints' content.</a>
+<a name="ln925">    const string s = search.tostring();</a>
+<a name="ln926">    if (s == &quot;*&quot;)</a>
+<a name="ln927">    {</a>
+<a name="ln928">        for (int i = 0; i &lt; TRAVEL_WAYPOINT_COUNT; ++i)</a>
+<a name="ln929">            _waypoint_search(i, results);</a>
+<a name="ln930">        return;</a>
+<a name="ln931">    }</a>
+<a name="ln932">    else if (s.size() == 1 &amp;&amp; s[0] &gt;= '0' &amp;&amp; s[0] &lt;= '9')</a>
+<a name="ln933">    {</a>
+<a name="ln934">        _waypoint_search(s[0] - '0', results);</a>
+<a name="ln935">        return;</a>
+<a name="ln936">    }</a>
+<a name="ln937"> </a>
+<a name="ln938">    for (const auto &amp;entry : m_stashes)</a>
+<a name="ln939">    {</a>
+<a name="ln940">        vector&lt;stash_search_result&gt; new_results =</a>
+<a name="ln941">            entry.second.matches_search(lplace, search);</a>
+<a name="ln942">        for (auto &amp;res : new_results)</a>
+<a name="ln943">        {</a>
+<a name="ln944">            res.pos.id = m_place;</a>
+<a name="ln945">            results.push_back(res);</a>
+<a name="ln946">        }</a>
+<a name="ln947">    }</a>
+<a name="ln948"> </a>
+<a name="ln949">    for (const ShopInfo &amp;shop : m_shops)</a>
+<a name="ln950">    {</a>
+<a name="ln951">        vector&lt;stash_search_result&gt; new_results =</a>
+<a name="ln952">            shop.matches_search(lplace, search);</a>
+<a name="ln953">        for (auto &amp;res : new_results)</a>
+<a name="ln954">        {</a>
+<a name="ln955">            res.pos.id = m_place;</a>
+<a name="ln956">            results.push_back(res);</a>
+<a name="ln957">        }</a>
+<a name="ln958">    }</a>
+<a name="ln959">}</a>
+<a name="ln960"> </a>
+<a name="ln961">void LevelStashes::_update_corpses(int rot_time)</a>
+<a name="ln962">{</a>
+<a name="ln963">    for (auto &amp;entry : m_stashes)</a>
+<a name="ln964">        entry.second._update_corpses(rot_time);</a>
+<a name="ln965">}</a>
+<a name="ln966"> </a>
+<a name="ln967">void LevelStashes::_update_identification()</a>
+<a name="ln968">{</a>
+<a name="ln969">    for (auto &amp;entry : m_stashes)</a>
+<a name="ln970">        entry.second._update_identification();</a>
+<a name="ln971">}</a>
+<a name="ln972"> </a>
+<a name="ln973">void LevelStashes::write(FILE *f, bool identify) const</a>
+<a name="ln974">{</a>
+<a name="ln975">    if (!has_stashes())</a>
+<a name="ln976">        return;</a>
+<a name="ln977"> </a>
+<a name="ln978">    // very unlikely level names will be localized, but hey</a>
+<a name="ln979">    fprintf(f, &quot;%s\n&quot;, OUTS(level_name()));</a>
+<a name="ln980"> </a>
+<a name="ln981">    for (const ShopInfo &amp;shop : m_shops)</a>
+<a name="ln982">        shop.write(f, identify);</a>
+<a name="ln983"> </a>
+<a name="ln984">    if (m_stashes.size())</a>
+<a name="ln985">    {</a>
+<a name="ln986">        const Stash &amp;s = m_stashes.begin()-&gt;second;</a>
+<a name="ln987">        string levname = short_level_name();</a>
+<a name="ln988">        for (const auto &amp;entry : m_stashes)</a>
+<a name="ln989">            entry.second.write(f, s.pos, levname, identify);</a>
+<a name="ln990">    }</a>
+<a name="ln991">    fprintf(f, &quot;\n&quot;);</a>
+<a name="ln992">}</a>
+<a name="ln993"> </a>
+<a name="ln994">void LevelStashes::save(writer&amp; outf) const</a>
+<a name="ln995">{</a>
+<a name="ln996">    // How many stashes on this level?</a>
+<a name="ln997">    marshallShort(outf, (short) m_stashes.size());</a>
+<a name="ln998"> </a>
+<a name="ln999">    m_place.save(outf);</a>
+<a name="ln1000"> </a>
+<a name="ln1001">    // And write the individual stashes</a>
+<a name="ln1002">    for (const auto &amp;entry : m_stashes)</a>
+<a name="ln1003">        entry.second.save(outf);</a>
+<a name="ln1004"> </a>
+<a name="ln1005">    marshallShort(outf, (short) m_shops.size());</a>
+<a name="ln1006">    for (const ShopInfo &amp;shop : m_shops)</a>
+<a name="ln1007">        shop.save(outf);</a>
+<a name="ln1008">}</a>
+<a name="ln1009"> </a>
+<a name="ln1010">void LevelStashes::load(reader&amp; inf)</a>
+<a name="ln1011">{</a>
+<a name="ln1012">    int size = unmarshallShort(inf);</a>
+<a name="ln1013"> </a>
+<a name="ln1014">    m_place.load(inf);</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    m_stashes.clear();</a>
+<a name="ln1017">    for (int i = 0; i &lt; size; ++i)</a>
+<a name="ln1018">    {</a>
+<a name="ln1019">        Stash s;</a>
+<a name="ln1020">        s.load(inf);</a>
+<a name="ln1021">        if (!s.empty())</a>
+<a name="ln1022">            m_stashes[s.pos] = s;</a>
+<a name="ln1023">    }</a>
+<a name="ln1024"> </a>
+<a name="ln1025">    m_shops.clear();</a>
+<a name="ln1026">    int shopc = unmarshallShort(inf);</a>
+<a name="ln1027">    for (int i = 0; i &lt; shopc; ++i)</a>
+<a name="ln1028">    {</a>
+<a name="ln1029">        m_shops.emplace_back();</a>
+<a name="ln1030">        m_shops.back().load(inf);</a>
+<a name="ln1031">    }</a>
+<a name="ln1032">}</a>
+<a name="ln1033"> </a>
+<a name="ln1034">void LevelStashes::remove_shop(const coord_def&amp; c)</a>
+<a name="ln1035">{</a>
+<a name="ln1036">    for (unsigned i = 0; i &lt; m_shops.size(); ++i)</a>
+<a name="ln1037">        if (m_shops[i].is_at(c))</a>
+<a name="ln1038">        {</a>
+<a name="ln1039">            m_shops.erase(m_shops.begin() + i);</a>
+<a name="ln1040">            return;</a>
+<a name="ln1041">        }</a>
+<a name="ln1042">}</a>
+<a name="ln1043"> </a>
+<a name="ln1044">LevelStashes &amp;StashTracker::get_current_level()</a>
+<a name="ln1045">{</a>
+<a name="ln1046">    return levels[level_id::current()];</a>
+<a name="ln1047">}</a>
+<a name="ln1048"> </a>
+<a name="ln1049">LevelStashes *StashTracker::find_level(const level_id &amp;id)</a>
+<a name="ln1050">{</a>
+<a name="ln1051">    return map_find(levels, id);</a>
+<a name="ln1052">}</a>
+<a name="ln1053"> </a>
+<a name="ln1054">LevelStashes *StashTracker::find_current_level()</a>
+<a name="ln1055">{</a>
+<a name="ln1056">    return find_level(level_id::current());</a>
+<a name="ln1057">}</a>
+<a name="ln1058"> </a>
+<a name="ln1059">bool StashTracker::update_stash(const coord_def&amp; c)</a>
+<a name="ln1060">{</a>
+<a name="ln1061">    LevelStashes *lev = find_current_level();</a>
+<a name="ln1062">    if (lev)</a>
+<a name="ln1063">    {</a>
+<a name="ln1064">        bool res = lev-&gt;update_stash(c);</a>
+<a name="ln1065">        if (!lev-&gt;has_stashes())</a>
+<a name="ln1066">            remove_level();</a>
+<a name="ln1067">        return res;</a>
+<a name="ln1068">    }</a>
+<a name="ln1069">    return false;</a>
+<a name="ln1070">}</a>
+<a name="ln1071"> </a>
+<a name="ln1072">void StashTracker::move_stash(const coord_def&amp; from, const coord_def&amp; to)</a>
+<a name="ln1073">{</a>
+<a name="ln1074">    if (LevelStashes *lev = find_current_level())</a>
+<a name="ln1075">        lev-&gt;move_stash(from, to);</a>
+<a name="ln1076">}</a>
+<a name="ln1077"> </a>
+<a name="ln1078">bool StashTracker::unmark_trapping_nets(const coord_def &amp;c)</a>
+<a name="ln1079">{</a>
+<a name="ln1080">    if (LevelStashes *lev = find_current_level())</a>
+<a name="ln1081">        return lev-&gt;unmark_trapping_nets(c);</a>
+<a name="ln1082">    else</a>
+<a name="ln1083">        return false;</a>
+<a name="ln1084">}</a>
+<a name="ln1085"> </a>
+<a name="ln1086">void StashTracker::remove_level(const level_id &amp;place)</a>
+<a name="ln1087">{</a>
+<a name="ln1088">    levels.erase(place);</a>
+<a name="ln1089">}</a>
+<a name="ln1090"> </a>
+<a name="ln1091">void StashTracker::add_stash(coord_def p)</a>
+<a name="ln1092">{</a>
+<a name="ln1093">    LevelStashes &amp;current = get_current_level();</a>
+<a name="ln1094">    current.add_stash(p);</a>
+<a name="ln1095"> </a>
+<a name="ln1096">    if (!current.has_stashes())</a>
+<a name="ln1097">        remove_level();</a>
+<a name="ln1098">}</a>
+<a name="ln1099"> </a>
+<a name="ln1100">void StashTracker::dump(const char *filename, bool identify) const</a>
+<a name="ln1101">{</a>
+<a name="ln1102">    FILE *outf = fopen_u(filename, &quot;w&quot;);</a>
+<a name="ln1103">    if (outf)</a>
+<a name="ln1104">    {</a>
+<a name="ln1105">        write(outf, identify);</a>
+<a name="ln1106">        fclose(outf);</a>
+<a name="ln1107">    }</a>
+<a name="ln1108">}</a>
+<a name="ln1109"> </a>
+<a name="ln1110">void StashTracker::write(FILE *f, bool identify) const</a>
+<a name="ln1111">{</a>
+<a name="ln1112">    fprintf(f, &quot;%s\n\n&quot;, OUTS(you.your_name));</a>
+<a name="ln1113">    if (!levels.size())</a>
+<a name="ln1114">        fprintf(f, &quot;  You have no stashes.\n&quot;);</a>
+<a name="ln1115">    else</a>
+<a name="ln1116">    {</a>
+<a name="ln1117">        for (const auto &amp;entry : levels)</a>
+<a name="ln1118">            entry.second.write(f, identify);</a>
+<a name="ln1119">    }</a>
+<a name="ln1120">}</a>
+<a name="ln1121"> </a>
+<a name="ln1122">void StashTracker::save(writer&amp; outf) const</a>
+<a name="ln1123">{</a>
+<a name="ln1124">    // Time of last corpse update.</a>
+<a name="ln1125">    marshallInt(outf, last_corpse_update);</a>
+<a name="ln1126"> </a>
+<a name="ln1127">    // How many levels have we?</a>
+<a name="ln1128">    marshallShort(outf, (short) levels.size());</a>
+<a name="ln1129"> </a>
+<a name="ln1130">    // And ask each level to write itself to the tag</a>
+<a name="ln1131">    for (const auto &amp;entry : levels)</a>
+<a name="ln1132">        entry.second.save(outf);</a>
+<a name="ln1133">}</a>
+<a name="ln1134"> </a>
+<a name="ln1135">void StashTracker::load(reader&amp; inf)</a>
+<a name="ln1136">{</a>
+<a name="ln1137">    // Time of last corpse update.</a>
+<a name="ln1138">    last_corpse_update = unmarshallInt(inf);</a>
+<a name="ln1139"> </a>
+<a name="ln1140">    int count = unmarshallShort(inf);</a>
+<a name="ln1141"> </a>
+<a name="ln1142">    levels.clear();</a>
+<a name="ln1143">    for (int i = 0; i &lt; count; ++i)</a>
+<a name="ln1144">    {</a>
+<a name="ln1145">        LevelStashes st;</a>
+<a name="ln1146">        st.load(inf);</a>
+<a name="ln1147">        if (st.has_stashes())</a>
+<a name="ln1148">            levels[st.where()] = st;</a>
+<a name="ln1149">    }</a>
+<a name="ln1150">}</a>
+<a name="ln1151"> </a>
+<a name="ln1152">void StashTracker::update_visible_stashes()</a>
+<a name="ln1153">{</a>
+<a name="ln1154">    LevelStashes *lev = find_current_level();</a>
+<a name="ln1155">    for (radius_iterator ri(you.pos(),</a>
+<a name="ln1156">                            you.xray_vision ? LOS_NONE : LOS_DEFAULT); ri; ++ri)</a>
+<a name="ln1157">    {</a>
+<a name="ln1158">        const dungeon_feature_type feat = grd(*ri);</a>
+<a name="ln1159"> </a>
+<a name="ln1160">        if ((!lev || !lev-&gt;update_stash(*ri))</a>
+<a name="ln1161">            &amp;&amp; (_grid_has_perceived_item(*ri)</a>
+<a name="ln1162">                || !Stash::is_boring_feature(feat)))</a>
+<a name="ln1163">        {</a>
+<a name="ln1164">            if (!lev)</a>
+<a name="ln1165">                lev = &amp;get_current_level();</a>
+<a name="ln1166">            lev-&gt;add_stash(*ri);</a>
+<a name="ln1167">        }</a>
+<a name="ln1168"> </a>
+<a name="ln1169">        if (feat == DNGN_ENTER_SHOP)</a>
+<a name="ln1170">            get_shop(*ri);</a>
+<a name="ln1171">    }</a>
+<a name="ln1172"> </a>
+<a name="ln1173">    if (lev &amp;&amp; !lev-&gt;has_stashes())</a>
+<a name="ln1174">        remove_level();</a>
+<a name="ln1175">}</a>
+<a name="ln1176"> </a>
+<a name="ln1177">#define SEARCH_SPAM_THRESHOLD 400</a>
+<a name="ln1178">static string lastsearch;</a>
+<a name="ln1179">static input_history search_history(15);</a>
+<a name="ln1180"> </a>
+<a name="ln1181">string StashTracker::stash_search_prompt()</a>
+<a name="ln1182">{</a>
+<a name="ln1183">    vector&lt;string&gt; opts;</a>
+<a name="ln1184">    if (!lastsearch.empty())</a>
+<a name="ln1185">    {</a>
+<a name="ln1186">        const string disp = replace_all(lastsearch, &quot;&lt;&quot;, &quot;&lt;&lt;&quot;);</a>
+<a name="ln1187">        opts.push_back(</a>
+<a name="ln1188">            make_stringf(&quot;Enter for \&quot;%s\&quot;&quot;, disp.c_str()));</a>
+<a name="ln1189">    }</a>
+<a name="ln1190">    if (lastsearch != &quot;.&quot;)</a>
+<a name="ln1191">        opts.emplace_back(&quot;? for help&quot;);</a>
+<a name="ln1192"> </a>
+<a name="ln1193">    string prompt_qual =</a>
+<a name="ln1194">        comma_separated_line(opts.begin(), opts.end(), &quot;, or &quot;, &quot;, or &quot;);</a>
+<a name="ln1195"> </a>
+<a name="ln1196">    if (!prompt_qual.empty())</a>
+<a name="ln1197">        prompt_qual = &quot; [&quot; + prompt_qual + &quot;]&quot;;</a>
+<a name="ln1198"> </a>
+<a name="ln1199">    return make_stringf(&quot;Search for what%s? &quot;, prompt_qual.c_str());</a>
+<a name="ln1200">}</a>
+<a name="ln1201"> </a>
+<a name="ln1202">void StashTracker::remove_shop(const level_pos &amp;pos)</a>
+<a name="ln1203">{</a>
+<a name="ln1204">    LevelStashes *lev = find_level(pos.id);</a>
+<a name="ln1205">    if (lev)</a>
+<a name="ln1206">        lev-&gt;remove_shop(pos.pos);</a>
+<a name="ln1207">}</a>
+<a name="ln1208"> </a>
+<a name="ln1209">class stash_search_reader : public line_reader</a>
+<a name="ln1210">{</a>
+<a name="ln1211">public:</a>
+<a name="ln1212">    stash_search_reader(char *buf, size_t sz,</a>
+<a name="ln1213">                        int wcol = get_number_of_cols())</a>
+<a name="ln1214">        : line_reader(buf, sz, wcol)</a>
+<a name="ln1215">    {</a>
+<a name="ln1216">        set_input_history(&amp;search_history);</a>
+<a name="ln1217">#ifdef USE_TILE_WEB</a>
+<a name="ln1218">        tag = &quot;stash_search&quot;;</a>
+<a name="ln1219">#endif</a>
+<a name="ln1220">    }</a>
+<a name="ln1221">protected:</a>
+<a name="ln1222">    int process_key(int ch) override</a>
+<a name="ln1223">    {</a>
+<a name="ln1224">        if (ch == '?' &amp;&amp; !pos)</a>
+<a name="ln1225">        {</a>
+<a name="ln1226">            *buffer = 0;</a>
+<a name="ln1227">            return ch;</a>
+<a name="ln1228">        }</a>
+<a name="ln1229">        return line_reader::process_key(ch);</a>
+<a name="ln1230">    }</a>
+<a name="ln1231">};</a>
+<a name="ln1232"> </a>
+<a name="ln1233">static bool _is_potentially_boring(stash_search_result res)</a>
+<a name="ln1234">{</a>
+<a name="ln1235">    return res.match_type == MATCH_ITEM &amp;&amp; res.item.defined()</a>
+<a name="ln1236">        &amp;&amp; !res.in_inventory</a>
+<a name="ln1237">        &amp;&amp; (res.item.base_type == OBJ_WEAPONS</a>
+<a name="ln1238">            || res.item.base_type == OBJ_ARMOUR</a>
+<a name="ln1239">            || res.item.base_type == OBJ_MISSILES)</a>
+<a name="ln1240">        &amp;&amp; (item_type_known(res.item) || !item_is_branded(res.item))</a>
+<a name="ln1241">        || res.match_type == MATCH_FEATURE &amp;&amp; feat_is_trap(res.feat);</a>
+<a name="ln1242">}</a>
+<a name="ln1243"> </a>
+<a name="ln1244">static bool _is_duplicate_for_search(stash_search_result l,</a>
+<a name="ln1245">                                     stash_search_result r,</a>
+<a name="ln1246">                                     bool ignore_missile_stacks=true)</a>
+<a name="ln1247">{</a>
+<a name="ln1248">    if (l.in_inventory || r.in_inventory)</a>
+<a name="ln1249">        return false;</a>
+<a name="ln1250">    if (ignore_missile_stacks &amp;&amp;</a>
+<a name="ln1251">        l.item.base_type == OBJ_MISSILES</a>
+<a name="ln1252">        &amp;&amp; r.item.base_type == OBJ_MISSILES</a>
+<a name="ln1253">        &amp;&amp; l.item.sub_type == r.item.sub_type</a>
+<a name="ln1254">        &amp;&amp; l.item.brand == r.item.brand</a>
+<a name="ln1255">        &amp;&amp; is_shop_item(l.item) == is_shop_item(r.item))</a>
+<a name="ln1256">    {</a>
+<a name="ln1257">        // Special handling for missile deduplication: ignore that stacks</a>
+<a name="ln1258">        // of different sizes have different &quot;names&quot;.</a>
+<a name="ln1259">        return true;</a>
+<a name="ln1260">    }</a>
+<a name="ln1261">    // Otherwise just use the search result description.</a>
+<a name="ln1262">    // TODO: better handling for items in shops (ideally, ignore price)</a>
+<a name="ln1263">    return l.match == r.match;</a>
+<a name="ln1264">}</a>
+<a name="ln1265"> </a>
+<a name="ln1266"> </a>
+<a name="ln1267">// helper for search_stashes</a>
+<a name="ln1268">static bool _compare_by_distance(const stash_search_result&amp; lhs,</a>
+<a name="ln1269">                                 const stash_search_result&amp; rhs)</a>
+<a name="ln1270">{</a>
+<a name="ln1271">    if (lhs.player_distance != rhs.player_distance)</a>
+<a name="ln1272">    {</a>
+<a name="ln1273">        // Sort by increasing distance</a>
+<a name="ln1274">        return lhs.player_distance &lt; rhs.player_distance;</a>
+<a name="ln1275">    }</a>
+<a name="ln1276">    else if (lhs.player_distance == 0)</a>
+<a name="ln1277">    {</a>
+<a name="ln1278">        // If on the same level, sort by distance to player.</a>
+<a name="ln1279">        const int lhs_dist = grid_distance(you.pos(), lhs.pos.pos);</a>
+<a name="ln1280">        const int rhs_dist = grid_distance(you.pos(), rhs.pos.pos);</a>
+<a name="ln1281">        if (lhs_dist != rhs_dist)</a>
+<a name="ln1282">            return lhs_dist &lt; rhs_dist;</a>
+<a name="ln1283">    }</a>
+<a name="ln1284"> </a>
+<a name="ln1285">    if (lhs.match != rhs.match)</a>
+<a name="ln1286">    {</a>
+<a name="ln1287">        // Then by name.</a>
+<a name="ln1288">        return lhs.match &lt; rhs.match;</a>
+<a name="ln1289">    }</a>
+<a name="ln1290">    else</a>
+<a name="ln1291">        return false;</a>
+<a name="ln1292">}</a>
+<a name="ln1293"> </a>
+<a name="ln1294">// helper for search_stashes</a>
+<a name="ln1295">static bool _compare_by_name(const stash_search_result&amp; lhs,</a>
+<a name="ln1296">                             const stash_search_result&amp; rhs)</a>
+<a name="ln1297">{</a>
+<a name="ln1298">    if (lhs.primary_sort != rhs.primary_sort)</a>
+<a name="ln1299">    {</a>
+<a name="ln1300">        // Sort first by DESC_QUALNAME for items</a>
+<a name="ln1301">        return lhs.primary_sort &lt; rhs.primary_sort;</a>
+<a name="ln1302">    }</a>
+<a name="ln1303">    else if (!_is_duplicate_for_search(lhs, rhs, true))</a>
+<a name="ln1304">        // are the matches not equal for deduplication purposes?</a>
+<a name="ln1305">    {</a>
+<a name="ln1306">        // Then sort by 1. whether the item is in a shop, and 2. the full</a>
+<a name="ln1307">        // stash description (which is DESC_A plus other stuff). The shop</a>
+<a name="ln1308">        // check is there so that non-shop ammo (which isn't considered a</a>
+<a name="ln1309">        // search duplicate for shop ammo) will be adjacent, and thus</a>
+<a name="ln1310">        // collapsible, in _stash_filter_duplicates.</a>
+<a name="ln1311">        const bool l_shop = is_shop_item(lhs.item);</a>
+<a name="ln1312">        const bool r_shop = is_shop_item(rhs.item);</a>
+<a name="ln1313"> </a>
+<a name="ln1314">        return !l_shop &amp;&amp; r_shop</a>
+<a name="ln1315">            || l_shop == r_shop &amp;&amp; lhs.match &lt; rhs.match;</a>
+<a name="ln1316">    }</a>
+<a name="ln1317">    else if (lhs.player_distance != rhs.player_distance)</a>
+<a name="ln1318">    {</a>
+<a name="ln1319">        // Then sort by increasing distance</a>
+<a name="ln1320">        return lhs.player_distance &lt; rhs.player_distance;</a>
+<a name="ln1321">    }</a>
+<a name="ln1322">    else</a>
+<a name="ln1323">    {</a>
+<a name="ln1324">        // If on the same level, sort by distance to player.</a>
+<a name="ln1325">        const int lhs_dist = grid_distance(you.pos(), lhs.pos.pos);</a>
+<a name="ln1326">        const int rhs_dist = grid_distance(you.pos(), rhs.pos.pos);</a>
+<a name="ln1327">        return lhs_dist &lt; rhs_dist;</a>
+<a name="ln1328">    }</a>
+<a name="ln1329">}</a>
+<a name="ln1330"> </a>
+<a name="ln1331">static vector&lt;stash_search_result&gt; _inventory_search(const base_pattern &amp;search)</a>
+<a name="ln1332">{</a>
+<a name="ln1333">    vector&lt;stash_search_result&gt; results;</a>
+<a name="ln1334">    for (const item_def &amp;item : you.inv)</a>
+<a name="ln1335">    {</a>
+<a name="ln1336">        if (!item.defined())</a>
+<a name="ln1337">            continue;</a>
+<a name="ln1338"> </a>
+<a name="ln1339">        const string s   = Stash::stash_item_name(item);</a>
+<a name="ln1340">        const string ann = stash_annotate_item(STASH_LUA_SEARCH_ANNOTATE, &amp;item);</a>
+<a name="ln1341">        if (search.matches(ann + &quot; &quot; + s)</a>
+<a name="ln1342">            || is_dumpable_artefact(item)</a>
+<a name="ln1343">               &amp;&amp; search.matches(chardump_desc(item)))</a>
+<a name="ln1344">        {</a>
+<a name="ln1345">            stash_search_result res;</a>
+<a name="ln1346">            res.match = s;</a>
+<a name="ln1347">            res.primary_sort = s; // don't use DESC_QUALNAME for inventory items</a>
+<a name="ln1348">            res.item = item;</a>
+<a name="ln1349">            // Needs to not be equal to ITEM_IN_INVENTORY so the describe</a>
+<a name="ln1350">            // menu doesn't think it can manipulate the item.</a>
+<a name="ln1351">            res.item.pos = you.pos();</a>
+<a name="ln1352">            res.in_inventory = true;</a>
+<a name="ln1353">            res.pos = level_pos::current();</a>
+<a name="ln1354">            results.push_back(res);</a>
+<a name="ln1355">        }</a>
+<a name="ln1356">    }</a>
+<a name="ln1357"> </a>
+<a name="ln1358">    return results;</a>
+<a name="ln1359">}</a>
+<a name="ln1360"> </a>
+<a name="ln1361">/*</a>
+<a name="ln1362"> * Eliminate boring duplicates from stash search results. Uses `match`</a>
+<a name="ln1363"> * to determine whether something is a duplicate.</a>
+<a name="ln1364"> *</a>
+<a name="ln1365"> * Populates the `duplicates` field of the search results as a side effect.</a>
+<a name="ln1366"> *</a>
+<a name="ln1367"> * @param in  the search result to filter.</a>
+<a name="ln1368"> * @return a vector sorted by `match`.</a>
+<a name="ln1369"> */</a>
+<a name="ln1370">static vector&lt;stash_search_result&gt; _stash_filter_duplicates(vector&lt;stash_search_result&gt; &amp;in)</a>
+<a name="ln1371">{</a>
+<a name="ln1372">    vector&lt;stash_search_result&gt; out;</a>
+<a name="ln1373">    out.clear();</a>
+<a name="ln1374">    out.reserve(in.size());</a>
+<a name="ln1375">    // TODO: any problems doing this in place?</a>
+<a name="ln1376">    // Everything gets resorted before display.</a>
+<a name="ln1377">    stable_sort(in.begin(), in.end(), _compare_by_name);</a>
+<a name="ln1378"> </a>
+<a name="ln1379">    for (const stash_search_result &amp;res : in)</a>
+<a name="ln1380">    {</a>
+<a name="ln1381">        if (out.size() &amp;&amp; !out.back().in_inventory &amp;&amp;</a>
+<a name="ln1382">            _is_potentially_boring(res) &amp;&amp; _is_duplicate_for_search(out.back(),</a>
+<a name="ln1383">                                                                    res))</a>
+<a name="ln1384">        // don't push_back duplicates</a>
+<a name="ln1385">        {</a>
+<a name="ln1386">            stash_match_type mtype = out.back().match_type;</a>
+<a name="ln1387">            switch (mtype)</a>
+<a name="ln1388">            {</a>
+<a name="ln1389">            case MATCH_ITEM:</a>
+<a name="ln1390">                out.back().duplicate_piles++;</a>
+<a name="ln1391">                out.back().duplicates += res.item.quantity;</a>
+<a name="ln1392">                break;</a>
+<a name="ln1393">            case MATCH_FEATURE:</a>
+<a name="ln1394">                // number of piles is meaningless for features; just keep track</a>
+<a name="ln1395">                // of how many we've found</a>
+<a name="ln1396">                out.back().duplicates++;</a>
+<a name="ln1397">                break;</a>
+<a name="ln1398">                // We shouldn't get here (shops aren't boring enough to</a>
+<a name="ln1399">                // deduplicate). But in case it becomes possible we won't</a>
+<a name="ln1400">                // collapse entries.</a>
+<a name="ln1401">            default:</a>
+<a name="ln1402">                out.push_back(res);</a>
+<a name="ln1403">                out.back().duplicate_piles = 0;</a>
+<a name="ln1404">                out.back().duplicates = 0;</a>
+<a name="ln1405">                break;</a>
+<a name="ln1406">            }</a>
+<a name="ln1407">        }</a>
+<a name="ln1408">        else</a>
+<a name="ln1409">        {</a>
+<a name="ln1410">            out.push_back(res);</a>
+<a name="ln1411">            out.back().duplicate_piles = 0;</a>
+<a name="ln1412">            out.back().duplicates = 0;</a>
+<a name="ln1413">        }</a>
+<a name="ln1414">    }</a>
+<a name="ln1415">    return out;</a>
+<a name="ln1416">}</a>
+<a name="ln1417"> </a>
+<a name="ln1418">void StashTracker::search_stashes(string search_term)</a>
+<a name="ln1419">{</a>
+<a name="ln1420">    char buf[400];</a>
+<a name="ln1421"> </a>
+<a name="ln1422">    update_corpses();</a>
+<a name="ln1423">    update_identification();</a>
+<a name="ln1424"> </a>
+<a name="ln1425">    if (search_term.empty())</a>
+<a name="ln1426">    {</a>
+<a name="ln1427">        stash_search_reader reader(buf, sizeof buf);</a>
+<a name="ln1428"> </a>
+<a name="ln1429">        bool validline = false;</a>
+<a name="ln1430">        msgwin_prompt(stash_search_prompt());</a>
+<a name="ln1431">        while (true)</a>
+<a name="ln1432">        {</a>
+<a name="ln1433">            int ret = reader.read_line();</a>
+<a name="ln1434">            if (!ret)</a>
+<a name="ln1435">            {</a>
+<a name="ln1436">                validline = true;</a>
+<a name="ln1437">                break;</a>
+<a name="ln1438">            }</a>
+<a name="ln1439">            else if (ret == '?')</a>
+<a name="ln1440">            {</a>
+<a name="ln1441">                show_stash_search_help();</a>
+<a name="ln1442">                redraw_screen();</a>
+<a name="ln1443">            }</a>
+<a name="ln1444">            else</a>
+<a name="ln1445">                break;</a>
+<a name="ln1446">        }</a>
+<a name="ln1447">        msgwin_reply(validline ? buf : &quot;&quot;);</a>
+<a name="ln1448"> </a>
+<a name="ln1449">        clear_messages();</a>
+<a name="ln1450">        if (!validline || (!*buf &amp;&amp; lastsearch.empty()))</a>
+<a name="ln1451">        {</a>
+<a name="ln1452">            canned_msg(MSG_OK);</a>
+<a name="ln1453">            return;</a>
+<a name="ln1454">        }</a>
+<a name="ln1455">    }</a>
+<a name="ln1456">    string csearch_literal = search_term.empty() ? (*buf? buf : lastsearch) : search_term;</a>
+<a name="ln1457">    string csearch = csearch_literal;</a>
+<a name="ln1458"> </a>
+<a name="ln1459">    bool curr_lev = (csearch[0] == '@' || csearch == &quot;.&quot;);</a>
+<a name="ln1460">    if (curr_lev)</a>
+<a name="ln1461">    {</a>
+<a name="ln1462">        csearch.erase(0, 1);</a>
+<a name="ln1463">        if (csearch.length() == 0)</a>
+<a name="ln1464">            csearch = &quot;.&quot;;</a>
+<a name="ln1465">    }</a>
+<a name="ln1466"> </a>
+<a name="ln1467">    base_pattern *search = nullptr;</a>
+<a name="ln1468"> </a>
+<a name="ln1469">    lua_text_pattern ltpat(csearch);</a>
+<a name="ln1470">    text_pattern tpat(csearch, true);</a>
+<a name="ln1471">    plaintext_pattern ptpat(csearch, true);</a>
+<a name="ln1472"> </a>
+<a name="ln1473">    if (lua_text_pattern::is_lua_pattern(csearch))</a>
+<a name="ln1474">        search = &amp;ltpat;</a>
+<a name="ln1475">    else if (csearch[0] != '='</a>
+<a name="ln1476">             &amp;&amp; (csearch == &quot;.&quot; || csearch == &quot;..&quot; || csearch[0] == '/'</a>
+<a name="ln1477">                 || Options.regex_search))</a>
+<a name="ln1478">    {</a>
+<a name="ln1479">        if (csearch[0] == '/')</a>
+<a name="ln1480">            csearch.erase(0, 1);</a>
+<a name="ln1481">        tpat = csearch;</a>
+<a name="ln1482">        search = &amp;tpat;</a>
+<a name="ln1483">    }</a>
+<a name="ln1484">    else</a>
+<a name="ln1485">    {</a>
+<a name="ln1486">        if (csearch[0] == '=')</a>
+<a name="ln1487">            csearch.erase(0, 1);</a>
+<a name="ln1488">        ptpat = csearch;</a>
+<a name="ln1489">        search = &amp;ptpat;</a>
+<a name="ln1490">    }</a>
+<a name="ln1491"> </a>
+<a name="ln1492">    if (!search-&gt;valid() &amp;&amp; csearch != &quot;*&quot;)</a>
+<a name="ln1493">    {</a>
+<a name="ln1494">        mprf(MSGCH_PLAIN, &quot;Your search expression is invalid.&quot;);</a>
+<a name="ln1495">        return ;</a>
+<a name="ln1496">    }</a>
+<a name="ln1497"> </a>
+<a name="ln1498">    lastsearch = csearch_literal;</a>
+<a name="ln1499"> </a>
+<a name="ln1500">    vector&lt;stash_search_result&gt; results;</a>
+<a name="ln1501">    if (!curr_lev)</a>
+<a name="ln1502">        results = _inventory_search(*search);</a>
+<a name="ln1503">    get_matching_stashes(*search, results, curr_lev);</a>
+<a name="ln1504"> </a>
+<a name="ln1505">    if (results.empty())</a>
+<a name="ln1506">    {</a>
+<a name="ln1507">        mprf(MSGCH_PLAIN, &quot;Can't find anything matching that.&quot;);</a>
+<a name="ln1508">        return;</a>
+<a name="ln1509">    }</a>
+<a name="ln1510"> </a>
+<a name="ln1511">    // The spam threshold works a lot better if we use the deduplicated size.</a>
+<a name="ln1512">    vector&lt;stash_search_result&gt; dedup_results = _stash_filter_duplicates(results);</a>
+<a name="ln1513"> </a>
+<a name="ln1514">    if (dedup_results.size() &gt; SEARCH_SPAM_THRESHOLD)</a>
+<a name="ln1515">    {</a>
+<a name="ln1516">        mprf(MSGCH_PLAIN, &quot;Too many matches; use a more specific search.&quot;);</a>
+<a name="ln1517">        return;</a>
+<a name="ln1518">    }</a>
+<a name="ln1519"> </a>
+<a name="ln1520">    dedup_results.erase(remove_if(dedup_results.begin(), dedup_results.end(),</a>
+<a name="ln1521">        [](const stash_search_result res) {</a>
+<a name="ln1522">            return res.item.defined() &amp;&amp; is_useless_item(res.item, false);</a>
+<a name="ln1523">        }), dedup_results.end());</a>
+<a name="ln1524"> </a>
+<a name="ln1525">    bool sort_by_dist = true;</a>
+<a name="ln1526">    bool filter_useless = true;</a>
+<a name="ln1527">    bool default_execute = true;</a>
+<a name="ln1528">    while (true)</a>
+<a name="ln1529">    {</a>
+<a name="ln1530">        bool again;</a>
+<a name="ln1531">        // Note that sort_by_dist and filter_useless can be modified by the</a>
+<a name="ln1532">        // following call if requested by the user. Also, &quot;results&quot; will be</a>
+<a name="ln1533">        // sorted by the call as appropriate:</a>
+<a name="ln1534">        if (filter_useless)</a>
+<a name="ln1535">        {</a>
+<a name="ln1536">            // use the deduplicated results if we are filtering useless items</a>
+<a name="ln1537">            again = display_search_results(dedup_results,</a>
+<a name="ln1538">                                           sort_by_dist,</a>
+<a name="ln1539">                                           filter_useless,</a>
+<a name="ln1540">                                           default_execute,</a>
+<a name="ln1541">                                           search,</a>
+<a name="ln1542">                                           csearch == &quot;.&quot;</a>
+<a name="ln1543">                                           || csearch == &quot;..&quot;,</a>
+<a name="ln1544">                                           results.size());</a>
+<a name="ln1545">        }</a>
+<a name="ln1546">        else</a>
+<a name="ln1547">        {</a>
+<a name="ln1548">            again = display_search_results(results,</a>
+<a name="ln1549">                                           sort_by_dist,</a>
+<a name="ln1550">                                           filter_useless,</a>
+<a name="ln1551">                                           default_execute,</a>
+<a name="ln1552">                                           search,</a>
+<a name="ln1553">                                           csearch == &quot;.&quot;</a>
+<a name="ln1554">                                           || csearch == &quot;..&quot;,</a>
+<a name="ln1555">                                           dedup_results.size());</a>
+<a name="ln1556">        }</a>
+<a name="ln1557">        if (!again)</a>
+<a name="ln1558">            break;</a>
+<a name="ln1559">    }</a>
+<a name="ln1560">}</a>
+<a name="ln1561"> </a>
+<a name="ln1562">void StashTracker::get_matching_stashes(</a>
+<a name="ln1563">        const base_pattern &amp;search,</a>
+<a name="ln1564">        vector&lt;stash_search_result&gt; &amp;results,</a>
+<a name="ln1565">        bool curr_lev)</a>
+<a name="ln1566">    const</a>
+<a name="ln1567">{</a>
+<a name="ln1568">    level_id curr = level_id::current();</a>
+<a name="ln1569">    for (const auto &amp;entry : levels)</a>
+<a name="ln1570">    {</a>
+<a name="ln1571">        if (curr_lev &amp;&amp; curr != entry.first)</a>
+<a name="ln1572">            continue;</a>
+<a name="ln1573">        entry.second.get_matching_stashes(search, results);</a>
+<a name="ln1574">    }</a>
+<a name="ln1575"> </a>
+<a name="ln1576">    for (stash_search_result &amp;result : results)</a>
+<a name="ln1577">    {</a>
+<a name="ln1578">        int ldist = level_distance(curr, result.pos.id);</a>
+<a name="ln1579">        if (ldist == -1)</a>
+<a name="ln1580">            ldist = 1000;</a>
+<a name="ln1581"> </a>
+<a name="ln1582">        result.player_distance = ldist;</a>
+<a name="ln1583">    }</a>
+<a name="ln1584">}</a>
+<a name="ln1585"> </a>
+<a name="ln1586">class StashSearchMenu : public Menu</a>
+<a name="ln1587">{</a>
+<a name="ln1588">public:</a>
+<a name="ln1589">    StashSearchMenu(const char* sort_style_,const char* filtered_)</a>
+<a name="ln1590">        : Menu(MF_MULTISELECT | MF_ALLOW_FORMATTING),</a>
+<a name="ln1591">          request_toggle_sort_method(false),</a>
+<a name="ln1592">          request_toggle_filter_useless(false),</a>
+<a name="ln1593">          sort_style(sort_style_),</a>
+<a name="ln1594">          filtered(filtered_)</a>
+<a name="ln1595">    { }</a>
+<a name="ln1596"> </a>
+<a name="ln1597">public:</a>
+<a name="ln1598">    bool request_toggle_sort_method;</a>
+<a name="ln1599">    bool request_toggle_filter_useless;</a>
+<a name="ln1600">    const char* sort_style;</a>
+<a name="ln1601">    const char* filtered;</a>
+<a name="ln1602"> </a>
+<a name="ln1603">protected:</a>
+<a name="ln1604">    bool process_key(int key) override;</a>
+<a name="ln1605">    virtual formatted_string calc_title() override;</a>
+<a name="ln1606">};</a>
+<a name="ln1607"> </a>
+<a name="ln1608">formatted_string StashSearchMenu::calc_title()</a>
+<a name="ln1609">{</a>
+<a name="ln1610">    const int num_matches = items.size();</a>
+<a name="ln1611">    const int num_alt_matches = title-&gt;quantity;</a>
+<a name="ln1612">    formatted_string fs;</a>
+<a name="ln1613">    fs.textcolour(title-&gt;colour);</a>
+<a name="ln1614">    string prefixes[] = {</a>
+<a name="ln1615">        make_stringf(&quot;%d match%s&quot;,</a>
+<a name="ln1616">            num_alt_matches, num_alt_matches == 1 ? &quot;&quot; : &quot;es&quot;),</a>
+<a name="ln1617">        make_stringf(&quot;%d match%s&quot;,</a>
+<a name="ln1618">            num_matches, num_matches == 1 ? &quot;&quot; : &quot;es&quot;),</a>
+<a name="ln1619">    };</a>
+<a name="ln1620">    const bool f = num_matches != num_alt_matches;</a>
+<a name="ln1621">    fs.cprintf(prefixes[f]);</a>
+<a name="ln1622">    if (num_matches == 0 &amp;&amp; filtered)</a>
+<a name="ln1623">    {</a>
+<a name="ln1624">        // TODO: it might be better to just force filtered=false in the</a>
+<a name="ln1625">        // display loop if only useless items are found.</a>
+<a name="ln1626">        fs += formatted_string::parse_string(</a>
+<a name="ln1627">            &quot;&lt;lightgrey&gt;&quot;</a>
+<a name="ln1628">            &quot;: only useless items found; press &lt;w&gt;=&lt;/w&gt; to show.&quot;</a>
+<a name="ln1629">            &quot;                    &quot;</a>
+<a name="ln1630">            &quot;&lt;/lightgrey&gt;&quot;);</a>
+<a name="ln1631">    } else {</a>
+<a name="ln1632">        fs += formatted_string::parse_string(make_stringf(</a>
+<a name="ln1633">            &quot;&lt;lightgrey&gt;&quot;</a>
+<a name="ln1634">            &quot;: &lt;w&gt;%s&lt;/w&gt; [toggle: &lt;w&gt;!&lt;/w&gt;],&quot;</a>
+<a name="ln1635">            &quot; by &lt;w&gt;%s&lt;/w&gt; [&lt;w&gt;/&lt;/w&gt;],&quot;</a>
+<a name="ln1636">            &quot; &lt;w&gt;%s&lt;/w&gt; useless &amp; duplicates [&lt;w&gt;=&lt;/w&gt;]&quot;</a>
+<a name="ln1637">            &quot;&lt;/lightgrey&gt;&quot;,</a>
+<a name="ln1638">            menu_action == ACT_EXECUTE ? &quot;travel&quot; : &quot;view  &quot;,</a>
+<a name="ln1639">            sort_style, filtered));</a>
+<a name="ln1640">    }</a>
+<a name="ln1641">    fs.cprintf(string(max(0, strwidth(prefixes[!f])-strwidth(prefixes[f])),</a>
+<a name="ln1642">                      ' '));</a>
+<a name="ln1643">    return fs;</a>
+<a name="ln1644">}</a>
+<a name="ln1645"> </a>
+<a name="ln1646">bool StashSearchMenu::process_key(int key)</a>
+<a name="ln1647">{</a>
+<a name="ln1648">    if (key == '/')</a>
+<a name="ln1649">    {</a>
+<a name="ln1650">        request_toggle_sort_method = true;</a>
+<a name="ln1651">        return false;</a>
+<a name="ln1652">    }</a>
+<a name="ln1653">    else if (key == '=')</a>
+<a name="ln1654">    {</a>
+<a name="ln1655">        request_toggle_filter_useless = true;</a>
+<a name="ln1656">        return false;</a>
+<a name="ln1657">    }</a>
+<a name="ln1658"> </a>
+<a name="ln1659">    return Menu::process_key(key);</a>
+<a name="ln1660">}</a>
+<a name="ln1661"> </a>
+<a name="ln1662">// Returns true to request redisplay if display method was toggled</a>
+<a name="ln1663">bool StashTracker::display_search_results(</a>
+<a name="ln1664">    vector&lt;stash_search_result&gt; &amp;results_in,</a>
+<a name="ln1665">    bool&amp; sort_by_dist,</a>
+<a name="ln1666">    bool&amp; filter_useless,</a>
+<a name="ln1667">    bool&amp; default_execute,</a>
+<a name="ln1668">    base_pattern* search,</a>
+<a name="ln1669">    bool nohl,</a>
+<a name="ln1670">    size_t num_alt_results)</a>
+<a name="ln1671">{</a>
+<a name="ln1672">    vector&lt;stash_search_result&gt; * results = &amp;results_in;</a>
+<a name="ln1673"> </a>
+<a name="ln1674">    if (sort_by_dist)</a>
+<a name="ln1675">        stable_sort(results-&gt;begin(), results-&gt;end(), _compare_by_distance);</a>
+<a name="ln1676">    else</a>
+<a name="ln1677">        stable_sort(results-&gt;begin(), results-&gt;end(), _compare_by_name);</a>
+<a name="ln1678"> </a>
+<a name="ln1679">    StashSearchMenu stashmenu(sort_by_dist ? &quot;dist&quot; : &quot;name&quot;,</a>
+<a name="ln1680">                              filter_useless ? &quot;hide&quot; : &quot;show&quot;);</a>
+<a name="ln1681">    stashmenu.set_tag(&quot;stash&quot;);</a>
+<a name="ln1682">    stashmenu.action_cycle = Menu::CYCLE_TOGGLE;</a>
+<a name="ln1683">    stashmenu.menu_action  = default_execute ? Menu::ACT_EXECUTE</a>
+<a name="ln1684">                                             : Menu::ACT_EXAMINE;</a>
+<a name="ln1685">    string title = &quot;match&quot;;</a>
+<a name="ln1686"> </a>
+<a name="ln1687">    MenuEntry *mtitle = new MenuEntry(title, MEL_TITLE);</a>
+<a name="ln1688">    // Abuse of the quantity field.</a>
+<a name="ln1689">    mtitle-&gt;quantity = num_alt_results;</a>
+<a name="ln1690">    stashmenu.set_title(mtitle);</a>
+<a name="ln1691"> </a>
+<a name="ln1692">    menu_letter hotkey;</a>
+<a name="ln1693">    for (stash_search_result &amp;res : *results)</a>
+<a name="ln1694">    {</a>
+<a name="ln1695">        ostringstream matchtitle;</a>
+<a name="ln1696">        if (!res.in_inventory)</a>
+<a name="ln1697">        {</a>
+<a name="ln1698">            if (const uint8_t waypoint = travel_cache.is_waypoint(res.pos))</a>
+<a name="ln1699">                matchtitle &lt;&lt; &quot;(&quot; &lt;&lt; waypoint &lt;&lt; &quot;) &quot;;</a>
+<a name="ln1700">            matchtitle &lt;&lt; &quot;[&quot; &lt;&lt; res.pos.id.describe() &lt;&lt; &quot;] &quot;;</a>
+<a name="ln1701">        }</a>
+<a name="ln1702"> </a>
+<a name="ln1703">        matchtitle &lt;&lt; res.match;</a>
+<a name="ln1704">        if (res.duplicates &gt; 0)</a>
+<a name="ln1705">        {</a>
+<a name="ln1706">            matchtitle &lt;&lt; &quot; (&quot; &lt;&lt; res.duplicates &lt;&lt; &quot; further duplicate&quot; &lt;&lt;</a>
+<a name="ln1707">                (res.duplicates == 1 ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln1708">            if (res.duplicates != res.duplicate_piles  // piles are only</a>
+<a name="ln1709">                                                       // meaningful for items</a>
+<a name="ln1710">                &amp;&amp; res.match_type == MATCH_ITEM)</a>
+<a name="ln1711">            {</a>
+<a name="ln1712">                matchtitle &lt;&lt; &quot; in &quot; &lt;&lt; res.duplicate_piles</a>
+<a name="ln1713">                           &lt;&lt; &quot; pile&quot; &lt;&lt; (res.duplicate_piles == 1 ? &quot;&quot; : &quot;s&quot;);</a>
+<a name="ln1714">            }</a>
+<a name="ln1715">            matchtitle &lt;&lt; &quot;)&quot;;</a>
+<a name="ln1716">        }</a>
+<a name="ln1717"> </a>
+<a name="ln1718">        MenuEntry *me = new MenuEntry(matchtitle.str(), MEL_ITEM, 1,</a>
+<a name="ln1719">                                      res.in_inventory ? 0</a>
+<a name="ln1720">                                                       : (int)hotkey);</a>
+<a name="ln1721">        me-&gt;data = &amp;res;</a>
+<a name="ln1722"> </a>
+<a name="ln1723">        if (res.shop &amp;&amp; !res.shop-&gt;is_visited())</a>
+<a name="ln1724">            me-&gt;colour = CYAN;</a>
+<a name="ln1725"> </a>
+<a name="ln1726">        if (res.item.defined())</a>
+<a name="ln1727">        {</a>
+<a name="ln1728">            const int itemcol = menu_colour(res.item.name(DESC_PLAIN).c_str(),</a>
+<a name="ln1729">                                            item_prefix(res.item), &quot;pickup&quot;);</a>
+<a name="ln1730">            if (itemcol != -1)</a>
+<a name="ln1731">                me-&gt;colour = itemcol;</a>
+<a name="ln1732">        }</a>
+<a name="ln1733"> </a>
+<a name="ln1734">#ifdef USE_TILE</a>
+<a name="ln1735">        if (res.item.defined())</a>
+<a name="ln1736">        {</a>
+<a name="ln1737">            vector&lt;tile_def&gt; item_tiles;</a>
+<a name="ln1738">            get_tiles_for_item(res.item, item_tiles, false);</a>
+<a name="ln1739">            for (const auto &amp;tile : item_tiles)</a>
+<a name="ln1740">                me-&gt;add_tile(tile);</a>
+<a name="ln1741">        }</a>
+<a name="ln1742">        else if (res.shop)</a>
+<a name="ln1743">            me-&gt;add_tile(tile_def(tileidx_shop(&amp;res.shop-&gt;shop), TEX_FEAT));</a>
+<a name="ln1744">        else if (feat_is_trap(res.feat))</a>
+<a name="ln1745">        {</a>
+<a name="ln1746">            const tileidx_t idx = tileidx_trap(res.trap);</a>
+<a name="ln1747">            me-&gt;add_tile(tile_def(idx, get_dngn_tex(idx)));</a>
+<a name="ln1748">        }</a>
+<a name="ln1749">        else if (feat_is_runed(res.feat))</a>
+<a name="ln1750">        {</a>
+<a name="ln1751">            // Handle large doors and huge gates</a>
+<a name="ln1752">            const tileidx_t idx = tileidx_feature_base(res.feat);</a>
+<a name="ln1753">            me-&gt;add_tile(tile_def(idx, get_dngn_tex(idx)));</a>
+<a name="ln1754">        }</a>
+<a name="ln1755">        else</a>
+<a name="ln1756">        {</a>
+<a name="ln1757">            const dungeon_feature_type feat = feat_by_desc(res.match);</a>
+<a name="ln1758">            const tileidx_t idx = tileidx_feature_base(feat);</a>
+<a name="ln1759">            me-&gt;add_tile(tile_def(idx, get_dngn_tex(idx)));</a>
+<a name="ln1760">        }</a>
+<a name="ln1761">#endif</a>
+<a name="ln1762"> </a>
+<a name="ln1763">        stashmenu.add_entry(me);</a>
+<a name="ln1764">        if (!res.in_inventory)</a>
+<a name="ln1765">            ++hotkey;</a>
+<a name="ln1766">    }</a>
+<a name="ln1767"> </a>
+<a name="ln1768">    stashmenu.set_flags(MF_SINGLESELECT | MF_ALLOW_FORMATTING);</a>
+<a name="ln1769"> </a>
+<a name="ln1770">    stashmenu.on_single_selection = [&amp;stashmenu, &amp;search, &amp;nohl](const MenuEntry&amp; item)</a>
+<a name="ln1771">    {</a>
+<a name="ln1772">        stash_search_result *res = static_cast&lt;stash_search_result *&gt;(item.data);</a>
+<a name="ln1773">        if (stashmenu.menu_action == StashSearchMenu::ACT_EXAMINE)</a>
+<a name="ln1774">        {</a>
+<a name="ln1775">            if (res-&gt;item.defined())</a>
+<a name="ln1776">            {</a>
+<a name="ln1777">                item_def it = res-&gt;item;</a>
+<a name="ln1778">                describe_item(it,</a>
+<a name="ln1779">                    [search, nohl](string&amp; desc)</a>
+<a name="ln1780">                    {</a>
+<a name="ln1781">                        if (!nohl)</a>
+<a name="ln1782">                            desc = search-&gt;match_location(desc).annotate_string(&quot;lightcyan&quot;);</a>
+<a name="ln1783">                    });</a>
+<a name="ln1784">            }</a>
+<a name="ln1785">            else if (res-&gt;shop)</a>
+<a name="ln1786">                res-&gt;shop-&gt;show_menu(res-&gt;pos);</a>
+<a name="ln1787">            else</a>
+<a name="ln1788">            {</a>
+<a name="ln1789">                level_excursion le;</a>
+<a name="ln1790">                le.go_to(res-&gt;pos.id);</a>
+<a name="ln1791">                describe_feature_wide(res-&gt;pos.pos);</a>
+<a name="ln1792">            }</a>
+<a name="ln1793">        }</a>
+<a name="ln1794">        else</a>
+<a name="ln1795">        {</a>
+<a name="ln1796">            level_pos lp = res-&gt;pos;</a>
+<a name="ln1797">            if (show_map(lp, true, true))</a>
+<a name="ln1798">            {</a>
+<a name="ln1799">                start_translevel_travel(lp);</a>
+<a name="ln1800">                return false;</a>
+<a name="ln1801">            }</a>
+<a name="ln1802">        }</a>
+<a name="ln1803">        return true;</a>
+<a name="ln1804">    };</a>
+<a name="ln1805"> </a>
+<a name="ln1806">    vector&lt;MenuEntry*&gt; sel = stashmenu.show();</a>
+<a name="ln1807">    redraw_screen();</a>
+<a name="ln1808">    default_execute = stashmenu.menu_action == Menu::ACT_EXECUTE;</a>
+<a name="ln1809">    if (stashmenu.request_toggle_sort_method)</a>
+<a name="ln1810">    {</a>
+<a name="ln1811">        sort_by_dist = !sort_by_dist;</a>
+<a name="ln1812">        return true;</a>
+<a name="ln1813">    }</a>
+<a name="ln1814">    if (stashmenu.request_toggle_filter_useless)</a>
+<a name="ln1815">    {</a>
+<a name="ln1816">        filter_useless = !filter_useless;</a>
+<a name="ln1817">        return true;</a>
+<a name="ln1818">    }</a>
+<a name="ln1819">    return false;</a>
+<a name="ln1820">}</a>
+<a name="ln1821"> </a>
+<a name="ln1822">void StashTracker::update_corpses()</a>
+<a name="ln1823">{</a>
+<a name="ln1824">    if (you.elapsed_time - last_corpse_update &lt; ROT_TIME_FACTOR)</a>
+<a name="ln1825">        return;</a>
+<a name="ln1826"> </a>
+<a name="ln1827">    const int rot_time =</a>
+<a name="ln1828">        (you.elapsed_time - last_corpse_update) / ROT_TIME_FACTOR;</a>
+<a name="ln1829"> </a>
+<a name="ln1830">    last_corpse_update = you.elapsed_time;</a>
+<a name="ln1831"> </a>
+<a name="ln1832">    for (auto &amp;entry : levels)</a>
+<a name="ln1833">        entry.second._update_corpses(rot_time);</a>
+<a name="ln1834">}</a>
+<a name="ln1835"> </a>
+<a name="ln1836">void StashTracker::update_identification()</a>
+<a name="ln1837">{</a>
+<a name="ln1838">    if (!have_passive(passive_t::identify_items))</a>
+<a name="ln1839">        return;</a>
+<a name="ln1840"> </a>
+<a name="ln1841">    for (auto &amp;entry : levels)</a>
+<a name="ln1842">        entry.second._update_identification();</a>
+<a name="ln1843">}</a>
+<a name="ln1844"> </a>
+<a name="ln1845">//////////////////////////////////////////////</a>
+<a name="ln1846"> </a>
+<a name="ln1847">ST_ItemIterator::ST_ItemIterator()</a>
+<a name="ln1848">{</a>
+<a name="ln1849">    m_stash_level_it = StashTrack.levels.begin();</a>
+<a name="ln1850">    new_level();</a>
+<a name="ln1851">    //(*this)++;</a>
+<a name="ln1852">}</a>
+<a name="ln1853"> </a>
+<a name="ln1854">ST_ItemIterator::operator bool() const</a>
+<a name="ln1855">{</a>
+<a name="ln1856">    return m_item != nullptr;</a>
+<a name="ln1857">}</a>
+<a name="ln1858"> </a>
+<a name="ln1859">const item_def&amp; ST_ItemIterator::operator *() const</a>
+<a name="ln1860">{</a>
+<a name="ln1861">    return *m_item;</a>
+<a name="ln1862">}</a>
+<a name="ln1863"> </a>
+<a name="ln1864">const item_def* ST_ItemIterator::operator-&gt;() const</a>
+<a name="ln1865">{</a>
+<a name="ln1866">    return m_item;</a>
+<a name="ln1867">}</a>
+<a name="ln1868"> </a>
+<a name="ln1869">const level_id &amp;ST_ItemIterator::place()</a>
+<a name="ln1870">{</a>
+<a name="ln1871">    return m_place;</a>
+<a name="ln1872">}</a>
+<a name="ln1873"> </a>
+<a name="ln1874">const ShopInfo* ST_ItemIterator::shop()</a>
+<a name="ln1875">{</a>
+<a name="ln1876">    return m_shop;</a>
+<a name="ln1877">}</a>
+<a name="ln1878"> </a>
+<a name="ln1879">unsigned        ST_ItemIterator::price()</a>
+<a name="ln1880">{</a>
+<a name="ln1881">    return m_price;</a>
+<a name="ln1882">}</a>
+<a name="ln1883"> </a>
+<a name="ln1884">const ST_ItemIterator&amp; ST_ItemIterator::operator ++ ()</a>
+<a name="ln1885">{</a>
+<a name="ln1886">    m_item = nullptr;</a>
+<a name="ln1887">    m_shop = nullptr;</a>
+<a name="ln1888"> </a>
+<a name="ln1889">    const LevelStashes &amp;ls = m_stash_level_it-&gt;second;</a>
+<a name="ln1890"> </a>
+<a name="ln1891">    if (m_stash_it == ls.m_stashes.end())</a>
+<a name="ln1892">    {</a>
+<a name="ln1893">        if (m_shop_it == ls.m_shops.end())</a>
+<a name="ln1894">        {</a>
+<a name="ln1895">            ++m_stash_level_it;</a>
+<a name="ln1896">            if (m_stash_level_it == StashTrack.levels.end())</a>
+<a name="ln1897">                return *this;</a>
+<a name="ln1898"> </a>
+<a name="ln1899">            new_level();</a>
+<a name="ln1900">            return *this;</a>
+<a name="ln1901">        }</a>
+<a name="ln1902">        m_shop = &amp;(*m_shop_it);</a>
+<a name="ln1903"> </a>
+<a name="ln1904">        if (m_shop_item_it != m_shop-&gt;shop.stock.end())</a>
+<a name="ln1905">        {</a>
+<a name="ln1906">            const item_def &amp;item = *m_shop_item_it++;</a>
+<a name="ln1907">            m_item  = &amp;item;</a>
+<a name="ln1908">            ASSERT(m_item-&gt;defined());</a>
+<a name="ln1909">            m_price = item_price(item, m_shop-&gt;shop);</a>
+<a name="ln1910">            return *this;</a>
+<a name="ln1911">        }</a>
+<a name="ln1912"> </a>
+<a name="ln1913">        ++m_shop_it;</a>
+<a name="ln1914">        if (m_shop_it != ls.m_shops.end())</a>
+<a name="ln1915">            m_shop_item_it = m_shop_it-&gt;shop.stock.begin();</a>
+<a name="ln1916"> </a>
+<a name="ln1917">        ++(*this);</a>
+<a name="ln1918">    }</a>
+<a name="ln1919">    else</a>
+<a name="ln1920">    {</a>
+<a name="ln1921">        if (m_stash_item_it != m_stash_it-&gt;second.items.end())</a>
+<a name="ln1922">        {</a>
+<a name="ln1923">            m_item = &amp;(*m_stash_item_it++);</a>
+<a name="ln1924">            ASSERT(m_item-&gt;defined());</a>
+<a name="ln1925">            return *this;</a>
+<a name="ln1926">        }</a>
+<a name="ln1927"> </a>
+<a name="ln1928">        ++m_stash_it;</a>
+<a name="ln1929">        if (m_stash_it == ls.m_stashes.end())</a>
+<a name="ln1930">        {</a>
+<a name="ln1931">            ++(*this);</a>
+<a name="ln1932">            return *this;</a>
+<a name="ln1933">        }</a>
+<a name="ln1934"> </a>
+<a name="ln1935">        m_stash_item_it = m_stash_it-&gt;second.items.begin();</a>
+<a name="ln1936">        ++(*this);</a>
+<a name="ln1937">    }</a>
+<a name="ln1938"> </a>
+<a name="ln1939">    return *this;</a>
+<a name="ln1940">}</a>
+<a name="ln1941"> </a>
+<a name="ln1942">void ST_ItemIterator::new_level()</a>
+<a name="ln1943">{</a>
+<a name="ln1944">    m_item  = nullptr;</a>
+<a name="ln1945">    m_shop  = nullptr;</a>
+<a name="ln1946">    m_price = 0;</a>
+<a name="ln1947"> </a>
+<a name="ln1948">    if (m_stash_level_it == StashTrack.levels.end())</a>
+<a name="ln1949">        return;</a>
+<a name="ln1950"> </a>
+<a name="ln1951">    const LevelStashes &amp;ls = m_stash_level_it-&gt;second;</a>
+<a name="ln1952"> </a>
+<a name="ln1953">    m_place = ls.m_place;</a>
+<a name="ln1954"> </a>
+<a name="ln1955">    m_stash_it = ls.m_stashes.begin();</a>
+<a name="ln1956">    if (m_stash_it != ls.m_stashes.end())</a>
+<a name="ln1957">    {</a>
+<a name="ln1958">        m_stash_item_it = m_stash_it-&gt;second.items.begin();</a>
+<a name="ln1959">        if (m_stash_item_it != m_stash_it-&gt;second.items.end())</a>
+<a name="ln1960">        {</a>
+<a name="ln1961">            m_item = &amp;(*m_stash_item_it++);</a>
+<a name="ln1962">            ASSERT(m_item-&gt;defined());</a>
+<a name="ln1963">        }</a>
+<a name="ln1964">    }</a>
+<a name="ln1965"> </a>
+<a name="ln1966">    m_shop_it = ls.m_shops.begin();</a>
+<a name="ln1967">    if (m_shop_it != ls.m_shops.end())</a>
+<a name="ln1968">    {</a>
+<a name="ln1969">        const ShopInfo &amp;si = *m_shop_it;</a>
+<a name="ln1970"> </a>
+<a name="ln1971">        m_shop_item_it = si.shop.stock.begin();</a>
+<a name="ln1972"> </a>
+<a name="ln1973">        if (m_item == nullptr &amp;&amp; m_shop_item_it != si.shop.stock.end())</a>
+<a name="ln1974">        {</a>
+<a name="ln1975">            const item_def &amp;item = *m_shop_item_it++;</a>
+<a name="ln1976">            m_item  = &amp;item;</a>
+<a name="ln1977">            ASSERT(m_item-&gt;defined());</a>
+<a name="ln1978">            m_price = item_price(item, si.shop);</a>
+<a name="ln1979">            m_shop  = &amp;si;</a>
+<a name="ln1980">        }</a>
+<a name="ln1981">    }</a>
+<a name="ln1982">}</a>
+<a name="ln1983"> </a>
+<a name="ln1984">ST_ItemIterator ST_ItemIterator::operator ++ (int)</a>
+<a name="ln1985">{</a>
+<a name="ln1986">    const ST_ItemIterator copy = *this;</a>
+<a name="ln1987">    ++(*this);</a>
+<a name="ln1988">    return copy;</a>
+<a name="ln1989">}</a>
+
+</code></pre>
+<div class="balloon" rel="186"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="460"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="800"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1342"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

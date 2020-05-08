@@ -1,0 +1,3523 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>spl-damage.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Damage-dealing spells not already handled elsewhere.</a>
+<a name="ln4"> *           Other targeted spells are covered in spl-zap.cc.</a>
+<a name="ln5">**/</a>
+<a name="ln6"> </a>
+<a name="ln7">#include &quot;AppHdr.h&quot;</a>
+<a name="ln8"> </a>
+<a name="ln9"> </a>
+<a name="ln10">#include &quot;spl-damage.h&quot;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &lt;functional&gt;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &quot;act-iter.h&quot;</a>
+<a name="ln15">#include &quot;areas.h&quot;</a>
+<a name="ln16">#include &quot;attack.h&quot;</a>
+<a name="ln17">#include &quot;beam.h&quot;</a>
+<a name="ln18">#include &quot;cloud.h&quot;</a>
+<a name="ln19">#include &quot;colour.h&quot;</a>
+<a name="ln20">#include &quot;coordit.h&quot;</a>
+<a name="ln21">#include &quot;directn.h&quot;</a>
+<a name="ln22">#include &quot;english.h&quot;</a>
+<a name="ln23">#include &quot;env.h&quot;</a>
+<a name="ln24">#include &quot;fight.h&quot;</a>
+<a name="ln25">#include &quot;fineff.h&quot;</a>
+<a name="ln26">#include &quot;food.h&quot;</a>
+<a name="ln27">#include &quot;fprop.h&quot;</a>
+<a name="ln28">#include &quot;god-conduct.h&quot;</a>
+<a name="ln29">#include &quot;invent.h&quot;</a>
+<a name="ln30">#include &quot;items.h&quot;</a>
+<a name="ln31">#include &quot;level-state-type.h&quot;</a>
+<a name="ln32">#include &quot;los.h&quot;</a>
+<a name="ln33">#include &quot;losglobal.h&quot;</a>
+<a name="ln34">#include &quot;macro.h&quot;</a>
+<a name="ln35">#include &quot;mapmark.h&quot;</a>
+<a name="ln36">#include &quot;message.h&quot;</a>
+<a name="ln37">#include &quot;misc.h&quot;</a>
+<a name="ln38">#include &quot;mon-behv.h&quot;</a>
+<a name="ln39">#include &quot;mon-death.h&quot;</a>
+<a name="ln40">#include &quot;mon-tentacle.h&quot;</a>
+<a name="ln41">#include &quot;mutation.h&quot;</a>
+<a name="ln42">#include &quot;ouch.h&quot;</a>
+<a name="ln43">#include &quot;prompt.h&quot;</a>
+<a name="ln44">#include &quot;random.h&quot;</a>
+<a name="ln45">#include &quot;religion.h&quot;</a>
+<a name="ln46">#include &quot;shout.h&quot;</a>
+<a name="ln47">#include &quot;spl-summoning.h&quot;</a>
+<a name="ln48">#include &quot;spl-util.h&quot;</a>
+<a name="ln49">#include &quot;spl-zap.h&quot;</a>
+<a name="ln50">#include &quot;stepdown.h&quot;</a>
+<a name="ln51">#include &quot;stringutil.h&quot;</a>
+<a name="ln52">#include &quot;target.h&quot;</a>
+<a name="ln53">#include &quot;terrain.h&quot;</a>
+<a name="ln54">#include &quot;transform.h&quot;</a>
+<a name="ln55">#include &quot;unicode.h&quot;</a>
+<a name="ln56">#include &quot;viewchar.h&quot;</a>
+<a name="ln57">#include &quot;view.h&quot;</a>
+<a name="ln58"> </a>
+<a name="ln59">void setup_fire_storm(const actor *source, int pow, bolt &amp;beam)</a>
+<a name="ln60">{</a>
+<a name="ln61">    zappy(ZAP_FIRE_STORM, pow, source-&gt;is_monster(), beam);</a>
+<a name="ln62">    beam.ex_size      = 2 + (random2(1000) &lt; pow);</a>
+<a name="ln63">    beam.source_id    = source-&gt;mid;</a>
+<a name="ln64">    // XXX: Should this be KILL_MON_MISSILE?</a>
+<a name="ln65">    beam.thrower      =</a>
+<a name="ln66">        source-&gt;is_player() ? KILL_YOU_MISSILE : KILL_MON;</a>
+<a name="ln67">    beam.aux_source.clear();</a>
+<a name="ln68">    beam.is_tracer    = false;</a>
+<a name="ln69">    beam.origin_spell = SPELL_FIRE_STORM;</a>
+<a name="ln70">}</a>
+<a name="ln71"> </a>
+<a name="ln72">spret cast_fire_storm(int pow, bolt &amp;beam, bool fail)</a>
+<a name="ln73">{</a>
+<a name="ln74">    if (grid_distance(beam.target, beam.source) &gt; beam.range)</a>
+<a name="ln75">    {</a>
+<a name="ln76">        mpr(&quot;That is beyond the maximum range.&quot;);</a>
+<a name="ln77">        return spret::abort;</a>
+<a name="ln78">    }</a>
+<a name="ln79"> </a>
+<a name="ln80">    if (cell_is_solid(beam.target))</a>
+<a name="ln81">    {</a>
+<a name="ln82">        const char *feat = feat_type_name(grd(beam.target));</a>
+<a name="ln83">        mprf(&quot;You can't place the storm on %s.&quot;, article_a(feat).c_str());</a>
+<a name="ln84">        return spret::abort;</a>
+<a name="ln85">    }</a>
+<a name="ln86"> </a>
+<a name="ln87">    setup_fire_storm(&amp;you, pow, beam);</a>
+<a name="ln88"> </a>
+<a name="ln89">    bolt tempbeam = beam;</a>
+<a name="ln90">    tempbeam.ex_size = (pow &gt; 76) ? 3 : 2;</a>
+<a name="ln91">    tempbeam.is_tracer = true;</a>
+<a name="ln92"> </a>
+<a name="ln93">    tempbeam.explode(false);</a>
+<a name="ln94">    if (tempbeam.beam_cancelled)</a>
+<a name="ln95">        return spret::abort;</a>
+<a name="ln96"> </a>
+<a name="ln97">    fail_check();</a>
+<a name="ln98"> </a>
+<a name="ln99">    beam.apply_beam_conducts();</a>
+<a name="ln100">    beam.refine_for_explosion();</a>
+<a name="ln101">    beam.explode(false);</a>
+<a name="ln102"> </a>
+<a name="ln103">    viewwindow();</a>
+<a name="ln104">    return spret::success;</a>
+<a name="ln105">}</a>
+<a name="ln106"> </a>
+<a name="ln107">// No setup/cast split here as monster damnation is completely different.</a>
+<a name="ln108">// XXX make this not true</a>
+<a name="ln109">bool cast_smitey_damnation(int pow, bolt &amp;beam)</a>
+<a name="ln110">{</a>
+<a name="ln111">    beam.name              = &quot;damnation&quot;;</a>
+<a name="ln112">    beam.aux_source        = &quot;damnation&quot;;</a>
+<a name="ln113">    beam.ex_size           = 1;</a>
+<a name="ln114">    beam.flavour           = BEAM_DAMNATION;</a>
+<a name="ln115">    beam.real_flavour      = beam.flavour;</a>
+<a name="ln116">    beam.glyph             = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln117">    beam.colour            = LIGHTRED;</a>
+<a name="ln118">    beam.source_id         = MID_PLAYER;</a>
+<a name="ln119">    beam.thrower           = KILL_YOU;</a>
+<a name="ln120">    beam.obvious_effect    = false;</a>
+<a name="ln121">    beam.pierce            = false;</a>
+<a name="ln122">    beam.is_explosion      = true;</a>
+<a name="ln123">    beam.ench_power        = pow;      // used for radius</a>
+<a name="ln124">    beam.hit               = 20 + pow / 10;</a>
+<a name="ln125">    beam.damage            = calc_dice(6, 30 + pow);</a>
+<a name="ln126">    beam.attitude          = ATT_FRIENDLY;</a>
+<a name="ln127">    beam.friend_info.count = 0;</a>
+<a name="ln128">    beam.is_tracer         = true;</a>
+<a name="ln129"> </a>
+<a name="ln130">    beam.explode(false);</a>
+<a name="ln131"> </a>
+<a name="ln132">    if (beam.beam_cancelled)</a>
+<a name="ln133">    {</a>
+<a name="ln134">        canned_msg(MSG_OK);</a>
+<a name="ln135">        return false;</a>
+<a name="ln136">    }</a>
+<a name="ln137"> </a>
+<a name="ln138">    mpr(&quot;You call forth a pillar of damnation!&quot;);</a>
+<a name="ln139"> </a>
+<a name="ln140">    beam.is_tracer = false;</a>
+<a name="ln141">    beam.in_explosion_phase = false;</a>
+<a name="ln142">    beam.explode(true);</a>
+<a name="ln143"> </a>
+<a name="ln144">    return true;</a>
+<a name="ln145">}</a>
+<a name="ln146"> </a>
+<a name="ln147">// XXX no friendly check</a>
+<a name="ln148">spret cast_chain_spell(spell_type spell_cast, int pow,</a>
+<a name="ln149">                            const actor *caster, bool fail)</a>
+<a name="ln150">{</a>
+<a name="ln151">    fail_check();</a>
+<a name="ln152">    bolt beam;</a>
+<a name="ln153"> </a>
+<a name="ln154">    // initialise beam structure</a>
+<a name="ln155">    switch (spell_cast)</a>
+<a name="ln156">    {</a>
+<a name="ln157">        case SPELL_CHAIN_LIGHTNING:</a>
+<a name="ln158">            beam.name           = &quot;lightning arc&quot;;</a>
+<a name="ln159">            beam.aux_source     = &quot;chain lightning&quot;;</a>
+<a name="ln160">            beam.glyph          = dchar_glyph(DCHAR_FIRED_ZAP);</a>
+<a name="ln161">            beam.flavour        = BEAM_ELECTRICITY;</a>
+<a name="ln162">            break;</a>
+<a name="ln163">        case SPELL_CHAIN_OF_CHAOS:</a>
+<a name="ln164">            beam.name           = &quot;arc of chaos&quot;;</a>
+<a name="ln165">            beam.aux_source     = &quot;chain of chaos&quot;;</a>
+<a name="ln166">            beam.glyph          = dchar_glyph(DCHAR_FIRED_ZAP);</a>
+<a name="ln167">            beam.flavour        = BEAM_CHAOS;</a>
+<a name="ln168">            break;</a>
+<a name="ln169">        default:</a>
+<a name="ln170">            die(&quot;buggy chain spell %d cast&quot;, spell_cast);</a>
+<a name="ln171">            break;</a>
+<a name="ln172">    }</a>
+<a name="ln173">    beam.source_id      = caster-&gt;mid;</a>
+<a name="ln174">    beam.thrower        = caster-&gt;is_player() ? KILL_YOU_MISSILE : KILL_MON_MISSILE;</a>
+<a name="ln175">    beam.range          = 8;</a>
+<a name="ln176">    beam.hit            = AUTOMATIC_HIT;</a>
+<a name="ln177">    beam.obvious_effect = true;</a>
+<a name="ln178">    beam.pierce         = false;       // since we want to stop at our target</a>
+<a name="ln179">    beam.is_explosion   = false;</a>
+<a name="ln180">    beam.is_tracer      = false;</a>
+<a name="ln181">    beam.origin_spell   = spell_cast;</a>
+<a name="ln182"> </a>
+<a name="ln183">    if (const monster* mons = caster-&gt;as_monster())</a>
+<a name="ln184">        beam.source_name = mons-&gt;name(DESC_PLAIN, true);</a>
+<a name="ln185"> </a>
+<a name="ln186">    bool first = true;</a>
+<a name="ln187">    coord_def source, target;</a>
+<a name="ln188"> </a>
+<a name="ln189">    for (source = caster-&gt;pos(); pow &gt; 0;</a>
+<a name="ln190">         pow -= 8 + random2(13), source = target)</a>
+<a name="ln191">    {</a>
+<a name="ln192">        // infinity as far as this spell is concerned</a>
+<a name="ln193">        // (Range - 1) is used because the distance is randomised and</a>
+<a name="ln194">        // may be shifted by one.</a>
+<a name="ln195">        int min_dist = LOS_DEFAULT_RANGE - 1;</a>
+<a name="ln196"> </a>
+<a name="ln197">        int dist;</a>
+<a name="ln198">        int count = 0;</a>
+<a name="ln199"> </a>
+<a name="ln200">        target.x = -1;</a>
+<a name="ln201">        target.y = -1;</a>
+<a name="ln202"> </a>
+<a name="ln203">        for (monster_iterator mi; mi; ++mi)</a>
+<a name="ln204">        {</a>
+<a name="ln205">            if (invalid_monster(*mi))</a>
+<a name="ln206">                continue;</a>
+<a name="ln207"> </a>
+<a name="ln208">            // Don't arc to things we cannot hit.</a>
+<a name="ln209">            if (beam.ignores_monster(*mi))</a>
+<a name="ln210">                continue;</a>
+<a name="ln211"> </a>
+<a name="ln212">            dist = grid_distance(source, mi-&gt;pos());</a>
+<a name="ln213"> </a>
+<a name="ln214">            // check for the source of this arc</a>
+<a name="ln215">            if (!dist)</a>
+<a name="ln216">                continue;</a>
+<a name="ln217"> </a>
+<a name="ln218">            // randomise distance (arcs don't care about a couple of feet)</a>
+<a name="ln219">            dist += (random2(3) - 1);</a>
+<a name="ln220"> </a>
+<a name="ln221">            // always ignore targets further than current one</a>
+<a name="ln222">            if (dist &gt; min_dist)</a>
+<a name="ln223">                continue;</a>
+<a name="ln224"> </a>
+<a name="ln225">            if (!cell_see_cell(source, mi-&gt;pos(), LOS_SOLID)</a>
+<a name="ln226">                || !cell_see_cell(caster-&gt;pos(), mi-&gt;pos(), LOS_SOLID_SEE))</a>
+<a name="ln227">            {</a>
+<a name="ln228">                continue;</a>
+<a name="ln229">            }</a>
+<a name="ln230"> </a>
+<a name="ln231">            // check for actors along the arc path</a>
+<a name="ln232">            ray_def ray;</a>
+<a name="ln233">            if (!find_ray(source, mi-&gt;pos(), ray, opc_solid))</a>
+<a name="ln234">                continue;</a>
+<a name="ln235"> </a>
+<a name="ln236">            while (ray.advance())</a>
+<a name="ln237">                if (actor_at(ray.pos()))</a>
+<a name="ln238">                    break;</a>
+<a name="ln239"> </a>
+<a name="ln240">            if (ray.pos() != mi-&gt;pos())</a>
+<a name="ln241">                continue;</a>
+<a name="ln242"> </a>
+<a name="ln243">            count++;</a>
+<a name="ln244"> </a>
+<a name="ln245">            if (dist &lt; min_dist)</a>
+<a name="ln246">            {</a>
+<a name="ln247">                // switch to looking for closer targets (but not always)</a>
+<a name="ln248">                if (!one_chance_in(10))</a>
+<a name="ln249">                {</a>
+<a name="ln250">                    min_dist = dist;</a>
+<a name="ln251">                    target = mi-&gt;pos();</a>
+<a name="ln252">                    count = 0;</a>
+<a name="ln253">                }</a>
+<a name="ln254">            }</a>
+<a name="ln255">            else if (target.x == -1 || one_chance_in(count))</a>
+<a name="ln256">            {</a>
+<a name="ln257">                // either first target, or new selected target at</a>
+<a name="ln258">                // min_dist == dist.</a>
+<a name="ln259">                target = mi-&gt;pos();</a>
+<a name="ln260">            }</a>
+<a name="ln261">        }</a>
+<a name="ln262"> </a>
+<a name="ln263">        // now check if the player is a target</a>
+<a name="ln264">        dist = grid_distance(source, you.pos());</a>
+<a name="ln265"> </a>
+<a name="ln266">        if (dist)       // i.e., player was not the source</a>
+<a name="ln267">        {</a>
+<a name="ln268">            // distance randomised (as above)</a>
+<a name="ln269">            dist += (random2(3) - 1);</a>
+<a name="ln270"> </a>
+<a name="ln271">            // select player if only, closest, or randomly selected</a>
+<a name="ln272">            if ((target.x == -1</a>
+<a name="ln273">                    || dist &lt; min_dist</a>
+<a name="ln274">                    || (dist == min_dist &amp;&amp; one_chance_in(count + 1)))</a>
+<a name="ln275">                &amp;&amp; cell_see_cell(source, you.pos(), LOS_SOLID))</a>
+<a name="ln276">            {</a>
+<a name="ln277">                target = you.pos();</a>
+<a name="ln278">            }</a>
+<a name="ln279">        }</a>
+<a name="ln280"> </a>
+<a name="ln281">        const bool see_source = you.see_cell(source);</a>
+<a name="ln282">        const bool see_targ   = you.see_cell(target);</a>
+<a name="ln283"> </a>
+<a name="ln284">        if (target.x == -1)</a>
+<a name="ln285">        {</a>
+<a name="ln286">            if (see_source)</a>
+<a name="ln287">                mprf(&quot;The %s grounds out.&quot;, beam.name.c_str());</a>
+<a name="ln288"> </a>
+<a name="ln289">            break;</a>
+<a name="ln290">        }</a>
+<a name="ln291"> </a>
+<a name="ln292">        // Trying to limit message spamming here so we'll only mention</a>
+<a name="ln293">        // the thunder at the start or when it's out of LoS.</a>
+<a name="ln294">        switch (spell_cast)</a>
+<a name="ln295">        {</a>
+<a name="ln296">            case SPELL_CHAIN_LIGHTNING:</a>
+<a name="ln297">            {</a>
+<a name="ln298">                const char* msg = &quot;You hear a mighty clap of thunder!&quot;;</a>
+<a name="ln299">                noisy(spell_effect_noise(SPELL_CHAIN_LIGHTNING), source,</a>
+<a name="ln300">                      (first || !see_source) ? msg : nullptr);</a>
+<a name="ln301">                break;</a>
+<a name="ln302">            }</a>
+<a name="ln303">            case SPELL_CHAIN_OF_CHAOS:</a>
+<a name="ln304">                if (first &amp;&amp; see_source)</a>
+<a name="ln305">                    mpr(&quot;A swirling arc of seething chaos appears!&quot;);</a>
+<a name="ln306">                break;</a>
+<a name="ln307">            default:</a>
+<a name="ln308">                break;</a>
+<a name="ln309">        }</a>
+<a name="ln310">        first = false;</a>
+<a name="ln311"> </a>
+<a name="ln312">        if (see_source &amp;&amp; !see_targ)</a>
+<a name="ln313">            mprf(&quot;The %s arcs out of your line of sight!&quot;, beam.name.c_str());</a>
+<a name="ln314">        else if (!see_source &amp;&amp; see_targ)</a>
+<a name="ln315">            mprf(&quot;The %s suddenly appears!&quot;, beam.name.c_str());</a>
+<a name="ln316"> </a>
+<a name="ln317">        beam.source = source;</a>
+<a name="ln318">        beam.target = target;</a>
+<a name="ln319">        switch (spell_cast)</a>
+<a name="ln320">        {</a>
+<a name="ln321">            case SPELL_CHAIN_LIGHTNING:</a>
+<a name="ln322">                beam.colour = LIGHTBLUE;</a>
+<a name="ln323">                beam.damage = caster-&gt;is_player()</a>
+<a name="ln324">                    ? calc_dice(5, 10 + pow * 2 / 3)</a>
+<a name="ln325">                    : calc_dice(5, 46 + pow / 6);</a>
+<a name="ln326">                break;</a>
+<a name="ln327">            case SPELL_CHAIN_OF_CHAOS:</a>
+<a name="ln328">                beam.colour       = ETC_RANDOM;</a>
+<a name="ln329">                beam.ench_power   = pow;</a>
+<a name="ln330">                beam.damage       = calc_dice(3, 5 + pow / 6);</a>
+<a name="ln331">                beam.real_flavour = BEAM_CHAOS;</a>
+<a name="ln332">                beam.flavour      = BEAM_CHAOS;</a>
+<a name="ln333">            default:</a>
+<a name="ln334">                break;</a>
+<a name="ln335">        }</a>
+<a name="ln336"> </a>
+<a name="ln337">        // Be kinder to the caster.</a>
+<a name="ln338">        if (target == caster-&gt;pos())</a>
+<a name="ln339">        {</a>
+<a name="ln340">            // This should not hit the caster, too scary as a player effect and</a>
+<a name="ln341">            // too kind to the player as a monster effect.</a>
+<a name="ln342">            if (spell_cast == SPELL_CHAIN_OF_CHAOS)</a>
+<a name="ln343">            {</a>
+<a name="ln344">                beam.real_flavour = BEAM_VISUAL;</a>
+<a name="ln345">                beam.flavour      = BEAM_VISUAL;</a>
+<a name="ln346">            }</a>
+<a name="ln347"> </a>
+<a name="ln348">            // Reduce damage when the spell arcs to the caster.</a>
+<a name="ln349">            beam.damage.num = max(1, beam.damage.num / 2);</a>
+<a name="ln350">            beam.damage.size = max(3, beam.damage.size / 2);</a>
+<a name="ln351">        }</a>
+<a name="ln352">        beam.fire();</a>
+<a name="ln353">    }</a>
+<a name="ln354"> </a>
+<a name="ln355">    return spret::success;</a>
+<a name="ln356">}</a>
+<a name="ln357"> </a>
+<a name="ln358">/*</a>
+<a name="ln359"> * Handle the application of damage from a player spell that doesn't apply these</a>
+<a name="ln360"> * through struct bolt. This can apply god conducts and handles any necessary</a>
+<a name="ln361"> * death cleanup.</a>
+<a name="ln362"> * @param mon          The monster.</a>
+<a name="ln363"> * @param damage       The damage to apply, if any. Regardless of damage done,</a>
+<a name="ln364"> *                     the monster will have death cleanup applied via</a>
+<a name="ln365"> *                     monster_die() if it's now dead.</a>
+<a name="ln366"> * @param flavour      The beam flavour of damage.</a>
+<a name="ln367"> * @param god_conducts If true, apply any god conducts, in which case the</a>
+<a name="ln368"> *                     monster must be alive. Some callers need to apply</a>
+<a name="ln369"> *                     effects prior to damage that might kill the monster,</a>
+<a name="ln370"> *                     hence handle conducts on their own.</a>
+<a name="ln371">*/</a>
+<a name="ln372">static void _player_hurt_monster(monster &amp;mon, int damage, beam_type flavour,</a>
+<a name="ln373">                                 bool god_conducts = true)</a>
+<a name="ln374">{</a>
+<a name="ln375">    ASSERT(mon.alive() || !god_conducts);</a>
+<a name="ln376"> </a>
+<a name="ln377">    if (god_conducts &amp;&amp; you.deity() == GOD_FEDHAS &amp;&amp; fedhas_neutralises(mon))</a>
+<a name="ln378">    {</a>
+<a name="ln379">        simple_god_message(&quot; protects your plant from harm.&quot;, GOD_FEDHAS);</a>
+<a name="ln380">        return;</a>
+<a name="ln381">    }</a>
+<a name="ln382"> </a>
+<a name="ln383">    god_conduct_trigger conducts[3];</a>
+<a name="ln384">    if (god_conducts)</a>
+<a name="ln385">        set_attack_conducts(conducts, mon, you.can_see(mon));</a>
+<a name="ln386"> </a>
+<a name="ln387">    if (damage)</a>
+<a name="ln388">        mon.hurt(&amp;you, damage, flavour, KILLED_BY_BEAM);</a>
+<a name="ln389"> </a>
+<a name="ln390">    if (mon.alive())</a>
+<a name="ln391">    {</a>
+<a name="ln392">        behaviour_event(&amp;mon, ME_WHACK, &amp;you);</a>
+<a name="ln393"> </a>
+<a name="ln394">        if (damage &amp;&amp; you.can_see(mon))</a>
+<a name="ln395">            print_wounds(mon);</a>
+<a name="ln396">    }</a>
+<a name="ln397">    // monster::hurt() wasn't called, so we do death cleanup.</a>
+<a name="ln398">    else if (!damage)</a>
+<a name="ln399">        monster_die(mon, KILL_YOU, NON_MONSTER);</a>
+<a name="ln400">}</a>
+<a name="ln401"> </a>
+<a name="ln402">static counted_monster_list _counted_monster_list_from_vector(</a>
+<a name="ln403">    vector&lt;monster *&gt; affected_monsters)</a>
+<a name="ln404">{</a>
+<a name="ln405">    counted_monster_list mons;</a>
+<a name="ln406">    for (auto mon : affected_monsters)</a>
+<a name="ln407">        mons.add(mon);</a>
+<a name="ln408">    return mons;</a>
+<a name="ln409">}</a>
+<a name="ln410"> </a>
+<a name="ln411">static bool _drain_lifeable(const actor* agent, const actor* act)</a>
+<a name="ln412">{</a>
+<a name="ln413">    if (act-&gt;res_negative_energy() &gt;= 3)</a>
+<a name="ln414">        return false;</a>
+<a name="ln415"> </a>
+<a name="ln416">    if (!agent)</a>
+<a name="ln417">        return true;</a>
+<a name="ln418"> </a>
+<a name="ln419">    const monster* mons = agent-&gt;as_monster();</a>
+<a name="ln420">    const monster* m = act-&gt;as_monster();</a>
+<a name="ln421"> </a>
+<a name="ln422">    return !(agent-&gt;is_player() &amp;&amp; act-&gt;wont_attack()</a>
+<a name="ln423">             || mons &amp;&amp; act-&gt;is_player() &amp;&amp; mons-&gt;wont_attack()</a>
+<a name="ln424">             || mons &amp;&amp; m &amp;&amp; mons_atts_aligned(mons-&gt;attitude, m-&gt;attitude));</a>
+<a name="ln425">}</a>
+<a name="ln426"> </a>
+<a name="ln427">static void _los_spell_pre_damage_monsters(const actor* agent,</a>
+<a name="ln428">                                           vector&lt;monster *&gt; affected_monsters,</a>
+<a name="ln429">                                           const char *verb)</a>
+<a name="ln430">{</a>
+<a name="ln431">    // Filter out affected monsters that we don't know for sure are there</a>
+<a name="ln432">    vector&lt;monster*&gt; seen_monsters;</a>
+<a name="ln433">    for (monster *mon : affected_monsters)</a>
+<a name="ln434">        if (you.can_see(*mon))</a>
+<a name="ln435">            seen_monsters.push_back(mon);</a>
+<a name="ln436"> </a>
+<a name="ln437">    if (!seen_monsters.empty())</a>
+<a name="ln438">    {</a>
+<a name="ln439">        counted_monster_list mons_list =</a>
+<a name="ln440">            _counted_monster_list_from_vector(seen_monsters);</a>
+<a name="ln441">        const string message = make_stringf(&quot;%s %s %s.&quot;,</a>
+<a name="ln442">                mons_list.describe(DESC_THE).c_str(),</a>
+<a name="ln443">                conjugate_verb(&quot;be&quot;, mons_list.count() &gt; 1).c_str(), verb);</a>
+<a name="ln444">        if (strwidth(message) &lt; get_number_of_cols() - 2)</a>
+<a name="ln445">            mpr(message);</a>
+<a name="ln446">        else</a>
+<a name="ln447">        {</a>
+<a name="ln448">            // Exclamation mark to suggest that a lot of creatures were</a>
+<a name="ln449">            // affected.</a>
+<a name="ln450">            mprf(&quot;The monsters around %s are %s!&quot;,</a>
+<a name="ln451">                agent &amp;&amp; agent-&gt;is_monster() &amp;&amp; you.can_see(*agent)</a>
+<a name="ln452">                ? agent-&gt;as_monster()-&gt;name(DESC_THE).c_str()</a>
+<a name="ln453">                : &quot;you&quot;, verb);</a>
+<a name="ln454">        }</a>
+<a name="ln455">    }</a>
+<a name="ln456">}</a>
+<a name="ln457"> </a>
+<a name="ln458">static int _los_spell_damage_player(const actor* agent, bolt &amp;beam,</a>
+<a name="ln459">                                    bool actual)</a>
+<a name="ln460">{</a>
+<a name="ln461">    int hurted = actual ? beam.damage.roll()</a>
+<a name="ln462">                        // Monsters use the average for foe calculations.</a>
+<a name="ln463">                        : (1 + beam.damage.num * beam.damage.size) / 2;</a>
+<a name="ln464">    hurted = check_your_resists(hurted, beam.flavour, beam.name, 0,</a>
+<a name="ln465">            // Drain life doesn't apply drain effects.</a>
+<a name="ln466">            actual &amp;&amp; beam.origin_spell != SPELL_DRAIN_LIFE);</a>
+<a name="ln467">    if (actual &amp;&amp; hurted &gt; 0)</a>
+<a name="ln468">    {</a>
+<a name="ln469">        if (beam.origin_spell == SPELL_OZOCUBUS_REFRIGERATION)</a>
+<a name="ln470">            mpr(&quot;You feel very cold.&quot;);</a>
+<a name="ln471"> </a>
+<a name="ln472">        if (agent &amp;&amp; !agent-&gt;is_player())</a>
+<a name="ln473">        {</a>
+<a name="ln474">            ouch(hurted, KILLED_BY_BEAM, agent-&gt;mid,</a>
+<a name="ln475">                 make_stringf(&quot;by %s&quot;, beam.name.c_str()).c_str(), true,</a>
+<a name="ln476">                 agent-&gt;as_monster()-&gt;name(DESC_A).c_str());</a>
+<a name="ln477">            you.expose_to_element(beam.flavour, 5);</a>
+<a name="ln478">        }</a>
+<a name="ln479">        // -harm from player casting Ozo's Refridge.</a>
+<a name="ln480">        // we don't actually take damage, but can get slowed and lose potions</a>
+<a name="ln481">        else if (beam.origin_spell == SPELL_OZOCUBUS_REFRIGERATION)</a>
+<a name="ln482">        {</a>
+<a name="ln483">            you.expose_to_element(beam.flavour, 5);</a>
+<a name="ln484">            you.increase_duration(DUR_NO_POTIONS, 7 + random2(9), 15);</a>
+<a name="ln485">        }</a>
+<a name="ln486">    }</a>
+<a name="ln487"> </a>
+<a name="ln488">    return hurted;</a>
+<a name="ln489">}</a>
+<a name="ln490"> </a>
+<a name="ln491">static int _los_spell_damage_monster(const actor* agent, monster &amp;target,</a>
+<a name="ln492">                                     bolt &amp;beam, bool actual)</a>
+<a name="ln493">{</a>
+<a name="ln494"> </a>
+<a name="ln495">    beam.thrower = (agent &amp;&amp; agent-&gt;is_player()) ? KILL_YOU :</a>
+<a name="ln496">                    agent                        ? KILL_MON</a>
+<a name="ln497">                                                 : KILL_MISC;</a>
+<a name="ln498"> </a>
+<a name="ln499">    // Set conducts here. The monster needs to be alive when this is done, and</a>
+<a name="ln500">    // mons_adjust_flavoured() could kill it.</a>
+<a name="ln501">    god_conduct_trigger conducts[3];</a>
+<a name="ln502">    if (YOU_KILL(beam.thrower))</a>
+<a name="ln503">        set_attack_conducts(conducts, target, you.can_see(target));</a>
+<a name="ln504"> </a>
+<a name="ln505">    int hurted = actual ? beam.damage.roll()</a>
+<a name="ln506">                        // Monsters use the average for foe calculations.</a>
+<a name="ln507">                        : (1 + beam.damage.num * beam.damage.size) / 2;</a>
+<a name="ln508">    hurted = mons_adjust_flavoured(&amp;target, beam, hurted,</a>
+<a name="ln509">                 // Drain life doesn't apply drain effects.</a>
+<a name="ln510">                 actual &amp;&amp; beam.origin_spell != SPELL_DRAIN_LIFE);</a>
+<a name="ln511">    dprf(&quot;damage done: %d&quot;, hurted);</a>
+<a name="ln512"> </a>
+<a name="ln513">    if (actual)</a>
+<a name="ln514">    {</a>
+<a name="ln515">        if (YOU_KILL(beam.thrower))</a>
+<a name="ln516">            _player_hurt_monster(target, hurted, beam.flavour, false);</a>
+<a name="ln517">        else if (hurted)</a>
+<a name="ln518">            target.hurt(agent, hurted, beam.flavour);</a>
+<a name="ln519"> </a>
+<a name="ln520">        // Cold-blooded creatures can be slowed.</a>
+<a name="ln521">        if (beam.origin_spell == SPELL_OZOCUBUS_REFRIGERATION</a>
+<a name="ln522">            &amp;&amp; target.alive())</a>
+<a name="ln523">        {</a>
+<a name="ln524">            target.expose_to_element(beam.flavour, 5);</a>
+<a name="ln525">        }</a>
+<a name="ln526">    }</a>
+<a name="ln527"> </a>
+<a name="ln528">    // So that summons don't restore HP.</a>
+<a name="ln529">    if (beam.origin_spell == SPELL_DRAIN_LIFE &amp;&amp; target.is_summoned())</a>
+<a name="ln530">        return 0;</a>
+<a name="ln531"> </a>
+<a name="ln532">    return hurted;</a>
+<a name="ln533">}</a>
+<a name="ln534"> </a>
+<a name="ln535"> </a>
+<a name="ln536">static spret _cast_los_attack_spell(spell_type spell, int pow,</a>
+<a name="ln537">                                         const actor* agent, bool actual,</a>
+<a name="ln538">                                         bool fail, int* damage_done)</a>
+<a name="ln539">{</a>
+<a name="ln540">    const monster* mons = agent ? agent-&gt;as_monster() : nullptr;</a>
+<a name="ln541"> </a>
+<a name="ln542">    const zap_type zap = spell_to_zap(spell);</a>
+<a name="ln543">    if (zap == NUM_ZAPS)</a>
+<a name="ln544">        return spret::abort;</a>
+<a name="ln545"> </a>
+<a name="ln546">    bolt beam;</a>
+<a name="ln547">    zappy(zap, pow, mons, beam);</a>
+<a name="ln548">    beam.source_id = agent ? agent-&gt;mid : MID_NOBODY;</a>
+<a name="ln549">    beam.foe_ratio = 80;</a>
+<a name="ln550"> </a>
+<a name="ln551">    const char *player_msg = nullptr, *global_msg = nullptr,</a>
+<a name="ln552">               *mons_vis_msg = nullptr, *mons_invis_msg = nullptr,</a>
+<a name="ln553">               *verb = nullptr, *prompt_verb = nullptr;</a>
+<a name="ln554">    bool (*vulnerable)(const actor *, const actor *) = nullptr;</a>
+<a name="ln555"> </a>
+<a name="ln556">    switch (spell)</a>
+<a name="ln557">    {</a>
+<a name="ln558">        case SPELL_OZOCUBUS_REFRIGERATION:</a>
+<a name="ln559">            player_msg = &quot;The heat is drained from your surroundings.&quot;;</a>
+<a name="ln560">            global_msg = &quot;Something drains the heat from around you.&quot;;</a>
+<a name="ln561">            mons_vis_msg = &quot; drains the heat from the surrounding&quot;</a>
+<a name="ln562">                           &quot; environment!&quot;;</a>
+<a name="ln563">            mons_invis_msg = &quot;The ambient heat is drained!&quot;;</a>
+<a name="ln564">            verb = &quot;frozen&quot;;</a>
+<a name="ln565">            prompt_verb = &quot;refrigerate&quot;;</a>
+<a name="ln566">            vulnerable = [](const actor *caster, const actor *act) {</a>
+<a name="ln567">                return act-&gt;is_player() || act-&gt;res_cold() &lt; 3</a>
+<a name="ln568">                       &amp;&amp; !(caster-&gt;deity() == GOD_FEDHAS</a>
+<a name="ln569">                            &amp;&amp; fedhas_protects(act-&gt;as_monster()));</a>
+<a name="ln570">            };</a>
+<a name="ln571">            break;</a>
+<a name="ln572"> </a>
+<a name="ln573">        case SPELL_DRAIN_LIFE:</a>
+<a name="ln574">            player_msg = &quot;You draw life from your surroundings.&quot;;</a>
+<a name="ln575">            global_msg = &quot;Something draws the life force from your&quot;</a>
+<a name="ln576">                         &quot; surroundings.&quot;;</a>
+<a name="ln577">            mons_vis_msg = &quot; draws from the surrounding life force!&quot;;</a>
+<a name="ln578">            mons_invis_msg = &quot;The surrounding life force dissipates!&quot;;</a>
+<a name="ln579">            verb = &quot;drained of life&quot;;</a>
+<a name="ln580">            prompt_verb = &quot;drain life&quot;;</a>
+<a name="ln581">            vulnerable = &amp;_drain_lifeable;</a>
+<a name="ln582">            break;</a>
+<a name="ln583"> </a>
+<a name="ln584">        case SPELL_SONIC_WAVE:</a>
+<a name="ln585">            player_msg = &quot;You send a blast of sound all around you.&quot;;</a>
+<a name="ln586">            global_msg = &quot;Something sends a blast of sound all around you.&quot;;</a>
+<a name="ln587">            mons_vis_msg = &quot; sends a blast of sound all around you!&quot;;</a>
+<a name="ln588">            mons_invis_msg = &quot;Sound blasts the surrounding area!&quot;;</a>
+<a name="ln589">            verb = &quot;blasted&quot;;</a>
+<a name="ln590">            // prompt_verb = &quot;sing&quot; The singing sword prompts in melee-attack</a>
+<a name="ln591">            vulnerable = [](const actor *caster, const actor *act) {</a>
+<a name="ln592">                return act != caster</a>
+<a name="ln593">                       &amp;&amp; !(caster-&gt;deity() == GOD_FEDHAS</a>
+<a name="ln594">                            &amp;&amp; fedhas_protects(act-&gt;as_monster()));</a>
+<a name="ln595">            };</a>
+<a name="ln596">            break;</a>
+<a name="ln597"> </a>
+<a name="ln598">        default:</a>
+<a name="ln599">            return spret::abort;</a>
+<a name="ln600">    }</a>
+<a name="ln601"> </a>
+<a name="ln602">    auto vul_hitfunc = [vulnerable](const actor *act) -&gt; bool</a>
+<a name="ln603">    {</a>
+<a name="ln604">        return (*vulnerable)(&amp;you, act);</a>
+<a name="ln605">    };</a>
+<a name="ln606"> </a>
+<a name="ln607">    if (agent &amp;&amp; agent-&gt;is_player())</a>
+<a name="ln608">    {</a>
+<a name="ln609">        ASSERT(actual);</a>
+<a name="ln610"> </a>
+<a name="ln611">        targeter_radius hitfunc(&amp;you, LOS_NO_TRANS);</a>
+<a name="ln612">        // Singing Sword's spell shouldn't give a prompt at this time.</a>
+<a name="ln613">        if (spell != SPELL_SONIC_WAVE)</a>
+<a name="ln614">        {</a>
+<a name="ln615">            if (stop_attack_prompt(hitfunc, prompt_verb, vul_hitfunc))</a>
+<a name="ln616">                return spret::abort;</a>
+<a name="ln617"> </a>
+<a name="ln618">            fail_check();</a>
+<a name="ln619">        }</a>
+<a name="ln620"> </a>
+<a name="ln621">        mpr(player_msg);</a>
+<a name="ln622">        flash_view_delay(UA_PLAYER, beam.colour, 300, &amp;hitfunc);</a>
+<a name="ln623">    }</a>
+<a name="ln624">    else if (actual)</a>
+<a name="ln625">    {</a>
+<a name="ln626">        if (!agent)</a>
+<a name="ln627">            mpr(global_msg);</a>
+<a name="ln628">        else if (you.can_see(*agent))</a>
+<a name="ln629">            simple_monster_message(*mons, mons_vis_msg);</a>
+<a name="ln630">        else if (you.see_cell(agent-&gt;pos()))</a>
+<a name="ln631">            mpr(mons_invis_msg);</a>
+<a name="ln632"> </a>
+<a name="ln633">        if (!agent || you.see_cell(agent-&gt;pos()))</a>
+<a name="ln634">            flash_view_delay(UA_MONSTER, beam.colour, 300);</a>
+<a name="ln635">    }</a>
+<a name="ln636"> </a>
+<a name="ln637">    bool affects_you = false;</a>
+<a name="ln638">    vector&lt;monster *&gt; affected_monsters;</a>
+<a name="ln639"> </a>
+<a name="ln640">    for (actor_near_iterator ai((agent ? agent : &amp;you)-&gt;pos(), LOS_NO_TRANS);</a>
+<a name="ln641">         ai; ++ai)</a>
+<a name="ln642">    {</a>
+<a name="ln643">        if ((*vulnerable)(agent, *ai))</a>
+<a name="ln644">        {</a>
+<a name="ln645">            if (ai-&gt;is_player())</a>
+<a name="ln646">                affects_you = true;</a>
+<a name="ln647">            else</a>
+<a name="ln648">                affected_monsters.push_back(ai-&gt;as_monster());</a>
+<a name="ln649">        }</a>
+<a name="ln650">    }</a>
+<a name="ln651"> </a>
+<a name="ln652">    const int avg_damage = (1 + beam.damage.num * beam.damage.size) / 2;</a>
+<a name="ln653">    int total_damage = 0;</a>
+<a name="ln654">    // XXX: This ordering is kind of broken; it's to preserve the message</a>
+<a name="ln655">    // order from the original behaviour in the case of refrigerate.</a>
+<a name="ln656">    if (affects_you)</a>
+<a name="ln657">    {</a>
+<a name="ln658">        total_damage = _los_spell_damage_player(agent, beam, actual);</a>
+<a name="ln659">        if (!actual &amp;&amp; mons)</a>
+<a name="ln660">        {</a>
+<a name="ln661">            if (mons-&gt;wont_attack())</a>
+<a name="ln662">            {</a>
+<a name="ln663">                beam.friend_info.count++;</a>
+<a name="ln664">                beam.friend_info.power +=</a>
+<a name="ln665">                    (you.get_experience_level() * total_damage / avg_damage);</a>
+<a name="ln666">            }</a>
+<a name="ln667">            else</a>
+<a name="ln668">            {</a>
+<a name="ln669">                beam.foe_info.count++;</a>
+<a name="ln670">                beam.foe_info.power +=</a>
+<a name="ln671">                    (you.get_experience_level() * total_damage / avg_damage);</a>
+<a name="ln672">            }</a>
+<a name="ln673">        }</a>
+<a name="ln674">    }</a>
+<a name="ln675"> </a>
+<a name="ln676">    if (actual &amp;&amp; !affected_monsters.empty())</a>
+<a name="ln677">        _los_spell_pre_damage_monsters(agent, affected_monsters, verb);</a>
+<a name="ln678"> </a>
+<a name="ln679">    for (auto m : affected_monsters)</a>
+<a name="ln680">    {</a>
+<a name="ln681">        // Watch out for invalidation. Example: Ozocubu's refrigeration on</a>
+<a name="ln682">        // a bunch of ballistomycete spores that blow each other up.</a>
+<a name="ln683">        if (!m-&gt;alive())</a>
+<a name="ln684">            continue;</a>
+<a name="ln685"> </a>
+<a name="ln686">        int this_damage = _los_spell_damage_monster(agent, *m, beam, actual);</a>
+<a name="ln687">        total_damage += this_damage;</a>
+<a name="ln688"> </a>
+<a name="ln689">        if (!actual &amp;&amp; mons)</a>
+<a name="ln690">        {</a>
+<a name="ln691">            if (mons_atts_aligned(m-&gt;attitude, mons-&gt;attitude))</a>
+<a name="ln692">            {</a>
+<a name="ln693">                beam.friend_info.count++;</a>
+<a name="ln694">                beam.friend_info.power +=</a>
+<a name="ln695">                    (m-&gt;get_hit_dice() * this_damage / avg_damage);</a>
+<a name="ln696">            }</a>
+<a name="ln697">            else</a>
+<a name="ln698">            {</a>
+<a name="ln699">                beam.foe_info.count++;</a>
+<a name="ln700">                beam.foe_info.power +=</a>
+<a name="ln701">                    (m-&gt;get_hit_dice() * this_damage / avg_damage);</a>
+<a name="ln702">            }</a>
+<a name="ln703">        }</a>
+<a name="ln704">    }</a>
+<a name="ln705"> </a>
+<a name="ln706">    if (damage_done)</a>
+<a name="ln707">        *damage_done = total_damage;</a>
+<a name="ln708"> </a>
+<a name="ln709">    if (actual)</a>
+<a name="ln710">        return spret::success;</a>
+<a name="ln711">    return mons_should_fire(beam) ? spret::success : spret::abort;</a>
+<a name="ln712">}</a>
+<a name="ln713"> </a>
+<a name="ln714">spret trace_los_attack_spell(spell_type spell, int pow, const actor* agent)</a>
+<a name="ln715">{</a>
+<a name="ln716">    return _cast_los_attack_spell(spell, pow, agent, false, false, nullptr);</a>
+<a name="ln717">}</a>
+<a name="ln718"> </a>
+<a name="ln719">spret fire_los_attack_spell(spell_type spell, int pow, const actor* agent,</a>
+<a name="ln720">                            bool fail, int* damage_done)</a>
+<a name="ln721">{</a>
+<a name="ln722">    return _cast_los_attack_spell(spell, pow, agent, true, fail, damage_done);</a>
+<a name="ln723">}</a>
+<a name="ln724"> </a>
+<a name="ln725">spret vampiric_drain(int pow, monster* mons, bool fail)</a>
+<a name="ln726">{</a>
+<a name="ln727">    if (you.hp == you.hp_max)</a>
+<a name="ln728">    {</a>
+<a name="ln729">        canned_msg(MSG_FULL_HEALTH);</a>
+<a name="ln730">        return spret::abort;</a>
+<a name="ln731">    }</a>
+<a name="ln732"> </a>
+<a name="ln733">    const bool observable = mons &amp;&amp; mons-&gt;observable();</a>
+<a name="ln734">    if (!mons</a>
+<a name="ln735">        || mons-&gt;submerged()</a>
+<a name="ln736">        || !observable &amp;&amp; !actor_is_susceptible_to_vampirism(*mons))</a>
+<a name="ln737">    {</a>
+<a name="ln738">        fail_check();</a>
+<a name="ln739"> </a>
+<a name="ln740">        canned_msg(MSG_NOTHING_CLOSE_ENOUGH);</a>
+<a name="ln741">        // Cost to disallow freely locating invisible/submerged</a>
+<a name="ln742">        // monsters.</a>
+<a name="ln743">        return spret::success;</a>
+<a name="ln744">    }</a>
+<a name="ln745"> </a>
+<a name="ln746">    // TODO: check known rN instead of holiness</a>
+<a name="ln747">    if (observable &amp;&amp; !actor_is_susceptible_to_vampirism(*mons))</a>
+<a name="ln748">    {</a>
+<a name="ln749">        mpr(&quot;You can't drain life from that!&quot;);</a>
+<a name="ln750">        return spret::abort;</a>
+<a name="ln751">    }</a>
+<a name="ln752"> </a>
+<a name="ln753">    if (stop_attack_prompt(mons, false, you.pos()))</a>
+<a name="ln754">    {</a>
+<a name="ln755">        canned_msg(MSG_OK);</a>
+<a name="ln756">        return spret::abort;</a>
+<a name="ln757">    }</a>
+<a name="ln758"> </a>
+<a name="ln759">    fail_check();</a>
+<a name="ln760"> </a>
+<a name="ln761">    if (!mons-&gt;alive())</a>
+<a name="ln762">    {</a>
+<a name="ln763">        canned_msg(MSG_NOTHING_HAPPENS);</a>
+<a name="ln764">        return spret::success;</a>
+<a name="ln765">    }</a>
+<a name="ln766"> </a>
+<a name="ln767">    // The practical maximum of this is about 25 (pow @ 100). - bwr</a>
+<a name="ln768">    int hp_gain = 3 + random2avg(9, 2) + random2(pow) / 7;</a>
+<a name="ln769"> </a>
+<a name="ln770">    hp_gain = min(mons-&gt;hit_points, hp_gain);</a>
+<a name="ln771">    hp_gain = min(you.hp_max - you.hp, hp_gain);</a>
+<a name="ln772"> </a>
+<a name="ln773">    hp_gain = resist_adjust_damage(mons, BEAM_NEG, hp_gain);</a>
+<a name="ln774"> </a>
+<a name="ln775">    if (!hp_gain)</a>
+<a name="ln776">    {</a>
+<a name="ln777">        canned_msg(MSG_NOTHING_HAPPENS);</a>
+<a name="ln778">        return spret::success;</a>
+<a name="ln779">    }</a>
+<a name="ln780"> </a>
+<a name="ln781">    _player_hurt_monster(*mons, hp_gain, BEAM_NEG);</a>
+<a name="ln782"> </a>
+<a name="ln783">    hp_gain = div_rand_round(hp_gain, 2);</a>
+<a name="ln784"> </a>
+<a name="ln785">    if (hp_gain &amp;&amp; !you.duration[DUR_DEATHS_DOOR])</a>
+<a name="ln786">    {</a>
+<a name="ln787">        mprf(&quot;You feel life coursing into your body%s&quot;,</a>
+<a name="ln788">             attack_strength_punctuation(hp_gain).c_str());</a>
+<a name="ln789">        inc_hp(hp_gain);</a>
+<a name="ln790">    }</a>
+<a name="ln791"> </a>
+<a name="ln792">    return spret::success;</a>
+<a name="ln793">}</a>
+<a name="ln794"> </a>
+<a name="ln795">spret cast_freeze(int pow, monster* mons, bool fail)</a>
+<a name="ln796">{</a>
+<a name="ln797">    pow = min(25, pow);</a>
+<a name="ln798"> </a>
+<a name="ln799">    if (!mons || mons-&gt;submerged())</a>
+<a name="ln800">    {</a>
+<a name="ln801">        fail_check();</a>
+<a name="ln802">        canned_msg(MSG_NOTHING_CLOSE_ENOUGH);</a>
+<a name="ln803">        // If there's no monster there, you still pay the costs in</a>
+<a name="ln804">        // order to prevent locating invisible/submerged monsters.</a>
+<a name="ln805">        return spret::success;</a>
+<a name="ln806">    }</a>
+<a name="ln807"> </a>
+<a name="ln808">    if (stop_attack_prompt(mons, false, you.pos()))</a>
+<a name="ln809">    {</a>
+<a name="ln810">        canned_msg(MSG_OK);</a>
+<a name="ln811">        return spret::abort;</a>
+<a name="ln812">    }</a>
+<a name="ln813"> </a>
+<a name="ln814">    fail_check();</a>
+<a name="ln815"> </a>
+<a name="ln816">    // Set conducts here. The monster needs to be alive when this is done, and</a>
+<a name="ln817">    // mons_adjust_flavoured() could kill it.</a>
+<a name="ln818">    god_conduct_trigger conducts[3];</a>
+<a name="ln819">    set_attack_conducts(conducts, *mons);</a>
+<a name="ln820"> </a>
+<a name="ln821">    bolt beam;</a>
+<a name="ln822">    beam.flavour = BEAM_COLD;</a>
+<a name="ln823">    beam.thrower = KILL_YOU;</a>
+<a name="ln824"> </a>
+<a name="ln825">    const int orig_hurted = roll_dice(1, 3 + pow / 3);</a>
+<a name="ln826">    int hurted = mons_adjust_flavoured(mons, beam, orig_hurted);</a>
+<a name="ln827">    mprf(&quot;You freeze %s%s%s&quot;,</a>
+<a name="ln828">         mons-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln829">         hurted ? &quot;&quot; : &quot; but do no damage&quot;,</a>
+<a name="ln830">         attack_strength_punctuation(hurted).c_str());</a>
+<a name="ln831"> </a>
+<a name="ln832">    _player_hurt_monster(*mons, hurted, beam.flavour, false);</a>
+<a name="ln833"> </a>
+<a name="ln834">    if (mons-&gt;alive())</a>
+<a name="ln835">        mons-&gt;expose_to_element(BEAM_COLD, orig_hurted);</a>
+<a name="ln836"> </a>
+<a name="ln837">    return spret::success;</a>
+<a name="ln838">}</a>
+<a name="ln839"> </a>
+<a name="ln840">spret cast_airstrike(int pow, const dist &amp;beam, bool fail)</a>
+<a name="ln841">{</a>
+<a name="ln842">    if (cell_is_solid(beam.target))</a>
+<a name="ln843">    {</a>
+<a name="ln844">        canned_msg(MSG_UNTHINKING_ACT);</a>
+<a name="ln845">        return spret::abort;</a>
+<a name="ln846">    }</a>
+<a name="ln847"> </a>
+<a name="ln848">    monster* mons = monster_at(beam.target);</a>
+<a name="ln849">    if (!mons || mons-&gt;submerged())</a>
+<a name="ln850">    {</a>
+<a name="ln851">        fail_check();</a>
+<a name="ln852">        canned_msg(MSG_SPELL_FIZZLES);</a>
+<a name="ln853">        return spret::success; // still losing a turn</a>
+<a name="ln854">    }</a>
+<a name="ln855"> </a>
+<a name="ln856">    if (stop_attack_prompt(mons, false, you.pos()))</a>
+<a name="ln857">        return spret::abort;</a>
+<a name="ln858">    fail_check();</a>
+<a name="ln859"> </a>
+<a name="ln860">    noisy(spell_effect_noise(SPELL_AIRSTRIKE), beam.target);</a>
+<a name="ln861"> </a>
+<a name="ln862">    bolt pbeam;</a>
+<a name="ln863">    pbeam.flavour = BEAM_AIR;</a>
+<a name="ln864"> </a>
+<a name="ln865">    int empty_space = 0;</a>
+<a name="ln866">    for (adjacent_iterator ai(beam.target); ai; ++ai)</a>
+<a name="ln867">        if (!monster_at(*ai) &amp;&amp; !cell_is_solid(*ai))</a>
+<a name="ln868">            empty_space++;</a>
+<a name="ln869"> </a>
+<a name="ln870">    empty_space = max(3, empty_space);</a>
+<a name="ln871"> </a>
+<a name="ln872">    int hurted = 5 + empty_space + random2avg(2 + div_rand_round(pow, 7),</a>
+<a name="ln873">                                              empty_space - 2);</a>
+<a name="ln874">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln875">    const int preac = hurted;</a>
+<a name="ln876">#endif</a>
+<a name="ln877">    hurted = mons-&gt;apply_ac(mons-&gt;beam_resists(pbeam, hurted, false));</a>
+<a name="ln878">    dprf(&quot;preac: %d, postac: %d&quot;, preac, hurted);</a>
+<a name="ln879"> </a>
+<a name="ln880">    mprf(&quot;The air twists around and %sstrikes %s%s%s&quot;,</a>
+<a name="ln881">         mons-&gt;airborne() ? &quot;violently &quot; : &quot;&quot;,</a>
+<a name="ln882">         mons-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln883">         hurted ? &quot;&quot; : &quot; but does no damage&quot;,</a>
+<a name="ln884">         attack_strength_punctuation(hurted).c_str());</a>
+<a name="ln885">    _player_hurt_monster(*mons, hurted, pbeam.flavour);</a>
+<a name="ln886"> </a>
+<a name="ln887">    return spret::success;</a>
+<a name="ln888">}</a>
+<a name="ln889"> </a>
+<a name="ln890">// Here begin the actual spells:</a>
+<a name="ln891">static int _shatter_mon_dice(const monster *mon)</a>
+<a name="ln892">{</a>
+<a name="ln893">    if (!mon)</a>
+<a name="ln894">        return 0;</a>
+<a name="ln895"> </a>
+<a name="ln896">    // Removed a lot of silly monsters down here... people, just because</a>
+<a name="ln897">    // it says ice, rock, or iron in the name doesn't mean it's actually</a>
+<a name="ln898">    // made out of the substance. - bwr</a>
+<a name="ln899">    switch (mon-&gt;type)</a>
+<a name="ln900">    {</a>
+<a name="ln901">    // Double damage to stone, metal and crystal.</a>
+<a name="ln902">    case MONS_EARTH_ELEMENTAL:</a>
+<a name="ln903">    case MONS_USHABTI:</a>
+<a name="ln904">    case MONS_STATUE:</a>
+<a name="ln905">    case MONS_GARGOYLE:</a>
+<a name="ln906">    case MONS_IRON_ELEMENTAL:</a>
+<a name="ln907">    case MONS_IRON_GOLEM:</a>
+<a name="ln908">    case MONS_PEACEKEEPER:</a>
+<a name="ln909">    case MONS_WAR_GARGOYLE:</a>
+<a name="ln910">    case MONS_SALTLING:</a>
+<a name="ln911">    case MONS_CRYSTAL_GUARDIAN:</a>
+<a name="ln912">    case MONS_OBSIDIAN_STATUE:</a>
+<a name="ln913">    case MONS_ORANGE_STATUE:</a>
+<a name="ln914">    case MONS_ROXANNE:</a>
+<a name="ln915">        return 6;</a>
+<a name="ln916"> </a>
+<a name="ln917">    default:</a>
+<a name="ln918">        if (mon-&gt;is_insubstantial())</a>
+<a name="ln919">            return 1;</a>
+<a name="ln920">        if (mon-&gt;petrifying() || mon-&gt;petrified())</a>
+<a name="ln921">            return 6; // reduced later by petrification's damage reduction</a>
+<a name="ln922">        else if (mon-&gt;is_skeletal() || mon-&gt;is_icy())</a>
+<a name="ln923">            return 6;</a>
+<a name="ln924">        else if (mon-&gt;airborne() || mons_is_slime(*mon))</a>
+<a name="ln925">            return 1;</a>
+<a name="ln926">        // Normal damage to everything else.</a>
+<a name="ln927">        else</a>
+<a name="ln928">            return 3;</a>
+<a name="ln929">    }</a>
+<a name="ln930">}</a>
+<a name="ln931"> </a>
+<a name="ln932">static int _shatter_monsters(coord_def where, int pow, actor *agent)</a>
+<a name="ln933">{</a>
+<a name="ln934">    dice_def dam_dice(0, 5 + pow / 3); // Number of dice set below.</a>
+<a name="ln935">    monster* mon = monster_at(where);</a>
+<a name="ln936"> </a>
+<a name="ln937">    if (!mon || !mon-&gt;alive() || mon == agent)</a>
+<a name="ln938">        return 0;</a>
+<a name="ln939"> </a>
+<a name="ln940">    dam_dice.num = _shatter_mon_dice(mon);</a>
+<a name="ln941">    int damage = max(0, dam_dice.roll() - random2(mon-&gt;armour_class()));</a>
+<a name="ln942"> </a>
+<a name="ln943">    if (agent-&gt;is_player())</a>
+<a name="ln944">        _player_hurt_monster(*mon, damage, BEAM_MMISSILE);</a>
+<a name="ln945">    else if (damage)</a>
+<a name="ln946">        mon-&gt;hurt(agent, damage);</a>
+<a name="ln947"> </a>
+<a name="ln948">    return damage;</a>
+<a name="ln949">}</a>
+<a name="ln950"> </a>
+<a name="ln951">static int _shatter_walls(coord_def where, int /*pow*/, actor *agent)</a>
+<a name="ln952">{</a>
+<a name="ln953">    int chance = 0;</a>
+<a name="ln954"> </a>
+<a name="ln955">    // if not in-bounds then we can't really shatter it -- bwr</a>
+<a name="ln956">    if (!in_bounds(where))</a>
+<a name="ln957">        return 0;</a>
+<a name="ln958"> </a>
+<a name="ln959">    if (env.markers.property_at(where, MAT_ANY, &quot;veto_shatter&quot;) == &quot;veto&quot;)</a>
+<a name="ln960">        return 0;</a>
+<a name="ln961"> </a>
+<a name="ln962">    const dungeon_feature_type grid = grd(where);</a>
+<a name="ln963"> </a>
+<a name="ln964">    switch (grid)</a>
+<a name="ln965">    {</a>
+<a name="ln966">    case DNGN_CLOSED_DOOR:</a>
+<a name="ln967">    case DNGN_CLOSED_CLEAR_DOOR:</a>
+<a name="ln968">    case DNGN_RUNED_DOOR:</a>
+<a name="ln969">    case DNGN_RUNED_CLEAR_DOOR:</a>
+<a name="ln970">    case DNGN_OPEN_DOOR:</a>
+<a name="ln971">    case DNGN_OPEN_CLEAR_DOOR:</a>
+<a name="ln972">    case DNGN_SEALED_DOOR:</a>
+<a name="ln973">    case DNGN_SEALED_CLEAR_DOOR:</a>
+<a name="ln974">        if (you.see_cell(where))</a>
+<a name="ln975">            mpr(&quot;A door shatters!&quot;);</a>
+<a name="ln976">        chance = 100;</a>
+<a name="ln977">        break;</a>
+<a name="ln978"> </a>
+<a name="ln979">    case DNGN_GRATE:</a>
+<a name="ln980">        if (you.see_cell(where))</a>
+<a name="ln981">            mpr(&quot;An iron grate is ripped into pieces!&quot;);</a>
+<a name="ln982">        chance = 100;</a>
+<a name="ln983">        break;</a>
+<a name="ln984"> </a>
+<a name="ln985">    case DNGN_ORCISH_IDOL:</a>
+<a name="ln986">    case DNGN_GRANITE_STATUE:</a>
+<a name="ln987">        chance = 100;</a>
+<a name="ln988">        break;</a>
+<a name="ln989"> </a>
+<a name="ln990">    case DNGN_METAL_WALL:</a>
+<a name="ln991">        chance = 15;</a>
+<a name="ln992">        break;</a>
+<a name="ln993"> </a>
+<a name="ln994">    case DNGN_CLEAR_STONE_WALL:</a>
+<a name="ln995">    case DNGN_STONE_WALL:</a>
+<a name="ln996">        chance = 25;</a>
+<a name="ln997">        break;</a>
+<a name="ln998"> </a>
+<a name="ln999">    case DNGN_CLEAR_ROCK_WALL:</a>
+<a name="ln1000">    case DNGN_ROCK_WALL:</a>
+<a name="ln1001">    case DNGN_SLIMY_WALL:</a>
+<a name="ln1002">    case DNGN_CRYSTAL_WALL:</a>
+<a name="ln1003">    case DNGN_TREE:</a>
+<a name="ln1004">        chance = 33;</a>
+<a name="ln1005">        break;</a>
+<a name="ln1006"> </a>
+<a name="ln1007">    default:</a>
+<a name="ln1008">        break;</a>
+<a name="ln1009">    }</a>
+<a name="ln1010"> </a>
+<a name="ln1011">    if (agent-&gt;deity() == GOD_FEDHAS &amp;&amp; feat_is_tree(grid))</a>
+<a name="ln1012">        return 0;</a>
+<a name="ln1013"> </a>
+<a name="ln1014">    if (x_chance_in_y(chance, 100))</a>
+<a name="ln1015">    {</a>
+<a name="ln1016">        noisy(spell_effect_noise(SPELL_SHATTER), where);</a>
+<a name="ln1017"> </a>
+<a name="ln1018">        destroy_wall(where);</a>
+<a name="ln1019"> </a>
+<a name="ln1020">        return 1;</a>
+<a name="ln1021">    }</a>
+<a name="ln1022"> </a>
+<a name="ln1023">    return 0;</a>
+<a name="ln1024">}</a>
+<a name="ln1025"> </a>
+<a name="ln1026">static int _shatter_player_dice()</a>
+<a name="ln1027">{</a>
+<a name="ln1028">    if (you.is_insubstantial())</a>
+<a name="ln1029">        return 1;</a>
+<a name="ln1030">    if (you.petrified() || you.petrifying())</a>
+<a name="ln1031">        return 6; // reduced later by petrification's damage reduction</a>
+<a name="ln1032">    else if (you.form == transformation::statue</a>
+<a name="ln1033">             || you.form == transformation::ice_beast</a>
+<a name="ln1034">             || you.species == SP_GARGOYLE)</a>
+<a name="ln1035">        return 6;</a>
+<a name="ln1036">    else if (you.airborne())</a>
+<a name="ln1037">        return 1;</a>
+<a name="ln1038">    else</a>
+<a name="ln1039">        return 3;</a>
+<a name="ln1040">}</a>
+<a name="ln1041"> </a>
+<a name="ln1042">/**</a>
+<a name="ln1043"> * Is this a valid target for shatter?</a>
+<a name="ln1044"> *</a>
+<a name="ln1045"> * @param act     The actor being considered</a>
+<a name="ln1046"> * @return        Whether the actor will take damage from shatter.</a>
+<a name="ln1047"> */</a>
+<a name="ln1048">static bool _shatterable(const actor *act)</a>
+<a name="ln1049">{</a>
+<a name="ln1050">    if (act-&gt;is_player())</a>
+<a name="ln1051">        return _shatter_player_dice();</a>
+<a name="ln1052">    return _shatter_mon_dice(act-&gt;as_monster());</a>
+<a name="ln1053">}</a>
+<a name="ln1054"> </a>
+<a name="ln1055">spret cast_shatter(int pow, bool fail)</a>
+<a name="ln1056">{</a>
+<a name="ln1057">    targeter_radius hitfunc(&amp;you, LOS_ARENA);</a>
+<a name="ln1058">    if (stop_attack_prompt(hitfunc, &quot;attack&quot;, _shatterable))</a>
+<a name="ln1059">        return spret::abort;</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    fail_check();</a>
+<a name="ln1062">    const bool silence = silenced(you.pos());</a>
+<a name="ln1063"> </a>
+<a name="ln1064">    if (silence)</a>
+<a name="ln1065">        mpr(&quot;The dungeon shakes!&quot;);</a>
+<a name="ln1066">    else</a>
+<a name="ln1067">    {</a>
+<a name="ln1068">        noisy(spell_effect_noise(SPELL_SHATTER), you.pos());</a>
+<a name="ln1069">        mprf(MSGCH_SOUND, &quot;The dungeon rumbles!&quot;);</a>
+<a name="ln1070">    }</a>
+<a name="ln1071"> </a>
+<a name="ln1072">    run_animation(ANIMATION_SHAKE_VIEWPORT, UA_PLAYER);</a>
+<a name="ln1073"> </a>
+<a name="ln1074">    int dest = 0;</a>
+<a name="ln1075">    for (distance_iterator di(you.pos(), true, true, LOS_RADIUS); di; ++di)</a>
+<a name="ln1076">    {</a>
+<a name="ln1077">        // goes from the center out, so newly dug walls recurse</a>
+<a name="ln1078">        if (!cell_see_cell(you.pos(), *di, LOS_SOLID))</a>
+<a name="ln1079">            continue;</a>
+<a name="ln1080"> </a>
+<a name="ln1081">        _shatter_monsters(*di, pow, &amp;you);</a>
+<a name="ln1082">        dest += _shatter_walls(*di, pow, &amp;you);</a>
+<a name="ln1083">    }</a>
+<a name="ln1084"> </a>
+<a name="ln1085">    if (dest &amp;&amp; !silence)</a>
+<a name="ln1086">        mprf(MSGCH_SOUND, &quot;Ka-crash!&quot;);</a>
+<a name="ln1087"> </a>
+<a name="ln1088">    return spret::success;</a>
+<a name="ln1089">}</a>
+<a name="ln1090"> </a>
+<a name="ln1091">static int _shatter_player(int pow, actor *wielder, bool devastator = false)</a>
+<a name="ln1092">{</a>
+<a name="ln1093">    if (wielder-&gt;is_player())</a>
+<a name="ln1094">        return 0;</a>
+<a name="ln1095"> </a>
+<a name="ln1096">    dice_def dam_dice(_shatter_player_dice(), 5 + pow / 3);</a>
+<a name="ln1097"> </a>
+<a name="ln1098">    int damage = max(0, dam_dice.roll() - random2(you.armour_class()));</a>
+<a name="ln1099"> </a>
+<a name="ln1100">    if (damage &gt; 0)</a>
+<a name="ln1101">    {</a>
+<a name="ln1102">        mprf(damage &gt; 15 ? &quot;You shudder from the earth-shattering force%s&quot;</a>
+<a name="ln1103">                        : &quot;You shudder%s&quot;,</a>
+<a name="ln1104">             attack_strength_punctuation(damage).c_str());</a>
+<a name="ln1105">        if (devastator)</a>
+<a name="ln1106">            ouch(damage, KILLED_BY_MONSTER, wielder-&gt;mid);</a>
+<a name="ln1107">        else</a>
+<a name="ln1108">            ouch(damage, KILLED_BY_BEAM, wielder-&gt;mid, &quot;by Shatter&quot;);</a>
+<a name="ln1109">    }</a>
+<a name="ln1110"> </a>
+<a name="ln1111">    return damage;</a>
+<a name="ln1112">}</a>
+<a name="ln1113"> </a>
+<a name="ln1114">bool mons_shatter(monster* caster, bool actual)</a>
+<a name="ln1115">{</a>
+<a name="ln1116">    const bool silence = silenced(caster-&gt;pos());</a>
+<a name="ln1117">    int foes = 0;</a>
+<a name="ln1118"> </a>
+<a name="ln1119">    if (actual)</a>
+<a name="ln1120">    {</a>
+<a name="ln1121">        if (silence)</a>
+<a name="ln1122">        {</a>
+<a name="ln1123">            mprf(&quot;The dungeon shakes around %s!&quot;,</a>
+<a name="ln1124">                 caster-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1125">        }</a>
+<a name="ln1126">        else</a>
+<a name="ln1127">        {</a>
+<a name="ln1128">            noisy(spell_effect_noise(SPELL_SHATTER), caster-&gt;pos(), caster-&gt;mid);</a>
+<a name="ln1129">            mprf(MSGCH_SOUND, &quot;The dungeon rumbles around %s!&quot;,</a>
+<a name="ln1130">                 caster-&gt;name(DESC_THE).c_str());</a>
+<a name="ln1131">        }</a>
+<a name="ln1132">    }</a>
+<a name="ln1133"> </a>
+<a name="ln1134">    int pow = 5 + div_rand_round(caster-&gt;get_hit_dice() * 9, 2);</a>
+<a name="ln1135"> </a>
+<a name="ln1136">    int dest = 0;</a>
+<a name="ln1137">    for (distance_iterator di(caster-&gt;pos(), true, true, LOS_RADIUS); di; ++di)</a>
+<a name="ln1138">    {</a>
+<a name="ln1139">        // goes from the center out, so newly dug walls recurse</a>
+<a name="ln1140">        if (!cell_see_cell(caster-&gt;pos(), *di, LOS_SOLID))</a>
+<a name="ln1141">            continue;</a>
+<a name="ln1142"> </a>
+<a name="ln1143">        if (actual)</a>
+<a name="ln1144">        {</a>
+<a name="ln1145">            _shatter_monsters(*di, pow, caster);</a>
+<a name="ln1146">            if (*di == you.pos())</a>
+<a name="ln1147">                _shatter_player(pow, caster);</a>
+<a name="ln1148">            dest += _shatter_walls(*di, pow, caster);</a>
+<a name="ln1149">        }</a>
+<a name="ln1150">        else</a>
+<a name="ln1151">        {</a>
+<a name="ln1152">            if (you.pos() == *di)</a>
+<a name="ln1153">                foes -= _shatter_player_dice();</a>
+<a name="ln1154">            if (const monster *victim = monster_at(*di))</a>
+<a name="ln1155">            {</a>
+<a name="ln1156">                dprf(&quot;[%s]&quot;, victim-&gt;name(DESC_PLAIN, true).c_str());</a>
+<a name="ln1157">                foes += _shatter_mon_dice(victim)</a>
+<a name="ln1158">                     * (victim-&gt;wont_attack() ? -1 : 1);</a>
+<a name="ln1159">            }</a>
+<a name="ln1160">        }</a>
+<a name="ln1161">    }</a>
+<a name="ln1162"> </a>
+<a name="ln1163">    if (dest &amp;&amp; !silence)</a>
+<a name="ln1164">        mprf(MSGCH_SOUND, &quot;Ka-crash!&quot;);</a>
+<a name="ln1165"> </a>
+<a name="ln1166">    if (actual)</a>
+<a name="ln1167">        run_animation(ANIMATION_SHAKE_VIEWPORT, UA_MONSTER);</a>
+<a name="ln1168"> </a>
+<a name="ln1169">    if (!caster-&gt;wont_attack())</a>
+<a name="ln1170">        foes *= -1;</a>
+<a name="ln1171"> </a>
+<a name="ln1172">    if (!actual)</a>
+<a name="ln1173">        dprf(&quot;Shatter foe HD: %d&quot;, foes);</a>
+<a name="ln1174"> </a>
+<a name="ln1175">    return foes &gt; 0; // doesn't matter if actual</a>
+<a name="ln1176">}</a>
+<a name="ln1177"> </a>
+<a name="ln1178">void shillelagh(actor *wielder, coord_def where, int pow)</a>
+<a name="ln1179">{</a>
+<a name="ln1180">    bolt beam;</a>
+<a name="ln1181">    beam.name = &quot;shillelagh&quot;;</a>
+<a name="ln1182">    beam.flavour = BEAM_VISUAL;</a>
+<a name="ln1183">    beam.set_agent(wielder);</a>
+<a name="ln1184">    beam.colour = BROWN;</a>
+<a name="ln1185">    beam.glyph = dchar_glyph(DCHAR_EXPLOSION);</a>
+<a name="ln1186">    beam.range = 1;</a>
+<a name="ln1187">    beam.ex_size = 1;</a>
+<a name="ln1188">    beam.is_explosion = true;</a>
+<a name="ln1189">    beam.source = wielder-&gt;pos();</a>
+<a name="ln1190">    beam.target = where;</a>
+<a name="ln1191">    beam.hit = AUTOMATIC_HIT;</a>
+<a name="ln1192">    beam.loudness = 7;</a>
+<a name="ln1193">    beam.explode();</a>
+<a name="ln1194"> </a>
+<a name="ln1195">    counted_monster_list affected_monsters;</a>
+<a name="ln1196">    for (adjacent_iterator ai(where, false); ai; ++ai)</a>
+<a name="ln1197">    {</a>
+<a name="ln1198">        monster *mon = monster_at(*ai);</a>
+<a name="ln1199">        if (!mon || !mon-&gt;alive() || mon-&gt;submerged()</a>
+<a name="ln1200">            || mon-&gt;is_insubstantial() || !you.can_see(*mon)</a>
+<a name="ln1201">            || mon == wielder)</a>
+<a name="ln1202">        {</a>
+<a name="ln1203">            continue;</a>
+<a name="ln1204">        }</a>
+<a name="ln1205">        affected_monsters.add(mon);</a>
+<a name="ln1206">    }</a>
+<a name="ln1207">    if (!affected_monsters.empty())</a>
+<a name="ln1208">    {</a>
+<a name="ln1209">        const string message =</a>
+<a name="ln1210">            make_stringf(&quot;%s shudder%s.&quot;,</a>
+<a name="ln1211">                         affected_monsters.describe().c_str(),</a>
+<a name="ln1212">                         affected_monsters.count() == 1? &quot;s&quot; : &quot;&quot;);</a>
+<a name="ln1213">        if (strwidth(message) &lt; get_number_of_cols() - 2)</a>
+<a name="ln1214">            mpr(message);</a>
+<a name="ln1215">        else</a>
+<a name="ln1216">            mpr(&quot;There is a shattering impact!&quot;);</a>
+<a name="ln1217">    }</a>
+<a name="ln1218"> </a>
+<a name="ln1219">    // need to do this again to do the actual damage</a>
+<a name="ln1220">    for (adjacent_iterator ai(where, false); ai; ++ai)</a>
+<a name="ln1221">        _shatter_monsters(*ai, pow * 3 / 2, wielder);</a>
+<a name="ln1222"> </a>
+<a name="ln1223">    if ((you.pos() - wielder-&gt;pos()).rdist() &lt;= 1 &amp;&amp; in_bounds(you.pos()))</a>
+<a name="ln1224">        _shatter_player(pow, wielder, true);</a>
+<a name="ln1225">}</a>
+<a name="ln1226"> </a>
+<a name="ln1227">/**</a>
+<a name="ln1228"> * Irradiate the given cell. (Per the spell.)</a>
+<a name="ln1229"> *</a>
+<a name="ln1230"> * @param where     The cell in question.</a>
+<a name="ln1231"> * @param pow       The power with which the spell is being cast.</a>
+<a name="ln1232"> * @param agent     The agent (player or monster) doing the irradiating.</a>
+<a name="ln1233"> */</a>
+<a name="ln1234">static int _irradiate_cell(coord_def where, int pow, actor *agent)</a>
+<a name="ln1235">{</a>
+<a name="ln1236">    monster *mons = monster_at(where);</a>
+<a name="ln1237">    if (!mons || !mons-&gt;alive())</a>
+<a name="ln1238">        return 0; // XXX: handle damaging the player for mons casts...?</a>
+<a name="ln1239"> </a>
+<a name="ln1240">    const int dice = 6;</a>
+<a name="ln1241">    const int max_dam = 30 + div_rand_round(pow, 2);</a>
+<a name="ln1242">    const dice_def dam_dice = calc_dice(dice, max_dam);</a>
+<a name="ln1243">    const int dam = dam_dice.roll();</a>
+<a name="ln1244">    mprf(&quot;%s is blasted with magical radiation%s&quot;,</a>
+<a name="ln1245">         mons-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1246">         attack_strength_punctuation(dam).c_str());</a>
+<a name="ln1247">    dprf(&quot;irr for %d (%d pow, max %d)&quot;, dam, pow, max_dam);</a>
+<a name="ln1248"> </a>
+<a name="ln1249">    if (agent-&gt;deity() == GOD_FEDHAS &amp;&amp; fedhas_protects(mons))</a>
+<a name="ln1250">    {</a>
+<a name="ln1251">        simple_god_message(</a>
+<a name="ln1252">                    make_stringf(&quot; protects %s plant from harm.&quot;,</a>
+<a name="ln1253">                        agent-&gt;is_player() ? &quot;your&quot; : &quot;a&quot;).c_str(),</a>
+<a name="ln1254">                    GOD_FEDHAS);</a>
+<a name="ln1255">        return 0;</a>
+<a name="ln1256">    }</a>
+<a name="ln1257"> </a>
+<a name="ln1258">    if (agent-&gt;is_player())</a>
+<a name="ln1259">        _player_hurt_monster(*mons, dam, BEAM_MMISSILE);</a>
+<a name="ln1260">    else if (dam)</a>
+<a name="ln1261">        mons-&gt;hurt(agent, dam, BEAM_MMISSILE);</a>
+<a name="ln1262"> </a>
+<a name="ln1263">    if (mons-&gt;alive())</a>
+<a name="ln1264">        mons-&gt;malmutate(&quot;&quot;);</a>
+<a name="ln1265"> </a>
+<a name="ln1266">    return dam;</a>
+<a name="ln1267">}</a>
+<a name="ln1268"> </a>
+<a name="ln1269">/**</a>
+<a name="ln1270"> * Attempt to cast the spell &quot;Irradiate&quot;, damaging &amp; deforming enemies around</a>
+<a name="ln1271"> * the player.</a>
+<a name="ln1272"> *</a>
+<a name="ln1273"> * @param pow   The power at which the spell is being cast.</a>
+<a name="ln1274"> * @param who   The actor doing the irradiating.</a>
+<a name="ln1275"> * @param fail  Whether the player has failed to cast the spell.</a>
+<a name="ln1276"> * @return      spret::abort if the player changed their mind about casting after</a>
+<a name="ln1277"> *              realizing they would hit an ally; spret::fail if they failed the</a>
+<a name="ln1278"> *              cast chance; spret::success otherwise.</a>
+<a name="ln1279"> */</a>
+<a name="ln1280">spret cast_irradiate(int powc, actor* who, bool fail)</a>
+<a name="ln1281">{</a>
+<a name="ln1282">    targeter_radius hitfunc(who, LOS_NO_TRANS, 1, 0, 1);</a>
+<a name="ln1283">    auto vulnerable = [who](const actor *act) -&gt; bool</a>
+<a name="ln1284">    {</a>
+<a name="ln1285">        return !act-&gt;is_player()</a>
+<a name="ln1286">               &amp;&amp; !(who-&gt;deity() == GOD_FEDHAS</a>
+<a name="ln1287">                    &amp;&amp; fedhas_protects(act-&gt;as_monster()));</a>
+<a name="ln1288">    };</a>
+<a name="ln1289"> </a>
+<a name="ln1290">    if (stop_attack_prompt(hitfunc, &quot;irradiate&quot;, vulnerable))</a>
+<a name="ln1291">        return spret::abort;</a>
+<a name="ln1292"> </a>
+<a name="ln1293">    fail_check();</a>
+<a name="ln1294"> </a>
+<a name="ln1295">    ASSERT(who);</a>
+<a name="ln1296">    if (who-&gt;is_player())</a>
+<a name="ln1297">        mpr(&quot;You erupt in a fountain of uncontrolled magic!&quot;);</a>
+<a name="ln1298">    else</a>
+<a name="ln1299">    {</a>
+<a name="ln1300">        simple_monster_message(*who-&gt;as_monster(),</a>
+<a name="ln1301">                               &quot; erupts in a fountain of uncontrolled magic!&quot;);</a>
+<a name="ln1302">    }</a>
+<a name="ln1303"> </a>
+<a name="ln1304">    bolt beam;</a>
+<a name="ln1305">    beam.name = &quot;irradiate&quot;;</a>
+<a name="ln1306">    beam.flavour = BEAM_VISUAL;</a>
+<a name="ln1307">    beam.set_agent(&amp;you);</a>
+<a name="ln1308">    beam.colour = ETC_MUTAGENIC;</a>
+<a name="ln1309">    beam.glyph = dchar_glyph(DCHAR_EXPLOSION);</a>
+<a name="ln1310">    beam.range = 1;</a>
+<a name="ln1311">    beam.ex_size = 1;</a>
+<a name="ln1312">    beam.is_explosion = true;</a>
+<a name="ln1313">    beam.explode_delay = beam.explode_delay * 3 / 2;</a>
+<a name="ln1314">    beam.source = you.pos();</a>
+<a name="ln1315">    beam.target = you.pos();</a>
+<a name="ln1316">    beam.hit = AUTOMATIC_HIT;</a>
+<a name="ln1317">    beam.loudness = 0;</a>
+<a name="ln1318">    beam.explode(true, true);</a>
+<a name="ln1319"> </a>
+<a name="ln1320">    apply_random_around_square([powc, who] (coord_def where) {</a>
+<a name="ln1321">        return _irradiate_cell(where, powc, who);</a>
+<a name="ln1322">    }, who-&gt;pos(), true, 8);</a>
+<a name="ln1323"> </a>
+<a name="ln1324">    if (who-&gt;is_player())</a>
+<a name="ln1325">        contaminate_player(1000 + random2(500));</a>
+<a name="ln1326">    return spret::success;</a>
+<a name="ln1327">}</a>
+<a name="ln1328"> </a>
+<a name="ln1329">// How much work can we consider we'll have done by igniting a cloud here?</a>
+<a name="ln1330">// Considers a cloud under a susceptible ally bad, a cloud under a a susceptible</a>
+<a name="ln1331">// enemy good, and other clouds relatively unimportant.</a>
+<a name="ln1332">static int _ignite_tracer_cloud_value(coord_def where, actor *agent)</a>
+<a name="ln1333">{</a>
+<a name="ln1334">    actor* act = actor_at(where);</a>
+<a name="ln1335">    if (act)</a>
+<a name="ln1336">    {</a>
+<a name="ln1337">        const int dam = actor_cloud_immune(*act, CLOUD_FIRE)</a>
+<a name="ln1338">                        ? 0</a>
+<a name="ln1339">                        : resist_adjust_damage(act, BEAM_FIRE, 40);</a>
+<a name="ln1340"> </a>
+<a name="ln1341">        if (agent-&gt;deity() == GOD_FEDHAS &amp;&amp; agent-&gt;is_player()</a>
+<a name="ln1342">            &amp;&amp; fedhas_protects(act-&gt;as_monster()))</a>
+<a name="ln1343">        {</a>
+<a name="ln1344">            return 0;</a>
+<a name="ln1345">        }</a>
+<a name="ln1346"> </a>
+<a name="ln1347">        return mons_aligned(act, agent) ? -dam : dam;</a>
+<a name="ln1348">    }</a>
+<a name="ln1349">    // We've done something, but its value is indeterminate</a>
+<a name="ln1350">    else</a>
+<a name="ln1351">        return 1;</a>
+<a name="ln1352">}</a>
+<a name="ln1353"> </a>
+<a name="ln1354">/**</a>
+<a name="ln1355"> * Place flame clouds over toxic bogs, by the power of Ignite Poison.</a>
+<a name="ln1356"> *</a>
+<a name="ln1357"> * @param where     The tile in question.</a>
+<a name="ln1358"> * @param pow       The power with which Ignite Poison is being cast.</a>
+<a name="ln1359"> *                  If -1, this indicates the spell is a test-run 'tracer'.</a>
+<a name="ln1360"> * @param agent     The caster of Ignite Poison.</a>
+<a name="ln1361"> * @return          If we're just running a tracer, return the expected 'value'</a>
+<a name="ln1362"> *                  of creating fire clouds in the given location (could be</a>
+<a name="ln1363"> *                  negative if there are allies there).</a>
+<a name="ln1364"> *                  If it's not a tracer, return 1 if a flame cloud is created</a>
+<a name="ln1365"> *                  and 0 otherwise.</a>
+<a name="ln1366"> */</a>
+<a name="ln1367">static int _ignite_poison_bog(coord_def where, int pow, actor *agent)</a>
+<a name="ln1368">{</a>
+<a name="ln1369">    const bool tracer = (pow == -1);  // Only testing damage, not dealing it</a>
+<a name="ln1370"> </a>
+<a name="ln1371">    if (grd(where) != DNGN_TOXIC_BOG)</a>
+<a name="ln1372">        return false;</a>
+<a name="ln1373"> </a>
+<a name="ln1374">    if (tracer)</a>
+<a name="ln1375">    {</a>
+<a name="ln1376">        const int value = _ignite_tracer_cloud_value(where, agent);</a>
+<a name="ln1377">        // Player doesn't care about magnitude.</a>
+<a name="ln1378">        return agent &amp;&amp; agent-&gt;is_player() ? sgn(value) : value;</a>
+<a name="ln1379">    }</a>
+<a name="ln1380"> </a>
+<a name="ln1381">    place_cloud(CLOUD_FIRE, where,</a>
+<a name="ln1382">                30 + random2(20 + pow), agent);</a>
+<a name="ln1383">    return true;</a>
+<a name="ln1384">}</a>
+<a name="ln1385"> </a>
+<a name="ln1386">/**</a>
+<a name="ln1387"> * Turn poisonous clouds in the given tile into flame clouds, by the power of</a>
+<a name="ln1388"> * Ignite Poison.</a>
+<a name="ln1389"> *</a>
+<a name="ln1390"> * @param where     The tile in question.</a>
+<a name="ln1391"> * @param pow       The power with which Ignite Poison is being cast.</a>
+<a name="ln1392"> *                  If -1, this indicates the spell is a test-run 'tracer'.</a>
+<a name="ln1393"> * @param agent     The caster of Ignite Poison.</a>
+<a name="ln1394"> * @return          If we're just running a tracer, return the expected 'value'</a>
+<a name="ln1395"> *                  of creating fire clouds in the given location (could be</a>
+<a name="ln1396"> *                  negative if there are allies there).</a>
+<a name="ln1397"> *                  If it's not a tracer, return 1 if a flame cloud is created</a>
+<a name="ln1398"> *                  and 0 otherwise.</a>
+<a name="ln1399"> */</a>
+<a name="ln1400">static int _ignite_poison_clouds(coord_def where, int pow, actor *agent)</a>
+<a name="ln1401">{</a>
+<a name="ln1402">    const bool tracer = (pow == -1);  // Only testing damage, not dealing it</a>
+<a name="ln1403"> </a>
+<a name="ln1404">    cloud_struct* cloud = cloud_at(where);</a>
+<a name="ln1405">    if (!cloud)</a>
+<a name="ln1406">        return false;</a>
+<a name="ln1407"> </a>
+<a name="ln1408">    if (cloud-&gt;type != CLOUD_MEPHITIC &amp;&amp; cloud-&gt;type != CLOUD_POISON)</a>
+<a name="ln1409">        return false;</a>
+<a name="ln1410"> </a>
+<a name="ln1411">    if (tracer)</a>
+<a name="ln1412">    {</a>
+<a name="ln1413">        const int value = _ignite_tracer_cloud_value(where, agent);</a>
+<a name="ln1414">        // Player doesn't care about magnitude.</a>
+<a name="ln1415">        return agent &amp;&amp; agent-&gt;is_player() ? sgn(value) : value;</a>
+<a name="ln1416">    }</a>
+<a name="ln1417"> </a>
+<a name="ln1418">    cloud-&gt;type = CLOUD_FIRE;</a>
+<a name="ln1419">    cloud-&gt;decay = 30 + random2(20 + pow); // from 3-5 turns to 3-15 turns</a>
+<a name="ln1420">    cloud-&gt;whose = agent-&gt;kill_alignment();</a>
+<a name="ln1421">    cloud-&gt;killer = agent-&gt;is_player() ? KILL_YOU_MISSILE : KILL_MON_MISSILE;</a>
+<a name="ln1422">    cloud-&gt;source = agent-&gt;mid;</a>
+<a name="ln1423">    return true;</a>
+<a name="ln1424">}</a>
+<a name="ln1425"> </a>
+<a name="ln1426">/**</a>
+<a name="ln1427"> * Burn poisoned monsters in the given tile, removing their poison state &amp;</a>
+<a name="ln1428"> * damaging them.</a>
+<a name="ln1429"> *</a>
+<a name="ln1430"> * @param where     The tile in question.</a>
+<a name="ln1431"> * @param pow       The power with which Ignite Poison is being cast.</a>
+<a name="ln1432"> *                  If -1, this indicates the spell is a test-run 'tracer'.</a>
+<a name="ln1433"> * @param agent     The caster of Ignite Poison.</a>
+<a name="ln1434"> * @return          If we're just running a tracer, return the expected damage</a>
+<a name="ln1435"> *                  of burning the monster in the given location (could be</a>
+<a name="ln1436"> *                  negative if there are allies there).</a>
+<a name="ln1437"> *                  If it's not a tracer, return 1 if damage is caused &amp; 0</a>
+<a name="ln1438"> *                  otherwise.</a>
+<a name="ln1439"> */</a>
+<a name="ln1440">static int _ignite_poison_monsters(coord_def where, int pow, actor *agent)</a>
+<a name="ln1441">{</a>
+<a name="ln1442">    bolt beam;</a>
+<a name="ln1443">    beam.flavour = BEAM_FIRE;   // This is dumb, only used for adjust!</a>
+<a name="ln1444"> </a>
+<a name="ln1445">    const bool tracer = (pow == -1);  // Only testing damage, not dealing it</a>
+<a name="ln1446">    if (tracer)                       // Give some fake damage to test resists</a>
+<a name="ln1447">        pow = 100;</a>
+<a name="ln1448"> </a>
+<a name="ln1449">    // If a monster casts Ignite Poison, it can't hit itself.</a>
+<a name="ln1450">    // This doesn't apply to the other functions: it can ignite</a>
+<a name="ln1451">    // clouds where it's standing!</a>
+<a name="ln1452"> </a>
+<a name="ln1453">    monster* mon = monster_at(where);</a>
+<a name="ln1454">    if (invalid_monster(mon) || mon == agent)</a>
+<a name="ln1455">        return 0;</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    // how poisoned is the victim?</a>
+<a name="ln1458">    const mon_enchant ench = mon-&gt;get_ench(ENCH_POISON);</a>
+<a name="ln1459">    const int pois_str = ench.ench == ENCH_NONE ? 0 : ench.degree;</a>
+<a name="ln1460"> </a>
+<a name="ln1461">    // poison currently does roughly 6 damage per degree (over its duration)</a>
+<a name="ln1462">    // do roughly 2x to 3x that much, scaling with spellpower</a>
+<a name="ln1463">    const dice_def dam_dice(pois_str * 2, 12 + div_rand_round(pow * 6, 100));</a>
+<a name="ln1464"> </a>
+<a name="ln1465">    const int base_dam = dam_dice.roll();</a>
+<a name="ln1466">    const int damage = mons_adjust_flavoured(mon, beam, base_dam, false);</a>
+<a name="ln1467">    if (damage &lt;= 0)</a>
+<a name="ln1468">        return 0;</a>
+<a name="ln1469"> </a>
+<a name="ln1470">    if (agent &amp;&amp; agent-&gt;deity() == GOD_FEDHAS &amp;&amp; fedhas_protects(mon))</a>
+<a name="ln1471">    {</a>
+<a name="ln1472">        if (!tracer)</a>
+<a name="ln1473">        {</a>
+<a name="ln1474">            simple_god_message(</a>
+<a name="ln1475">                        make_stringf(&quot; protects %s plant from harm.&quot;,</a>
+<a name="ln1476">                            agent-&gt;is_player() ? &quot;your&quot; : &quot;a&quot;).c_str(),</a>
+<a name="ln1477">                        GOD_FEDHAS);</a>
+<a name="ln1478">        }</a>
+<a name="ln1479">        return 0;</a>
+<a name="ln1480">    }</a>
+<a name="ln1481"> </a>
+<a name="ln1482">    mon-&gt;expose_to_element(BEAM_FIRE, damage);</a>
+<a name="ln1483"> </a>
+<a name="ln1484">    if (tracer)</a>
+<a name="ln1485">    {</a>
+<a name="ln1486">        // players don't care about magnitude, just care if enemies exist</a>
+<a name="ln1487">        if (agent &amp;&amp; agent-&gt;is_player())</a>
+<a name="ln1488">            return mons_aligned(mon, agent) ? -1 : 1;</a>
+<a name="ln1489">        return mons_aligned(mon, agent) ? -1 * damage : damage;</a>
+<a name="ln1490">    }</a>
+<a name="ln1491"> </a>
+<a name="ln1492">    if (you.see_cell(mon-&gt;pos()))</a>
+<a name="ln1493">    {</a>
+<a name="ln1494">        mprf(&quot;%s seems to burn from within%s&quot;,</a>
+<a name="ln1495">             mon-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1496">             attack_strength_punctuation(damage).c_str());</a>
+<a name="ln1497">    }</a>
+<a name="ln1498"> </a>
+<a name="ln1499">    dprf(&quot;Dice: %dd%d; Damage: %d&quot;, dam_dice.num, dam_dice.size, damage);</a>
+<a name="ln1500"> </a>
+<a name="ln1501">    mon-&gt;hurt(agent, damage);</a>
+<a name="ln1502"> </a>
+<a name="ln1503">    if (mon-&gt;alive())</a>
+<a name="ln1504">    {</a>
+<a name="ln1505">        behaviour_event(mon, ME_WHACK, agent);</a>
+<a name="ln1506"> </a>
+<a name="ln1507">        // Monster survived, remove any poison.</a>
+<a name="ln1508">        mon-&gt;del_ench(ENCH_POISON, true); // suppress spam</a>
+<a name="ln1509">        print_wounds(*mon);</a>
+<a name="ln1510">    }</a>
+<a name="ln1511"> </a>
+<a name="ln1512">    return 1;</a>
+<a name="ln1513">}</a>
+<a name="ln1514"> </a>
+<a name="ln1515">/**</a>
+<a name="ln1516"> * Burn poisoned players in the given tile, removing their poison state &amp;</a>
+<a name="ln1517"> * damaging them.</a>
+<a name="ln1518"> *</a>
+<a name="ln1519"> * @param where     The tile in question.</a>
+<a name="ln1520"> * @param pow       The power with which Ignite Poison is being cast.</a>
+<a name="ln1521"> *                  If -1, this indicates the spell is a test-run 'tracer'.</a>
+<a name="ln1522"> * @param agent     The caster of Ignite Poison.</a>
+<a name="ln1523"> * @return          If we're just running a tracer, return the expected damage</a>
+<a name="ln1524"> *                  of burning the player in the given location (could be</a>
+<a name="ln1525"> *                  negative if the player is an ally).</a>
+<a name="ln1526"> *                  If it's not a tracer, return 1 if damage is caused &amp; 0</a>
+<a name="ln1527"> *                  otherwise.</a>
+<a name="ln1528"> */</a>
+<a name="ln1529"> </a>
+<a name="ln1530">static int _ignite_poison_player(coord_def where, int pow, actor *agent)</a>
+<a name="ln1531">{</a>
+<a name="ln1532">    if (agent-&gt;is_player() || where != you.pos())</a>
+<a name="ln1533">        return 0;</a>
+<a name="ln1534"> </a>
+<a name="ln1535">    const bool tracer = (pow == -1);  // Only testing damage, not dealing it</a>
+<a name="ln1536">    if (tracer)                       // Give some fake damage to test resists</a>
+<a name="ln1537">        pow = 100;</a>
+<a name="ln1538"> </a>
+<a name="ln1539">    // Step down heavily beyond light poisoning (or we could easily one-shot a heavily poisoned character)</a>
+<a name="ln1540">    const int pois_str = stepdown((double)you.duration[DUR_POISONING] / 5000,</a>
+<a name="ln1541">                                  2.25);</a>
+<a name="ln1542">    if (!pois_str)</a>
+<a name="ln1543">        return 0;</a>
+<a name="ln1544"> </a>
+<a name="ln1545">    const int base_dam = roll_dice(pois_str, 5 + pow/7);</a>
+<a name="ln1546">    const int damage = resist_adjust_damage(&amp;you, BEAM_FIRE, base_dam);</a>
+<a name="ln1547"> </a>
+<a name="ln1548">    if (tracer)</a>
+<a name="ln1549">        return mons_aligned(&amp;you, agent) ? -1 * damage : damage;</a>
+<a name="ln1550"> </a>
+<a name="ln1551">    const int resist = player_res_fire();</a>
+<a name="ln1552">    if (resist &gt; 0)</a>
+<a name="ln1553">        mpr(&quot;You feel like your blood is boiling!&quot;);</a>
+<a name="ln1554">    else if (resist &lt; 0)</a>
+<a name="ln1555">        mpr(&quot;The poison in your system burns terribly!&quot;);</a>
+<a name="ln1556">    else</a>
+<a name="ln1557">        mpr(&quot;The poison in your system burns!&quot;);</a>
+<a name="ln1558"> </a>
+<a name="ln1559">    ouch(damage, KILLED_BY_BEAM, agent-&gt;mid,</a>
+<a name="ln1560">         &quot;by burning poison&quot;, you.can_see(*agent),</a>
+<a name="ln1561">         agent-&gt;as_monster()-&gt;name(DESC_A, true).c_str());</a>
+<a name="ln1562">    if (damage &gt; 0)</a>
+<a name="ln1563">        you.expose_to_element(BEAM_FIRE, 2);</a>
+<a name="ln1564"> </a>
+<a name="ln1565">    mprf(MSGCH_RECOVERY, &quot;You are no longer poisoned.&quot;);</a>
+<a name="ln1566">    you.duration[DUR_POISONING] = 0;</a>
+<a name="ln1567"> </a>
+<a name="ln1568">    return damage ? 1 : 0;</a>
+<a name="ln1569">}</a>
+<a name="ln1570"> </a>
+<a name="ln1571">/**</a>
+<a name="ln1572"> * Would casting Ignite Poison possibly harm one of the player's allies in the</a>
+<a name="ln1573"> * given cell?</a>
+<a name="ln1574"> *</a>
+<a name="ln1575"> * @param  where    The cell in question.</a>
+<a name="ln1576"> * @return          1 if there's potential harm, 0 otherwise.</a>
+<a name="ln1577"> */</a>
+<a name="ln1578">static int _ignite_ally_harm(const coord_def &amp;where)</a>
+<a name="ln1579">{</a>
+<a name="ln1580">    if (where == you.pos())</a>
+<a name="ln1581">        return 0; // you're not your own ally!</a>
+<a name="ln1582">    // (prevents issues with duplicate prompts when standing in an igniteable</a>
+<a name="ln1583">    // cloud)</a>
+<a name="ln1584"> </a>
+<a name="ln1585">    return (_ignite_poison_clouds(where, -1, &amp;you) &lt; 0)   ? 1 :</a>
+<a name="ln1586">           (_ignite_poison_monsters(where, -1, &amp;you) &lt; 0) ? 1 :</a>
+<a name="ln1587">           (_ignite_poison_bog(where, -1, &amp;you) &lt; 0)      ? 1 :</a>
+<a name="ln1588">            0;</a>
+<a name="ln1589">}</a>
+<a name="ln1590"> </a>
+<a name="ln1591">/**</a>
+<a name="ln1592"> * Let the player choose to abort a casting of ignite poison, if it seems</a>
+<a name="ln1593"> * like a bad idea. (If they'd ignite themself.)</a>
+<a name="ln1594"> *</a>
+<a name="ln1595"> * @return      Whether the player chose to abort the casting.</a>
+<a name="ln1596"> */</a>
+<a name="ln1597">static bool maybe_abort_ignite()</a>
+<a name="ln1598">{</a>
+<a name="ln1599">    string prompt = &quot;You are standing &quot;;</a>
+<a name="ln1600"> </a>
+<a name="ln1601">    // XXX XXX XXX major code duplication (ChrisOelmueller)</a>
+<a name="ln1602">    if (const cloud_struct* cloud = cloud_at(you.pos()))</a>
+<a name="ln1603">    {</a>
+<a name="ln1604">        if ((cloud-&gt;type == CLOUD_MEPHITIC || cloud-&gt;type == CLOUD_POISON)</a>
+<a name="ln1605">            &amp;&amp; !actor_cloud_immune(you, CLOUD_FIRE))</a>
+<a name="ln1606">        {</a>
+<a name="ln1607">            prompt += &quot;in a cloud of &quot;;</a>
+<a name="ln1608">            prompt += cloud-&gt;cloud_name(true);</a>
+<a name="ln1609">            prompt += &quot;! Ignite poison anyway?&quot;;</a>
+<a name="ln1610">            if (!yesno(prompt.c_str(), false, 'n'))</a>
+<a name="ln1611">                return true;</a>
+<a name="ln1612">        }</a>
+<a name="ln1613">    }</a>
+<a name="ln1614"> </a>
+<a name="ln1615">    if (apply_area_visible(_ignite_ally_harm, you.pos()) &gt; 0)</a>
+<a name="ln1616">    {</a>
+<a name="ln1617">        return !yesno(&quot;You might harm nearby allies! Ignite poison anyway?&quot;,</a>
+<a name="ln1618">                      false, 'n');</a>
+<a name="ln1619">    }</a>
+<a name="ln1620"> </a>
+<a name="ln1621">    return false;</a>
+<a name="ln1622">}</a>
+<a name="ln1623"> </a>
+<a name="ln1624">/**</a>
+<a name="ln1625"> * Does Ignite Poison affect the given creature?</a>
+<a name="ln1626"> *</a>
+<a name="ln1627"> * @param act       The creature in question.</a>
+<a name="ln1628"> * @return          Whether Ignite Poison can directly damage the given</a>
+<a name="ln1629"> *                  creature (not counting clouds).</a>
+<a name="ln1630"> */</a>
+<a name="ln1631">bool ignite_poison_affects(const actor* act)</a>
+<a name="ln1632">{</a>
+<a name="ln1633">    if (act-&gt;is_player())</a>
+<a name="ln1634">        return you.duration[DUR_POISONING];</a>
+<a name="ln1635">    return act-&gt;as_monster()-&gt;has_ench(ENCH_POISON);</a>
+<a name="ln1636">}</a>
+<a name="ln1637"> </a>
+<a name="ln1638">/**</a>
+<a name="ln1639"> * Cast the spell Ignite Poison, burning poisoned creatures and poisonous</a>
+<a name="ln1640"> * clouds in LOS.</a>
+<a name="ln1641"> *</a>
+<a name="ln1642"> * @param agent         The spell's caster.</a>
+<a name="ln1643"> * @param pow           The power with which the spell is being cast.</a>
+<a name="ln1644"> * @param fail          If it's a player spell, whether the spell fail chance</a>
+<a name="ln1645"> *                      was hit (whether the spell will fail as soon as the</a>
+<a name="ln1646"> *                      player chooses not to abort the casting)</a>
+<a name="ln1647"> * @param mon_tracer    Whether the 'casting' is just a tracer (a check to see</a>
+<a name="ln1648"> *                      if it's worth actually casting)</a>
+<a name="ln1649"> * @return              If it's a tracer, spret::success if the spell should</a>
+<a name="ln1650"> *                      be cast &amp; spret::abort otherwise.</a>
+<a name="ln1651"> *                      If it's a real spell, spret::abort if the player chose</a>
+<a name="ln1652"> *                      to abort the spell, spret::fail if they failed the cast</a>
+<a name="ln1653"> *                      chance, and spret::success otherwise.</a>
+<a name="ln1654"> */</a>
+<a name="ln1655">spret cast_ignite_poison(actor* agent, int pow, bool fail, bool tracer)</a>
+<a name="ln1656">{</a>
+<a name="ln1657">    if (tracer)</a>
+<a name="ln1658">    {</a>
+<a name="ln1659">        // Estimate how much useful effect we'd get if we cast the spell now</a>
+<a name="ln1660">        const int work = apply_area_visible([agent] (coord_def where) {</a>
+<a name="ln1661">            return _ignite_poison_clouds(where, -1, agent)</a>
+<a name="ln1662">                 + _ignite_poison_monsters(where, -1, agent)</a>
+<a name="ln1663">                 + _ignite_poison_player(where, -1, agent)</a>
+<a name="ln1664">                 + _ignite_poison_bog(where, -1, agent);</a>
+<a name="ln1665">        }, agent-&gt;pos());</a>
+<a name="ln1666"> </a>
+<a name="ln1667">        return work &gt; 0 ? spret::success : spret::abort;</a>
+<a name="ln1668">    }</a>
+<a name="ln1669"> </a>
+<a name="ln1670">    if (agent-&gt;is_player())</a>
+<a name="ln1671">    {</a>
+<a name="ln1672">        if (maybe_abort_ignite())</a>
+<a name="ln1673">        {</a>
+<a name="ln1674">            canned_msg(MSG_OK);</a>
+<a name="ln1675">            return spret::abort;</a>
+<a name="ln1676">        }</a>
+<a name="ln1677">        fail_check();</a>
+<a name="ln1678">    }</a>
+<a name="ln1679"> </a>
+<a name="ln1680">    targeter_radius hitfunc(agent, LOS_NO_TRANS);</a>
+<a name="ln1681">    flash_view_delay(</a>
+<a name="ln1682">        agent-&gt;is_player()</a>
+<a name="ln1683">            ? UA_PLAYER</a>
+<a name="ln1684">            : UA_MONSTER,</a>
+<a name="ln1685">        RED, 100, &amp;hitfunc);</a>
+<a name="ln1686"> </a>
+<a name="ln1687">    mprf(&quot;%s %s the poison in %s surroundings!&quot;, agent-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1688">         agent-&gt;conj_verb(&quot;ignite&quot;).c_str(),</a>
+<a name="ln1689">         agent-&gt;pronoun(PRONOUN_POSSESSIVE).c_str());</a>
+<a name="ln1690"> </a>
+<a name="ln1691">    // this could conceivably cause crashes if the player dies midway through</a>
+<a name="ln1692">    // maybe split it up...?</a>
+<a name="ln1693">    apply_area_visible([pow, agent] (coord_def where) {</a>
+<a name="ln1694">        _ignite_poison_clouds(where, pow, agent);</a>
+<a name="ln1695">        _ignite_poison_monsters(where, pow, agent);</a>
+<a name="ln1696">        _ignite_poison_bog(where, pow, agent);</a>
+<a name="ln1697">        // Only relevant if a monster is casting this spell</a>
+<a name="ln1698">        // (never hurts the caster)</a>
+<a name="ln1699">        _ignite_poison_player(where, pow, agent);</a>
+<a name="ln1700">        return 0; // ignored</a>
+<a name="ln1701">    }, agent-&gt;pos());</a>
+<a name="ln1702"> </a>
+<a name="ln1703">    return spret::success;</a>
+<a name="ln1704">}</a>
+<a name="ln1705"> </a>
+<a name="ln1706">static void _ignition_square(const actor */*agent*/, bolt beam, coord_def square, bool center)</a>
+<a name="ln1707">{</a>
+<a name="ln1708">    // HACK: bypass visual effect</a>
+<a name="ln1709">    beam.target = square;</a>
+<a name="ln1710">    beam.in_explosion_phase = true;</a>
+<a name="ln1711">    beam.explosion_affect_cell(square);</a>
+<a name="ln1712">    if (center)</a>
+<a name="ln1713">        noisy(spell_effect_noise(SPELL_IGNITION),square);</a>
+<a name="ln1714">}</a>
+<a name="ln1715"> </a>
+<a name="ln1716">spret cast_ignition(const actor *agent, int pow, bool fail)</a>
+<a name="ln1717">{</a>
+<a name="ln1718">    ASSERT(agent-&gt;is_player());</a>
+<a name="ln1719"> </a>
+<a name="ln1720">    fail_check();</a>
+<a name="ln1721"> </a>
+<a name="ln1722">    //targeter_radius hitfunc(agent, LOS_NO_TRANS);</a>
+<a name="ln1723"> </a>
+<a name="ln1724">    // Ignition affects squares that had hostile monsters on them at the time</a>
+<a name="ln1725">    // of casting. This way nothing bad happens when monsters die halfway</a>
+<a name="ln1726">    // through the spell.</a>
+<a name="ln1727">    vector&lt;coord_def&gt; blast_sources;</a>
+<a name="ln1728"> </a>
+<a name="ln1729">    for (actor_near_iterator ai(agent-&gt;pos(), LOS_NO_TRANS);</a>
+<a name="ln1730">         ai; ++ai)</a>
+<a name="ln1731">    {</a>
+<a name="ln1732">        if (ai-&gt;is_monster()</a>
+<a name="ln1733">            &amp;&amp; !ai-&gt;as_monster()-&gt;wont_attack()</a>
+<a name="ln1734">            &amp;&amp; !mons_is_firewood(*ai-&gt;as_monster())</a>
+<a name="ln1735">            &amp;&amp; !mons_is_tentacle_segment(ai-&gt;as_monster()-&gt;type))</a>
+<a name="ln1736">        {</a>
+<a name="ln1737">            blast_sources.push_back(ai-&gt;position);</a>
+<a name="ln1738">        }</a>
+<a name="ln1739">    }</a>
+<a name="ln1740"> </a>
+<a name="ln1741">    if (blast_sources.empty())</a>
+<a name="ln1742">        canned_msg(MSG_NOTHING_HAPPENS);</a>
+<a name="ln1743">    else</a>
+<a name="ln1744">    {</a>
+<a name="ln1745">        mpr(&quot;The air bursts into flame!&quot;);</a>
+<a name="ln1746"> </a>
+<a name="ln1747">        vector&lt;coord_def&gt; blast_adjacents;</a>
+<a name="ln1748"> </a>
+<a name="ln1749">        // Used to draw explosion cells</a>
+<a name="ln1750">        bolt beam_visual;</a>
+<a name="ln1751">        beam_visual.set_agent(agent);</a>
+<a name="ln1752">        beam_visual.flavour       = BEAM_VISUAL;</a>
+<a name="ln1753">        beam_visual.glyph         = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln1754">        beam_visual.colour        = RED;</a>
+<a name="ln1755">        beam_visual.ex_size       = 1;</a>
+<a name="ln1756">        beam_visual.is_explosion  = true;</a>
+<a name="ln1757"> </a>
+<a name="ln1758">        // Used to deal damage; invisible</a>
+<a name="ln1759">        bolt beam_actual;</a>
+<a name="ln1760">        beam_actual.set_agent(agent);</a>
+<a name="ln1761">        beam_actual.flavour       = BEAM_FIRE;</a>
+<a name="ln1762">        beam_actual.real_flavour  = BEAM_FIRE;</a>
+<a name="ln1763">        beam_actual.glyph         = 0;</a>
+<a name="ln1764">        beam_actual.damage        = calc_dice(3, 10 + pow/3); // less than fireball</a>
+<a name="ln1765">        beam_actual.name          = &quot;fireball&quot;;</a>
+<a name="ln1766">        beam_actual.colour        = RED;</a>
+<a name="ln1767">        beam_actual.ex_size       = 0;</a>
+<a name="ln1768">        beam_actual.is_explosion  = true;</a>
+<a name="ln1769">        beam_actual.loudness      = 0;</a>
+<a name="ln1770">        beam_actual.origin_spell  = SPELL_IGNITION;</a>
+<a name="ln1771">        beam_actual.apply_beam_conducts();</a>
+<a name="ln1772"> </a>
+<a name="ln1773">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1774">        dprf(DIAG_BEAM, &quot;ignition dam=%dd%d&quot;,</a>
+<a name="ln1775">             beam_actual.damage.num, beam_actual.damage.size);</a>
+<a name="ln1776">#endif</a>
+<a name="ln1777"> </a>
+<a name="ln1778">        // Fake &quot;shaped&quot; radius 1 explosions (skipping squares with friends).</a>
+<a name="ln1779">        for (coord_def pos : blast_sources)</a>
+<a name="ln1780">        {</a>
+<a name="ln1781">            for (adjacent_iterator ai(pos); ai; ++ai)</a>
+<a name="ln1782">            {</a>
+<a name="ln1783">                if (cell_is_solid(*ai)</a>
+<a name="ln1784">                    &amp;&amp; (!beam_actual.can_affect_wall(*ai)</a>
+<a name="ln1785">                        || you_worship(GOD_FEDHAS)))</a>
+<a name="ln1786">                {</a>
+<a name="ln1787">                    continue;</a>
+<a name="ln1788">                }</a>
+<a name="ln1789"> </a>
+<a name="ln1790">                actor *act = actor_at(*ai);</a>
+<a name="ln1791"> </a>
+<a name="ln1792">                // Friendly creature, don't blast this square.</a>
+<a name="ln1793">                if (act &amp;&amp; (act == agent</a>
+<a name="ln1794">                            || (act-&gt;is_monster()</a>
+<a name="ln1795">                                &amp;&amp; act-&gt;as_monster()-&gt;wont_attack())))</a>
+<a name="ln1796">                {</a>
+<a name="ln1797">                    continue;</a>
+<a name="ln1798">                }</a>
+<a name="ln1799"> </a>
+<a name="ln1800">                blast_adjacents.push_back(*ai);</a>
+<a name="ln1801">                beam_visual.explosion_draw_cell(*ai);</a>
+<a name="ln1802">            }</a>
+<a name="ln1803">            beam_visual.explosion_draw_cell(pos);</a>
+<a name="ln1804">        }</a>
+<a name="ln1805">        update_screen();</a>
+<a name="ln1806">        scaled_delay(50);</a>
+<a name="ln1807"> </a>
+<a name="ln1808">        // Real explosions on each individual square.</a>
+<a name="ln1809">        for (coord_def pos : blast_sources)</a>
+<a name="ln1810">            _ignition_square(agent, beam_actual, pos, true);</a>
+<a name="ln1811">        for (coord_def pos : blast_adjacents)</a>
+<a name="ln1812">            _ignition_square(agent, beam_actual, pos, false);</a>
+<a name="ln1813">    }</a>
+<a name="ln1814"> </a>
+<a name="ln1815">    return spret::success;</a>
+<a name="ln1816">}</a>
+<a name="ln1817"> </a>
+<a name="ln1818">static int _discharge_monsters(const coord_def &amp;where, int pow,</a>
+<a name="ln1819">                               const actor &amp;agent)</a>
+<a name="ln1820">{</a>
+<a name="ln1821">    actor* victim = actor_at(where);</a>
+<a name="ln1822"> </a>
+<a name="ln1823">    if (!victim || !victim-&gt;alive())</a>
+<a name="ln1824">        return 0;</a>
+<a name="ln1825"> </a>
+<a name="ln1826">    int damage = (&amp;agent == victim) ? 1 + random2(3 + pow / 15)</a>
+<a name="ln1827">                                    : 3 + random2(5 + pow / 10</a>
+<a name="ln1828">                                                  + (random2(pow) / 10));</a>
+<a name="ln1829"> </a>
+<a name="ln1830">    bolt beam;</a>
+<a name="ln1831">    beam.flavour    = BEAM_ELECTRICITY; // used for mons_adjust_flavoured</a>
+<a name="ln1832">    beam.glyph      = dchar_glyph(DCHAR_FIRED_ZAP);</a>
+<a name="ln1833">    beam.colour     = LIGHTBLUE;</a>
+<a name="ln1834">#ifdef USE_TILE</a>
+<a name="ln1835">    beam.tile_beam  = -1;</a>
+<a name="ln1836">#endif</a>
+<a name="ln1837">    beam.draw_delay = 0;</a>
+<a name="ln1838"> </a>
+<a name="ln1839">    dprf(&quot;Static discharge on (%d,%d) pow: %d&quot;, where.x, where.y, pow);</a>
+<a name="ln1840">    if (victim-&gt;is_player() || victim-&gt;res_elec() &lt;= 0)</a>
+<a name="ln1841">        beam.draw(where);</a>
+<a name="ln1842"> </a>
+<a name="ln1843">    if (victim-&gt;is_player())</a>
+<a name="ln1844">    {</a>
+<a name="ln1845">        damage = 1 + random2(3 + pow / 15);</a>
+<a name="ln1846">        dprf(&quot;You: static discharge damage: %d&quot;, damage);</a>
+<a name="ln1847">        damage = check_your_resists(damage, BEAM_ELECTRICITY,</a>
+<a name="ln1848">                                    &quot;static discharge&quot;);</a>
+<a name="ln1849">        mprf(&quot;You are struck by an arc of lightning%s&quot;,</a>
+<a name="ln1850">             attack_strength_punctuation(damage).c_str());</a>
+<a name="ln1851">        ouch(damage, KILLED_BY_BEAM, agent.mid, &quot;by static electricity&quot;, true,</a>
+<a name="ln1852">             agent.is_player() ? &quot;you&quot; : agent.name(DESC_A).c_str());</a>
+<a name="ln1853">        if (damage &gt; 0)</a>
+<a name="ln1854">            victim-&gt;expose_to_element(BEAM_ELECTRICITY, 2);</a>
+<a name="ln1855">    }</a>
+<a name="ln1856">    // rEelec monsters don't allow arcs to continue.</a>
+<a name="ln1857">    else if (victim-&gt;res_elec() &gt; 0)</a>
+<a name="ln1858">        return 0;</a>
+<a name="ln1859">    else if (agent.deity() == GOD_FEDHAS</a>
+<a name="ln1860">             &amp;&amp; fedhas_protects(victim-&gt;as_monster()))</a>
+<a name="ln1861">    {</a>
+<a name="ln1862">        simple_god_message(</a>
+<a name="ln1863">                    make_stringf(&quot; protects %s plant from harm.&quot;,</a>
+<a name="ln1864">                        agent.is_player() ? &quot;your&quot; : &quot;a&quot;).c_str(),</a>
+<a name="ln1865">                    GOD_FEDHAS);</a>
+<a name="ln1866">        return 0;</a>
+<a name="ln1867">    }</a>
+<a name="ln1868">    else</a>
+<a name="ln1869">    {</a>
+<a name="ln1870">        monster* mons = victim-&gt;as_monster();</a>
+<a name="ln1871"> </a>
+<a name="ln1872">        // We need to initialize these before the monster has died.</a>
+<a name="ln1873">        god_conduct_trigger conducts[3];</a>
+<a name="ln1874">        if (agent.is_player())</a>
+<a name="ln1875">            set_attack_conducts(conducts, *mons, you.can_see(*mons));</a>
+<a name="ln1876"> </a>
+<a name="ln1877">        dprf(&quot;%s: static discharge damage: %d&quot;,</a>
+<a name="ln1878">             mons-&gt;name(DESC_PLAIN, true).c_str(), damage);</a>
+<a name="ln1879">        damage = mons_adjust_flavoured(mons, beam, damage);</a>
+<a name="ln1880">        mprf(&quot;%s is struck by an arc of lightning%s&quot;,</a>
+<a name="ln1881">                mons-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln1882">                attack_strength_punctuation(damage).c_str());</a>
+<a name="ln1883"> </a>
+<a name="ln1884">        if (agent.is_player())</a>
+<a name="ln1885">            _player_hurt_monster(*mons, damage, beam.flavour, false);</a>
+<a name="ln1886">        else if (damage)</a>
+<a name="ln1887">            mons-&gt;hurt(agent.as_monster(), damage);</a>
+<a name="ln1888">    }</a>
+<a name="ln1889"> </a>
+<a name="ln1890">    // Recursion to give us chain-lightning -- bwr</a>
+<a name="ln1891">    // Low power slight chance added for low power characters -- bwr</a>
+<a name="ln1892">    if ((pow &gt;= 10 &amp;&amp; !one_chance_in(4)) || (pow &gt;= 3 &amp;&amp; one_chance_in(10)))</a>
+<a name="ln1893">    {</a>
+<a name="ln1894">        pow /= random_range(2, 3);</a>
+<a name="ln1895">        damage += apply_random_around_square([pow, &amp;agent] (coord_def where2) {</a>
+<a name="ln1896">            return _discharge_monsters(where2, pow, agent);</a>
+<a name="ln1897">        }, where, true, 1);</a>
+<a name="ln1898">    }</a>
+<a name="ln1899">    else if (damage &gt; 0)</a>
+<a name="ln1900">    {</a>
+<a name="ln1901">        // Only printed if we did damage, so that the messages in</a>
+<a name="ln1902">        // cast_discharge() are clean. -- bwr</a>
+<a name="ln1903">        mpr(&quot;The lightning grounds out.&quot;);</a>
+<a name="ln1904">    }</a>
+<a name="ln1905"> </a>
+<a name="ln1906">    return damage;</a>
+<a name="ln1907">}</a>
+<a name="ln1908"> </a>
+<a name="ln1909">bool safe_discharge(coord_def where, vector&lt;const actor *&gt; &amp;exclude)</a>
+<a name="ln1910">{</a>
+<a name="ln1911">    for (adjacent_iterator ai(where); ai; ++ai)</a>
+<a name="ln1912">    {</a>
+<a name="ln1913">        const actor *act = actor_at(*ai);</a>
+<a name="ln1914">        if (!act)</a>
+<a name="ln1915">            continue;</a>
+<a name="ln1916"> </a>
+<a name="ln1917">        if (find(exclude.begin(), exclude.end(), act) == exclude.end())</a>
+<a name="ln1918">        {</a>
+<a name="ln1919">            if (act-&gt;is_monster())</a>
+<a name="ln1920">            {</a>
+<a name="ln1921">                // Harmless to these monsters, so don't prompt about them.</a>
+<a name="ln1922">                if (act-&gt;res_elec() &gt; 0</a>
+<a name="ln1923">                    || you.deity() == GOD_FEDHAS</a>
+<a name="ln1924">                       &amp;&amp; fedhas_protects(act-&gt;as_monster()))</a>
+<a name="ln1925">                {</a>
+<a name="ln1926">                    continue;</a>
+<a name="ln1927">                }</a>
+<a name="ln1928"> </a>
+<a name="ln1929">                if (stop_attack_prompt(act-&gt;as_monster(), false, where))</a>
+<a name="ln1930">                    return false;</a>
+<a name="ln1931">            }</a>
+<a name="ln1932">            // Don't prompt for the player, but always continue arcing.</a>
+<a name="ln1933"> </a>
+<a name="ln1934">            exclude.push_back(act);</a>
+<a name="ln1935">            if (!safe_discharge(act-&gt;pos(), exclude))</a>
+<a name="ln1936">                return false;</a>
+<a name="ln1937">        }</a>
+<a name="ln1938">    }</a>
+<a name="ln1939"> </a>
+<a name="ln1940">    return true;</a>
+<a name="ln1941">}</a>
+<a name="ln1942"> </a>
+<a name="ln1943">spret cast_discharge(int pow, const actor &amp;agent, bool fail, bool prompt)</a>
+<a name="ln1944">{</a>
+<a name="ln1945">    vector&lt;const actor *&gt; exclude;</a>
+<a name="ln1946">    if (agent.is_player() &amp;&amp; prompt &amp;&amp; !safe_discharge(you.pos(), exclude))</a>
+<a name="ln1947">        return spret::abort;</a>
+<a name="ln1948"> </a>
+<a name="ln1949">    fail_check();</a>
+<a name="ln1950"> </a>
+<a name="ln1951">    const int num_targs = 1 + random2(random_range(1, 3) + pow / 20);</a>
+<a name="ln1952">    const int dam =</a>
+<a name="ln1953">        apply_random_around_square([pow, &amp;agent] (coord_def target) {</a>
+<a name="ln1954">            return _discharge_monsters(target, pow, agent);</a>
+<a name="ln1955">        }, agent.pos(), true, num_targs);</a>
+<a name="ln1956"> </a>
+<a name="ln1957">    dprf(&quot;Arcs: %d Damage: %d&quot;, num_targs, dam);</a>
+<a name="ln1958"> </a>
+<a name="ln1959">    if (dam &gt; 0)</a>
+<a name="ln1960">        scaled_delay(100);</a>
+<a name="ln1961">    else</a>
+<a name="ln1962">    {</a>
+<a name="ln1963">        if (coinflip())</a>
+<a name="ln1964">            mpr(&quot;The air crackles with electrical energy.&quot;);</a>
+<a name="ln1965">        else</a>
+<a name="ln1966">        {</a>
+<a name="ln1967">            const bool plural = coinflip();</a>
+<a name="ln1968">            mprf(&quot;%s blue arc%s ground%s harmlessly.&quot;,</a>
+<a name="ln1969">                 plural ? &quot;Some&quot; : &quot;A&quot;,</a>
+<a name="ln1970">                 plural ? &quot;s&quot; : &quot;&quot;,</a>
+<a name="ln1971">                 plural ? &quot; themselves&quot; : &quot;s itself&quot;);</a>
+<a name="ln1972">        }</a>
+<a name="ln1973">    }</a>
+<a name="ln1974">    return spret::success;</a>
+<a name="ln1975">}</a>
+<a name="ln1976"> </a>
+<a name="ln1977">bool setup_fragmentation_beam(bolt &amp;beam, int pow, const actor *caster,</a>
+<a name="ln1978">                              const coord_def target, bool quiet,</a>
+<a name="ln1979">                              const char **what, bool &amp;hole)</a>
+<a name="ln1980">{</a>
+<a name="ln1981">    beam.flavour     = BEAM_FRAG;</a>
+<a name="ln1982">    beam.glyph       = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln1983">    beam.source_id   = caster-&gt;mid;</a>
+<a name="ln1984">    beam.thrower     = caster-&gt;is_player() ? KILL_YOU : KILL_MON;</a>
+<a name="ln1985">    beam.ex_size     = 1;</a>
+<a name="ln1986">    beam.source      = you.pos();</a>
+<a name="ln1987">    beam.hit         = AUTOMATIC_HIT;</a>
+<a name="ln1988"> </a>
+<a name="ln1989">    beam.source_name = caster-&gt;name(DESC_PLAIN, true);</a>
+<a name="ln1990">    beam.aux_source = &quot;by Lee's Rapid Deconstruction&quot;; // for direct attack</a>
+<a name="ln1991"> </a>
+<a name="ln1992">    beam.target = target;</a>
+<a name="ln1993"> </a>
+<a name="ln1994">    // Number of dice vary from 2-4.</a>
+<a name="ln1995">    beam.damage = dice_def(0, 5 + pow / 5);</a>
+<a name="ln1996"> </a>
+<a name="ln1997">    monster* mon = monster_at(target);</a>
+<a name="ln1998">    const dungeon_feature_type grid = grd(target);</a>
+<a name="ln1999"> </a>
+<a name="ln2000">    if (target == you.pos())</a>
+<a name="ln2001">    {</a>
+<a name="ln2002">        const bool petrified = (you.petrified() || you.petrifying());</a>
+<a name="ln2003"> </a>
+<a name="ln2004">        if (you.form == transformation::statue || you.species == SP_GARGOYLE)</a>
+<a name="ln2005">        {</a>
+<a name="ln2006">            beam.name       = &quot;blast of rock fragments&quot;;</a>
+<a name="ln2007">            beam.colour     = BROWN;</a>
+<a name="ln2008">            beam.damage.num = you.form == transformation::statue ? 3 : 2;</a>
+<a name="ln2009">            return true;</a>
+<a name="ln2010">        }</a>
+<a name="ln2011">        else if (petrified)</a>
+<a name="ln2012">        {</a>
+<a name="ln2013">            beam.name       = &quot;blast of petrified fragments&quot;;</a>
+<a name="ln2014">            beam.colour     = mons_class_colour(player_mons(true));</a>
+<a name="ln2015">            beam.damage.num = 3;</a>
+<a name="ln2016">            return true;</a>
+<a name="ln2017">        }</a>
+<a name="ln2018">        else if (you.form == transformation::ice_beast) // blast of ice</a>
+<a name="ln2019">        {</a>
+<a name="ln2020">            beam.name       = &quot;icy blast&quot;;</a>
+<a name="ln2021">            beam.colour     = WHITE;</a>
+<a name="ln2022">            beam.damage.num = 3;</a>
+<a name="ln2023">            beam.flavour    = BEAM_ICE;</a>
+<a name="ln2024">            return true;</a>
+<a name="ln2025">        }</a>
+<a name="ln2026">    }</a>
+<a name="ln2027">    else if (mon</a>
+<a name="ln2028">             &amp;&amp; mon-&gt;alive()</a>
+<a name="ln2029">             &amp;&amp; (caster-&gt;is_monster() || (you.can_see(*mon))))</a>
+<a name="ln2030">    {</a>
+<a name="ln2031">        switch (mon-&gt;type)</a>
+<a name="ln2032">        {</a>
+<a name="ln2033">        case MONS_TOENAIL_GOLEM:</a>
+<a name="ln2034">            beam.name       = &quot;blast of toenail fragments&quot;;</a>
+<a name="ln2035">            beam.colour     = RED;</a>
+<a name="ln2036">            beam.damage.num = 3;</a>
+<a name="ln2037">            break;</a>
+<a name="ln2038"> </a>
+<a name="ln2039">        case MONS_IRON_ELEMENTAL:</a>
+<a name="ln2040">        case MONS_IRON_GOLEM:</a>
+<a name="ln2041">        case MONS_PEACEKEEPER:</a>
+<a name="ln2042">        case MONS_WAR_GARGOYLE:</a>
+<a name="ln2043">            beam.name       = &quot;blast of metal fragments&quot;;</a>
+<a name="ln2044">            beam.colour     = CYAN;</a>
+<a name="ln2045">            beam.damage.num = 4;</a>
+<a name="ln2046">            break;</a>
+<a name="ln2047"> </a>
+<a name="ln2048">        case MONS_EARTH_ELEMENTAL:</a>
+<a name="ln2049">        case MONS_USHABTI:</a>
+<a name="ln2050">        case MONS_STATUE:</a>
+<a name="ln2051">        case MONS_GARGOYLE:</a>
+<a name="ln2052">            beam.name       = &quot;blast of rock fragments&quot;;</a>
+<a name="ln2053">            beam.colour     = BROWN;</a>
+<a name="ln2054">            beam.damage.num = 3;</a>
+<a name="ln2055">            break;</a>
+<a name="ln2056"> </a>
+<a name="ln2057">        case MONS_SALTLING:</a>
+<a name="ln2058">            beam.name       = &quot;blast of salt crystal fragments&quot;;</a>
+<a name="ln2059">            beam.colour     = WHITE;</a>
+<a name="ln2060">            beam.damage.num = 3;</a>
+<a name="ln2061">            break;</a>
+<a name="ln2062"> </a>
+<a name="ln2063">        case MONS_OBSIDIAN_STATUE:</a>
+<a name="ln2064">        case MONS_ORANGE_STATUE:</a>
+<a name="ln2065">        case MONS_CRYSTAL_GUARDIAN:</a>
+<a name="ln2066">        case MONS_ROXANNE:</a>
+<a name="ln2067">            beam.ex_size    = 2;</a>
+<a name="ln2068">            beam.damage.num = 4;</a>
+<a name="ln2069">            if (mon-&gt;type == MONS_OBSIDIAN_STATUE)</a>
+<a name="ln2070">            {</a>
+<a name="ln2071">                beam.name       = &quot;blast of obsidian shards&quot;;</a>
+<a name="ln2072">                beam.colour     = DARKGREY;</a>
+<a name="ln2073">            }</a>
+<a name="ln2074">            else if (mon-&gt;type == MONS_ORANGE_STATUE)</a>
+<a name="ln2075">            {</a>
+<a name="ln2076">                beam.name       = &quot;blast of orange crystal shards&quot;;</a>
+<a name="ln2077">                beam.colour     = LIGHTRED;</a>
+<a name="ln2078">            }</a>
+<a name="ln2079">            else if (mon-&gt;type == MONS_CRYSTAL_GUARDIAN)</a>
+<a name="ln2080">            {</a>
+<a name="ln2081">                beam.name       = &quot;blast of crystal shards&quot;;</a>
+<a name="ln2082">                beam.colour     = GREEN;</a>
+<a name="ln2083">            }</a>
+<a name="ln2084">            else</a>
+<a name="ln2085">            {</a>
+<a name="ln2086">                beam.name       = &quot;blast of sapphire shards&quot;;</a>
+<a name="ln2087">                beam.colour     = BLUE;</a>
+<a name="ln2088">            }</a>
+<a name="ln2089">            break;</a>
+<a name="ln2090"> </a>
+<a name="ln2091">        default:</a>
+<a name="ln2092">            const bool petrified = (mon-&gt;petrified() || mon-&gt;petrifying());</a>
+<a name="ln2093"> </a>
+<a name="ln2094">            // Petrifying or petrified monsters can be exploded.</a>
+<a name="ln2095">            if (petrified)</a>
+<a name="ln2096">            {</a>
+<a name="ln2097">                monster_info minfo(mon);</a>
+<a name="ln2098">                beam.name       = &quot;blast of petrified fragments&quot;;</a>
+<a name="ln2099">                beam.colour     = minfo.colour();</a>
+<a name="ln2100">                beam.damage.num = 3;</a>
+<a name="ln2101">                break;</a>
+<a name="ln2102">            }</a>
+<a name="ln2103">            else if (mon-&gt;is_icy()) // blast of ice</a>
+<a name="ln2104">            {</a>
+<a name="ln2105">                beam.name       = &quot;icy blast&quot;;</a>
+<a name="ln2106">                beam.colour     = WHITE;</a>
+<a name="ln2107">                beam.damage.num = 3;</a>
+<a name="ln2108">                beam.flavour    = BEAM_ICE;</a>
+<a name="ln2109">                break;</a>
+<a name="ln2110">            }</a>
+<a name="ln2111">            else if (mon-&gt;is_skeletal()) // blast of bone</a>
+<a name="ln2112">            {</a>
+<a name="ln2113">                beam.name   = &quot;blast of bone shards&quot;;</a>
+<a name="ln2114">                beam.colour = LIGHTGREY;</a>
+<a name="ln2115">                beam.damage.num = 3;</a>
+<a name="ln2116">                break;</a>
+<a name="ln2117">            }</a>
+<a name="ln2118">            // Targeted monster not shatterable, try the terrain instead.</a>
+<a name="ln2119">            goto do_terrain;</a>
+<a name="ln2120">        }</a>
+<a name="ln2121"> </a>
+<a name="ln2122">        beam.aux_source = beam.name;</a>
+<a name="ln2123"> </a>
+<a name="ln2124">        // Got a target, let's blow it up.</a>
+<a name="ln2125">        return true;</a>
+<a name="ln2126">    }</a>
+<a name="ln2127"> </a>
+<a name="ln2128">  do_terrain:</a>
+<a name="ln2129">    switch (grid)</a>
+<a name="ln2130">    {</a>
+<a name="ln2131">    // Stone and rock terrain</a>
+<a name="ln2132">    case DNGN_ORCISH_IDOL:</a>
+<a name="ln2133">        if (what &amp;&amp; *what == nullptr)</a>
+<a name="ln2134">            *what = &quot;stone idol&quot;;</a>
+<a name="ln2135">        // fall-through</a>
+<a name="ln2136">    case DNGN_ROCK_WALL:</a>
+<a name="ln2137">    case DNGN_SLIMY_WALL:</a>
+<a name="ln2138">    case DNGN_STONE_WALL:</a>
+<a name="ln2139">    case DNGN_CLEAR_ROCK_WALL:</a>
+<a name="ln2140">    case DNGN_CLEAR_STONE_WALL:</a>
+<a name="ln2141">        if (what &amp;&amp; *what == nullptr)</a>
+<a name="ln2142">            *what = &quot;wall&quot;;</a>
+<a name="ln2143">        // fall-through</a>
+<a name="ln2144">    case DNGN_GRANITE_STATUE:</a>
+<a name="ln2145">        if (what &amp;&amp; *what == nullptr)</a>
+<a name="ln2146">            *what = &quot;statue&quot;;</a>
+<a name="ln2147"> </a>
+<a name="ln2148">        beam.name       = &quot;blast of rock fragments&quot;;</a>
+<a name="ln2149">        beam.damage.num = 3;</a>
+<a name="ln2150">        break;</a>
+<a name="ln2151"> </a>
+<a name="ln2152">    // Metal -- small but nasty explosion</a>
+<a name="ln2153">    case DNGN_METAL_WALL:</a>
+<a name="ln2154">        if (what)</a>
+<a name="ln2155">            *what = &quot;metal wall&quot;;</a>
+<a name="ln2156">        // fall-through</a>
+<a name="ln2157">    case DNGN_GRATE:</a>
+<a name="ln2158">        if (what &amp;&amp; *what == nullptr)</a>
+<a name="ln2159">            *what = &quot;iron grate&quot;;</a>
+<a name="ln2160">        beam.name       = &quot;blast of metal fragments&quot;;</a>
+<a name="ln2161">        beam.damage.num = 4;</a>
+<a name="ln2162">        break;</a>
+<a name="ln2163"> </a>
+<a name="ln2164">    // Crystal</a>
+<a name="ln2165">    case DNGN_CRYSTAL_WALL:       // crystal -- large &amp; nasty explosion</a>
+<a name="ln2166">        if (what)</a>
+<a name="ln2167">            *what = &quot;crystal wall&quot;;</a>
+<a name="ln2168">        beam.ex_size    = 2;</a>
+<a name="ln2169">        beam.name       = &quot;blast of crystal shards&quot;;</a>
+<a name="ln2170">        beam.damage.num = 4;</a>
+<a name="ln2171">        break;</a>
+<a name="ln2172"> </a>
+<a name="ln2173">    // Stone arches and doors</a>
+<a name="ln2174">    case DNGN_OPEN_DOOR:</a>
+<a name="ln2175">    case DNGN_OPEN_CLEAR_DOOR:</a>
+<a name="ln2176">    case DNGN_CLOSED_DOOR:</a>
+<a name="ln2177">    case DNGN_CLOSED_CLEAR_DOOR:</a>
+<a name="ln2178">    case DNGN_RUNED_DOOR:</a>
+<a name="ln2179">    case DNGN_RUNED_CLEAR_DOOR:</a>
+<a name="ln2180">    case DNGN_SEALED_DOOR:</a>
+<a name="ln2181">    case DNGN_SEALED_CLEAR_DOOR:</a>
+<a name="ln2182">        if (what)</a>
+<a name="ln2183">            *what = &quot;stone door frame&quot;;</a>
+<a name="ln2184">        // fall-through</a>
+<a name="ln2185">    case DNGN_STONE_ARCH:</a>
+<a name="ln2186">        if (what &amp;&amp; *what == nullptr)</a>
+<a name="ln2187">            *what = &quot;stone arch&quot;;</a>
+<a name="ln2188">        hole            = false;  // to hit monsters standing on doors</a>
+<a name="ln2189">        beam.name       = &quot;blast of rock fragments&quot;;</a>
+<a name="ln2190">        beam.damage.num = 3;</a>
+<a name="ln2191">        break;</a>
+<a name="ln2192"> </a>
+<a name="ln2193">    default:</a>
+<a name="ln2194">        // Couldn't find a monster or wall to shatter - abort casting!</a>
+<a name="ln2195">        if (caster-&gt;is_player() &amp;&amp; !quiet)</a>
+<a name="ln2196">            mpr(&quot;You can't deconstruct that!&quot;);</a>
+<a name="ln2197">        return false;</a>
+<a name="ln2198">    }</a>
+<a name="ln2199"> </a>
+<a name="ln2200">    // If it was recoloured, use that colour instead.</a>
+<a name="ln2201">    if (env.grid_colours(target))</a>
+<a name="ln2202">        beam.colour = env.grid_colours(target);</a>
+<a name="ln2203">    else</a>
+<a name="ln2204">    {</a>
+<a name="ln2205">        beam.colour = element_colour(get_feature_def(grid).colour(),</a>
+<a name="ln2206">                                     false, target);</a>
+<a name="ln2207">    }</a>
+<a name="ln2208"> </a>
+<a name="ln2209">    beam.aux_source = beam.name;</a>
+<a name="ln2210"> </a>
+<a name="ln2211">    return true;</a>
+<a name="ln2212">}</a>
+<a name="ln2213"> </a>
+<a name="ln2214">spret cast_fragmentation(int pow, const actor *caster,</a>
+<a name="ln2215">                              const coord_def target, bool fail)</a>
+<a name="ln2216">{</a>
+<a name="ln2217">    bool hole                = true;</a>
+<a name="ln2218">    const char *what         = nullptr;</a>
+<a name="ln2219"> </a>
+<a name="ln2220">    bolt beam;</a>
+<a name="ln2221"> </a>
+<a name="ln2222">    if (!setup_fragmentation_beam(beam, pow, caster, target, false, &amp;what,</a>
+<a name="ln2223">                hole))</a>
+<a name="ln2224">    {</a>
+<a name="ln2225">        return spret::abort;</a>
+<a name="ln2226">    }</a>
+<a name="ln2227"> </a>
+<a name="ln2228">    if (caster-&gt;is_player())</a>
+<a name="ln2229">    {</a>
+<a name="ln2230">        bolt tempbeam;</a>
+<a name="ln2231">        bool temp;</a>
+<a name="ln2232">        setup_fragmentation_beam(tempbeam, pow, caster, target, true, nullptr,</a>
+<a name="ln2233">                                 temp);</a>
+<a name="ln2234">        tempbeam.is_tracer = true;</a>
+<a name="ln2235">        tempbeam.explode(false);</a>
+<a name="ln2236">        if (tempbeam.beam_cancelled)</a>
+<a name="ln2237">        {</a>
+<a name="ln2238">            canned_msg(MSG_OK);</a>
+<a name="ln2239">            return spret::abort;</a>
+<a name="ln2240">        }</a>
+<a name="ln2241">    }</a>
+<a name="ln2242"> </a>
+<a name="ln2243">    fail_check();</a>
+<a name="ln2244"> </a>
+<a name="ln2245">    if (what != nullptr) // Terrain explodes.</a>
+<a name="ln2246">    {</a>
+<a name="ln2247">        if (you.see_cell(target))</a>
+<a name="ln2248">            mprf(&quot;The %s shatters!&quot;, what);</a>
+<a name="ln2249">    }</a>
+<a name="ln2250">    else if (target == you.pos()) // You explode.</a>
+<a name="ln2251">    {</a>
+<a name="ln2252">        const int dam = beam.damage.roll();</a>
+<a name="ln2253">        mprf(&quot;You shatter%s&quot;, attack_strength_punctuation(dam).c_str());</a>
+<a name="ln2254"> </a>
+<a name="ln2255">        ouch(dam, KILLED_BY_BEAM, caster-&gt;mid,</a>
+<a name="ln2256">             &quot;by Lee's Rapid Deconstruction&quot;, true,</a>
+<a name="ln2257">             caster-&gt;is_player() ? &quot;you&quot;</a>
+<a name="ln2258">                                 : caster-&gt;name(DESC_A).c_str());</a>
+<a name="ln2259">    }</a>
+<a name="ln2260">    else // Monster explodes.</a>
+<a name="ln2261">    {</a>
+<a name="ln2262">        // Checks by setup_fragmentation_beam() must guarantee that we have an</a>
+<a name="ln2263">        // alive monster.</a>
+<a name="ln2264">        monster* mon = monster_at(target);</a>
+<a name="ln2265">        ASSERT(mon);</a>
+<a name="ln2266"> </a>
+<a name="ln2267">        const int dam = beam.damage.roll();</a>
+<a name="ln2268">        if (you.see_cell(target))</a>
+<a name="ln2269">        {</a>
+<a name="ln2270">            mprf(&quot;%s shatters%s&quot;, mon-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln2271">                 attack_strength_punctuation(dam).c_str());</a>
+<a name="ln2272">        }</a>
+<a name="ln2273"> </a>
+<a name="ln2274">        if (caster-&gt;is_player())</a>
+<a name="ln2275">            _player_hurt_monster(*mon, dam, BEAM_DISINTEGRATION);</a>
+<a name="ln2276">        else if (dam)</a>
+<a name="ln2277">            mon-&gt;hurt(caster, dam, BEAM_DISINTEGRATION);</a>
+<a name="ln2278">    }</a>
+<a name="ln2279"> </a>
+<a name="ln2280">    beam.explode(true, hole);</a>
+<a name="ln2281"> </a>
+<a name="ln2282">    return spret::success;</a>
+<a name="ln2283">}</a>
+<a name="ln2284"> </a>
+<a name="ln2285">spret cast_sandblast(int pow, bolt &amp;beam, bool fail)</a>
+<a name="ln2286">{</a>
+<a name="ln2287">    item_def *stone = nullptr;</a>
+<a name="ln2288">    int num_stones = 0;</a>
+<a name="ln2289">    for (item_def&amp; i : you.inv)</a>
+<a name="ln2290">    {</a>
+<a name="ln2291">        if (i.is_type(OBJ_MISSILES, MI_STONE)</a>
+<a name="ln2292">            &amp;&amp; check_warning_inscriptions(i, OPER_DESTROY))</a>
+<a name="ln2293">        {</a>
+<a name="ln2294">            num_stones += i.quantity;</a>
+<a name="ln2295">            stone = &amp;i;</a>
+<a name="ln2296">        }</a>
+<a name="ln2297">    }</a>
+<a name="ln2298"> </a>
+<a name="ln2299">    if (num_stones == 0)</a>
+<a name="ln2300">    {</a>
+<a name="ln2301">        mpr(&quot;You don't have any stones to cast with.&quot;);</a>
+<a name="ln2302">        return spret::abort;</a>
+<a name="ln2303">    }</a>
+<a name="ln2304"> </a>
+<a name="ln2305">    zap_type zap = ZAP_SANDBLAST;</a>
+<a name="ln2306">    const spret ret = zapping(zap, pow, beam, true, nullptr, fail);</a>
+<a name="ln2307"> </a>
+<a name="ln2308">    if (ret == spret::success)</a>
+<a name="ln2309">    {</a>
+<a name="ln2310">        if (dec_inv_item_quantity(letter_to_index(stone-&gt;slot), 1))</a>
+<a name="ln2311">            mpr(&quot;You now have no stones remaining.&quot;);</a>
+<a name="ln2312">        else</a>
+<a name="ln2313">            mprf_nocap(&quot;%s&quot;, stone-&gt;name(DESC_INVENTORY).c_str());</a>
+<a name="ln2314">    }</a>
+<a name="ln2315"> </a>
+<a name="ln2316">    return ret;</a>
+<a name="ln2317">}</a>
+<a name="ln2318"> </a>
+<a name="ln2319">static bool _elec_not_immune(const actor *act)</a>
+<a name="ln2320">{</a>
+<a name="ln2321">    return act-&gt;res_elec() &lt; 3 &amp;&amp; !(you_worship(GOD_FEDHAS)</a>
+<a name="ln2322">                                    &amp;&amp; fedhas_protects(act-&gt;as_monster()));</a>
+<a name="ln2323">}</a>
+<a name="ln2324"> </a>
+<a name="ln2325">spret cast_thunderbolt(actor *caster, int pow, coord_def aim, bool fail)</a>
+<a name="ln2326">{</a>
+<a name="ln2327">    coord_def prev;</a>
+<a name="ln2328"> </a>
+<a name="ln2329">    int &amp;charges = caster-&gt;props[THUNDERBOLT_CHARGES_KEY].get_int();</a>
+<a name="ln2330">    ASSERT(charges &lt;= LIGHTNING_MAX_CHARGE);</a>
+<a name="ln2331"> </a>
+<a name="ln2332">    int &amp;last_turn = caster-&gt;props[THUNDERBOLT_LAST_KEY].get_int();</a>
+<a name="ln2333">    coord_def &amp;last_aim = caster-&gt;props[THUNDERBOLT_AIM_KEY].get_coord();</a>
+<a name="ln2334"> </a>
+<a name="ln2335"> </a>
+<a name="ln2336">    if (last_turn &amp;&amp; last_turn + 1 == you.num_turns)</a>
+<a name="ln2337">        prev = last_aim;</a>
+<a name="ln2338">    else</a>
+<a name="ln2339">        charges = 0;</a>
+<a name="ln2340"> </a>
+<a name="ln2341">    targeter_thunderbolt hitfunc(caster, spell_range(SPELL_THUNDERBOLT, pow),</a>
+<a name="ln2342">                                 prev);</a>
+<a name="ln2343">    hitfunc.set_aim(aim);</a>
+<a name="ln2344"> </a>
+<a name="ln2345">    if (caster-&gt;is_player()</a>
+<a name="ln2346">        &amp;&amp; stop_attack_prompt(hitfunc, &quot;zap&quot;, _elec_not_immune))</a>
+<a name="ln2347">    {</a>
+<a name="ln2348">        return spret::abort;</a>
+<a name="ln2349">    }</a>
+<a name="ln2350"> </a>
+<a name="ln2351">    fail_check();</a>
+<a name="ln2352"> </a>
+<a name="ln2353">    const int juice</a>
+<a name="ln2354">        = (spell_mana(SPELL_THUNDERBOLT) + charges) * LIGHTNING_CHARGE_MULT;</a>
+<a name="ln2355"> </a>
+<a name="ln2356">    dprf(&quot;juice: %d&quot;, juice);</a>
+<a name="ln2357"> </a>
+<a name="ln2358">    bolt beam;</a>
+<a name="ln2359">    beam.name              = &quot;thunderbolt&quot;;</a>
+<a name="ln2360">    beam.aux_source        = &quot;lightning rod&quot;;</a>
+<a name="ln2361">    beam.flavour           = BEAM_ELECTRICITY;</a>
+<a name="ln2362">    beam.glyph             = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln2363">    beam.colour            = LIGHTCYAN;</a>
+<a name="ln2364">    beam.range             = 1;</a>
+<a name="ln2365">    beam.hit               = AUTOMATIC_HIT;</a>
+<a name="ln2366">    beam.ac_rule           = ac_type::proportional;</a>
+<a name="ln2367">    beam.set_agent(caster);</a>
+<a name="ln2368">#ifdef USE_TILE</a>
+<a name="ln2369">    beam.tile_beam = -1;</a>
+<a name="ln2370">#endif</a>
+<a name="ln2371">    beam.draw_delay = 0;</a>
+<a name="ln2372"> </a>
+<a name="ln2373">    for (const auto &amp;entry : hitfunc.zapped)</a>
+<a name="ln2374">    {</a>
+<a name="ln2375">        if (entry.second &lt;= 0)</a>
+<a name="ln2376">            continue;</a>
+<a name="ln2377"> </a>
+<a name="ln2378">        beam.draw(entry.first);</a>
+<a name="ln2379">    }</a>
+<a name="ln2380"> </a>
+<a name="ln2381">    scaled_delay(200);</a>
+<a name="ln2382"> </a>
+<a name="ln2383">    beam.glyph = 0; // FIXME: a hack to avoid &quot;appears out of thin air&quot;</a>
+<a name="ln2384"> </a>
+<a name="ln2385">    for (const auto &amp;entry : hitfunc.zapped)</a>
+<a name="ln2386">    {</a>
+<a name="ln2387">        if (entry.second &lt;= 0)</a>
+<a name="ln2388">            continue;</a>
+<a name="ln2389"> </a>
+<a name="ln2390">        // beams are incredibly spammy in debug mode</a>
+<a name="ln2391">        if (!actor_at(entry.first))</a>
+<a name="ln2392">            continue;</a>
+<a name="ln2393"> </a>
+<a name="ln2394">        int arc = hitfunc.arc_length[entry.first.distance_from(hitfunc.origin)];</a>
+<a name="ln2395">        ASSERT(arc &gt; 0);</a>
+<a name="ln2396">        dprf(&quot;at distance %d, arc length is %d&quot;,</a>
+<a name="ln2397">             entry.first.distance_from(hitfunc.origin), arc);</a>
+<a name="ln2398">        beam.source = beam.target = entry.first;</a>
+<a name="ln2399">        beam.source.x -= sgn(beam.source.x - hitfunc.origin.x);</a>
+<a name="ln2400">        beam.source.y -= sgn(beam.source.y - hitfunc.origin.y);</a>
+<a name="ln2401">        beam.damage = dice_def(div_rand_round(juice, LIGHTNING_CHARGE_MULT),</a>
+<a name="ln2402">                               div_rand_round(30 + pow / 6, arc + 2));</a>
+<a name="ln2403">        beam.fire();</a>
+<a name="ln2404">    }</a>
+<a name="ln2405"> </a>
+<a name="ln2406">    last_turn = you.num_turns;</a>
+<a name="ln2407">    last_aim = aim;</a>
+<a name="ln2408">    if (charges &lt; LIGHTNING_MAX_CHARGE)</a>
+<a name="ln2409">        charges++;</a>
+<a name="ln2410"> </a>
+<a name="ln2411">    return spret::success;</a>
+<a name="ln2412">}</a>
+<a name="ln2413"> </a>
+<a name="ln2414">// Find an enemy who would suffer from Awaken Forest.</a>
+<a name="ln2415">actor* forest_near_enemy(const actor *mon)</a>
+<a name="ln2416">{</a>
+<a name="ln2417">    const coord_def pos = mon-&gt;pos();</a>
+<a name="ln2418"> </a>
+<a name="ln2419">    for (radius_iterator ri(pos, LOS_NO_TRANS); ri; ++ri)</a>
+<a name="ln2420">    {</a>
+<a name="ln2421">        actor* foe = actor_at(*ri);</a>
+<a name="ln2422">        if (!foe || mons_aligned(foe, mon))</a>
+<a name="ln2423">            continue;</a>
+<a name="ln2424"> </a>
+<a name="ln2425">        for (adjacent_iterator ai(*ri); ai; ++ai)</a>
+<a name="ln2426">            if (feat_is_tree(grd(*ai)) &amp;&amp; cell_see_cell(pos, *ai, LOS_DEFAULT))</a>
+<a name="ln2427">                return foe;</a>
+<a name="ln2428">    }</a>
+<a name="ln2429"> </a>
+<a name="ln2430">    return nullptr;</a>
+<a name="ln2431">}</a>
+<a name="ln2432"> </a>
+<a name="ln2433">// Print a message only if you can see any affected trees.</a>
+<a name="ln2434">void forest_message(const coord_def pos, const string &amp;msg, msg_channel_type ch)</a>
+<a name="ln2435">{</a>
+<a name="ln2436">    for (radius_iterator ri(pos, LOS_DEFAULT); ri; ++ri)</a>
+<a name="ln2437">        if (feat_is_tree(grd(*ri))</a>
+<a name="ln2438">            &amp;&amp; cell_see_cell(you.pos(), *ri, LOS_DEFAULT))</a>
+<a name="ln2439">        {</a>
+<a name="ln2440">            mprf(ch, &quot;%s&quot;, msg.c_str());</a>
+<a name="ln2441">            return;</a>
+<a name="ln2442">        }</a>
+<a name="ln2443">}</a>
+<a name="ln2444"> </a>
+<a name="ln2445">void forest_damage(const actor *mon)</a>
+<a name="ln2446">{</a>
+<a name="ln2447">    const coord_def pos = mon-&gt;pos();</a>
+<a name="ln2448">    const int hd = mon-&gt;get_hit_dice();</a>
+<a name="ln2449"> </a>
+<a name="ln2450">    if (one_chance_in(4))</a>
+<a name="ln2451">    {</a>
+<a name="ln2452">        forest_message(pos, random_choose(</a>
+<a name="ln2453">            &quot;The trees move their gnarly branches around.&quot;,</a>
+<a name="ln2454">            &quot;You feel roots moving beneath the ground.&quot;,</a>
+<a name="ln2455">            &quot;Branches wave dangerously above you.&quot;,</a>
+<a name="ln2456">            &quot;Trunks creak and shift.&quot;,</a>
+<a name="ln2457">            &quot;Tree limbs sway around you.&quot;), MSGCH_TALK_VISUAL);</a>
+<a name="ln2458">    }</a>
+<a name="ln2459"> </a>
+<a name="ln2460">    for (radius_iterator ri(pos, LOS_NO_TRANS); ri; ++ri)</a>
+<a name="ln2461">    {</a>
+<a name="ln2462">        actor* foe = actor_at(*ri);</a>
+<a name="ln2463">        if (!foe || mons_aligned(foe, mon))</a>
+<a name="ln2464">            continue;</a>
+<a name="ln2465"> </a>
+<a name="ln2466">        if (is_sanctuary(foe-&gt;pos()))</a>
+<a name="ln2467">            continue;</a>
+<a name="ln2468"> </a>
+<a name="ln2469">        for (adjacent_iterator ai(*ri); ai; ++ai)</a>
+<a name="ln2470">            if (feat_is_tree(grd(*ai)) &amp;&amp; cell_see_cell(pos, *ai, LOS_NO_TRANS))</a>
+<a name="ln2471">            {</a>
+<a name="ln2472">                int dmg = 0;</a>
+<a name="ln2473">                string msg;</a>
+<a name="ln2474"> </a>
+<a name="ln2475">                if (!apply_chunked_AC(1, foe-&gt;evasion(ev_ignore::none, mon)))</a>
+<a name="ln2476">                {</a>
+<a name="ln2477">                    msg = random_choose(</a>
+<a name="ln2478">                            &quot;@foe@ @is@ waved at by a branch&quot;,</a>
+<a name="ln2479">                            &quot;A tree reaches out but misses @foe@&quot;,</a>
+<a name="ln2480">                            &quot;A root lunges up near @foe@&quot;);</a>
+<a name="ln2481">                }</a>
+<a name="ln2482">                else if (!(dmg = foe-&gt;apply_ac(hd + random2(hd), hd * 2 - 1,</a>
+<a name="ln2483">                                               ac_type::proportional)))</a>
+<a name="ln2484">                {</a>
+<a name="ln2485">                    msg = random_choose(</a>
+<a name="ln2486">                            &quot;@foe@ @is@ scraped by a branch&quot;,</a>
+<a name="ln2487">                            &quot;A tree reaches out and scrapes @foe@&quot;,</a>
+<a name="ln2488">                            &quot;A root barely touches @foe@ from below&quot;);</a>
+<a name="ln2489">                    if (foe-&gt;is_monster())</a>
+<a name="ln2490">                        behaviour_event(foe-&gt;as_monster(), ME_WHACK);</a>
+<a name="ln2491">                }</a>
+<a name="ln2492">                else</a>
+<a name="ln2493">                {</a>
+<a name="ln2494">                    msg = random_choose(</a>
+<a name="ln2495">                        &quot;@foe@ @is@ hit by a branch&quot;,</a>
+<a name="ln2496">                        &quot;A tree reaches out and hits @foe@&quot;,</a>
+<a name="ln2497">                        &quot;A root smacks @foe@ from below&quot;);</a>
+<a name="ln2498">                    if (foe-&gt;is_monster())</a>
+<a name="ln2499">                        behaviour_event(foe-&gt;as_monster(), ME_WHACK);</a>
+<a name="ln2500">                }</a>
+<a name="ln2501"> </a>
+<a name="ln2502">                msg = replace_all(replace_all(msg,</a>
+<a name="ln2503">                    &quot;@foe@&quot;, foe-&gt;name(DESC_THE)),</a>
+<a name="ln2504">                    &quot;@is@&quot;, foe-&gt;conj_verb(&quot;be&quot;))</a>
+<a name="ln2505">                    + attack_strength_punctuation(dmg);</a>
+<a name="ln2506">                if (you.see_cell(foe-&gt;pos()))</a>
+<a name="ln2507">                    mpr(msg);</a>
+<a name="ln2508"> </a>
+<a name="ln2509">                if (dmg &lt;= 0)</a>
+<a name="ln2510">                    break;</a>
+<a name="ln2511"> </a>
+<a name="ln2512">                foe-&gt;hurt(mon, dmg, BEAM_MISSILE, KILLED_BY_BEAM, &quot;&quot;,</a>
+<a name="ln2513">                          &quot;by angry trees&quot;);</a>
+<a name="ln2514"> </a>
+<a name="ln2515">                break;</a>
+<a name="ln2516">            }</a>
+<a name="ln2517">    }</a>
+<a name="ln2518">}</a>
+<a name="ln2519"> </a>
+<a name="ln2520">spret cast_dazzling_flash(int pow, bool fail, bool tracer)</a>
+<a name="ln2521">{</a>
+<a name="ln2522">    int range = spell_range(SPELL_DAZZLING_FLASH, pow);</a>
+<a name="ln2523">    targeter_radius hitfunc(&amp;you, LOS_SOLID_SEE, range);</a>
+<a name="ln2524">    bool (*vulnerable) (const actor *) = [](const actor * act) -&gt; bool</a>
+<a name="ln2525">    {</a>
+<a name="ln2526">        // No fedhas checks needed, plants can't be dazzled</a>
+<a name="ln2527">        return act-&gt;is_monster()</a>
+<a name="ln2528">               &amp;&amp; mons_can_be_dazzled(act-&gt;as_monster()-&gt;type);</a>
+<a name="ln2529">    };</a>
+<a name="ln2530"> </a>
+<a name="ln2531">    if (tracer)</a>
+<a name="ln2532">    {</a>
+<a name="ln2533">        for (radius_iterator ri(you.pos(), range, C_SQUARE, LOS_SOLID_SEE, true); ri; ++ri)</a>
+<a name="ln2534">        {</a>
+<a name="ln2535">            if (!in_bounds(*ri))</a>
+<a name="ln2536">                continue;</a>
+<a name="ln2537"> </a>
+<a name="ln2538">            const monster* mon = monster_at(*ri);</a>
+<a name="ln2539"> </a>
+<a name="ln2540">            if (!mon || !you.can_see(*mon))</a>
+<a name="ln2541">                continue;</a>
+<a name="ln2542"> </a>
+<a name="ln2543">            if (!mon-&gt;friendly() &amp;&amp; (*vulnerable)(mon))</a>
+<a name="ln2544">                return spret::success;</a>
+<a name="ln2545">        }</a>
+<a name="ln2546"> </a>
+<a name="ln2547">        return spret::abort;</a>
+<a name="ln2548">    }</a>
+<a name="ln2549"> </a>
+<a name="ln2550"> </a>
+<a name="ln2551">    // [eb] the simulationist in me wants to use LOS_DEFAULT</a>
+<a name="ln2552">    // and let this blind through glass</a>
+<a name="ln2553">    if (stop_attack_prompt(hitfunc, &quot;dazzle&quot;, vulnerable))</a>
+<a name="ln2554">        return spret::abort;</a>
+<a name="ln2555"> </a>
+<a name="ln2556">    fail_check();</a>
+<a name="ln2557"> </a>
+<a name="ln2558">    bolt beam;</a>
+<a name="ln2559">    beam.name = &quot;energy&quot;;</a>
+<a name="ln2560">    beam.flavour = BEAM_VISUAL;</a>
+<a name="ln2561">    beam.origin_spell = SPELL_DAZZLING_FLASH;</a>
+<a name="ln2562">    beam.set_agent(&amp;you);</a>
+<a name="ln2563">    beam.colour = WHITE;</a>
+<a name="ln2564">    beam.glyph = dchar_glyph(DCHAR_EXPLOSION);</a>
+<a name="ln2565">    beam.range = range;</a>
+<a name="ln2566">    beam.ex_size = range;</a>
+<a name="ln2567">    beam.is_explosion = true;</a>
+<a name="ln2568">    beam.source = you.pos();</a>
+<a name="ln2569">    beam.target = you.pos();</a>
+<a name="ln2570">    beam.hit = AUTOMATIC_HIT;</a>
+<a name="ln2571">    beam.loudness = 0;</a>
+<a name="ln2572">    beam.explode(true, true);</a>
+<a name="ln2573"> </a>
+<a name="ln2574">    for (radius_iterator ri(you.pos(), range, C_SQUARE, LOS_SOLID_SEE, true);</a>
+<a name="ln2575">         ri; ++ri)</a>
+<a name="ln2576">    {</a>
+<a name="ln2577">        monster* mons = monster_at(*ri);</a>
+<a name="ln2578"> </a>
+<a name="ln2579">        if (!mons || !mons_can_be_dazzled(mons-&gt;type))</a>
+<a name="ln2580">            continue;</a>
+<a name="ln2581"> </a>
+<a name="ln2582">        if (x_chance_in_y(95 - mons-&gt;get_hit_dice() * 4 , 150 - pow))</a>
+<a name="ln2583">        {</a>
+<a name="ln2584">            simple_monster_message(*mons, &quot; is dazzled.&quot;);</a>
+<a name="ln2585">            mons-&gt;add_ench(mon_enchant(ENCH_BLIND, 1, &amp;you,</a>
+<a name="ln2586">                           random_range(4, 8) * BASELINE_DELAY));</a>
+<a name="ln2587">        }</a>
+<a name="ln2588">    }</a>
+<a name="ln2589"> </a>
+<a name="ln2590">    return spret::success;</a>
+<a name="ln2591">}</a>
+<a name="ln2592"> </a>
+<a name="ln2593">static bool _toxic_can_affect(const actor *act)</a>
+<a name="ln2594">{</a>
+<a name="ln2595">    if (act-&gt;is_monster() &amp;&amp; act-&gt;as_monster()-&gt;submerged())</a>
+<a name="ln2596">        return false;</a>
+<a name="ln2597"> </a>
+<a name="ln2598">    // currently monsters are still immune at rPois 1</a>
+<a name="ln2599">    return act-&gt;res_poison() &lt; (act-&gt;is_player() ? 3 : 1);</a>
+<a name="ln2600">}</a>
+<a name="ln2601"> </a>
+<a name="ln2602">spret cast_toxic_radiance(actor *agent, int pow, bool fail, bool mon_tracer)</a>
+<a name="ln2603">{</a>
+<a name="ln2604">    if (agent-&gt;is_player())</a>
+<a name="ln2605">    {</a>
+<a name="ln2606">        targeter_radius hitfunc(&amp;you, LOS_NO_TRANS);</a>
+<a name="ln2607">        if (stop_attack_prompt(hitfunc, &quot;poison&quot;, _toxic_can_affect))</a>
+<a name="ln2608">            return spret::abort;</a>
+<a name="ln2609"> </a>
+<a name="ln2610">        fail_check();</a>
+<a name="ln2611"> </a>
+<a name="ln2612">        if (!you.duration[DUR_TOXIC_RADIANCE])</a>
+<a name="ln2613">            mpr(&quot;You begin to radiate toxic energy.&quot;);</a>
+<a name="ln2614">        else</a>
+<a name="ln2615">            mpr(&quot;Your toxic radiance grows in intensity.&quot;);</a>
+<a name="ln2616"> </a>
+<a name="ln2617">        you.increase_duration(DUR_TOXIC_RADIANCE, 2 + random2(pow/20), 15);</a>
+<a name="ln2618">        toxic_radiance_effect(&amp;you, 10, true);</a>
+<a name="ln2619"> </a>
+<a name="ln2620">        flash_view_delay(UA_PLAYER, GREEN, 300, &amp;hitfunc);</a>
+<a name="ln2621"> </a>
+<a name="ln2622">        return spret::success;</a>
+<a name="ln2623">    }</a>
+<a name="ln2624">    else if (mon_tracer)</a>
+<a name="ln2625">    {</a>
+<a name="ln2626">        for (actor_near_iterator ai(agent-&gt;pos(), LOS_NO_TRANS); ai; ++ai)</a>
+<a name="ln2627">        {</a>
+<a name="ln2628">            if (!_toxic_can_affect(*ai) || mons_aligned(agent, *ai))</a>
+<a name="ln2629">                continue;</a>
+<a name="ln2630">            else</a>
+<a name="ln2631">                return spret::success;</a>
+<a name="ln2632">        }</a>
+<a name="ln2633"> </a>
+<a name="ln2634">        // Didn't find any susceptible targets</a>
+<a name="ln2635">        return spret::abort;</a>
+<a name="ln2636">    }</a>
+<a name="ln2637">    else</a>
+<a name="ln2638">    {</a>
+<a name="ln2639">        monster* mon_agent = agent-&gt;as_monster();</a>
+<a name="ln2640">        simple_monster_message(*mon_agent,</a>
+<a name="ln2641">                               &quot; begins to radiate toxic energy.&quot;);</a>
+<a name="ln2642"> </a>
+<a name="ln2643">        mon_agent-&gt;add_ench(mon_enchant(ENCH_TOXIC_RADIANCE, 1, mon_agent,</a>
+<a name="ln2644">                                        (4 + random2avg(pow/15, 2)) * BASELINE_DELAY));</a>
+<a name="ln2645">        toxic_radiance_effect(agent, 10);</a>
+<a name="ln2646"> </a>
+<a name="ln2647">        targeter_radius hitfunc(mon_agent, LOS_NO_TRANS);</a>
+<a name="ln2648">        flash_view_delay(UA_MONSTER, GREEN, 300, &amp;hitfunc);</a>
+<a name="ln2649"> </a>
+<a name="ln2650">        return spret::success;</a>
+<a name="ln2651">    }</a>
+<a name="ln2652">}</a>
+<a name="ln2653"> </a>
+<a name="ln2654">/*</a>
+<a name="ln2655"> * Attempt to poison all monsters in line of sight of the caster.</a>
+<a name="ln2656"> *</a>
+<a name="ln2657"> * @param agent   The caster.</a>
+<a name="ln2658"> * @param mult    A number to multiply the damage by.</a>
+<a name="ln2659"> *                This is the time taken for the player's action in auts,</a>
+<a name="ln2660"> *                or 10 if the spell was cast this turn.</a>
+<a name="ln2661"> * @param on_cast Whether the spell was cast this turn. This only matters</a>
+<a name="ln2662"> *                if the player cast the spell. If true, we trigger conducts</a>
+<a name="ln2663"> *                if the player hurts allies; if false, we don't, to avoid</a>
+<a name="ln2664"> *                the player being accidentally put under penance.</a>
+<a name="ln2665"> *                Defaults to false.</a>
+<a name="ln2666"> */</a>
+<a name="ln2667">void toxic_radiance_effect(actor* agent, int mult, bool on_cast)</a>
+<a name="ln2668">{</a>
+<a name="ln2669">    int pow;</a>
+<a name="ln2670">    if (agent-&gt;is_player())</a>
+<a name="ln2671">        pow = calc_spell_power(SPELL_OLGREBS_TOXIC_RADIANCE, true);</a>
+<a name="ln2672">    else</a>
+<a name="ln2673">        pow = agent-&gt;as_monster()-&gt;get_hit_dice() * 8;</a>
+<a name="ln2674"> </a>
+<a name="ln2675">    for (actor_near_iterator ai(agent-&gt;pos(), LOS_NO_TRANS); ai; ++ai)</a>
+<a name="ln2676">    {</a>
+<a name="ln2677">        if (!_toxic_can_affect(*ai))</a>
+<a name="ln2678">            continue;</a>
+<a name="ln2679"> </a>
+<a name="ln2680">        // Monsters can skip hurting friendlies</a>
+<a name="ln2681">        if (agent-&gt;is_monster() &amp;&amp; mons_aligned(agent, *ai))</a>
+<a name="ln2682">            continue;</a>
+<a name="ln2683"> </a>
+<a name="ln2684">        int dam = roll_dice(1, 1 + pow / 20) * div_rand_round(mult, BASELINE_DELAY);</a>
+<a name="ln2685">        dam = resist_adjust_damage(*ai, BEAM_POISON, dam);</a>
+<a name="ln2686"> </a>
+<a name="ln2687">        if (ai-&gt;is_player())</a>
+<a name="ln2688">        {</a>
+<a name="ln2689">            // We're affected only if we're not the agent.</a>
+<a name="ln2690">            if (!agent-&gt;is_player())</a>
+<a name="ln2691">            {</a>
+<a name="ln2692">                ouch(dam, KILLED_BY_BEAM, agent-&gt;mid,</a>
+<a name="ln2693">                    &quot;by Olgreb's Toxic Radiance&quot;, true,</a>
+<a name="ln2694">                    agent-&gt;as_monster()-&gt;name(DESC_A).c_str());</a>
+<a name="ln2695"> </a>
+<a name="ln2696">                poison_player(roll_dice(2, 3), agent-&gt;name(DESC_A),</a>
+<a name="ln2697">                              &quot;toxic radiance&quot;, false);</a>
+<a name="ln2698">            }</a>
+<a name="ln2699">        }</a>
+<a name="ln2700">        else</a>
+<a name="ln2701">        {</a>
+<a name="ln2702">            god_conduct_trigger conducts[3];</a>
+<a name="ln2703"> </a>
+<a name="ln2704">            // Only trigger conducts on the turn the player casts the spell</a>
+<a name="ln2705">            // (see PR #999).</a>
+<a name="ln2706">            if (on_cast &amp;&amp; agent-&gt;is_player())</a>
+<a name="ln2707">                set_attack_conducts(conducts, *ai-&gt;as_monster());</a>
+<a name="ln2708"> </a>
+<a name="ln2709">            ai-&gt;hurt(agent, dam, BEAM_POISON);</a>
+<a name="ln2710"> </a>
+<a name="ln2711">            if (ai-&gt;alive())</a>
+<a name="ln2712">            {</a>
+<a name="ln2713">                behaviour_event(ai-&gt;as_monster(), ME_ANNOY, agent,</a>
+<a name="ln2714">                                agent-&gt;pos());</a>
+<a name="ln2715">                int q = mult / BASELINE_DELAY;</a>
+<a name="ln2716">                int levels = roll_dice(q, 2) - q + (roll_dice(1, 20) &lt;= (mult % BASELINE_DELAY));</a>
+<a name="ln2717">                if (!ai-&gt;as_monster()-&gt;has_ench(ENCH_POISON)) // Always apply poison to an unpoisoned enemy</a>
+<a name="ln2718">                    levels = max(levels, 1);</a>
+<a name="ln2719">                poison_monster(ai-&gt;as_monster(), agent, levels);</a>
+<a name="ln2720">            }</a>
+<a name="ln2721">        }</a>
+<a name="ln2722">    }</a>
+<a name="ln2723">}</a>
+<a name="ln2724"> </a>
+<a name="ln2725">spret cast_searing_ray(int pow, bolt &amp;beam, bool fail)</a>
+<a name="ln2726">{</a>
+<a name="ln2727">    const spret ret = zapping(ZAP_SEARING_RAY, pow, beam, true, nullptr,</a>
+<a name="ln2728">                                   fail);</a>
+<a name="ln2729"> </a>
+<a name="ln2730">    if (ret == spret::success)</a>
+<a name="ln2731">    {</a>
+<a name="ln2732">        monster * mons = monster_at(beam.target);</a>
+<a name="ln2733">        // Special value, used to avoid terminating ray immediately, since we</a>
+<a name="ln2734">        // took a non-wait action on this turn (ie: casting it)</a>
+<a name="ln2735">        you.attribute[ATTR_SEARING_RAY] = -1;</a>
+<a name="ln2736">        you.props[&quot;searing_ray_aimed_at_spot&quot;].get_bool() = beam.aimed_at_spot</a>
+<a name="ln2737">                                                            || !mons;</a>
+<a name="ln2738">        you.props[&quot;searing_ray_target&quot;].get_coord() = beam.target;</a>
+<a name="ln2739"> </a>
+<a name="ln2740">        if (mons)</a>
+<a name="ln2741">            you.props[&quot;searing_ray_mid&quot;].get_int() = mons-&gt;mid;</a>
+<a name="ln2742"> </a>
+<a name="ln2743">        string msg = &quot;(Press &lt;w&gt;%&lt;/w&gt; to maintain the ray.)&quot;;</a>
+<a name="ln2744">        insert_commands(msg, { CMD_WAIT });</a>
+<a name="ln2745">        mpr(msg);</a>
+<a name="ln2746">    }</a>
+<a name="ln2747"> </a>
+<a name="ln2748">    return ret;</a>
+<a name="ln2749">}</a>
+<a name="ln2750"> </a>
+<a name="ln2751">void handle_searing_ray()</a>
+<a name="ln2752">{</a>
+<a name="ln2753">    ASSERT_RANGE(you.attribute[ATTR_SEARING_RAY], 1, 4);</a>
+<a name="ln2754"> </a>
+<a name="ln2755">    // All of these effects interrupt a channeled ray</a>
+<a name="ln2756">    if (you.confused() || you.berserk())</a>
+<a name="ln2757">    {</a>
+<a name="ln2758">        end_searing_ray();</a>
+<a name="ln2759">        return;</a>
+<a name="ln2760">    }</a>
+<a name="ln2761"> </a>
+<a name="ln2762">    if (!enough_mp(1, true))</a>
+<a name="ln2763">    {</a>
+<a name="ln2764">        mpr(&quot;Without enough magic to sustain it, your searing ray dissipates.&quot;);</a>
+<a name="ln2765">        end_searing_ray();</a>
+<a name="ln2766">        return;</a>
+<a name="ln2767">    }</a>
+<a name="ln2768"> </a>
+<a name="ln2769">    const zap_type zap = zap_type(ZAP_SEARING_RAY);</a>
+<a name="ln2770">    const int pow = calc_spell_power(SPELL_SEARING_RAY, true);</a>
+<a name="ln2771"> </a>
+<a name="ln2772">    if (!you.props[&quot;searing_ray_aimed_at_spot&quot;].get_bool())</a>
+<a name="ln2773">    {</a>
+<a name="ln2774">        monster* mons = nullptr;</a>
+<a name="ln2775">        mons = monster_by_mid(you.props[&quot;searing_ray_mid&quot;].get_int());</a>
+<a name="ln2776">        // homing targeting, save the target location in case it dies</a>
+<a name="ln2777">        if (mons &amp;&amp; mons-&gt;alive())</a>
+<a name="ln2778">            you.props[&quot;searing_ray_target&quot;].get_coord() = mons-&gt;pos();</a>
+<a name="ln2779">        else</a>
+<a name="ln2780">            you.props[&quot;searing_ray_aimed_at_spot&quot;] = true;</a>
+<a name="ln2781">    }</a>
+<a name="ln2782"> </a>
+<a name="ln2783">    bolt beam;</a>
+<a name="ln2784">    beam.thrower = KILL_YOU_MISSILE;</a>
+<a name="ln2785">    beam.range   = calc_spell_range(SPELL_SEARING_RAY, pow);</a>
+<a name="ln2786">    beam.source  = you.pos();</a>
+<a name="ln2787">    beam.target  = you.props[&quot;searing_ray_target&quot;].get_coord();</a>
+<a name="ln2788"> </a>
+<a name="ln2789">    // If friendlies have moved into the beam path, give a chance to abort</a>
+<a name="ln2790">    if (!player_tracer(zap, pow, beam))</a>
+<a name="ln2791">    {</a>
+<a name="ln2792">        mpr(&quot;You stop channeling your searing ray.&quot;);</a>
+<a name="ln2793">        end_searing_ray();</a>
+<a name="ln2794">        return;</a>
+<a name="ln2795">    }</a>
+<a name="ln2796"> </a>
+<a name="ln2797">    zappy(zap, pow, false, beam);</a>
+<a name="ln2798"> </a>
+<a name="ln2799">    aim_battlesphere(&amp;you, SPELL_SEARING_RAY, pow, beam);</a>
+<a name="ln2800">    beam.fire();</a>
+<a name="ln2801">    trigger_battlesphere(&amp;you, beam);</a>
+<a name="ln2802"> </a>
+<a name="ln2803">    dec_mp(1);</a>
+<a name="ln2804"> </a>
+<a name="ln2805">    if (++you.attribute[ATTR_SEARING_RAY] &gt; 3)</a>
+<a name="ln2806">    {</a>
+<a name="ln2807">        mpr(&quot;You finish channeling your searing ray.&quot;);</a>
+<a name="ln2808">        end_searing_ray();</a>
+<a name="ln2809">    }</a>
+<a name="ln2810">}</a>
+<a name="ln2811"> </a>
+<a name="ln2812">void end_searing_ray()</a>
+<a name="ln2813">{</a>
+<a name="ln2814">    you.attribute[ATTR_SEARING_RAY] = 0;</a>
+<a name="ln2815">    you.props.erase(&quot;searing_ray_target&quot;);</a>
+<a name="ln2816">    you.props.erase(&quot;searing_ray_aimed_at_spot&quot;);</a>
+<a name="ln2817">}</a>
+<a name="ln2818"> </a>
+<a name="ln2819">/**</a>
+<a name="ln2820"> * Can a casting of Glaciate by the player injure the given creature?</a>
+<a name="ln2821"> *</a>
+<a name="ln2822"> * @param victim        The potential victim.</a>
+<a name="ln2823"> * @return              Whether Glaciate can harm that victim.</a>
+<a name="ln2824"> *                      (False for IOODs or friendly battlespheres.)</a>
+<a name="ln2825"> */</a>
+<a name="ln2826">static bool _player_glaciate_affects(const actor *victim)</a>
+<a name="ln2827">{</a>
+<a name="ln2828">    // TODO: deduplicate this with beam::ignores</a>
+<a name="ln2829">    if (!victim)</a>
+<a name="ln2830">        return false;</a>
+<a name="ln2831"> </a>
+<a name="ln2832">    const monster* mon = victim-&gt;as_monster();</a>
+<a name="ln2833">    if (!mon) // player</a>
+<a name="ln2834">        return true;</a>
+<a name="ln2835"> </a>
+<a name="ln2836">    return !mons_is_projectile(*mon)</a>
+<a name="ln2837">            &amp;&amp; (!mons_is_avatar(mon-&gt;type) || !mons_aligned(&amp;you, mon));</a>
+<a name="ln2838">}</a>
+<a name="ln2839"> </a>
+<a name="ln2840">spret cast_glaciate(actor *caster, int pow, coord_def aim, bool fail)</a>
+<a name="ln2841">{</a>
+<a name="ln2842">    const int range = spell_range(SPELL_GLACIATE, pow);</a>
+<a name="ln2843">    targeter_cone hitfunc(caster, range);</a>
+<a name="ln2844">    hitfunc.set_aim(aim);</a>
+<a name="ln2845"> </a>
+<a name="ln2846">    if (caster-&gt;is_player()</a>
+<a name="ln2847">        &amp;&amp; stop_attack_prompt(hitfunc, &quot;glaciate&quot;, _player_glaciate_affects))</a>
+<a name="ln2848">    {</a>
+<a name="ln2849">        return spret::abort;</a>
+<a name="ln2850">    }</a>
+<a name="ln2851"> </a>
+<a name="ln2852">    fail_check();</a>
+<a name="ln2853"> </a>
+<a name="ln2854">    bolt beam;</a>
+<a name="ln2855">    beam.name              = &quot;great icy blast&quot;;</a>
+<a name="ln2856">    beam.aux_source        = &quot;great icy blast&quot;;</a>
+<a name="ln2857">    beam.flavour           = BEAM_ICE;</a>
+<a name="ln2858">    beam.glyph             = dchar_glyph(DCHAR_EXPLOSION);</a>
+<a name="ln2859">    beam.colour            = WHITE;</a>
+<a name="ln2860">    beam.range             = 1;</a>
+<a name="ln2861">    beam.hit               = AUTOMATIC_HIT;</a>
+<a name="ln2862">    beam.source_id         = caster-&gt;mid;</a>
+<a name="ln2863">    beam.hit_verb          = &quot;engulfs&quot;;</a>
+<a name="ln2864">    beam.origin_spell      = SPELL_GLACIATE;</a>
+<a name="ln2865">    beam.set_agent(caster);</a>
+<a name="ln2866">#ifdef USE_TILE</a>
+<a name="ln2867">    beam.tile_beam = -1;</a>
+<a name="ln2868">#endif</a>
+<a name="ln2869">    beam.draw_delay = 0;</a>
+<a name="ln2870"> </a>
+<a name="ln2871">    for (int i = 1; i &lt;= range; i++)</a>
+<a name="ln2872">    {</a>
+<a name="ln2873">        for (const auto &amp;entry : hitfunc.sweep[i])</a>
+<a name="ln2874">        {</a>
+<a name="ln2875">            if (entry.second &lt;= 0)</a>
+<a name="ln2876">                continue;</a>
+<a name="ln2877"> </a>
+<a name="ln2878">            beam.draw(entry.first);</a>
+<a name="ln2879">        }</a>
+<a name="ln2880">        scaled_delay(25);</a>
+<a name="ln2881">    }</a>
+<a name="ln2882"> </a>
+<a name="ln2883">    scaled_delay(100);</a>
+<a name="ln2884"> </a>
+<a name="ln2885">    if (you.can_see(*caster) || caster-&gt;is_player())</a>
+<a name="ln2886">    {</a>
+<a name="ln2887">        mprf(&quot;%s %s a mighty blast of ice!&quot;,</a>
+<a name="ln2888">             caster-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln2889">             caster-&gt;conj_verb(&quot;conjure&quot;).c_str());</a>
+<a name="ln2890">    }</a>
+<a name="ln2891"> </a>
+<a name="ln2892">    beam.glyph = 0;</a>
+<a name="ln2893"> </a>
+<a name="ln2894">    for (int i = 1; i &lt;= range; i++)</a>
+<a name="ln2895">    {</a>
+<a name="ln2896">        for (const auto &amp;entry : hitfunc.sweep[i])</a>
+<a name="ln2897">        {</a>
+<a name="ln2898">            if (entry.second &lt;= 0)</a>
+<a name="ln2899">                continue;</a>
+<a name="ln2900"> </a>
+<a name="ln2901">            const int eff_range = max(3, (6 * i / LOS_DEFAULT_RANGE));</a>
+<a name="ln2902"> </a>
+<a name="ln2903">            // At or within range 3, this is equivalent to the old Ice Storm</a>
+<a name="ln2904">            // damage.</a>
+<a name="ln2905">            beam.damage =</a>
+<a name="ln2906">                caster-&gt;is_player()</a>
+<a name="ln2907">                    ? calc_dice(7, (66 + 3 * pow) / eff_range)</a>
+<a name="ln2908">                    : calc_dice(10, (54 + 3 * pow / 2) / eff_range);</a>
+<a name="ln2909"> </a>
+<a name="ln2910">            if (actor_at(entry.first))</a>
+<a name="ln2911">            {</a>
+<a name="ln2912">                beam.source = beam.target = entry.first;</a>
+<a name="ln2913">                beam.source.x -= sgn(beam.source.x - hitfunc.origin.x);</a>
+<a name="ln2914">                beam.source.y -= sgn(beam.source.y - hitfunc.origin.y);</a>
+<a name="ln2915">                beam.fire();</a>
+<a name="ln2916">            }</a>
+<a name="ln2917">            place_cloud(CLOUD_COLD, entry.first,</a>
+<a name="ln2918">                        (18 + random2avg(45,2)) / eff_range, caster);</a>
+<a name="ln2919">        }</a>
+<a name="ln2920">    }</a>
+<a name="ln2921"> </a>
+<a name="ln2922">    noisy(spell_effect_noise(SPELL_GLACIATE), hitfunc.origin);</a>
+<a name="ln2923"> </a>
+<a name="ln2924">    return spret::success;</a>
+<a name="ln2925">}</a>
+<a name="ln2926"> </a>
+<a name="ln2927">spret cast_random_bolt(int pow, bolt&amp; beam, bool fail)</a>
+<a name="ln2928">{</a>
+<a name="ln2929">    // Need to use a 'generic' tracer regardless of the actual beam type,</a>
+<a name="ln2930">    // to account for the possibility of both bouncing and irresistible damage</a>
+<a name="ln2931">    // (even though only one of these two ever occurs on the same bolt type).</a>
+<a name="ln2932">    bolt tracer = beam;</a>
+<a name="ln2933">    if (!player_tracer(ZAP_RANDOM_BOLT_TRACER, 200, tracer))</a>
+<a name="ln2934">        return spret::abort;</a>
+<a name="ln2935"> </a>
+<a name="ln2936">    fail_check();</a>
+<a name="ln2937"> </a>
+<a name="ln2938">    zap_type zap = random_choose(ZAP_BOLT_OF_FIRE,</a>
+<a name="ln2939">                                 ZAP_BOLT_OF_COLD,</a>
+<a name="ln2940">                                 ZAP_VENOM_BOLT,</a>
+<a name="ln2941">                                 ZAP_BOLT_OF_DRAINING,</a>
+<a name="ln2942">                                 ZAP_QUICKSILVER_BOLT,</a>
+<a name="ln2943">                                 ZAP_CRYSTAL_BOLT,</a>
+<a name="ln2944">                                 ZAP_LIGHTNING_BOLT,</a>
+<a name="ln2945">                                 ZAP_CORROSIVE_BOLT);</a>
+<a name="ln2946">    beam.origin_spell = SPELL_NO_SPELL; // let zapping reset this</a>
+<a name="ln2947">    zapping(zap, pow * 7 / 6 + 15, beam, false);</a>
+<a name="ln2948"> </a>
+<a name="ln2949">    return spret::success;</a>
+<a name="ln2950">}</a>
+<a name="ln2951"> </a>
+<a name="ln2952">size_t shotgun_beam_count(int pow)</a>
+<a name="ln2953">{</a>
+<a name="ln2954">    return 1 + stepdown((pow - 5) / 3, 5, ROUND_CLOSE);</a>
+<a name="ln2955">}</a>
+<a name="ln2956"> </a>
+<a name="ln2957">spret cast_scattershot(const actor *caster, int pow, const coord_def &amp;pos,</a>
+<a name="ln2958">                            bool fail)</a>
+<a name="ln2959">{</a>
+<a name="ln2960">    const size_t range = spell_range(SPELL_SCATTERSHOT, pow);</a>
+<a name="ln2961">    const size_t beam_count = shotgun_beam_count(pow);</a>
+<a name="ln2962"> </a>
+<a name="ln2963">    targeter_shotgun hitfunc(caster, beam_count, range);</a>
+<a name="ln2964"> </a>
+<a name="ln2965">    hitfunc.set_aim(pos);</a>
+<a name="ln2966"> </a>
+<a name="ln2967">    if (caster-&gt;is_player())</a>
+<a name="ln2968">    {</a>
+<a name="ln2969">        if (stop_attack_prompt(hitfunc, &quot;scattershot&quot;))</a>
+<a name="ln2970">            return spret::abort;</a>
+<a name="ln2971">    }</a>
+<a name="ln2972"> </a>
+<a name="ln2973">    fail_check();</a>
+<a name="ln2974"> </a>
+<a name="ln2975">    bolt beam;</a>
+<a name="ln2976">    beam.thrower = (caster &amp;&amp; caster-&gt;is_player()) ? KILL_YOU :</a>
+<a name="ln2977">                   (caster)                        ? KILL_MON</a>
+<a name="ln2978">                                                   : KILL_MISC;</a>
+<a name="ln2979">    beam.range       = range;</a>
+<a name="ln2980">    beam.source      = caster-&gt;pos();</a>
+<a name="ln2981">    beam.source_id   = caster-&gt;mid;</a>
+<a name="ln2982">    beam.source_name = caster-&gt;name(DESC_PLAIN, true);</a>
+<a name="ln2983">    zappy(ZAP_SCATTERSHOT, pow, false, beam);</a>
+<a name="ln2984">    beam.aux_source  = beam.name;</a>
+<a name="ln2985"> </a>
+<a name="ln2986">    if (!caster-&gt;is_player())</a>
+<a name="ln2987">        beam.damage   = dice_def(3, 4 + (pow / 18));</a>
+<a name="ln2988"> </a>
+<a name="ln2989">    // Choose a random number of 'pellets' to fire for each beam in the spread.</a>
+<a name="ln2990">    // total pellets has O(beam_count^2)</a>
+<a name="ln2991">    vector&lt;size_t&gt; pellets;</a>
+<a name="ln2992">    pellets.resize(beam_count);</a>
+<a name="ln2993">    for (size_t i = 0; i &lt; beam_count; i++)</a>
+<a name="ln2994">        pellets[random2avg(beam_count, 3)]++;</a>
+<a name="ln2995"> </a>
+<a name="ln2996">    map&lt;mid_t, int&gt; hit_count;</a>
+<a name="ln2997"> </a>
+<a name="ln2998">    // for each beam of pellets...</a>
+<a name="ln2999">    for (size_t i = 0; i &lt; beam_count; i++)</a>
+<a name="ln3000">    {</a>
+<a name="ln3001">        // find the beam's path.</a>
+<a name="ln3002">        ray_def ray = hitfunc.rays[i];</a>
+<a name="ln3003">        for (size_t j = 0; j &lt; range; j++)</a>
+<a name="ln3004">            ray.advance();</a>
+<a name="ln3005"> </a>
+<a name="ln3006">        // fire the beam once per pellet.</a>
+<a name="ln3007">        for (size_t j = 0; j &lt; pellets[i]; j++)</a>
+<a name="ln3008">        {</a>
+<a name="ln3009">            bolt tempbeam = beam;</a>
+<a name="ln3010">            tempbeam.draw_delay = 0;</a>
+<a name="ln3011">            tempbeam.target = ray.pos();</a>
+<a name="ln3012">            tempbeam.fire();</a>
+<a name="ln3013">            scaled_delay(5);</a>
+<a name="ln3014">            for (auto it : tempbeam.hit_count)</a>
+<a name="ln3015">               hit_count[it.first] += it.second;</a>
+<a name="ln3016">        }</a>
+<a name="ln3017">    }</a>
+<a name="ln3018"> </a>
+<a name="ln3019">    for (auto it : hit_count)</a>
+<a name="ln3020">    {</a>
+<a name="ln3021">        if (it.first == MID_PLAYER)</a>
+<a name="ln3022">            continue;</a>
+<a name="ln3023"> </a>
+<a name="ln3024">        monster* mons = monster_by_mid(it.first);</a>
+<a name="ln3025">        if (!mons || !mons-&gt;alive() || !you.can_see(*mons))</a>
+<a name="ln3026">            continue;</a>
+<a name="ln3027"> </a>
+<a name="ln3028">        print_wounds(*mons);</a>
+<a name="ln3029">    }</a>
+<a name="ln3030"> </a>
+<a name="ln3031">    return spret::success;</a>
+<a name="ln3032">}</a>
+<a name="ln3033"> </a>
+<a name="ln3034">spret cast_starburst(int pow, bool fail, bool tracer)</a>
+<a name="ln3035">{</a>
+<a name="ln3036">    int range = spell_range(SPELL_STARBURST, pow);</a>
+<a name="ln3037"> </a>
+<a name="ln3038">    vector&lt;coord_def&gt; offsets = { coord_def(range, 0),</a>
+<a name="ln3039">                                coord_def(range, range),</a>
+<a name="ln3040">                                coord_def(0, range),</a>
+<a name="ln3041">                                coord_def(-range, range),</a>
+<a name="ln3042">                                coord_def(-range, 0),</a>
+<a name="ln3043">                                coord_def(-range, -range),</a>
+<a name="ln3044">                                coord_def(0, -range),</a>
+<a name="ln3045">                                coord_def(range, -range) };</a>
+<a name="ln3046"> </a>
+<a name="ln3047">    bolt beam;</a>
+<a name="ln3048">    beam.range        = range;</a>
+<a name="ln3049">    beam.source       = you.pos();</a>
+<a name="ln3050">    beam.source_id    = MID_PLAYER;</a>
+<a name="ln3051">    beam.is_tracer    = tracer;</a>
+<a name="ln3052">    beam.is_targeting = tracer;</a>
+<a name="ln3053">    beam.dont_stop_player = true;</a>
+<a name="ln3054">    beam.friend_info.dont_stop = true;</a>
+<a name="ln3055">    beam.foe_info.dont_stop = true;</a>
+<a name="ln3056">    beam.attitude = ATT_FRIENDLY;</a>
+<a name="ln3057">    beam.thrower      = KILL_YOU;</a>
+<a name="ln3058">    beam.origin_spell = SPELL_STARBURST;</a>
+<a name="ln3059">    beam.draw_delay   = 5;</a>
+<a name="ln3060">    zappy(ZAP_BOLT_OF_FIRE, pow, false, beam);</a>
+<a name="ln3061"> </a>
+<a name="ln3062">    for (const coord_def &amp; offset : offsets)</a>
+<a name="ln3063">    {</a>
+<a name="ln3064">        beam.target = you.pos() + offset;</a>
+<a name="ln3065">        if (!tracer &amp;&amp; !player_tracer(ZAP_BOLT_OF_FIRE, pow, beam))</a>
+<a name="ln3066">            return spret::abort;</a>
+<a name="ln3067"> </a>
+<a name="ln3068">        if (tracer)</a>
+<a name="ln3069">        {</a>
+<a name="ln3070">            beam.fire();</a>
+<a name="ln3071">            // something to hit</a>
+<a name="ln3072">            if (beam.foe_info.count &gt; 0)</a>
+<a name="ln3073">                return spret::success;</a>
+<a name="ln3074">        }</a>
+<a name="ln3075">    }</a>
+<a name="ln3076"> </a>
+<a name="ln3077">    if (tracer)</a>
+<a name="ln3078">        return spret::abort;</a>
+<a name="ln3079"> </a>
+<a name="ln3080">    fail_check();</a>
+<a name="ln3081"> </a>
+<a name="ln3082">    // Randomize for nice animations</a>
+<a name="ln3083">    shuffle_array(offsets);</a>
+<a name="ln3084">    for (auto &amp; offset : offsets)</a>
+<a name="ln3085">    {</a>
+<a name="ln3086">        beam.target = you.pos() + offset;</a>
+<a name="ln3087">        beam.fire();</a>
+<a name="ln3088">    }</a>
+<a name="ln3089"> </a>
+<a name="ln3090">    return spret::success;</a>
+<a name="ln3091">}</a>
+<a name="ln3092"> </a>
+<a name="ln3093">void foxfire_attack(const monster *foxfire, const actor *target)</a>
+<a name="ln3094">{</a>
+<a name="ln3095">    actor * summoner = actor_by_mid(foxfire-&gt;summoner);</a>
+<a name="ln3096"> </a>
+<a name="ln3097">    // Don't allow foxfires that have wandered off to attack before dissapating</a>
+<a name="ln3098">    if (summoner &amp;&amp; !(summoner-&gt;can_see(*foxfire)</a>
+<a name="ln3099">                      &amp;&amp; summoner-&gt;see_cell(target-&gt;pos())))</a>
+<a name="ln3100">    {</a>
+<a name="ln3101">        return;</a>
+<a name="ln3102">    }</a>
+<a name="ln3103"> </a>
+<a name="ln3104">    bolt beam;</a>
+<a name="ln3105">    beam.thrower = (foxfire &amp;&amp; foxfire-&gt;friendly()) ? KILL_YOU :</a>
+<a name="ln3106">                   (foxfire)                       ? KILL_MON</a>
+<a name="ln3107">                                                  : KILL_MISC;</a>
+<a name="ln3108">    beam.range       = 1;</a>
+<a name="ln3109">    beam.source      = foxfire-&gt;pos();</a>
+<a name="ln3110">    beam.source_id   = foxfire-&gt;summoner;</a>
+<a name="ln3111">    beam.source_name = summoner-&gt;name(DESC_PLAIN, true);</a>
+<a name="ln3112">    zappy(ZAP_FOXFIRE, foxfire-&gt;get_hit_dice(), !foxfire-&gt;friendly(), beam);</a>
+<a name="ln3113">    beam.aux_source  = beam.name;</a>
+<a name="ln3114">    beam.target      = target-&gt;pos();</a>
+<a name="ln3115">    beam.fire();</a>
+<a name="ln3116">}</a>
+<a name="ln3117"> </a>
+<a name="ln3118">/**</a>
+<a name="ln3119"> * Hailstorm the given cell. (Per the spell.)</a>
+<a name="ln3120"> *</a>
+<a name="ln3121"> * @param where     The cell in question.</a>
+<a name="ln3122"> * @param pow       The power with which the spell is being cast.</a>
+<a name="ln3123"> * @param agent     The agent (player or monster) doing the hailstorming.</a>
+<a name="ln3124"> */</a>
+<a name="ln3125">static void _hailstorm_cell(coord_def where, int pow, actor *agent)</a>
+<a name="ln3126">{</a>
+<a name="ln3127">    bolt beam;</a>
+<a name="ln3128">    beam.flavour    = BEAM_ICE;</a>
+<a name="ln3129">    beam.thrower    = agent-&gt;is_player() ? KILL_YOU : KILL_MON;</a>
+<a name="ln3130">    beam.source_id  = agent-&gt;mid;</a>
+<a name="ln3131">    beam.attitude   = agent-&gt;temp_attitude();</a>
+<a name="ln3132">    beam.glyph      = dchar_glyph(DCHAR_FIRED_BURST);</a>
+<a name="ln3133">    beam.colour     = ETC_ICE;</a>
+<a name="ln3134">#ifdef USE_TILE</a>
+<a name="ln3135">    beam.tile_beam  = -1;</a>
+<a name="ln3136">#endif</a>
+<a name="ln3137">    beam.draw_delay = 10;</a>
+<a name="ln3138">    beam.source     = where;</a>
+<a name="ln3139">    beam.target     = where;</a>
+<a name="ln3140">    beam.damage     = calc_dice(3, 10 + pow / 2);</a>
+<a name="ln3141">    beam.hit        = 18 + pow / 6;</a>
+<a name="ln3142">    beam.name       = &quot;hail&quot;;</a>
+<a name="ln3143">    beam.hit_verb   = &quot;pelts&quot;;</a>
+<a name="ln3144"> </a>
+<a name="ln3145">    monster *mons = monster_at(where);</a>
+<a name="ln3146">    if (mons &amp;&amp; mons-&gt;is_icy())</a>
+<a name="ln3147">    {</a>
+<a name="ln3148">        string msg;</a>
+<a name="ln3149">        one_chance_in(20) ? msg = &quot;%s dances in the hail.&quot; :</a>
+<a name="ln3150">                            msg = &quot;%s is unaffected.&quot;;</a>
+<a name="ln3151">        if (you.can_see(*mons))</a>
+<a name="ln3152">            mprf(msg.c_str(), mons-&gt;name(DESC_THE).c_str());</a>
+<a name="ln3153">        else</a>
+<a name="ln3154">            mprf(msg.c_str(), &quot;Something&quot;);</a>
+<a name="ln3155"> </a>
+<a name="ln3156">        beam.draw(where);</a>
+<a name="ln3157">        return;</a>
+<a name="ln3158">    }</a>
+<a name="ln3159"> </a>
+<a name="ln3160">    beam.fire();</a>
+<a name="ln3161">}</a>
+<a name="ln3162"> </a>
+<a name="ln3163">spret cast_hailstorm(int pow, bool fail, bool tracer)</a>
+<a name="ln3164">{</a>
+<a name="ln3165">    targeter_radius hitfunc(&amp;you, LOS_NO_TRANS, 3, 0, 2);</a>
+<a name="ln3166">    bool (*vulnerable) (const actor *) = [](const actor * act) -&gt; bool</a>
+<a name="ln3167">    {</a>
+<a name="ln3168">        return !act-&gt;is_icy()</a>
+<a name="ln3169">            &amp;&amp; !(you_worship(GOD_FEDHAS)</a>
+<a name="ln3170">                 &amp;&amp; fedhas_protects(act-&gt;as_monster()));</a>
+<a name="ln3171">    };</a>
+<a name="ln3172"> </a>
+<a name="ln3173">    if (tracer)</a>
+<a name="ln3174">    {</a>
+<a name="ln3175">        for (radius_iterator ri(you.pos(), 3, C_SQUARE, LOS_NO_TRANS, true); ri; ++ri)</a>
+<a name="ln3176">        {</a>
+<a name="ln3177">            if (grid_distance(you.pos(), *ri) == 1 || !in_bounds(*ri))</a>
+<a name="ln3178">                continue;</a>
+<a name="ln3179"> </a>
+<a name="ln3180">            const monster* mon = monster_at(*ri);</a>
+<a name="ln3181"> </a>
+<a name="ln3182">            if (!mon || !you.can_see(*mon))</a>
+<a name="ln3183">                continue;</a>
+<a name="ln3184"> </a>
+<a name="ln3185">            if (!mon-&gt;friendly() &amp;&amp; (*vulnerable)(mon))</a>
+<a name="ln3186">                return spret::success;</a>
+<a name="ln3187">        }</a>
+<a name="ln3188"> </a>
+<a name="ln3189">        return spret::abort;</a>
+<a name="ln3190">    }</a>
+<a name="ln3191"> </a>
+<a name="ln3192">    if (stop_attack_prompt(hitfunc, &quot;hailstorm&quot;, vulnerable))</a>
+<a name="ln3193">        return spret::abort;</a>
+<a name="ln3194"> </a>
+<a name="ln3195">    fail_check();</a>
+<a name="ln3196"> </a>
+<a name="ln3197">    mpr(&quot;A cannonade of hail descends around you!&quot;);</a>
+<a name="ln3198"> </a>
+<a name="ln3199">    for (radius_iterator ri(you.pos(), 3, C_SQUARE, LOS_NO_TRANS, true); ri; ++ri)</a>
+<a name="ln3200">    {</a>
+<a name="ln3201">        if (grid_distance(you.pos(), *ri) == 1 || !in_bounds(*ri))</a>
+<a name="ln3202">            continue;</a>
+<a name="ln3203"> </a>
+<a name="ln3204">        _hailstorm_cell(*ri, pow, &amp;you);</a>
+<a name="ln3205">    }</a>
+<a name="ln3206"> </a>
+<a name="ln3207">    return spret::success;</a>
+<a name="ln3208">}</a>
+<a name="ln3209"> </a>
+<a name="ln3210">static void _imb_actor(actor * act, int pow)</a>
+<a name="ln3211">{</a>
+<a name="ln3212">    bolt beam;</a>
+<a name="ln3213">    beam.source          = you.pos();</a>
+<a name="ln3214">    beam.thrower         = KILL_YOU;</a>
+<a name="ln3215">    beam.source_id       = MID_PLAYER;</a>
+<a name="ln3216">    beam.range           = LOS_RADIUS;</a>
+<a name="ln3217">    beam.colour          = LIGHTMAGENTA;</a>
+<a name="ln3218">    beam.glyph           = dchar_glyph(DCHAR_FIRED_ZAP);</a>
+<a name="ln3219">    beam.name            = &quot;mystic blast&quot;;</a>
+<a name="ln3220">    beam.origin_spell    = SPELL_ISKENDERUNS_MYSTIC_BLAST;</a>
+<a name="ln3221">    beam.ench_power      = pow;</a>
+<a name="ln3222">    beam.aimed_at_spot   = true;</a>
+<a name="ln3223">    beam.loudness        = 10;</a>
+<a name="ln3224"> </a>
+<a name="ln3225">    beam.target          = act-&gt;pos();</a>
+<a name="ln3226"> </a>
+<a name="ln3227">    beam.flavour          = BEAM_VISUAL;</a>
+<a name="ln3228">    beam.affects_nothing = true;</a>
+<a name="ln3229">    beam.pierce          = true;</a>
+<a name="ln3230">    beam.fire();</a>
+<a name="ln3231"> </a>
+<a name="ln3232">    beam.flavour          = BEAM_MMISSILE;</a>
+<a name="ln3233">    beam.affects_nothing = false;</a>
+<a name="ln3234">    beam.hit             = 10 + pow / 7;</a>
+<a name="ln3235">    beam.damage          = calc_dice(2, 6 + pow / 3);</a>
+<a name="ln3236"> </a>
+<a name="ln3237">    beam.affect_actor(act);</a>
+<a name="ln3238">}</a>
+<a name="ln3239"> </a>
+<a name="ln3240">struct dist_sorter</a>
+<a name="ln3241">{</a>
+<a name="ln3242">    coord_def pos;</a>
+<a name="ln3243">    bool operator()(const actor* a, const actor* b)</a>
+<a name="ln3244">    {</a>
+<a name="ln3245">        return a-&gt;pos().distance_from(pos) &gt; b-&gt;pos().distance_from(pos);</a>
+<a name="ln3246">    }</a>
+<a name="ln3247">};</a>
+<a name="ln3248"> </a>
+<a name="ln3249">spret cast_imb(int pow, bool fail)</a>
+<a name="ln3250">{</a>
+<a name="ln3251">    int range = spell_range(SPELL_ISKENDERUNS_MYSTIC_BLAST, pow);</a>
+<a name="ln3252">    targeter_radius hitfunc(&amp;you, LOS_SOLID_SEE, range);</a>
+<a name="ln3253">    bool (*vulnerable) (const actor *) = [](const actor * act) -&gt; bool</a>
+<a name="ln3254">    {</a>
+<a name="ln3255">        return !(act-&gt;is_monster()</a>
+<a name="ln3256">                 &amp;&amp; mons_is_conjured(act-&gt;as_monster()-&gt;type));</a>
+<a name="ln3257">    };</a>
+<a name="ln3258"> </a>
+<a name="ln3259">    if (stop_attack_prompt(hitfunc, &quot;blast&quot;, vulnerable))</a>
+<a name="ln3260">        return spret::abort;</a>
+<a name="ln3261"> </a>
+<a name="ln3262">    fail_check();</a>
+<a name="ln3263"> </a>
+<a name="ln3264">    mpr(&quot;You erupt in a blast of force!&quot;);</a>
+<a name="ln3265"> </a>
+<a name="ln3266">    vector&lt;actor *&gt; act_list;</a>
+<a name="ln3267"> </a>
+<a name="ln3268">    for (actor_near_iterator ai(you.pos(), LOS_SOLID_SEE); ai; ++ai)</a>
+<a name="ln3269">    {</a>
+<a name="ln3270">        if (ai-&gt;pos().distance_from(you.pos()) &gt; range</a>
+<a name="ln3271">            || ai-&gt;pos() == you.pos() // so it's never aimed_at_feet</a>
+<a name="ln3272">            || mons_is_conjured(ai-&gt;as_monster()-&gt;type)) // skip prisms &amp;c.</a>
+<a name="ln3273">        {</a>
+<a name="ln3274">            continue;</a>
+<a name="ln3275">        }</a>
+<a name="ln3276"> </a>
+<a name="ln3277">        act_list.push_back(*ai);</a>
+<a name="ln3278">    }</a>
+<a name="ln3279"> </a>
+<a name="ln3280">    dist_sorter sorter = {you.pos()};</a>
+<a name="ln3281">    sort(act_list.begin(), act_list.end(), sorter);</a>
+<a name="ln3282"> </a>
+<a name="ln3283">    for (actor *act : act_list)</a>
+<a name="ln3284">        _imb_actor(act, pow);</a>
+<a name="ln3285"> </a>
+<a name="ln3286">    return spret::success;</a>
+<a name="ln3287">}</a>
+<a name="ln3288"> </a>
+<a name="ln3289">void actor_apply_toxic_bog(actor * act)</a>
+<a name="ln3290">{</a>
+<a name="ln3291">    if (grd(act-&gt;pos()) != DNGN_TOXIC_BOG)</a>
+<a name="ln3292">        return;</a>
+<a name="ln3293"> </a>
+<a name="ln3294">    if (!act-&gt;ground_level())</a>
+<a name="ln3295">        return;</a>
+<a name="ln3296"> </a>
+<a name="ln3297">    const bool player = act-&gt;is_player();</a>
+<a name="ln3298">    monster *mons = !player ? act-&gt;as_monster() : nullptr;</a>
+<a name="ln3299"> </a>
+<a name="ln3300">    actor *oppressor = nullptr;</a>
+<a name="ln3301"> </a>
+<a name="ln3302">    for (map_marker *marker : env.markers.get_markers_at(act-&gt;pos()))</a>
+<a name="ln3303">    {</a>
+<a name="ln3304">        if (marker-&gt;get_type() == MAT_TERRAIN_CHANGE)</a>
+<a name="ln3305">        {</a>
+<a name="ln3306">            map_terrain_change_marker* tmarker =</a>
+<a name="ln3307">                    dynamic_cast&lt;map_terrain_change_marker*&gt;(marker);</a>
+<a name="ln3308">            if (tmarker-&gt;change_type == TERRAIN_CHANGE_BOG)</a>
+<a name="ln3309">                oppressor = actor_by_mid(tmarker-&gt;mon_num);</a>
+<a name="ln3310">        }</a>
+<a name="ln3311">    }</a>
+<a name="ln3312"> </a>
+<a name="ln3313">    const int base_damage = dice_def(4, 6).roll();</a>
+<a name="ln3314">    const int damage = resist_adjust_damage(act, BEAM_POISON_ARROW, base_damage);</a>
+<a name="ln3315">    const int resist = base_damage - damage;</a>
+<a name="ln3316"> </a>
+<a name="ln3317">    const int final_damage = timescale_damage(act, damage);</a>
+<a name="ln3318"> </a>
+<a name="ln3319">    if (player &amp;&amp; final_damage &gt; 0)</a>
+<a name="ln3320">    {</a>
+<a name="ln3321">        mprf(&quot;You fester in the toxic bog%s&quot;,</a>
+<a name="ln3322">                attack_strength_punctuation(final_damage).c_str());</a>
+<a name="ln3323">    }</a>
+<a name="ln3324">    else if (final_damage &gt; 0)</a>
+<a name="ln3325">    {</a>
+<a name="ln3326">        behaviour_event(mons, ME_DISTURB, 0, act-&gt;pos());</a>
+<a name="ln3327">        mprf(&quot;%s festers in the toxic bog%s&quot;,</a>
+<a name="ln3328">                mons-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln3329">                attack_strength_punctuation(final_damage).c_str());</a>
+<a name="ln3330">    }</a>
+<a name="ln3331"> </a>
+<a name="ln3332">    if (final_damage &gt; 0 &amp;&amp; resist &gt; 0)</a>
+<a name="ln3333">    {</a>
+<a name="ln3334">        if (player)</a>
+<a name="ln3335">            canned_msg(MSG_YOU_PARTIALLY_RESIST);</a>
+<a name="ln3336"> </a>
+<a name="ln3337">        act-&gt;poison(oppressor, 7, true);</a>
+<a name="ln3338">    }</a>
+<a name="ln3339">    else if (final_damage &gt; 0)</a>
+<a name="ln3340">        act-&gt;poison(oppressor, 21, true);</a>
+<a name="ln3341"> </a>
+<a name="ln3342">    if (final_damage)</a>
+<a name="ln3343">    {</a>
+<a name="ln3344"> </a>
+<a name="ln3345">        const string oppr_name =</a>
+<a name="ln3346">            oppressor ? &quot; &quot;+apostrophise(oppressor-&gt;name(DESC_THE))</a>
+<a name="ln3347">                      : &quot;&quot;;</a>
+<a name="ln3348">        dprf(&quot;%s %s %d damage from%s toxic bog.&quot;,</a>
+<a name="ln3349">             act-&gt;name(DESC_THE).c_str(),</a>
+<a name="ln3350">             act-&gt;conj_verb(&quot;take&quot;).c_str(),</a>
+<a name="ln3351">             final_damage,</a>
+<a name="ln3352">             oppr_name.c_str());</a>
+<a name="ln3353"> </a>
+<a name="ln3354">        act-&gt;hurt(oppressor, final_damage, BEAM_MISSILE,</a>
+<a name="ln3355">                  KILLED_BY_POISON, &quot;&quot;, &quot;toxic bog&quot;);</a>
+<a name="ln3356">    }</a>
+<a name="ln3357">}</a>
+<a name="ln3358"> </a>
+<a name="ln3359">/**</a>
+<a name="ln3360"> * Cast Frozen Ramparts</a>
+<a name="ln3361"> *</a>
+<a name="ln3362"> * @param caster The caster.</a>
+<a name="ln3363"> * @param pow    The spell power.</a>
+<a name="ln3364"> * @param fail   Did this spell miscast? If true, abort the cast.</a>
+<a name="ln3365"> * @return       spret::fail if one could be found but we miscast, and</a>
+<a name="ln3366"> *               spret::success if the spell was successfully cast.</a>
+<a name="ln3367">*/</a>
+<a name="ln3368">spret cast_frozen_ramparts(int pow, bool fail)</a>
+<a name="ln3369">{</a>
+<a name="ln3370">    vector&lt;coord_def&gt; wall_locs;</a>
+<a name="ln3371">    for (radius_iterator ri(you.pos(),</a>
+<a name="ln3372">                spell_range(SPELL_FROZEN_RAMPARTS, -1, false), C_SQUARE,</a>
+<a name="ln3373">                LOS_NO_TRANS, true); ri; ++ri)</a>
+<a name="ln3374">    {</a>
+<a name="ln3375">        const auto feat = grd(*ri);</a>
+<a name="ln3376">        if (feat_is_wall(feat))</a>
+<a name="ln3377">            wall_locs.push_back(*ri);</a>
+<a name="ln3378">    }</a>
+<a name="ln3379"> </a>
+<a name="ln3380">    if (wall_locs.empty())</a>
+<a name="ln3381">    {</a>
+<a name="ln3382">        mpr(&quot;There are no walls around you to affect.&quot;);</a>
+<a name="ln3383">        return spret::abort;</a>
+<a name="ln3384">    }</a>
+<a name="ln3385"> </a>
+<a name="ln3386">    fail_check();</a>
+<a name="ln3387"> </a>
+<a name="ln3388">    for (auto pos: wall_locs)</a>
+<a name="ln3389">    {</a>
+<a name="ln3390">        if (in_bounds(pos))</a>
+<a name="ln3391">            noisy(spell_effect_noise(SPELL_FROZEN_RAMPARTS), pos);</a>
+<a name="ln3392">        env.pgrid(pos) |= FPROP_ICY;</a>
+<a name="ln3393">    }</a>
+<a name="ln3394"> </a>
+<a name="ln3395">    env.level_state |= LSTATE_ICY_WALL;</a>
+<a name="ln3396">    you.props[FROZEN_RAMPARTS_KEY] = you.pos();</a>
+<a name="ln3397"> </a>
+<a name="ln3398">    mpr(&quot;The walls around you are covered in ice.&quot;);</a>
+<a name="ln3399">    you.duration[DUR_FROZEN_RAMPARTS] = random_range(40 + pow,</a>
+<a name="ln3400">                                                     80 + pow * 3 / 2);</a>
+<a name="ln3401">    return spret::success;</a>
+<a name="ln3402">}</a>
+<a name="ln3403"> </a>
+<a name="ln3404">//returns the closest target to the player</a>
+<a name="ln3405">static monster* _closest_target_in_range(int radius)</a>
+<a name="ln3406">{</a>
+<a name="ln3407">    for (distance_iterator di(you.pos(), true, true, radius); di; ++di)</a>
+<a name="ln3408">    {</a>
+<a name="ln3409">        monster *mon = monster_at(*di);</a>
+<a name="ln3410">        if (mon</a>
+<a name="ln3411">            &amp;&amp; you.see_cell_no_trans(mon-&gt;pos())</a>
+<a name="ln3412">            &amp;&amp; !mon-&gt;wont_attack()</a>
+<a name="ln3413">            &amp;&amp; !mons_is_firewood(*mon))</a>
+<a name="ln3414">        {</a>
+<a name="ln3415">            return mon;</a>
+<a name="ln3416">        }</a>
+<a name="ln3417">    }</a>
+<a name="ln3418"> </a>
+<a name="ln3419">    return nullptr;</a>
+<a name="ln3420">}</a>
+<a name="ln3421"> </a>
+<a name="ln3422">spret cast_absolute_zero(int pow, bool fail, bool tracer)</a>
+<a name="ln3423">{</a>
+<a name="ln3424">    monster* const mon = _closest_target_in_range(</a>
+<a name="ln3425">            spell_range(SPELL_ABSOLUTE_ZERO, pow));</a>
+<a name="ln3426"> </a>
+<a name="ln3427">    if (tracer)</a>
+<a name="ln3428">    {</a>
+<a name="ln3429">        if (!mon)</a>
+<a name="ln3430">            return spret::abort;</a>
+<a name="ln3431">        else</a>
+<a name="ln3432">            return spret::success;</a>
+<a name="ln3433">    }</a>
+<a name="ln3434"> </a>
+<a name="ln3435">    if (mon &amp;&amp; you.can_see(*mon) &amp;&amp; stop_attack_prompt(mon, false, mon-&gt;pos()))</a>
+<a name="ln3436">        return spret::abort;</a>
+<a name="ln3437"> </a>
+<a name="ln3438">    fail_check();</a>
+<a name="ln3439"> </a>
+<a name="ln3440">    if (!mon)</a>
+<a name="ln3441">        canned_msg(MSG_NOTHING_HAPPENS);</a>
+<a name="ln3442">    else</a>
+<a name="ln3443">    {</a>
+<a name="ln3444">        targeter_radius hitfunc(&amp;you, LOS_NO_TRANS);</a>
+<a name="ln3445">        flash_view_delay(UA_PLAYER, LIGHTCYAN, 100, &amp;hitfunc);</a>
+<a name="ln3446"> </a>
+<a name="ln3447">        god_conduct_trigger conducts[3];</a>
+<a name="ln3448">        set_attack_conducts(conducts, *mon, you.can_see(*mon));</a>
+<a name="ln3449"> </a>
+<a name="ln3450">        if (mon-&gt;type == MONS_ROYAL_JELLY &amp;&amp; !mon-&gt;is_summoned())</a>
+<a name="ln3451">        {</a>
+<a name="ln3452">            // need to do this here, because react_to_damage is never called</a>
+<a name="ln3453">            mprf(&quot;A cloud of jellies burst out of %s as it chills to&quot;</a>
+<a name="ln3454">                 &quot; absolute zero!&quot;, mon-&gt;name(DESC_THE, false).c_str());</a>
+<a name="ln3455">            trj_spawn_fineff::schedule(&amp;you, mon, mon-&gt;pos(), mon-&gt;hit_points);</a>
+<a name="ln3456">        }</a>
+<a name="ln3457">        else</a>
+<a name="ln3458">        {</a>
+<a name="ln3459">            mprf(&quot;You chill %s to absolute zero!&quot;,</a>
+<a name="ln3460">                 you.can_see(*mon) ? mon-&gt;name(DESC_THE).c_str() : &quot;something&quot;);</a>
+<a name="ln3461">        }</a>
+<a name="ln3462"> </a>
+<a name="ln3463">        const coord_def pos = mon-&gt;pos();</a>
+<a name="ln3464">        glaciate_freeze(mon, KILL_YOU, actor_to_death_source(&amp;you));</a>
+<a name="ln3465">        noisy(spell_effect_noise(SPELL_ABSOLUTE_ZERO), pos, you.mid);</a>
+<a name="ln3466">    }</a>
+<a name="ln3467"> </a>
+<a name="ln3468">    return spret::success;</a>
+<a name="ln3469">}</a>
+
+</code></pre>
+<div class="balloon" rel="178"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'beam.pierce' variable was assigned the same value.</p></div>
+<div class="balloon" rel="179"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'beam.is_explosion' variable was assigned the same value.</p></div>
+<div class="balloon" rel="180"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'beam.is_tracer' variable was assigned the same value.</p></div>
+<div class="balloon" rel="567"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="629"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'mons' pointer was utilized before it was verified against nullptr. Check lines: 629, 659.</p></div>
+<div class="balloon" rel="736"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="1923"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation.</p></div>
+<div class="balloon" rel="3098"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v595/" target="_blank">V595</a> The 'foxfire' pointer was utilized before it was verified against nullptr. Check lines: 3098, 3105.</p></div>
+<div class="balloon" rel="3308"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v522/" target="_blank">V522</a> There might be dereferencing of a potential null pointer 'tmarker'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

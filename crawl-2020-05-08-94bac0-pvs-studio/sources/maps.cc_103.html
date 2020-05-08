@@ -1,0 +1,1677 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>maps.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Functions used to create vaults.</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">#include &quot;AppHdr.h&quot;</a>
+<a name="ln7"> </a>
+<a name="ln8">#include &quot;maps.h&quot;</a>
+<a name="ln9"> </a>
+<a name="ln10">#include &lt;algorithm&gt;</a>
+<a name="ln11">#include &lt;cstdlib&gt;</a>
+<a name="ln12">#include &lt;cstring&gt;</a>
+<a name="ln13">#include &lt;sys/param.h&gt;</a>
+<a name="ln14">#include &lt;sys/types.h&gt;</a>
+<a name="ln15">#ifndef TARGET_COMPILER_VC</a>
+<a name="ln16">#include &lt;unistd.h&gt;</a>
+<a name="ln17">#endif</a>
+<a name="ln18"> </a>
+<a name="ln19">#include &quot;branch.h&quot;</a>
+<a name="ln20">#include &quot;coord.h&quot;</a>
+<a name="ln21">#include &quot;coordit.h&quot;</a>
+<a name="ln22">#include &quot;dbg-maps.h&quot;</a>
+<a name="ln23">#include &quot;dungeon.h&quot;</a>
+<a name="ln24">#include &quot;end.h&quot;</a>
+<a name="ln25">#include &quot;endianness.h&quot;</a>
+<a name="ln26">#include &quot;files.h&quot;</a>
+<a name="ln27">#include &quot;mapmark.h&quot;</a>
+<a name="ln28">#include &quot;message.h&quot;</a>
+<a name="ln29">#include &quot;state.h&quot;</a>
+<a name="ln30">#include &quot;stringutil.h&quot;</a>
+<a name="ln31">#include &quot;syscalls.h&quot;</a>
+<a name="ln32">#include &quot;terrain.h&quot;</a>
+<a name="ln33"> </a>
+<a name="ln34">#ifndef BYTE_ORDER</a>
+<a name="ln35"># error BYTE_ORDER is not defined</a>
+<a name="ln36">#endif</a>
+<a name="ln37">#if BYTE_ORDER == LITTLE_ENDIAN</a>
+<a name="ln38"># define WORD_LEN (int8_t)sizeof(long)</a>
+<a name="ln39">#else</a>
+<a name="ln40"># define WORD_LEN -(int8_t)sizeof(long)</a>
+<a name="ln41">#endif</a>
+<a name="ln42"> </a>
+<a name="ln43">static map_section_type _write_vault(map_def &amp;mdef,</a>
+<a name="ln44">                                     vault_placement &amp;,</a>
+<a name="ln45">                                     bool check_place);</a>
+<a name="ln46">static map_section_type _apply_vault_definition(</a>
+<a name="ln47">    map_def &amp;def,</a>
+<a name="ln48">    vault_placement &amp;,</a>
+<a name="ln49">    bool check_place);</a>
+<a name="ln50"> </a>
+<a name="ln51">static bool _resolve_map(map_def &amp;def);</a>
+<a name="ln52"> </a>
+<a name="ln53">static bool _map_safe_vault_place(const map_def &amp;map,</a>
+<a name="ln54">                                  const coord_def &amp;c,</a>
+<a name="ln55">                                  const coord_def &amp;size);</a>
+<a name="ln56"> </a>
+<a name="ln57">// Globals: Use unwind_var to modify!</a>
+<a name="ln58"> </a>
+<a name="ln59">// Checks whether a map place is valid.</a>
+<a name="ln60">map_place_check_t map_place_valid = _map_safe_vault_place;</a>
+<a name="ln61"> </a>
+<a name="ln62">// If non-empty, any floating vault's @ exit must land on these point.</a>
+<a name="ln63">point_vector map_anchor_points;</a>
+<a name="ln64"> </a>
+<a name="ln65">//////////////////////////////////////////////////////////////////////////</a>
+<a name="ln66">// New style vault definitions</a>
+<a name="ln67"> </a>
+<a name="ln68">static map_vector vdefs;</a>
+<a name="ln69"> </a>
+<a name="ln70">// Parameter array that vault code can use.</a>
+<a name="ln71">string_vector map_parameters;</a>
+<a name="ln72"> </a>
+<a name="ln73">dgn_map_parameters::dgn_map_parameters(const string &amp;astring)</a>
+<a name="ln74">    : mpar(map_parameters)</a>
+<a name="ln75">{</a>
+<a name="ln76">    map_parameters.push_back(astring);</a>
+<a name="ln77">}</a>
+<a name="ln78"> </a>
+<a name="ln79">dgn_map_parameters::dgn_map_parameters(const string_vector &amp;parameters)</a>
+<a name="ln80">    : mpar(map_parameters)</a>
+<a name="ln81">{</a>
+<a name="ln82">    map_parameters = parameters;</a>
+<a name="ln83">}</a>
+<a name="ln84"> </a>
+<a name="ln85">/* ******************** BEGIN PUBLIC FUNCTIONS ******************* */</a>
+<a name="ln86"> </a>
+<a name="ln87">// Remember (!!!) - if a member of the monster array isn't specified</a>
+<a name="ln88">// within a vault subroutine, assume that it holds a random monster</a>
+<a name="ln89">// -- only in cases of explicit monsters assignment have I listed</a>
+<a name="ln90">// out random monster insertion {dlb}</a>
+<a name="ln91"> </a>
+<a name="ln92">// Make sure that vault_n, where n is a number, is a vault which can be put</a>
+<a name="ln93">// anywhere, while other vault names are for specific level ranges, etc.</a>
+<a name="ln94">map_section_type vault_main(vault_placement &amp;place, const map_def *vault,</a>
+<a name="ln95">                            bool check_place)</a>
+<a name="ln96">{</a>
+<a name="ln97">#ifdef DEBUG_STATISTICS</a>
+<a name="ln98">    if (crawl_state.map_stat_gen)</a>
+<a name="ln99">        mapstat_report_map_try(*vault);</a>
+<a name="ln100">#endif</a>
+<a name="ln101"> </a>
+<a name="ln102">    // Return value of MAP_NONE forces dungeon.cc to regenerate the</a>
+<a name="ln103">    // level, except for branch entry vaults where dungeon.cc just</a>
+<a name="ln104">    // rejects the vault and places a vanilla entry.</a>
+<a name="ln105"> </a>
+<a name="ln106">    return _write_vault(const_cast&lt;map_def&amp;&gt;(*vault), place, check_place);</a>
+<a name="ln107">}</a>
+<a name="ln108"> </a>
+<a name="ln109">static map_section_type _write_vault(map_def &amp;mdef,</a>
+<a name="ln110">                                     vault_placement &amp;place,</a>
+<a name="ln111">                                     bool check_place)</a>
+<a name="ln112">{</a>
+<a name="ln113">    mdef.load();</a>
+<a name="ln114"> </a>
+<a name="ln115">    // Copy the map so we can monkey with it.</a>
+<a name="ln116">    place.map = mdef;</a>
+<a name="ln117">    place.map.original = &amp;mdef;</a>
+<a name="ln118"> </a>
+<a name="ln119">    // Try so many times to place the map. This will always succeed</a>
+<a name="ln120">    // unless there are conflicting map placements in 'avoid', or there</a>
+<a name="ln121">    // is a map validate Lua hook that keeps rejecting the map.</a>
+<a name="ln122">    int tries = 25;</a>
+<a name="ln123"> </a>
+<a name="ln124">    while (tries-- &gt; 0)</a>
+<a name="ln125">    {</a>
+<a name="ln126">        // We're a regular vault, so clear the subvault stack.</a>
+<a name="ln127">        clear_subvault_stack();</a>
+<a name="ln128"> </a>
+<a name="ln129">        if (place.map.test_lua_veto())</a>
+<a name="ln130">            break;</a>
+<a name="ln131"> </a>
+<a name="ln132">        if (!_resolve_map(place.map))</a>
+<a name="ln133">            continue;</a>
+<a name="ln134"> </a>
+<a name="ln135">        // Must set size here, or minivaults will not be placed correctly.</a>
+<a name="ln136">        place.size = place.map.size();</a>
+<a name="ln137">        place.orient = _apply_vault_definition(place.map,</a>
+<a name="ln138">                                               place, check_place);</a>
+<a name="ln139"> </a>
+<a name="ln140">        if (place.orient != MAP_NONE)</a>
+<a name="ln141">            return place.orient;</a>
+<a name="ln142">    }</a>
+<a name="ln143">    return MAP_NONE;</a>
+<a name="ln144">}</a>
+<a name="ln145"> </a>
+<a name="ln146">static void _dgn_flush_map_environments()</a>
+<a name="ln147">{</a>
+<a name="ln148">    // Clean up cached environments.</a>
+<a name="ln149">    dlua.callfn(&quot;dgn_flush_map_environments&quot;, 0, 0);</a>
+<a name="ln150">}</a>
+<a name="ln151"> </a>
+<a name="ln152">static void _dgn_flush_map_environment_for(const string &amp;mapname)</a>
+<a name="ln153">{</a>
+<a name="ln154">    dlua.callfn(&quot;dgn_flush_map_environment_for&quot;, &quot;s&quot;, mapname.c_str());</a>
+<a name="ln155">}</a>
+<a name="ln156"> </a>
+<a name="ln157">// Execute the map's Lua, perform substitutions and other transformations,</a>
+<a name="ln158">// and validate the map</a>
+<a name="ln159">static bool _resolve_map_lua(map_def &amp;map)</a>
+<a name="ln160">{</a>
+<a name="ln161">    _dgn_flush_map_environment_for(map.name);</a>
+<a name="ln162">    map.reinit();</a>
+<a name="ln163"> </a>
+<a name="ln164">    string err = map.run_lua(true);</a>
+<a name="ln165">    if (!err.empty())</a>
+<a name="ln166">    {</a>
+<a name="ln167">#ifdef DEBUG_STATISTICS</a>
+<a name="ln168">        if (crawl_state.map_stat_gen)</a>
+<a name="ln169">            mapstat_report_error(map, err);</a>
+<a name="ln170">#endif</a>
+<a name="ln171">        mprf(MSGCH_ERROR, &quot;Lua error: %s&quot;, err.c_str());</a>
+<a name="ln172">        return false;</a>
+<a name="ln173">    }</a>
+<a name="ln174"> </a>
+<a name="ln175">    map.fixup();</a>
+<a name="ln176">    err = map.resolve();</a>
+<a name="ln177">    if (!err.empty())</a>
+<a name="ln178">    {</a>
+<a name="ln179">        mprf(MSGCH_ERROR, &quot;Error: %s&quot;, err.c_str());</a>
+<a name="ln180">        return false;</a>
+<a name="ln181">    }</a>
+<a name="ln182"> </a>
+<a name="ln183">    if (!map.test_lua_validate(false))</a>
+<a name="ln184">    {</a>
+<a name="ln185">        dprf(&quot;Lua validation for map %s failed.&quot;, map.name.c_str());</a>
+<a name="ln186">        return false;</a>
+<a name="ln187">    }</a>
+<a name="ln188"> </a>
+<a name="ln189">    return true;</a>
+<a name="ln190">}</a>
+<a name="ln191"> </a>
+<a name="ln192">// Resolve Lua and transformation directives, then mirror and rotate the</a>
+<a name="ln193">// map if allowed</a>
+<a name="ln194">static bool _resolve_map(map_def &amp;map)</a>
+<a name="ln195">{</a>
+<a name="ln196">    if (!_resolve_map_lua(map))</a>
+<a name="ln197">        return false;</a>
+<a name="ln198"> </a>
+<a name="ln199">    // Don't bother flipping or rotating 1x1 subvaults.</a>
+<a name="ln200">    // This just cuts down on level generation message spam.</a>
+<a name="ln201">    if (map.map.width() == map.map.height() &amp;&amp; map.map.width() == 1)</a>
+<a name="ln202">        return true;</a>
+<a name="ln203"> </a>
+<a name="ln204">    // Mirroring is possible for any map that does not explicitly forbid it.</a>
+<a name="ln205">    // Note that mirroring also flips the orientation.</a>
+<a name="ln206">    if (coinflip())</a>
+<a name="ln207">        map.hmirror();</a>
+<a name="ln208"> </a>
+<a name="ln209">    if (coinflip())</a>
+<a name="ln210">        map.vmirror();</a>
+<a name="ln211"> </a>
+<a name="ln212">    // The map may also refuse to be rotated.</a>
+<a name="ln213">    if (coinflip())</a>
+<a name="ln214">        map.rotate(coinflip());</a>
+<a name="ln215"> </a>
+<a name="ln216">    return true;</a>
+<a name="ln217">}</a>
+<a name="ln218"> </a>
+<a name="ln219">bool resolve_subvault(map_def &amp;map)</a>
+<a name="ln220">{</a>
+<a name="ln221">    ASSERT(map.is_subvault());</a>
+<a name="ln222">    if (!map.is_subvault())</a>
+<a name="ln223">        return false;</a>
+<a name="ln224"> </a>
+<a name="ln225">    if (map.test_lua_veto())</a>
+<a name="ln226">        return false;</a>
+<a name="ln227"> </a>
+<a name="ln228">    if (!_resolve_map_lua(map))</a>
+<a name="ln229">        return false;</a>
+<a name="ln230"> </a>
+<a name="ln231">    int width = map.subvault_width();</a>
+<a name="ln232">    int height = map.subvault_height();</a>
+<a name="ln233"> </a>
+<a name="ln234">    bool can_hmirror = !map.has_tag(&quot;no_hmirror&quot;);</a>
+<a name="ln235">    bool can_vmirror = !map.has_tag(&quot;no_vmirror&quot;);</a>
+<a name="ln236"> </a>
+<a name="ln237">    bool can_rot = (map.map.width() &lt;= height &amp;&amp; map.map.height() &lt;= width)</a>
+<a name="ln238">                   &amp;&amp; !map.has_tag(&quot;no_rotate&quot;);</a>
+<a name="ln239">    bool must_rot = (map.map.width() &gt; width || map.map.height() &gt; height);</a>
+<a name="ln240"> </a>
+<a name="ln241">    // Too big, whether or not it is rotated.</a>
+<a name="ln242">    if (must_rot &amp;&amp; !can_rot)</a>
+<a name="ln243">        return false;</a>
+<a name="ln244"> </a>
+<a name="ln245">    if (must_rot || can_rot &amp;&amp; coinflip())</a>
+<a name="ln246">    {</a>
+<a name="ln247">        bool dir = coinflip();</a>
+<a name="ln248">        map.rotate(dir);</a>
+<a name="ln249"> </a>
+<a name="ln250">        // Update post-rotation dimensions.</a>
+<a name="ln251">        width = map.subvault_width();</a>
+<a name="ln252">        height = map.subvault_height();</a>
+<a name="ln253">    }</a>
+<a name="ln254"> </a>
+<a name="ln255">    // Inexact fits with dimensions flipped will get rotated above.</a>
+<a name="ln256">    bool exact_fit = (map.map.height() == height &amp;&amp; map.map.width() == width);</a>
+<a name="ln257">    if (!exact_fit)</a>
+<a name="ln258">    {</a>
+<a name="ln259">        if (can_hmirror &amp;&amp; coinflip())</a>
+<a name="ln260">            map.hmirror();</a>
+<a name="ln261"> </a>
+<a name="ln262">        if (can_vmirror &amp;&amp; coinflip())</a>
+<a name="ln263">            map.vmirror();</a>
+<a name="ln264"> </a>
+<a name="ln265">        // The map may have refused to have been rotated, so verify dimensions.</a>
+<a name="ln266">        bool valid = (map.map.width() &lt;= width &amp;&amp; map.map.height() &lt;= height);</a>
+<a name="ln267">        return valid;</a>
+<a name="ln268">    }</a>
+<a name="ln269"> </a>
+<a name="ln270">    // Don't bother flipping or rotating 1x1 subvaults.</a>
+<a name="ln271">    // This just cuts down on level generation message spam.</a>
+<a name="ln272">    if (exact_fit &amp;&amp; width == height &amp;&amp; width == 1)</a>
+<a name="ln273">        return true;</a>
+<a name="ln274"> </a>
+<a name="ln275">    // Count original mismatches. If mirroring the map causes more cells to</a>
+<a name="ln276">    // not be written, then don't mirror. This allows oddly shaped subvaults</a>
+<a name="ln277">    // to be fit correctly into a parent vault that specifies the exact same</a>
+<a name="ln278">    // shape.</a>
+<a name="ln279">    const coord_def svplace(0, 0);</a>
+<a name="ln280"> </a>
+<a name="ln281">    // 0 - normal</a>
+<a name="ln282">    // 1 - flip horz</a>
+<a name="ln283">    // 2 - flip vert + horz</a>
+<a name="ln284">    // 3 - flip vert</a>
+<a name="ln285">    int mismatch[4];</a>
+<a name="ln286"> </a>
+<a name="ln287">    // Mirror map in all directions to find best fit.</a>
+<a name="ln288">    mismatch[0] = map.subvault_mismatch_count(svplace);</a>
+<a name="ln289">    map.hmirror();</a>
+<a name="ln290">    mismatch[1] = map.subvault_mismatch_count(svplace);</a>
+<a name="ln291">    map.vmirror();</a>
+<a name="ln292">    mismatch[2] = map.subvault_mismatch_count(svplace);</a>
+<a name="ln293">    map.hmirror();</a>
+<a name="ln294">    mismatch[3] = map.subvault_mismatch_count(svplace);</a>
+<a name="ln295"> </a>
+<a name="ln296">    int min_mismatch = mismatch[0];</a>
+<a name="ln297">    if (can_hmirror)</a>
+<a name="ln298">        min_mismatch = min(min_mismatch, mismatch[1]);</a>
+<a name="ln299">    if (can_hmirror &amp;&amp; can_vmirror)</a>
+<a name="ln300">        min_mismatch = min(min_mismatch, mismatch[2]);</a>
+<a name="ln301">    if (can_vmirror)</a>
+<a name="ln302">        min_mismatch = min(min_mismatch, mismatch[3]);</a>
+<a name="ln303"> </a>
+<a name="ln304">    // Pick a mirror combination with the minimum number of mismatches.</a>
+<a name="ln305">    min_mismatch = min(min_mismatch, mismatch[2]);</a>
+<a name="ln306">    if (!map.has_tag(&quot;no_vmirror&quot;))</a>
+<a name="ln307">        min_mismatch = min(min_mismatch, mismatch[3]);</a>
+<a name="ln308"> </a>
+<a name="ln309">    // Pick a mirror combination with the minimum number of mismatches.</a>
+<a name="ln310">    int idx = random2(4);</a>
+<a name="ln311">    while (mismatch[idx] != min_mismatch)</a>
+<a name="ln312">        idx = (idx + 1) % 4;</a>
+<a name="ln313"> </a>
+<a name="ln314">    // Flip the map (currently vmirror'd) to the correct orientation.</a>
+<a name="ln315">    if (idx == 0)</a>
+<a name="ln316">        map.vmirror();</a>
+<a name="ln317">    else if (idx == 1)</a>
+<a name="ln318">    {</a>
+<a name="ln319">        map.vmirror();</a>
+<a name="ln320">        map.hmirror();</a>
+<a name="ln321">    }</a>
+<a name="ln322">    else if (idx == 2)</a>
+<a name="ln323">        map.hmirror();</a>
+<a name="ln324"> </a>
+<a name="ln325">    ASSERT(map.subvault_mismatch_count(svplace) == min_mismatch);</a>
+<a name="ln326"> </a>
+<a name="ln327">    // We already know this is an exact fit, so this is a success.</a>
+<a name="ln328">    return true;</a>
+<a name="ln329">}</a>
+<a name="ln330"> </a>
+<a name="ln331">// Given a rectangular region, slides it to fit into the map. size must be</a>
+<a name="ln332">// smaller than (GXM,GYM).</a>
+<a name="ln333">static void _fit_region_into_map_bounds(coord_def &amp;pos, const coord_def &amp;size,</a>
+<a name="ln334">                                        int margin)</a>
+<a name="ln335">{</a>
+<a name="ln336">    const int X_1(X_BOUND_1 + margin);</a>
+<a name="ln337">    const int X_2(X_BOUND_2 - margin);</a>
+<a name="ln338">    const int Y_1(Y_BOUND_1 + margin);</a>
+<a name="ln339">    const int Y_2(Y_BOUND_2 - margin);</a>
+<a name="ln340"> </a>
+<a name="ln341">    ASSERT(size.x &lt;= (X_2 - X_1 + 1));</a>
+<a name="ln342">    ASSERT(size.y &lt;= (Y_2 - Y_1 + 1));</a>
+<a name="ln343"> </a>
+<a name="ln344">    if (pos.x &lt; X_1)</a>
+<a name="ln345">        pos.x = X_1;</a>
+<a name="ln346">    if (pos.y &lt; Y_1)</a>
+<a name="ln347">        pos.y = Y_1;</a>
+<a name="ln348">    if (pos.x + size.x - 1 &gt; X_2)</a>
+<a name="ln349">        pos.x = X_2 - size.x + 1;</a>
+<a name="ln350">    if (pos.y + size.y - 1 &gt; Y_2)</a>
+<a name="ln351">        pos.y = Y_2 - size.y + 1;</a>
+<a name="ln352">}</a>
+<a name="ln353"> </a>
+<a name="ln354">// Used for placement of vaults.</a>
+<a name="ln355">static bool _may_overwrite_feature(const coord_def p,</a>
+<a name="ln356">                                   bool water_ok, bool wall_ok = true)</a>
+<a name="ln357">{</a>
+<a name="ln358">    // If there's a mask specifying where vaults can be placed, don't</a>
+<a name="ln359">    // allow stepping outside it.</a>
+<a name="ln360">    if (Vault_Placement_Mask &amp;&amp; !(*Vault_Placement_Mask)(p))</a>
+<a name="ln361">        return false;</a>
+<a name="ln362"> </a>
+<a name="ln363">    // If in the abyss, the placement mask is the only check necessary</a>
+<a name="ln364">    // for terrain.</a>
+<a name="ln365">    if (Vault_Placement_Mask &amp;&amp; player_in_branch(BRANCH_ABYSS))</a>
+<a name="ln366">        return true;</a>
+<a name="ln367"> </a>
+<a name="ln368">    const dungeon_feature_type grid = grd(p);</a>
+<a name="ln369"> </a>
+<a name="ln370">    // Deep water grids may be overwritten if water_ok == true.</a>
+<a name="ln371">    if (grid == DNGN_DEEP_WATER)</a>
+<a name="ln372">        return water_ok;</a>
+<a name="ln373"> </a>
+<a name="ln374">    // Handle all other non-LOS blocking grids here.</a>
+<a name="ln375">    if (!feat_is_opaque(grid)</a>
+<a name="ln376">        &amp;&amp; grid != DNGN_FLOOR</a>
+<a name="ln377">        &amp;&amp; grid != DNGN_SHALLOW_WATER</a>
+<a name="ln378">        &amp;&amp; !feat_is_door(grid))</a>
+<a name="ln379">    {</a>
+<a name="ln380">        return false;</a>
+<a name="ln381">    }</a>
+<a name="ln382"> </a>
+<a name="ln383">    if (feat_is_wall(grid) || feat_is_tree(grid))</a>
+<a name="ln384">        return wall_ok;</a>
+<a name="ln385"> </a>
+<a name="ln386">    // Otherwise, feel free to clobber this feature.</a>
+<a name="ln387">    return true;</a>
+<a name="ln388">}</a>
+<a name="ln389"> </a>
+<a name="ln390">static bool _marker_is_portal(map_marker* marker)</a>
+<a name="ln391">{</a>
+<a name="ln392">    return marker &amp;&amp; !marker-&gt;property(&quot;portal&quot;).empty();</a>
+<a name="ln393">}</a>
+<a name="ln394"> </a>
+<a name="ln395">static bool _is_portal_place(const coord_def &amp;c)</a>
+<a name="ln396">{</a>
+<a name="ln397">    return _marker_is_portal(env.markers.find(c, MAT_LUA_MARKER));</a>
+<a name="ln398">}</a>
+<a name="ln399"> </a>
+<a name="ln400">static bool _is_transporter_place(const coord_def &amp;c)</a>
+<a name="ln401">{</a>
+<a name="ln402">    auto m = env.markers.find(c, MAT_LUA_MARKER);</a>
+<a name="ln403">    return m &amp;&amp; (!m-&gt;property(TRANSPORTER_NAME_PROP).empty()</a>
+<a name="ln404">                 || !m-&gt;property(TRANSPORTER_DEST_NAME_PROP).empty());</a>
+<a name="ln405">}</a>
+<a name="ln406"> </a>
+<a name="ln407">static bool _map_safe_vault_place(const map_def &amp;map,</a>
+<a name="ln408">                                  const coord_def &amp;c,</a>
+<a name="ln409">                                  const coord_def &amp;size)</a>
+<a name="ln410">{</a>
+<a name="ln411">    if (size.zero())</a>
+<a name="ln412">        return true;</a>
+<a name="ln413"> </a>
+<a name="ln414">    // Processing for layouts is handled elsewhere.</a>
+<a name="ln415">    if (map.is_overwritable_layout())</a>
+<a name="ln416">        return true;</a>
+<a name="ln417"> </a>
+<a name="ln418">    const bool water_ok =</a>
+<a name="ln419">        map.has_tag(&quot;water_ok&quot;) || player_in_branch(BRANCH_SWAMP);</a>
+<a name="ln420"> </a>
+<a name="ln421">    const bool vault_can_overwrite_other_vaults =</a>
+<a name="ln422">        map.has_tag(&quot;overwrite_floor_cell&quot;);</a>
+<a name="ln423"> </a>
+<a name="ln424">    const bool vault_can_replace_portals =</a>
+<a name="ln425">        map.has_tag(&quot;replace_portal&quot;);</a>
+<a name="ln426"> </a>
+<a name="ln427">    const vector&lt;string&gt; &amp;lines = map.map.get_lines();</a>
+<a name="ln428">    for (rectangle_iterator ri(c, c + size - 1); ri; ++ri)</a>
+<a name="ln429">    {</a>
+<a name="ln430">        const coord_def cp(*ri);</a>
+<a name="ln431">        const coord_def dp(cp - c);</a>
+<a name="ln432"> </a>
+<a name="ln433">        if (lines[dp.y][dp.x] == ' ')</a>
+<a name="ln434">            continue;</a>
+<a name="ln435"> </a>
+<a name="ln436">        // Unconditionally allow portal placements to work.</a>
+<a name="ln437">        if (vault_can_replace_portals &amp;&amp; _is_portal_place(cp))</a>
+<a name="ln438">            continue;</a>
+<a name="ln439"> </a>
+<a name="ln440">        if (!vault_can_overwrite_other_vaults)</a>
+<a name="ln441">        {</a>
+<a name="ln442">            // Also check adjacent squares for collisions, because being next</a>
+<a name="ln443">            // to another vault may block off one of this vault's exits.</a>
+<a name="ln444">            for (adjacent_iterator ai(cp); ai; ++ai)</a>
+<a name="ln445">            {</a>
+<a name="ln446">                if (map_bounds(*ai) &amp;&amp; (env.level_map_mask(*ai) &amp; MMT_VAULT))</a>
+<a name="ln447">                    return false;</a>
+<a name="ln448">            }</a>
+<a name="ln449">        }</a>
+<a name="ln450">        else if (grd(cp) != DNGN_FLOOR || env.pgrid(cp) &amp; FPROP_NO_TELE_INTO</a>
+<a name="ln451">                                       || _is_transporter_place(cp))</a>
+<a name="ln452">        {</a>
+<a name="ln453">            // Don't place overwrite_floor_cell vaults on anything but floor or</a>
+<a name="ln454">            // on squares that can't be teleported into, because</a>
+<a name="ln455">            // overwrite_floor_cell is used for things that are expected to be</a>
+<a name="ln456">            // connected. Don't place on transporter markers, because these will</a>
+<a name="ln457">            // later themselves overwrite whatever feature this vault places.</a>
+<a name="ln458">            return false;</a>
+<a name="ln459">        }</a>
+<a name="ln460"> </a>
+<a name="ln461">        // Don't overwrite features other than floor, rock wall, doors,</a>
+<a name="ln462">        // nor water, if !water_ok.</a>
+<a name="ln463">        if (!_may_overwrite_feature(cp, water_ok))</a>
+<a name="ln464">            return false;</a>
+<a name="ln465"> </a>
+<a name="ln466">        // Don't overwrite monsters or items, either!</a>
+<a name="ln467">        if (monster_at(cp) || igrd(cp) != NON_ITEM)</a>
+<a name="ln468">            return false;</a>
+<a name="ln469"> </a>
+<a name="ln470">        // If in Slime, don't let stairs end up next to minivaults,</a>
+<a name="ln471">        // so that they don't possibly end up next to unsafe walls.</a>
+<a name="ln472">        if (player_in_branch(BRANCH_SLIME))</a>
+<a name="ln473">        {</a>
+<a name="ln474">            for (adjacent_iterator ai(cp); ai; ++ai)</a>
+<a name="ln475">            {</a>
+<a name="ln476">                if (map_bounds(*ai) &amp;&amp; feat_is_stair(grd(*ai)))</a>
+<a name="ln477">                    return false;</a>
+<a name="ln478">            }</a>
+<a name="ln479">        }</a>
+<a name="ln480">    }</a>
+<a name="ln481"> </a>
+<a name="ln482">    return true;</a>
+<a name="ln483">}</a>
+<a name="ln484"> </a>
+<a name="ln485">static bool _connected_minivault_place(const coord_def &amp;c,</a>
+<a name="ln486">                                       const vault_placement &amp;place)</a>
+<a name="ln487">{</a>
+<a name="ln488">    if (place.size.zero())</a>
+<a name="ln489">        return true;</a>
+<a name="ln490"> </a>
+<a name="ln491">    // Must not be completely isolated.</a>
+<a name="ln492">    const vector&lt;string&gt; &amp;lines = place.map.map.get_lines();</a>
+<a name="ln493"> </a>
+<a name="ln494">    for (rectangle_iterator ri(c, c + place.size - 1); ri; ++ri)</a>
+<a name="ln495">    {</a>
+<a name="ln496">        const coord_def &amp;ci(*ri);</a>
+<a name="ln497"> </a>
+<a name="ln498">        if (lines[ci.y - c.y][ci.x - c.x] == ' ')</a>
+<a name="ln499">            continue;</a>
+<a name="ln500"> </a>
+<a name="ln501">        if (_may_overwrite_feature(ci, false, false)</a>
+<a name="ln502">            || (place.map.has_tag(&quot;replace_portal&quot;)</a>
+<a name="ln503">                &amp;&amp; _is_portal_place(ci)))</a>
+<a name="ln504">        {</a>
+<a name="ln505">            return true;</a>
+<a name="ln506">        }</a>
+<a name="ln507">    }</a>
+<a name="ln508"> </a>
+<a name="ln509">    return false;</a>
+<a name="ln510">}</a>
+<a name="ln511"> </a>
+<a name="ln512">coord_def find_portal_place(const vault_placement *place, bool check_place)</a>
+<a name="ln513">{</a>
+<a name="ln514">    vector&lt;coord_def&gt; candidates;</a>
+<a name="ln515">    for (auto marker : env.markers.get_all(MAT_LUA_MARKER))</a>
+<a name="ln516">    {</a>
+<a name="ln517">        if (_marker_is_portal(marker))</a>
+<a name="ln518">        {</a>
+<a name="ln519">            coord_def v1(marker-&gt;pos);</a>
+<a name="ln520">            if ((!check_place</a>
+<a name="ln521">                  || place &amp;&amp; map_place_valid(place-&gt;map, v1, place-&gt;size))</a>
+<a name="ln522">                &amp;&amp; (!place || _connected_minivault_place(v1, *place))</a>
+<a name="ln523">                &amp;&amp; !feat_is_gate(grd(v1))</a>
+<a name="ln524">                &amp;&amp; !feat_is_branch_entrance(grd(v1)))</a>
+<a name="ln525">            {</a>
+<a name="ln526">                candidates.push_back(v1);</a>
+<a name="ln527">            }</a>
+<a name="ln528">        }</a>
+<a name="ln529">    }</a>
+<a name="ln530"> </a>
+<a name="ln531">    if (!candidates.empty())</a>
+<a name="ln532">        return candidates[random2(candidates.size())];</a>
+<a name="ln533"> </a>
+<a name="ln534">    return coord_def();</a>
+<a name="ln535">}</a>
+<a name="ln536"> </a>
+<a name="ln537">static coord_def _find_minivault_place(</a>
+<a name="ln538">    const vault_placement &amp;place,</a>
+<a name="ln539">    bool check_place)</a>
+<a name="ln540">{</a>
+<a name="ln541">    if (place.map.has_tag(&quot;replace_portal&quot;))</a>
+<a name="ln542">    {</a>
+<a name="ln543">        coord_def portal_place = find_portal_place(&amp;place, check_place);</a>
+<a name="ln544">        if (!portal_place.origin())</a>
+<a name="ln545">            return portal_place;</a>
+<a name="ln546">    }</a>
+<a name="ln547"> </a>
+<a name="ln548">    // [ds] The margin around the edges of the map where the minivault</a>
+<a name="ln549">    // won't be placed. Purely arbitrary as far as I can see.</a>
+<a name="ln550">    // The spotty connector in the Shoals needs one more space to work.</a>
+<a name="ln551">    const int margin = MAPGEN_BORDER * 2 + player_in_branch(BRANCH_SHOALS);</a>
+<a name="ln552"> </a>
+<a name="ln553">    // Find a target area which can be safely overwritten.</a>
+<a name="ln554">    for (int tries = 0; tries &lt; 600; ++tries)</a>
+<a name="ln555">    {</a>
+<a name="ln556">        coord_def v1;</a>
+<a name="ln557">        v1.x = random_range(margin, GXM - margin - place.size.x);</a>
+<a name="ln558">        v1.y = random_range(margin, GYM - margin - place.size.y);</a>
+<a name="ln559"> </a>
+<a name="ln560">        if (check_place &amp;&amp; !map_place_valid(place.map, v1, place.size))</a>
+<a name="ln561">        {</a>
+<a name="ln562">#ifdef DEBUG_MINIVAULT_PLACEMENT</a>
+<a name="ln563">            mprf(MSGCH_DIAGNOSTICS,</a>
+<a name="ln564">                 &quot;Skipping (%d,%d): not safe to place map&quot;,</a>
+<a name="ln565">                 v1.x, v1.y);</a>
+<a name="ln566">#endif</a>
+<a name="ln567">            continue;</a>
+<a name="ln568">        }</a>
+<a name="ln569"> </a>
+<a name="ln570">        if (!_connected_minivault_place(v1, place))</a>
+<a name="ln571">        {</a>
+<a name="ln572">#ifdef DEBUG_MINIVAULT_PLACEMENT</a>
+<a name="ln573">            mprf(MSGCH_DIAGNOSTICS,</a>
+<a name="ln574">                 &quot;Skipping (%d,%d): not a good minivault place (tags: %s)&quot;,</a>
+<a name="ln575">                 v1.x, v1.y, place.map.tags.c_str());</a>
+<a name="ln576">#endif</a>
+<a name="ln577">            continue;</a>
+<a name="ln578">        }</a>
+<a name="ln579">        return v1;</a>
+<a name="ln580">    }</a>
+<a name="ln581">    return coord_def(-1, -1);</a>
+<a name="ln582">}</a>
+<a name="ln583"> </a>
+<a name="ln584">static bool _apply_vault_grid(map_def &amp;def,</a>
+<a name="ln585">                              vault_placement &amp;place,</a>
+<a name="ln586">                              bool check_place)</a>
+<a name="ln587">{</a>
+<a name="ln588">    const map_lines &amp;ml = def.map;</a>
+<a name="ln589">    const int orient = def.orient;</a>
+<a name="ln590"> </a>
+<a name="ln591">    const coord_def size(ml.size());</a>
+<a name="ln592"> </a>
+<a name="ln593">    coord_def start(0, 0);</a>
+<a name="ln594"> </a>
+<a name="ln595">    if (orient == MAP_SOUTH || orient == MAP_SOUTHEAST</a>
+<a name="ln596">        || orient == MAP_SOUTHWEST)</a>
+<a name="ln597">    {</a>
+<a name="ln598">        start.y = GYM - size.y;</a>
+<a name="ln599">    }</a>
+<a name="ln600">    if (orient == MAP_EAST || orient == MAP_NORTHEAST</a>
+<a name="ln601">        || orient == MAP_SOUTHEAST)</a>
+<a name="ln602">    {</a>
+<a name="ln603">        start.x = GXM - size.x;</a>
+<a name="ln604">    }</a>
+<a name="ln605"> </a>
+<a name="ln606">    // Handle maps aligned along cardinals that are smaller than</a>
+<a name="ln607">    // the corresponding map dimension.</a>
+<a name="ln608">    if ((orient == MAP_NORTH || orient == MAP_SOUTH</a>
+<a name="ln609">         || orient == MAP_ENCOMPASS || orient == MAP_CENTRE)</a>
+<a name="ln610">        &amp;&amp; size.x &lt; GXM)</a>
+<a name="ln611">    {</a>
+<a name="ln612">        start.x = (GXM - size.x) / 2;</a>
+<a name="ln613">    }</a>
+<a name="ln614">    if ((orient == MAP_EAST || orient == MAP_WEST</a>
+<a name="ln615">         || orient == MAP_ENCOMPASS || orient == MAP_CENTRE)</a>
+<a name="ln616">        &amp;&amp; size.y &lt; GYM)</a>
+<a name="ln617">    {</a>
+<a name="ln618">        start.y = (GYM - size.y) / 2;</a>
+<a name="ln619">    }</a>
+<a name="ln620"> </a>
+<a name="ln621">    // Floating maps can go anywhere, ask the map_def to suggest a place.</a>
+<a name="ln622">    if (orient == MAP_FLOAT)</a>
+<a name="ln623">    {</a>
+<a name="ln624">        const bool minivault = def.is_minivault();</a>
+<a name="ln625">        if (map_bounds(place.pos))</a>
+<a name="ln626">        {</a>
+<a name="ln627">            start = place.pos - size / 2;</a>
+<a name="ln628">            _fit_region_into_map_bounds(start, size, minivault ? MAPGEN_BORDER : 0);</a>
+<a name="ln629">        }</a>
+<a name="ln630">        else if (minivault)</a>
+<a name="ln631">        {</a>
+<a name="ln632">            start = _find_minivault_place(place, check_place);</a>
+<a name="ln633">            if (map_bounds(start))</a>
+<a name="ln634">                _fit_region_into_map_bounds(start, size, MAPGEN_BORDER);</a>
+<a name="ln635">        }</a>
+<a name="ln636">        else</a>
+<a name="ln637">            start = def.float_place();</a>
+<a name="ln638">    }</a>
+<a name="ln639"> </a>
+<a name="ln640">    if (!map_bounds(start))</a>
+<a name="ln641">        return false;</a>
+<a name="ln642"> </a>
+<a name="ln643">    if (check_place &amp;&amp; !map_place_valid(def, start, size))</a>
+<a name="ln644">    {</a>
+<a name="ln645">        dprf(DIAG_DNGN, &quot;Bad vault place: (%d,%d) dim (%d,%d)&quot;,</a>
+<a name="ln646">             start.x, start.y, size.x, size.y);</a>
+<a name="ln647">        return false;</a>
+<a name="ln648">    }</a>
+<a name="ln649"> </a>
+<a name="ln650">    place.pos  = start;</a>
+<a name="ln651">    place.size = size;</a>
+<a name="ln652"> </a>
+<a name="ln653">    return true;</a>
+<a name="ln654">}</a>
+<a name="ln655"> </a>
+<a name="ln656">static map_section_type _apply_vault_definition(</a>
+<a name="ln657">    map_def &amp;def,</a>
+<a name="ln658">    vault_placement &amp;place,</a>
+<a name="ln659">    bool check_place)</a>
+<a name="ln660">{</a>
+<a name="ln661">    if (!_apply_vault_grid(def, place, check_place))</a>
+<a name="ln662">        return MAP_NONE;</a>
+<a name="ln663"> </a>
+<a name="ln664">    const map_section_type orient = def.orient;</a>
+<a name="ln665">    return orient == MAP_NONE ? MAP_NORTH : orient;</a>
+<a name="ln666">}</a>
+<a name="ln667"> </a>
+<a name="ln668">///////////////////////////////////////////////////////////////////////////</a>
+<a name="ln669">// Map lookups</a>
+<a name="ln670"> </a>
+<a name="ln671">static bool _map_matches_layout_type(const map_def &amp;map)</a>
+<a name="ln672">{</a>
+<a name="ln673">    bool permissive = false;</a>
+<a name="ln674">    if (env.level_layout_types.empty()</a>
+<a name="ln675">        || (!map.has_tag_prefix(&quot;layout_&quot;)</a>
+<a name="ln676">            &amp;&amp; !(permissive = map.has_tag_prefix(&quot;nolayout_&quot;))))</a>
+<a name="ln677">    {</a>
+<a name="ln678">        return true;</a>
+<a name="ln679">    }</a>
+<a name="ln680"> </a>
+<a name="ln681">    for (const auto &amp;layout : env.level_layout_types)</a>
+<a name="ln682">    {</a>
+<a name="ln683">        if (map.has_tag(&quot;layout_&quot; + layout))</a>
+<a name="ln684">            return true;</a>
+<a name="ln685">        else if (map.has_tag(&quot;nolayout_&quot; + layout))</a>
+<a name="ln686">            return false;</a>
+<a name="ln687">    }</a>
+<a name="ln688"> </a>
+<a name="ln689">    return permissive;</a>
+<a name="ln690">}</a>
+<a name="ln691"> </a>
+<a name="ln692">static bool _map_matches_species(const map_def &amp;map)</a>
+<a name="ln693">{</a>
+<a name="ln694">    if (!species_type_valid(you.species))</a>
+<a name="ln695">        return true;</a>
+<a name="ln696">    return !map.has_tag(&quot;no_species_&quot;</a>
+<a name="ln697">           + lowercase_string(get_species_abbrev(you.species)));</a>
+<a name="ln698">}</a>
+<a name="ln699"> </a>
+<a name="ln700">const map_def *find_map_by_name(const string &amp;name)</a>
+<a name="ln701">{</a>
+<a name="ln702">    for (const map_def &amp;mapdef : vdefs)</a>
+<a name="ln703">        if (mapdef.name == name)</a>
+<a name="ln704">            return &amp;mapdef;</a>
+<a name="ln705"> </a>
+<a name="ln706">    return nullptr;</a>
+<a name="ln707">}</a>
+<a name="ln708"> </a>
+<a name="ln709">// Discards Lua code loaded by all maps to reduce memory use. If any stripped</a>
+<a name="ln710">// map is reused, its data will be reloaded from the .dsc</a>
+<a name="ln711">void strip_all_maps()</a>
+<a name="ln712">{</a>
+<a name="ln713">    for (map_def &amp;mapdef : vdefs)</a>
+<a name="ln714">        mapdef.strip();</a>
+<a name="ln715">}</a>
+<a name="ln716"> </a>
+<a name="ln717">vector&lt;string&gt; find_map_matches(const string &amp;name)</a>
+<a name="ln718">{</a>
+<a name="ln719">    vector&lt;string&gt; matches;</a>
+<a name="ln720"> </a>
+<a name="ln721">    for (const map_def &amp;mapdef : vdefs)</a>
+<a name="ln722">        if (mapdef.name.find(name) != string::npos)</a>
+<a name="ln723">            matches.push_back(mapdef.name);</a>
+<a name="ln724">    return matches;</a>
+<a name="ln725">}</a>
+<a name="ln726"> </a>
+<a name="ln727">mapref_vector find_maps_for_tag(const string &amp;tag,</a>
+<a name="ln728">                                bool check_depth,</a>
+<a name="ln729">                                bool check_used)</a>
+<a name="ln730">{</a>
+<a name="ln731">    mapref_vector maps;</a>
+<a name="ln732">    level_id place = level_id::current();</a>
+<a name="ln733">    unordered_set&lt;string&gt; tag_set = parse_tags(tag);</a>
+<a name="ln734"> </a>
+<a name="ln735">    for (const map_def &amp;mapdef : vdefs)</a>
+<a name="ln736">    {</a>
+<a name="ln737">        if (mapdef.has_all_tags(tag_set.begin(), tag_set.end())</a>
+<a name="ln738">            &amp;&amp; !mapdef.has_tag(&quot;dummy&quot;)</a>
+<a name="ln739">            &amp;&amp; (!check_depth || !mapdef.has_depth()</a>
+<a name="ln740">                || mapdef.is_usable_in(place))</a>
+<a name="ln741">            &amp;&amp; (!check_used || !mapdef.map_already_used()))</a>
+<a name="ln742">        {</a>
+<a name="ln743">            maps.push_back(&amp;mapdef);</a>
+<a name="ln744">        }</a>
+<a name="ln745">    }</a>
+<a name="ln746">    return maps;</a>
+<a name="ln747">}</a>
+<a name="ln748"> </a>
+<a name="ln749">struct map_selector</a>
+<a name="ln750">{</a>
+<a name="ln751">private:</a>
+<a name="ln752">    enum select_type</a>
+<a name="ln753">    {</a>
+<a name="ln754">        PLACE,</a>
+<a name="ln755">        DEPTH,</a>
+<a name="ln756">        DEPTH_AND_CHANCE,</a>
+<a name="ln757">        TAG,</a>
+<a name="ln758">    };</a>
+<a name="ln759"> </a>
+<a name="ln760">public:</a>
+<a name="ln761">    bool accept(const map_def &amp;md) const;</a>
+<a name="ln762">    void announce(const map_def *map) const;</a>
+<a name="ln763"> </a>
+<a name="ln764">    bool valid() const</a>
+<a name="ln765">    {</a>
+<a name="ln766">        return sel == TAG || place.is_valid();</a>
+<a name="ln767">    }</a>
+<a name="ln768"> </a>
+<a name="ln769">    static map_selector by_place(const level_id &amp;_place, bool _mini,</a>
+<a name="ln770">                                 maybe_bool _extra)</a>
+<a name="ln771">    {</a>
+<a name="ln772">        return map_selector(map_selector::PLACE, _place, &quot;&quot;, _mini, _extra,</a>
+<a name="ln773">                            false);</a>
+<a name="ln774">    }</a>
+<a name="ln775"> </a>
+<a name="ln776">    static map_selector by_depth(const level_id &amp;_place, bool _mini,</a>
+<a name="ln777">                                 maybe_bool _extra)</a>
+<a name="ln778">    {</a>
+<a name="ln779">        return map_selector(map_selector::DEPTH, _place, &quot;&quot;, _mini, _extra,</a>
+<a name="ln780">                            true);</a>
+<a name="ln781">    }</a>
+<a name="ln782"> </a>
+<a name="ln783">    static map_selector by_depth_chance(const level_id &amp;_place,</a>
+<a name="ln784">                                        maybe_bool _extra)</a>
+<a name="ln785">    {</a>
+<a name="ln786">        return map_selector(map_selector::DEPTH_AND_CHANCE, _place, &quot;&quot;, false,</a>
+<a name="ln787">                            _extra, true);</a>
+<a name="ln788">    }</a>
+<a name="ln789"> </a>
+<a name="ln790">    static map_selector by_tag(const string &amp;_tag,</a>
+<a name="ln791">                               bool _check_depth,</a>
+<a name="ln792">                               bool _check_chance,</a>
+<a name="ln793">                               maybe_bool _extra,</a>
+<a name="ln794">                               const level_id &amp;_place = level_id::current())</a>
+<a name="ln795">    {</a>
+<a name="ln796">        map_selector msel = map_selector(map_selector::TAG, _place, _tag,</a>
+<a name="ln797">                                         false, _extra, _check_depth);</a>
+<a name="ln798">        msel.ignore_chance = !_check_chance;</a>
+<a name="ln799">        return msel;</a>
+<a name="ln800">    }</a>
+<a name="ln801"> </a>
+<a name="ln802">private:</a>
+<a name="ln803">    map_selector(select_type _typ, const level_id &amp;_pl,</a>
+<a name="ln804">                 const string &amp;_tag,</a>
+<a name="ln805">                 bool _mini, maybe_bool _extra, bool _check_depth)</a>
+<a name="ln806">        : ignore_chance(false), preserve_dummy(false),</a>
+<a name="ln807">          sel(_typ), place(_pl), tag(_tag),</a>
+<a name="ln808">          mini(_mini), extra(_extra), check_depth(_check_depth),</a>
+<a name="ln809">          check_layout((sel == DEPTH || sel == DEPTH_AND_CHANCE)</a>
+<a name="ln810">                    &amp;&amp; place == level_id::current())</a>
+<a name="ln811">    {</a>
+<a name="ln812">        if (_typ == PLACE)</a>
+<a name="ln813">            ignore_chance = true;</a>
+<a name="ln814">    }</a>
+<a name="ln815"> </a>
+<a name="ln816">    bool depth_selectable(const map_def &amp;) const;</a>
+<a name="ln817"> </a>
+<a name="ln818">public:</a>
+<a name="ln819">    bool ignore_chance;</a>
+<a name="ln820">    bool preserve_dummy;</a>
+<a name="ln821">    const select_type sel;</a>
+<a name="ln822">    const level_id place;</a>
+<a name="ln823">    const string tag;</a>
+<a name="ln824">    const bool mini;</a>
+<a name="ln825">    const maybe_bool extra;</a>
+<a name="ln826">    const bool check_depth;</a>
+<a name="ln827">    const bool check_layout;</a>
+<a name="ln828">};</a>
+<a name="ln829"> </a>
+<a name="ln830">bool map_selector::depth_selectable(const map_def &amp;mapdef) const</a>
+<a name="ln831">{</a>
+<a name="ln832">    return mapdef.is_usable_in(place)</a>
+<a name="ln833">           // Some tagged levels cannot be selected as random</a>
+<a name="ln834">           // maps in a specific depth:</a>
+<a name="ln835">           &amp;&amp; !mapdef.has_tag_suffix(&quot;entry&quot;)</a>
+<a name="ln836">           &amp;&amp; !mapdef.has_tag(&quot;unrand&quot;)</a>
+<a name="ln837">           &amp;&amp; !mapdef.has_tag(&quot;place_unique&quot;)</a>
+<a name="ln838">           &amp;&amp; !mapdef.has_tag(&quot;tutorial&quot;)</a>
+<a name="ln839">           &amp;&amp; (!mapdef.has_tag_prefix(&quot;temple_&quot;)</a>
+<a name="ln840">               || mapdef.has_tag_prefix(&quot;uniq_altar_&quot;))</a>
+<a name="ln841">           &amp;&amp; _map_matches_species(mapdef)</a>
+<a name="ln842">           &amp;&amp; (!check_layout || _map_matches_layout_type(mapdef));</a>
+<a name="ln843">}</a>
+<a name="ln844"> </a>
+<a name="ln845">static bool _is_extra_compatible(maybe_bool want_extra, bool have_extra)</a>
+<a name="ln846">{</a>
+<a name="ln847">    return want_extra == MB_MAYBE</a>
+<a name="ln848">           || (want_extra == MB_TRUE &amp;&amp; have_extra)</a>
+<a name="ln849">           || (want_extra == MB_FALSE &amp;&amp; !have_extra);</a>
+<a name="ln850">}</a>
+<a name="ln851"> </a>
+<a name="ln852">bool map_selector::accept(const map_def &amp;mapdef) const</a>
+<a name="ln853">{</a>
+<a name="ln854">    switch (sel)</a>
+<a name="ln855">    {</a>
+<a name="ln856">    case PLACE:</a>
+<a name="ln857">        if (mapdef.has_tag_prefix(&quot;tutorial&quot;)</a>
+<a name="ln858">            &amp;&amp; (!crawl_state.game_is_tutorial()</a>
+<a name="ln859">                || !mapdef.has_tag(crawl_state.map)))</a>
+<a name="ln860">        {</a>
+<a name="ln861">            return false;</a>
+<a name="ln862">        }</a>
+<a name="ln863">        return mapdef.is_minivault() == mini</a>
+<a name="ln864">               &amp;&amp; _is_extra_compatible(extra, mapdef.is_extra_vault())</a>
+<a name="ln865">               &amp;&amp; mapdef.place.is_usable_in(place)</a>
+<a name="ln866">               &amp;&amp; _map_matches_layout_type(mapdef)</a>
+<a name="ln867">               &amp;&amp; !mapdef.map_already_used();</a>
+<a name="ln868"> </a>
+<a name="ln869">    case DEPTH:</a>
+<a name="ln870">    {</a>
+<a name="ln871">        const map_chance chance(mapdef.chance(place));</a>
+<a name="ln872">        return mapdef.is_minivault() == mini</a>
+<a name="ln873">               &amp;&amp; _is_extra_compatible(extra, mapdef.is_extra_vault())</a>
+<a name="ln874">               &amp;&amp; (!chance.valid() || mapdef.has_tag(&quot;dummy&quot;))</a>
+<a name="ln875">               &amp;&amp; depth_selectable(mapdef)</a>
+<a name="ln876">               &amp;&amp; !mapdef.map_already_used();</a>
+<a name="ln877">    }</a>
+<a name="ln878"> </a>
+<a name="ln879">    case DEPTH_AND_CHANCE:</a>
+<a name="ln880">    {</a>
+<a name="ln881">        const map_chance chance(mapdef.chance(place));</a>
+<a name="ln882">        // Only vaults with valid chance</a>
+<a name="ln883">        return chance.valid()</a>
+<a name="ln884">               &amp;&amp; !mapdef.has_tag(&quot;dummy&quot;)</a>
+<a name="ln885">               &amp;&amp; depth_selectable(mapdef)</a>
+<a name="ln886">               &amp;&amp; _is_extra_compatible(extra, mapdef.is_extra_vault())</a>
+<a name="ln887">               &amp;&amp; !mapdef.map_already_used();</a>
+<a name="ln888">    }</a>
+<a name="ln889"> </a>
+<a name="ln890">    case TAG:</a>
+<a name="ln891">        return mapdef.has_all_tags(tag) // allow multiple tags, for temple overflow vaults</a>
+<a name="ln892">               &amp;&amp; (!check_depth</a>
+<a name="ln893">                   || !mapdef.has_depth()</a>
+<a name="ln894">                   || mapdef.is_usable_in(place))</a>
+<a name="ln895">               &amp;&amp; _map_matches_species(mapdef)</a>
+<a name="ln896">               &amp;&amp; _map_matches_layout_type(mapdef)</a>
+<a name="ln897">               &amp;&amp; !mapdef.map_already_used();</a>
+<a name="ln898"> </a>
+<a name="ln899">    default:</a>
+<a name="ln900">        return false;</a>
+<a name="ln901">    }</a>
+<a name="ln902">}</a>
+<a name="ln903"> </a>
+<a name="ln904">void map_selector::announce(const map_def *vault) const</a>
+<a name="ln905">{</a>
+<a name="ln906">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln907">    if (vault)</a>
+<a name="ln908">    {</a>
+<a name="ln909">        if (sel == DEPTH_AND_CHANCE)</a>
+<a name="ln910">        {</a>
+<a name="ln911">            dprf(DIAG_DNGN,</a>
+<a name="ln912">                 &quot;[CHANCE+DEPTH] Found map %s for %s (%s)&quot;,</a>
+<a name="ln913">                 vault-&gt;name.c_str(), place.describe().c_str(),</a>
+<a name="ln914">                 vault-&gt;chance(place).describe().c_str());</a>
+<a name="ln915">        }</a>
+<a name="ln916">        else</a>
+<a name="ln917">        {</a>
+<a name="ln918">            const char *format =</a>
+<a name="ln919">                sel == PLACE ? &quot;[PLACE] Found map %s for %s&quot; :</a>
+<a name="ln920">                sel == DEPTH ? &quot;[DEPTH] Found random map %s for %s&quot; :</a>
+<a name="ln921">                &quot;[TAG] Found map %s tagged '%s'&quot;;</a>
+<a name="ln922"> </a>
+<a name="ln923">            dprf(DIAG_DNGN, format,</a>
+<a name="ln924">                 vault-&gt;name.c_str(),</a>
+<a name="ln925">                 sel == TAG ? tag.c_str() : place.describe().c_str());</a>
+<a name="ln926">        }</a>
+<a name="ln927">    }</a>
+<a name="ln928">#else</a>
+<a name="ln929">    UNUSED(vault);</a>
+<a name="ln930">#endif</a>
+<a name="ln931">}</a>
+<a name="ln932"> </a>
+<a name="ln933">string vault_chance_tag(const map_def &amp;map)</a>
+<a name="ln934">{</a>
+<a name="ln935">    if (map.has_tag_prefix(&quot;chance_&quot;))</a>
+<a name="ln936">    {</a>
+<a name="ln937">        for (const string &amp;tag : map.get_tags())</a>
+<a name="ln938">            if (tag.find(&quot;chance_&quot;) == 0)</a>
+<a name="ln939">                return tag;</a>
+<a name="ln940">    }</a>
+<a name="ln941">    return &quot;&quot;;</a>
+<a name="ln942">}</a>
+<a name="ln943"> </a>
+<a name="ln944">typedef vector&lt;unsigned&gt; vault_indices;</a>
+<a name="ln945"> </a>
+<a name="ln946">static vault_indices _eligible_maps_for_selector(const map_selector &amp;sel)</a>
+<a name="ln947">{</a>
+<a name="ln948">    vault_indices eligible;</a>
+<a name="ln949"> </a>
+<a name="ln950">    if (sel.valid())</a>
+<a name="ln951">    {</a>
+<a name="ln952">        for (unsigned i = 0, size = vdefs.size(); i &lt; size; ++i)</a>
+<a name="ln953">            if (sel.accept(vdefs[i]))</a>
+<a name="ln954">                eligible.push_back(i);</a>
+<a name="ln955">    }</a>
+<a name="ln956"> </a>
+<a name="ln957">    return eligible;</a>
+<a name="ln958">}</a>
+<a name="ln959"> </a>
+<a name="ln960">static const map_def *_random_map_by_selector(const map_selector &amp;sel);</a>
+<a name="ln961"> </a>
+<a name="ln962">static bool _vault_chance_new(const map_def &amp;map,</a>
+<a name="ln963">                              const level_id &amp;place,</a>
+<a name="ln964">                              set&lt;string&gt; &amp;chance_tags)</a>
+<a name="ln965">{</a>
+<a name="ln966">    if (map.chance(place).valid())</a>
+<a name="ln967">    {</a>
+<a name="ln968">        // There may be several alternatives for a portal</a>
+<a name="ln969">        // vault that want to be governed by one common</a>
+<a name="ln970">        // CHANCE. In this case each vault will use a</a>
+<a name="ln971">        // CHANCE, and a common chance_xxx tag. Pick the</a>
+<a name="ln972">        // first such vault for the chance roll.</a>
+<a name="ln973">        const string tag = vault_chance_tag(map);</a>
+<a name="ln974">        if (!chance_tags.count(tag))</a>
+<a name="ln975">        {</a>
+<a name="ln976">            if (!tag.empty())</a>
+<a name="ln977">                chance_tags.insert(tag);</a>
+<a name="ln978">            return true;</a>
+<a name="ln979">        }</a>
+<a name="ln980">    }</a>
+<a name="ln981">    return false;</a>
+<a name="ln982">}</a>
+<a name="ln983"> </a>
+<a name="ln984">class vault_chance_roll_iterator</a>
+<a name="ln985">{</a>
+<a name="ln986">public:</a>
+<a name="ln987">    vault_chance_roll_iterator(const mapref_vector &amp;_maps)</a>
+<a name="ln988">        : place(level_id::current()),</a>
+<a name="ln989">          current(_maps.begin()), end(_maps.end())</a>
+<a name="ln990">    {</a>
+<a name="ln991">        find_valid();</a>
+<a name="ln992">    }</a>
+<a name="ln993"> </a>
+<a name="ln994">    operator bool () const { return current != end; }</a>
+<a name="ln995">    const map_def *operator * () const { return *current; }</a>
+<a name="ln996">    const map_def *operator -&gt; () const { return *current; }</a>
+<a name="ln997"> </a>
+<a name="ln998">    vault_chance_roll_iterator &amp;operator ++ ()</a>
+<a name="ln999">    {</a>
+<a name="ln1000">        ++current;</a>
+<a name="ln1001">        find_valid();</a>
+<a name="ln1002">        return *this;</a>
+<a name="ln1003">    }</a>
+<a name="ln1004"> </a>
+<a name="ln1005">    vault_chance_roll_iterator operator ++ (int)</a>
+<a name="ln1006">    {</a>
+<a name="ln1007">        vault_chance_roll_iterator copy(*this);</a>
+<a name="ln1008">        operator ++ ();</a>
+<a name="ln1009">        return copy;</a>
+<a name="ln1010">    }</a>
+<a name="ln1011"> </a>
+<a name="ln1012">private:</a>
+<a name="ln1013">    void find_valid()</a>
+<a name="ln1014">    {</a>
+<a name="ln1015">        while (current != end &amp;&amp; !(*current)-&gt;chance(place).roll())</a>
+<a name="ln1016">            ++current;</a>
+<a name="ln1017">    }</a>
+<a name="ln1018"> </a>
+<a name="ln1019">private:</a>
+<a name="ln1020">    level_id place;</a>
+<a name="ln1021">    mapref_vector::const_iterator current;</a>
+<a name="ln1022">    mapref_vector::const_iterator end;</a>
+<a name="ln1023">};</a>
+<a name="ln1024"> </a>
+<a name="ln1025">static const map_def *_resolve_chance_vault(const map_selector &amp;sel,</a>
+<a name="ln1026">                                            const map_def *map)</a>
+<a name="ln1027">{</a>
+<a name="ln1028">    const string chance_tag = vault_chance_tag(*map);</a>
+<a name="ln1029">    // If this map has a chance_ tag, convert the search into</a>
+<a name="ln1030">    // a lookup for that tag.</a>
+<a name="ln1031">    if (!chance_tag.empty())</a>
+<a name="ln1032">    {</a>
+<a name="ln1033">        map_selector msel = map_selector::by_tag(chance_tag,</a>
+<a name="ln1034">                                                 sel.check_depth,</a>
+<a name="ln1035">                                                 false,</a>
+<a name="ln1036">                                                 sel.extra,</a>
+<a name="ln1037">                                                 sel.place);</a>
+<a name="ln1038">        return _random_map_by_selector(msel);</a>
+<a name="ln1039">    }</a>
+<a name="ln1040">    return map;</a>
+<a name="ln1041">}</a>
+<a name="ln1042"> </a>
+<a name="ln1043">static mapref_vector</a>
+<a name="ln1044">_random_chance_maps_in_list(const map_selector &amp;sel,</a>
+<a name="ln1045">                            const vault_indices &amp;filtered)</a>
+<a name="ln1046">{</a>
+<a name="ln1047">    // Vaults that are eligible and have &gt;0 chance.</a>
+<a name="ln1048">    mapref_vector chance;</a>
+<a name="ln1049">    mapref_vector chosen_chances;</a>
+<a name="ln1050"> </a>
+<a name="ln1051">    typedef set&lt;string&gt; tag_set;</a>
+<a name="ln1052">    tag_set chance_tags;</a>
+<a name="ln1053"> </a>
+<a name="ln1054">    for (const int i : filtered)</a>
+<a name="ln1055">        if (!sel.ignore_chance</a>
+<a name="ln1056">            &amp;&amp; _vault_chance_new(vdefs[i], sel.place, chance_tags))</a>
+<a name="ln1057">        {</a>
+<a name="ln1058">            chance.push_back(&amp;vdefs[i]);</a>
+<a name="ln1059">        }</a>
+<a name="ln1060"> </a>
+<a name="ln1061">    for (vault_chance_roll_iterator vc(chance); vc; ++vc)</a>
+<a name="ln1062">        if (const map_def *chosen = _resolve_chance_vault(sel, *vc))</a>
+<a name="ln1063">        {</a>
+<a name="ln1064">            chosen_chances.push_back(chosen);</a>
+<a name="ln1065">            sel.announce(chosen);</a>
+<a name="ln1066">        }</a>
+<a name="ln1067"> </a>
+<a name="ln1068">    return chosen_chances;</a>
+<a name="ln1069">}</a>
+<a name="ln1070"> </a>
+<a name="ln1071">static const map_def *</a>
+<a name="ln1072">_random_map_in_list(const map_selector &amp;sel,</a>
+<a name="ln1073">                    const vault_indices &amp;filtered)</a>
+<a name="ln1074">{</a>
+<a name="ln1075">    const map_def *chosen_map = nullptr;</a>
+<a name="ln1076">    int rollsize = 0;</a>
+<a name="ln1077"> </a>
+<a name="ln1078">    // First build a list of vaults that could be used:</a>
+<a name="ln1079">    mapref_vector eligible;</a>
+<a name="ln1080"> </a>
+<a name="ln1081">    // Vaults that are eligible and have &gt;0 chance.</a>
+<a name="ln1082">    mapref_vector chance;</a>
+<a name="ln1083"> </a>
+<a name="ln1084">    typedef set&lt;string&gt; tag_set;</a>
+<a name="ln1085">    tag_set chance_tags;</a>
+<a name="ln1086"> </a>
+<a name="ln1087">    for (auto i : filtered)</a>
+<a name="ln1088">    {</a>
+<a name="ln1089">        if (!sel.ignore_chance &amp;&amp; vdefs[i].chance(sel.place).valid())</a>
+<a name="ln1090">        {</a>
+<a name="ln1091">            if (_vault_chance_new(vdefs[i], sel.place, chance_tags))</a>
+<a name="ln1092">                chance.push_back(&amp;vdefs[i]);</a>
+<a name="ln1093">        }</a>
+<a name="ln1094">        else</a>
+<a name="ln1095">            eligible.push_back(&amp;vdefs[i]);</a>
+<a name="ln1096">    }</a>
+<a name="ln1097"> </a>
+<a name="ln1098">    for (vault_chance_roll_iterator vc(chance); vc; ++vc)</a>
+<a name="ln1099">        if (const map_def *chosen = _resolve_chance_vault(sel, *vc))</a>
+<a name="ln1100">        {</a>
+<a name="ln1101">            chosen_map = chosen;</a>
+<a name="ln1102">            break;</a>
+<a name="ln1103">        }</a>
+<a name="ln1104"> </a>
+<a name="ln1105">    if (!chosen_map)</a>
+<a name="ln1106">    {</a>
+<a name="ln1107">        const level_id &amp;here(level_id::current());</a>
+<a name="ln1108">        for (auto map : eligible)</a>
+<a name="ln1109">        {</a>
+<a name="ln1110">            const int weight = map-&gt;weight(here);</a>
+<a name="ln1111"> </a>
+<a name="ln1112">            if (weight &lt;= 0)</a>
+<a name="ln1113">                continue;</a>
+<a name="ln1114"> </a>
+<a name="ln1115">            rollsize += weight;</a>
+<a name="ln1116"> </a>
+<a name="ln1117">            if (rollsize &amp;&amp; x_chance_in_y(weight, rollsize))</a>
+<a name="ln1118">                chosen_map = map;</a>
+<a name="ln1119">        }</a>
+<a name="ln1120">    }</a>
+<a name="ln1121"> </a>
+<a name="ln1122">    if (!sel.preserve_dummy &amp;&amp; chosen_map</a>
+<a name="ln1123">        &amp;&amp; chosen_map-&gt;has_tag(&quot;dummy&quot;))</a>
+<a name="ln1124">    {</a>
+<a name="ln1125">        chosen_map = nullptr;</a>
+<a name="ln1126">    }</a>
+<a name="ln1127"> </a>
+<a name="ln1128">    sel.announce(chosen_map);</a>
+<a name="ln1129">    return chosen_map;</a>
+<a name="ln1130">}</a>
+<a name="ln1131"> </a>
+<a name="ln1132">static const map_def *_random_map_by_selector(const map_selector &amp;sel)</a>
+<a name="ln1133">{</a>
+<a name="ln1134">    const vault_indices filtered = _eligible_maps_for_selector(sel);</a>
+<a name="ln1135">    return _random_map_in_list(sel, filtered);</a>
+<a name="ln1136">}</a>
+<a name="ln1137"> </a>
+<a name="ln1138">// Returns a map for which PLACE: matches the given place.</a>
+<a name="ln1139">const map_def *random_map_for_place(const level_id &amp;place, bool minivault,</a>
+<a name="ln1140">                                    maybe_bool extra)</a>
+<a name="ln1141">{</a>
+<a name="ln1142">    return _random_map_by_selector(</a>
+<a name="ln1143">        map_selector::by_place(place, minivault, extra));</a>
+<a name="ln1144">}</a>
+<a name="ln1145"> </a>
+<a name="ln1146">const map_def *random_map_in_depth(const level_id &amp;place, bool want_minivault,</a>
+<a name="ln1147">                                   maybe_bool extra)</a>
+<a name="ln1148">{</a>
+<a name="ln1149">    return _random_map_by_selector(</a>
+<a name="ln1150">        map_selector::by_depth(place, want_minivault, extra));</a>
+<a name="ln1151">}</a>
+<a name="ln1152"> </a>
+<a name="ln1153">mapref_vector random_chance_maps_in_depth(const level_id &amp;place,</a>
+<a name="ln1154">                                          maybe_bool extra)</a>
+<a name="ln1155">{</a>
+<a name="ln1156">    map_selector sel = map_selector::by_depth_chance(place, extra);</a>
+<a name="ln1157">    const vault_indices eligible = _eligible_maps_for_selector(sel);</a>
+<a name="ln1158">    return _random_chance_maps_in_list(sel, eligible);</a>
+<a name="ln1159">}</a>
+<a name="ln1160"> </a>
+<a name="ln1161">const map_def *random_map_for_tag(const string &amp;tag,</a>
+<a name="ln1162">                                  bool check_depth,</a>
+<a name="ln1163">                                  bool check_chance,</a>
+<a name="ln1164">                                  maybe_bool extra)</a>
+<a name="ln1165">{</a>
+<a name="ln1166">    return _random_map_by_selector(</a>
+<a name="ln1167">        map_selector::by_tag(tag, check_depth, check_chance, extra));</a>
+<a name="ln1168">}</a>
+<a name="ln1169"> </a>
+<a name="ln1170">int map_count()</a>
+<a name="ln1171">{</a>
+<a name="ln1172">    return vdefs.size();</a>
+<a name="ln1173">}</a>
+<a name="ln1174"> </a>
+<a name="ln1175">/////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1176">// Reading maps from .des files.</a>
+<a name="ln1177"> </a>
+<a name="ln1178">// All global preludes.</a>
+<a name="ln1179">static vector&lt;dlua_chunk&gt; global_preludes;</a>
+<a name="ln1180"> </a>
+<a name="ln1181">// Map-specific prelude.</a>
+<a name="ln1182">dlua_chunk lc_global_prelude(&quot;global_prelude&quot;);</a>
+<a name="ln1183">string lc_desfile;</a>
+<a name="ln1184">map_def     lc_map;</a>
+<a name="ln1185">depth_ranges lc_default_depths;</a>
+<a name="ln1186">bool lc_run_global_prelude = true;</a>
+<a name="ln1187">map_load_info_t lc_loaded_maps;</a>
+<a name="ln1188"> </a>
+<a name="ln1189">static set&lt;string&gt; map_files_read;</a>
+<a name="ln1190"> </a>
+<a name="ln1191">extern int yylineno;</a>
+<a name="ln1192"> </a>
+<a name="ln1193">static void _reset_map_parser()</a>
+<a name="ln1194">{</a>
+<a name="ln1195">    lc_map.init();</a>
+<a name="ln1196">    lc_default_depths.clear();</a>
+<a name="ln1197">    lc_global_prelude.clear();</a>
+<a name="ln1198"> </a>
+<a name="ln1199">    yylineno = 1;</a>
+<a name="ln1200">    lc_run_global_prelude = true;</a>
+<a name="ln1201">}</a>
+<a name="ln1202"> </a>
+<a name="ln1203">////////////////////////////////////////////////////////////////////////////</a>
+<a name="ln1204"> </a>
+<a name="ln1205">static bool checked_des_index_dir = false;</a>
+<a name="ln1206"> </a>
+<a name="ln1207">static string _des_cache_dir(const string &amp;relpath = &quot;&quot;)</a>
+<a name="ln1208">{</a>
+<a name="ln1209">    return catpath(savedir_versioned_path(&quot;des&quot;), relpath);</a>
+<a name="ln1210">}</a>
+<a name="ln1211"> </a>
+<a name="ln1212">static void _check_des_index_dir()</a>
+<a name="ln1213">{</a>
+<a name="ln1214">    if (checked_des_index_dir)</a>
+<a name="ln1215">        return;</a>
+<a name="ln1216"> </a>
+<a name="ln1217">    string desdir = _des_cache_dir();</a>
+<a name="ln1218">    if (!check_mkdir(&quot;Data file cache&quot;, &amp;desdir, true))</a>
+<a name="ln1219">        end(1, true, &quot;Can't create data file cache: %s&quot;, desdir.c_str());</a>
+<a name="ln1220"> </a>
+<a name="ln1221">    checked_des_index_dir = true;</a>
+<a name="ln1222">}</a>
+<a name="ln1223"> </a>
+<a name="ln1224">string get_descache_path(const string &amp;file, const string &amp;ext)</a>
+<a name="ln1225">{</a>
+<a name="ln1226">    const string basename = change_file_extension(get_base_filename(file), ext);</a>
+<a name="ln1227">    return _des_cache_dir(basename);</a>
+<a name="ln1228">}</a>
+<a name="ln1229"> </a>
+<a name="ln1230">static bool verify_file_version(const string &amp;file, time_t mtime)</a>
+<a name="ln1231">{</a>
+<a name="ln1232">    FILE *fp = fopen_u(file.c_str(), &quot;rb&quot;);</a>
+<a name="ln1233">    if (!fp)</a>
+<a name="ln1234">        return false;</a>
+<a name="ln1235">    try</a>
+<a name="ln1236">    {</a>
+<a name="ln1237">        reader inf(fp);</a>
+<a name="ln1238">        const auto version = get_save_version(inf);</a>
+<a name="ln1239">        const auto major = version.major, minor = version.minor;</a>
+<a name="ln1240">        const int8_t word = unmarshallByte(inf);</a>
+<a name="ln1241">        const int64_t t = unmarshallSigned(inf);</a>
+<a name="ln1242">        fclose(fp);</a>
+<a name="ln1243">        return major == TAG_MAJOR_VERSION</a>
+<a name="ln1244">               &amp;&amp; minor &lt;= TAG_MINOR_VERSION</a>
+<a name="ln1245">               &amp;&amp; word == WORD_LEN</a>
+<a name="ln1246">               &amp;&amp; t == mtime;</a>
+<a name="ln1247">    }</a>
+<a name="ln1248">    catch (short_read_exception &amp;E)</a>
+<a name="ln1249">    {</a>
+<a name="ln1250">        fclose(fp);</a>
+<a name="ln1251">        return false;</a>
+<a name="ln1252">    }</a>
+<a name="ln1253">}</a>
+<a name="ln1254"> </a>
+<a name="ln1255">static bool _verify_map_index(const string &amp;base, time_t mtime)</a>
+<a name="ln1256">{</a>
+<a name="ln1257">    return verify_file_version(base + &quot;.idx&quot;, mtime);</a>
+<a name="ln1258">}</a>
+<a name="ln1259"> </a>
+<a name="ln1260">static bool _verify_map_full(const string &amp;base, time_t mtime)</a>
+<a name="ln1261">{</a>
+<a name="ln1262">    return verify_file_version(base + &quot;.dsc&quot;, mtime);</a>
+<a name="ln1263">}</a>
+<a name="ln1264"> </a>
+<a name="ln1265">static bool _load_map_index(const string&amp; cache, const string &amp;base,</a>
+<a name="ln1266">                            time_t mtime)</a>
+<a name="ln1267">{</a>
+<a name="ln1268">    // If there's a global prelude, load that first.</a>
+<a name="ln1269">    if (FILE *fp = fopen_u((base + &quot;.lux&quot;).c_str(), &quot;rb&quot;))</a>
+<a name="ln1270">    {</a>
+<a name="ln1271">        reader inf(fp, TAG_MINOR_VERSION);</a>
+<a name="ln1272">        const auto version = get_save_version(inf);</a>
+<a name="ln1273">        const auto major = version.major, minor = version.minor;</a>
+<a name="ln1274">        int8_t word = unmarshallByte(inf);</a>
+<a name="ln1275">        int64_t t = unmarshallSigned(inf);</a>
+<a name="ln1276">        if (major != TAG_MAJOR_VERSION || minor &gt; TAG_MINOR_VERSION</a>
+<a name="ln1277">            || word != WORD_LEN || t != mtime)</a>
+<a name="ln1278">        {</a>
+<a name="ln1279">            return false;</a>
+<a name="ln1280">        }</a>
+<a name="ln1281"> </a>
+<a name="ln1282">        lc_global_prelude.read(inf);</a>
+<a name="ln1283">        fclose(fp);</a>
+<a name="ln1284"> </a>
+<a name="ln1285">        global_preludes.push_back(lc_global_prelude);</a>
+<a name="ln1286">    }</a>
+<a name="ln1287"> </a>
+<a name="ln1288">    FILE* fp = fopen_u((base + &quot;.idx&quot;).c_str(), &quot;rb&quot;);</a>
+<a name="ln1289">    if (!fp)</a>
+<a name="ln1290">        end(1, true, &quot;Unable to read %s&quot;, (base + &quot;.idx&quot;).c_str());</a>
+<a name="ln1291"> </a>
+<a name="ln1292">    reader inf(fp, TAG_MINOR_VERSION);</a>
+<a name="ln1293">    // Re-check version, might have been modified in the meantime.</a>
+<a name="ln1294">    const auto version = get_save_version(inf);</a>
+<a name="ln1295">    const auto major = version.major, minor = version.minor;</a>
+<a name="ln1296">    int8_t word = unmarshallByte(inf);</a>
+<a name="ln1297">    int64_t t = unmarshallSigned(inf);</a>
+<a name="ln1298">    if (major != TAG_MAJOR_VERSION || minor &gt; TAG_MINOR_VERSION</a>
+<a name="ln1299">        || word != WORD_LEN || t != mtime)</a>
+<a name="ln1300">    {</a>
+<a name="ln1301">        return false;</a>
+<a name="ln1302">    }</a>
+<a name="ln1303"> </a>
+<a name="ln1304">#if TAG_MAJOR_VERSION == 34</a>
+<a name="ln1305">    // Throw out indices that could have CHANCE priority entirely.</a>
+<a name="ln1306">    if (minor &lt; TAG_MINOR_NO_PRIORITY)</a>
+<a name="ln1307">        return false;</a>
+<a name="ln1308">#endif</a>
+<a name="ln1309"> </a>
+<a name="ln1310">    const int nmaps = unmarshallShort(inf);</a>
+<a name="ln1311">    const int nexist = vdefs.size();</a>
+<a name="ln1312">    vdefs.resize(nexist + nmaps, map_def());</a>
+<a name="ln1313">    for (int i = 0; i &lt; nmaps; ++i)</a>
+<a name="ln1314">    {</a>
+<a name="ln1315">        map_def &amp;vdef(vdefs[nexist + i]);</a>
+<a name="ln1316">        vdef.read_index(inf);</a>
+<a name="ln1317">        vdef.description = unmarshallString(inf);</a>
+<a name="ln1318">        vdef.order = unmarshallInt(inf);</a>
+<a name="ln1319"> </a>
+<a name="ln1320">        vdef.set_file(cache);</a>
+<a name="ln1321">        lc_loaded_maps[vdef.name] = vdef.place_loaded_from;</a>
+<a name="ln1322">        vdef.place_loaded_from.clear();</a>
+<a name="ln1323">    }</a>
+<a name="ln1324">    fclose(fp);</a>
+<a name="ln1325"> </a>
+<a name="ln1326">    return true;</a>
+<a name="ln1327">}</a>
+<a name="ln1328"> </a>
+<a name="ln1329">static bool _load_map_cache(const string &amp;filename, const string &amp;cachename)</a>
+<a name="ln1330">{</a>
+<a name="ln1331">    _check_des_index_dir();</a>
+<a name="ln1332">    const string descache_base = get_descache_path(cachename, &quot;&quot;);</a>
+<a name="ln1333"> </a>
+<a name="ln1334">    file_lock deslock(descache_base + &quot;.lk&quot;, &quot;rb&quot;, false);</a>
+<a name="ln1335"> </a>
+<a name="ln1336">    time_t mtime = file_modtime(filename);</a>
+<a name="ln1337">    string file_idx = descache_base + &quot;.idx&quot;;</a>
+<a name="ln1338">    string file_dsc = descache_base + &quot;.dsc&quot;;</a>
+<a name="ln1339"> </a>
+<a name="ln1340">    // What's the point in checking these twice (here and in load_ma_index)?</a>
+<a name="ln1341">    if (!_verify_map_index(descache_base, mtime)</a>
+<a name="ln1342">        || !_verify_map_full(descache_base, mtime))</a>
+<a name="ln1343">    {</a>
+<a name="ln1344">        return false;</a>
+<a name="ln1345">    }</a>
+<a name="ln1346"> </a>
+<a name="ln1347">    return _load_map_index(cachename, descache_base, mtime);</a>
+<a name="ln1348">}</a>
+<a name="ln1349"> </a>
+<a name="ln1350">static void _write_map_prelude(const string &amp;filebase, time_t mtime)</a>
+<a name="ln1351">{</a>
+<a name="ln1352">    const string luafile = filebase + &quot;.lux&quot;;</a>
+<a name="ln1353">    if (lc_global_prelude.empty())</a>
+<a name="ln1354">    {</a>
+<a name="ln1355">        unlink_u(luafile.c_str());</a>
+<a name="ln1356">        return;</a>
+<a name="ln1357">    }</a>
+<a name="ln1358"> </a>
+<a name="ln1359">    FILE *fp = fopen_u(luafile.c_str(), &quot;wb&quot;);</a>
+<a name="ln1360">    writer outf(luafile, fp);</a>
+<a name="ln1361">    write_save_version(outf, save_version::current());</a>
+<a name="ln1362">    marshallByte(outf, WORD_LEN);</a>
+<a name="ln1363">    marshallSigned(outf, mtime);</a>
+<a name="ln1364">    lc_global_prelude.write(outf);</a>
+<a name="ln1365">    fclose(fp);</a>
+<a name="ln1366">}</a>
+<a name="ln1367"> </a>
+<a name="ln1368">static void _write_map_full(const string &amp;filebase, size_t vs, size_t ve,</a>
+<a name="ln1369">                            time_t mtime)</a>
+<a name="ln1370">{</a>
+<a name="ln1371">    const string cfile = filebase + &quot;.dsc&quot;;</a>
+<a name="ln1372">    FILE *fp = fopen_u(cfile.c_str(), &quot;wb&quot;);</a>
+<a name="ln1373">    if (!fp)</a>
+<a name="ln1374">        end(1, true, &quot;Unable to open %s for writing&quot;, cfile.c_str());</a>
+<a name="ln1375"> </a>
+<a name="ln1376">    writer outf(cfile, fp);</a>
+<a name="ln1377">    write_save_version(outf, save_version::current());</a>
+<a name="ln1378">    marshallByte(outf, WORD_LEN);</a>
+<a name="ln1379">    marshallSigned(outf, mtime);</a>
+<a name="ln1380">    for (size_t i = vs; i &lt; ve; ++i)</a>
+<a name="ln1381">        vdefs[i].write_full(outf);</a>
+<a name="ln1382">    fclose(fp);</a>
+<a name="ln1383">}</a>
+<a name="ln1384"> </a>
+<a name="ln1385">static void _write_map_index(const string &amp;filebase, size_t vs, size_t ve,</a>
+<a name="ln1386">                             time_t mtime)</a>
+<a name="ln1387">{</a>
+<a name="ln1388">    const string cfile = filebase + &quot;.idx&quot;;</a>
+<a name="ln1389">    FILE *fp = fopen_u(cfile.c_str(), &quot;wb&quot;);</a>
+<a name="ln1390">    if (!fp)</a>
+<a name="ln1391">        end(1, true, &quot;Unable to open %s for writing&quot;, cfile.c_str());</a>
+<a name="ln1392"> </a>
+<a name="ln1393">    writer outf(cfile, fp);</a>
+<a name="ln1394">    write_save_version(outf, save_version::current());</a>
+<a name="ln1395">    marshallByte(outf, WORD_LEN);</a>
+<a name="ln1396">    marshallSigned(outf, mtime);</a>
+<a name="ln1397">    marshallShort(outf, ve &gt; vs? ve - vs : 0);</a>
+<a name="ln1398">    for (size_t i = vs; i &lt; ve; ++i)</a>
+<a name="ln1399">    {</a>
+<a name="ln1400">        vdefs[i].write_index(outf);</a>
+<a name="ln1401">        marshallString(outf, vdefs[i].description);</a>
+<a name="ln1402">        marshallInt(outf, vdefs[i].order);</a>
+<a name="ln1403">        vdefs[i].place_loaded_from.clear();</a>
+<a name="ln1404">        vdefs[i].strip();</a>
+<a name="ln1405">    }</a>
+<a name="ln1406">    fclose(fp);</a>
+<a name="ln1407">}</a>
+<a name="ln1408"> </a>
+<a name="ln1409">static void _write_map_cache(const string &amp;filename, size_t vs, size_t ve,</a>
+<a name="ln1410">                             time_t mtime)</a>
+<a name="ln1411">{</a>
+<a name="ln1412">    _check_des_index_dir();</a>
+<a name="ln1413"> </a>
+<a name="ln1414">    const string descache_base = get_descache_path(filename, &quot;&quot;);</a>
+<a name="ln1415"> </a>
+<a name="ln1416">    file_lock deslock(descache_base + &quot;.lk&quot;, &quot;wb&quot;);</a>
+<a name="ln1417"> </a>
+<a name="ln1418">    _write_map_prelude(descache_base, mtime);</a>
+<a name="ln1419">    _write_map_full(descache_base, vs, ve, mtime);</a>
+<a name="ln1420">    _write_map_index(descache_base, vs, ve, mtime);</a>
+<a name="ln1421">}</a>
+<a name="ln1422"> </a>
+<a name="ln1423">static void _parse_maps(const string &amp;s)</a>
+<a name="ln1424">{</a>
+<a name="ln1425">    string cache_name = get_cache_name(s);</a>
+<a name="ln1426">    if (map_files_read.count(cache_name))</a>
+<a name="ln1427">        return;</a>
+<a name="ln1428"> </a>
+<a name="ln1429">    map_files_read.insert(cache_name);</a>
+<a name="ln1430"> </a>
+<a name="ln1431">    if (_load_map_cache(s, cache_name))</a>
+<a name="ln1432">        return;</a>
+<a name="ln1433"> </a>
+<a name="ln1434">    FILE *dat = fopen_u(s.c_str(), &quot;r&quot;);</a>
+<a name="ln1435">    if (!dat)</a>
+<a name="ln1436">        end(1, true, &quot;Failed to open %s for reading&quot;, s.c_str());</a>
+<a name="ln1437"> </a>
+<a name="ln1438">#ifdef DEBUG_DIAGNOSTICS</a>
+<a name="ln1439">    printf(&quot;Regenerating des: %s\n&quot;, s.c_str());</a>
+<a name="ln1440">#endif</a>
+<a name="ln1441">    // won't be seen by the user unless they look for it</a>
+<a name="ln1442">    mprf(MSGCH_PLAIN, &quot;Regenerating des: %s&quot;, s.c_str());</a>
+<a name="ln1443"> </a>
+<a name="ln1444">    time_t mtime = file_modtime(dat);</a>
+<a name="ln1445">    _reset_map_parser();</a>
+<a name="ln1446"> </a>
+<a name="ln1447">    extern int yyparse();</a>
+<a name="ln1448">    extern FILE *yyin;</a>
+<a name="ln1449">    yyin = dat;</a>
+<a name="ln1450"> </a>
+<a name="ln1451">    const size_t file_start = vdefs.size();</a>
+<a name="ln1452">    yyparse();</a>
+<a name="ln1453">    fclose(dat);</a>
+<a name="ln1454"> </a>
+<a name="ln1455">    global_preludes.push_back(lc_global_prelude);</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    _write_map_cache(cache_name, file_start, vdefs.size(), mtime);</a>
+<a name="ln1458">}</a>
+<a name="ln1459"> </a>
+<a name="ln1460">void read_map(const string &amp;file)</a>
+<a name="ln1461">{</a>
+<a name="ln1462">    _parse_maps(lc_desfile = datafile_path(file));</a>
+<a name="ln1463">    _dgn_flush_map_environments();</a>
+<a name="ln1464">    // Force GC to prevent heap from swelling unnecessarily.</a>
+<a name="ln1465">    dlua.gc();</a>
+<a name="ln1466">}</a>
+<a name="ln1467"> </a>
+<a name="ln1468">void read_maps()</a>
+<a name="ln1469">{</a>
+<a name="ln1470">    if (dlua.execfile(&quot;dlua/loadmaps.lua&quot;, true, true, true))</a>
+<a name="ln1471">        end(1, false, &quot;Lua error: %s&quot;, dlua.error.c_str());</a>
+<a name="ln1472"> </a>
+<a name="ln1473">    lc_loaded_maps.clear();</a>
+<a name="ln1474"> </a>
+<a name="ln1475">    {</a>
+<a name="ln1476">        unwind_var&lt;FixedVector&lt;int, NUM_BRANCHES&gt; &gt; depths(brdepth);</a>
+<a name="ln1477">        // let the sanity check place maps</a>
+<a name="ln1478">        for (branch_iterator it; it; ++it)</a>
+<a name="ln1479">            brdepth[it-&gt;id] = it-&gt;numlevels;</a>
+<a name="ln1480">        dlua.execfile(&quot;dlua/sanity.lua&quot;, true, true);</a>
+<a name="ln1481">    }</a>
+<a name="ln1482">}</a>
+<a name="ln1483"> </a>
+<a name="ln1484">// If a .dsc file has been changed under the running Crawl, discard</a>
+<a name="ln1485">// all map knowledge and reload maps. This will not affect maps that</a>
+<a name="ln1486">// have already been used, but it might trigger exciting happenings if</a>
+<a name="ln1487">// the new maps fail sanity checks or remove maps that the game</a>
+<a name="ln1488">// expects to be present.</a>
+<a name="ln1489">void reread_maps()</a>
+<a name="ln1490">{</a>
+<a name="ln1491">    dprf(&quot;reread_maps:: discarding %u existing maps&quot;,</a>
+<a name="ln1492">         (unsigned int)vdefs.size());</a>
+<a name="ln1493"> </a>
+<a name="ln1494">    // BOOM!</a>
+<a name="ln1495">    vdefs.clear();</a>
+<a name="ln1496">    map_files_read.clear();</a>
+<a name="ln1497">    read_maps();</a>
+<a name="ln1498">}</a>
+<a name="ln1499"> </a>
+<a name="ln1500">void dump_map(const map_def &amp;map)</a>
+<a name="ln1501">{</a>
+<a name="ln1502">    if (crawl_state.dump_maps)</a>
+<a name="ln1503">    {</a>
+<a name="ln1504">        fprintf(stderr, &quot;\n----------------------------------------\n%s\n&quot;,</a>
+<a name="ln1505">                map.describe().c_str());</a>
+<a name="ln1506">    }</a>
+<a name="ln1507">}</a>
+<a name="ln1508"> </a>
+<a name="ln1509">void add_parsed_map(const map_def &amp;md)</a>
+<a name="ln1510">{</a>
+<a name="ln1511">    map_def map = md;</a>
+<a name="ln1512"> </a>
+<a name="ln1513">    map.fixup();</a>
+<a name="ln1514">    vdefs.push_back(map);</a>
+<a name="ln1515">}</a>
+<a name="ln1516"> </a>
+<a name="ln1517">void run_map_global_preludes()</a>
+<a name="ln1518">{</a>
+<a name="ln1519">    for (dlua_chunk &amp;chunk : global_preludes)</a>
+<a name="ln1520">    {</a>
+<a name="ln1521">        if (!chunk.empty())</a>
+<a name="ln1522">        {</a>
+<a name="ln1523">            if (chunk.load_call(dlua, nullptr))</a>
+<a name="ln1524">                mprf(MSGCH_ERROR, &quot;Lua error: %s&quot;, chunk.orig_error().c_str());</a>
+<a name="ln1525">        }</a>
+<a name="ln1526">    }</a>
+<a name="ln1527">}</a>
+<a name="ln1528"> </a>
+<a name="ln1529">void run_map_local_preludes()</a>
+<a name="ln1530">{</a>
+<a name="ln1531">    for (map_def &amp;vdef : vdefs)</a>
+<a name="ln1532">    {</a>
+<a name="ln1533">        if (!vdef.prelude.empty())</a>
+<a name="ln1534">        {</a>
+<a name="ln1535">            string err = vdef.run_lua(true);</a>
+<a name="ln1536">            if (!err.empty())</a>
+<a name="ln1537">            {</a>
+<a name="ln1538">                mprf(MSGCH_ERROR, &quot;Lua error (map %s): %s&quot;,</a>
+<a name="ln1539">                     vdef.name.c_str(), err.c_str());</a>
+<a name="ln1540">            }</a>
+<a name="ln1541">        }</a>
+<a name="ln1542">    }</a>
+<a name="ln1543">}</a>
+<a name="ln1544"> </a>
+<a name="ln1545">const map_def *map_by_index(int index)</a>
+<a name="ln1546">{</a>
+<a name="ln1547">    return &amp;vdefs[index];</a>
+<a name="ln1548">}</a>
+<a name="ln1549"> </a>
+<a name="ln1550">// Supporting map code for mapstat</a>
+<a name="ln1551">#ifdef DEBUG_STATISTICS</a>
+<a name="ln1552"> </a>
+<a name="ln1553">typedef pair&lt;string, int&gt; weighted_map_name;</a>
+<a name="ln1554">typedef vector&lt;weighted_map_name&gt; weighted_map_names;</a>
+<a name="ln1555"> </a>
+<a name="ln1556">static weighted_map_names _find_random_vaults(</a>
+<a name="ln1557">    const level_id &amp;place, bool wantmini)</a>
+<a name="ln1558">{</a>
+<a name="ln1559">    weighted_map_names wms;</a>
+<a name="ln1560"> </a>
+<a name="ln1561">    if (!place.is_valid())</a>
+<a name="ln1562">        return wms;</a>
+<a name="ln1563"> </a>
+<a name="ln1564">    typedef map&lt;string, int&gt; map_count_t;</a>
+<a name="ln1565"> </a>
+<a name="ln1566">    map_count_t map_counts;</a>
+<a name="ln1567"> </a>
+<a name="ln1568">    map_selector sel = map_selector::by_depth(place, wantmini, MB_MAYBE);</a>
+<a name="ln1569">    sel.preserve_dummy = true;</a>
+<a name="ln1570"> </a>
+<a name="ln1571">    no_messages mx;</a>
+<a name="ln1572">    vault_indices filtered = _eligible_maps_for_selector(sel);</a>
+<a name="ln1573"> </a>
+<a name="ln1574">    for (int i = 0; i &lt; 10000; ++i)</a>
+<a name="ln1575">    {</a>
+<a name="ln1576">        const map_def *map(_random_map_in_list(sel, filtered));</a>
+<a name="ln1577">        if (!map)</a>
+<a name="ln1578">            map_counts[&quot;(none)&quot;]++;</a>
+<a name="ln1579">        else</a>
+<a name="ln1580">            map_counts[map-&gt;name]++;</a>
+<a name="ln1581">    }</a>
+<a name="ln1582"> </a>
+<a name="ln1583">    wms.insert(wms.end(), map_counts.begin(), map_counts.end());</a>
+<a name="ln1584">    return wms;</a>
+<a name="ln1585">}</a>
+<a name="ln1586"> </a>
+<a name="ln1587">static bool _weighted_map_more_likely(</a>
+<a name="ln1588">    const weighted_map_name &amp;a,</a>
+<a name="ln1589">    const weighted_map_name &amp;b)</a>
+<a name="ln1590">{</a>
+<a name="ln1591">    return a.second &gt; b.second;</a>
+<a name="ln1592">}</a>
+<a name="ln1593"> </a>
+<a name="ln1594">static void _report_random_vaults(</a>
+<a name="ln1595">    FILE *outf, const level_id &amp;place, bool wantmini)</a>
+<a name="ln1596">{</a>
+<a name="ln1597">    weighted_map_names wms = _find_random_vaults(place, wantmini);</a>
+<a name="ln1598">    sort(wms.begin(), wms.end(), _weighted_map_more_likely);</a>
+<a name="ln1599">    int weightsum = 0;</a>
+<a name="ln1600">    for (const auto&amp; weighted_name : wms)</a>
+<a name="ln1601">        weightsum += weighted_name.second;</a>
+<a name="ln1602"> </a>
+<a name="ln1603">    string line;</a>
+<a name="ln1604">    for (int i = 0, size = wms.size(); i &lt; size; ++i)</a>
+<a name="ln1605">    {</a>
+<a name="ln1606">        string curr = make_stringf(&quot;%s (%.2f%%)&quot;, wms[i].first.c_str(),</a>
+<a name="ln1607">                                   100.0 * wms[i].second / weightsum);</a>
+<a name="ln1608">        if (i &lt; size - 1)</a>
+<a name="ln1609">            curr += &quot;, &quot;;</a>
+<a name="ln1610">        if (line.length() + curr.length() &gt; 80u)</a>
+<a name="ln1611">        {</a>
+<a name="ln1612">            fprintf(outf, &quot;%s\n&quot;, line.c_str());</a>
+<a name="ln1613">            line.clear();</a>
+<a name="ln1614">        }</a>
+<a name="ln1615"> </a>
+<a name="ln1616">        line += curr;</a>
+<a name="ln1617">    }</a>
+<a name="ln1618">    if (!line.empty())</a>
+<a name="ln1619">        fprintf(outf, &quot;%s\n&quot;, line.c_str());</a>
+<a name="ln1620">}</a>
+<a name="ln1621"> </a>
+<a name="ln1622">void mapstat_report_random_maps(FILE *outf, const level_id &amp;place)</a>
+<a name="ln1623">{</a>
+<a name="ln1624">    fprintf(outf, &quot;---------------- Mini\n&quot;);</a>
+<a name="ln1625">    _report_random_vaults(outf, place, true);</a>
+<a name="ln1626">    fprintf(outf, &quot;------------- Regular\n&quot;);</a>
+<a name="ln1627">    _report_random_vaults(outf, place, false);</a>
+<a name="ln1628">}</a>
+<a name="ln1629"> </a>
+<a name="ln1630">#endif //DEBUG_STATISTICS</a>
+
+</code></pre>
+<div class="balloon" rel="245"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v648/" target="_blank">V648</a> Priority of the '&&' operation is higher than that of the '||' operation. Consider inspecting the 'must_rot || can_rot && coinflip()' expression.</p></div>
+<div class="balloon" rel="272"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: exact_fit.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

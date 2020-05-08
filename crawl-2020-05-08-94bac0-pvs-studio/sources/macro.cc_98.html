@@ -1,0 +1,1606 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>macro.cc</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * @file</a>
+<a name="ln3"> * @brief Crude macro-capability</a>
+<a name="ln4">**/</a>
+<a name="ln5"> </a>
+<a name="ln6">/*</a>
+<a name="ln7"> * The macro-implementation works like this:</a>
+<a name="ln8"> *   - getchm() works by reading characters from an internal</a>
+<a name="ln9"> *     buffer. If none are available, new characters are read into</a>
+<a name="ln10"> *     the buffer with _getch_mul().</a>
+<a name="ln11"> *   - _getch_mul() reads at least one character, but will read more</a>
+<a name="ln12"> *     if available (determined using kbhit(), which should be defined</a>
+<a name="ln13"> *     in the platform specific libraries).</a>
+<a name="ln14"> *   - Before adding the characters read into the buffer, any keybindings</a>
+<a name="ln15"> *     in the sequence are replaced (see macro_add_buf_long for the</a>
+<a name="ln16"> *     details).</a>
+<a name="ln17"> *</a>
+<a name="ln18"> * (When the above text mentions characters, it actually means int).</a>
+<a name="ln19"> */</a>
+<a name="ln20"> </a>
+<a name="ln21">#include &quot;AppHdr.h&quot;</a>
+<a name="ln22"> </a>
+<a name="ln23">#include &quot;macro.h&quot;</a>
+<a name="ln24"> </a>
+<a name="ln25">#include &lt;cctype&gt;</a>
+<a name="ln26">#include &lt;cstdio&gt;</a>
+<a name="ln27">#include &lt;cstdlib&gt;</a>
+<a name="ln28">#include &lt;deque&gt;</a>
+<a name="ln29">#include &lt;map&gt;</a>
+<a name="ln30">#include &lt;sstream&gt;</a>
+<a name="ln31">#include &lt;string&gt;</a>
+<a name="ln32">#include &lt;vector&gt;</a>
+<a name="ln33"> </a>
+<a name="ln34">#ifdef USE_TILE_LOCAL</a>
+<a name="ln35">#include &lt;SDL_keycode.h&gt;</a>
+<a name="ln36">#endif</a>
+<a name="ln37"> </a>
+<a name="ln38">#include &quot;cio.h&quot;</a>
+<a name="ln39">#include &quot;command.h&quot;</a>
+<a name="ln40">#include &quot;files.h&quot;</a>
+<a name="ln41">#include &quot;initfile.h&quot;</a>
+<a name="ln42">#include &quot;libutil.h&quot;</a>
+<a name="ln43">#include &quot;message.h&quot;</a>
+<a name="ln44">#include &quot;misc.h&quot; // erase_val</a>
+<a name="ln45">#include &quot;options.h&quot;</a>
+<a name="ln46">#include &quot;output.h&quot;</a>
+<a name="ln47">#include &quot;state.h&quot;</a>
+<a name="ln48">#include &quot;state.h&quot;</a>
+<a name="ln49">#include &quot;stringutil.h&quot;</a>
+<a name="ln50">#include &quot;syscalls.h&quot;</a>
+<a name="ln51">#include &quot;unicode.h&quot;</a>
+<a name="ln52">#include &quot;version.h&quot;</a>
+<a name="ln53"> </a>
+<a name="ln54">typedef deque&lt;int&gt; keybuf;</a>
+<a name="ln55">typedef map&lt;keyseq,keyseq&gt; macromap;</a>
+<a name="ln56"> </a>
+<a name="ln57">static macromap Keymaps[KMC_CONTEXT_COUNT];</a>
+<a name="ln58">static macromap Macros;</a>
+<a name="ln59"> </a>
+<a name="ln60">static macromap *all_maps[] =</a>
+<a name="ln61">{</a>
+<a name="ln62">    &amp;Keymaps[KMC_DEFAULT],</a>
+<a name="ln63">    &amp;Keymaps[KMC_LEVELMAP],</a>
+<a name="ln64">    &amp;Keymaps[KMC_TARGETING],</a>
+<a name="ln65">    &amp;Keymaps[KMC_CONFIRM],</a>
+<a name="ln66"> </a>
+<a name="ln67">    &amp;Macros,</a>
+<a name="ln68">};</a>
+<a name="ln69"> </a>
+<a name="ln70">static keybuf Buffer;</a>
+<a name="ln71">static keybuf SendKeysBuffer;</a>
+<a name="ln72"> </a>
+<a name="ln73">#define USERFUNCBASE -10000</a>
+<a name="ln74">static vector&lt;string&gt; userfunctions;</a>
+<a name="ln75"> </a>
+<a name="ln76">static vector&lt;key_recorder*&gt; recorders;</a>
+<a name="ln77"> </a>
+<a name="ln78">typedef map&lt;string, int&gt; name_to_cmd_map;</a>
+<a name="ln79">typedef map&lt;int, string&gt; cmd_to_name_map;</a>
+<a name="ln80"> </a>
+<a name="ln81">struct command_name</a>
+<a name="ln82">{</a>
+<a name="ln83">    command_type cmd;</a>
+<a name="ln84">    const char*  name;</a>
+<a name="ln85">};</a>
+<a name="ln86"> </a>
+<a name="ln87">static command_name _command_name_list[] =</a>
+<a name="ln88">{</a>
+<a name="ln89">#include &quot;cmd-name.h&quot;</a>
+<a name="ln90">};</a>
+<a name="ln91"> </a>
+<a name="ln92">static name_to_cmd_map _names_to_cmds;</a>
+<a name="ln93">static cmd_to_name_map _cmds_to_names;</a>
+<a name="ln94"> </a>
+<a name="ln95">struct default_binding</a>
+<a name="ln96">{</a>
+<a name="ln97">    int           key;</a>
+<a name="ln98">    command_type  cmd;</a>
+<a name="ln99">};</a>
+<a name="ln100"> </a>
+<a name="ln101">static default_binding _default_binding_list[] =</a>
+<a name="ln102">{</a>
+<a name="ln103">#include &quot;cmd-keys.h&quot;</a>
+<a name="ln104">};</a>
+<a name="ln105"> </a>
+<a name="ln106">typedef map&lt;int, int&gt; key_to_cmd_map;</a>
+<a name="ln107">typedef map&lt;int, int&gt; cmd_to_key_map;</a>
+<a name="ln108"> </a>
+<a name="ln109">static key_to_cmd_map _keys_to_cmds[KMC_CONTEXT_COUNT];</a>
+<a name="ln110">static cmd_to_key_map _cmds_to_keys[KMC_CONTEXT_COUNT];</a>
+<a name="ln111"> </a>
+<a name="ln112">static inline int userfunc_index(int key)</a>
+<a name="ln113">{</a>
+<a name="ln114">    int index = (key &lt;= USERFUNCBASE ? USERFUNCBASE - key : -1);</a>
+<a name="ln115">    return index &lt; 0 || index &gt;= (int) userfunctions.size()? -1 : index;</a>
+<a name="ln116">}</a>
+<a name="ln117"> </a>
+<a name="ln118">static int userfunc_index(const keyseq &amp;seq)</a>
+<a name="ln119">{</a>
+<a name="ln120">    if (seq.empty())</a>
+<a name="ln121">        return -1;</a>
+<a name="ln122"> </a>
+<a name="ln123">    return userfunc_index(seq.front());</a>
+<a name="ln124">}</a>
+<a name="ln125"> </a>
+<a name="ln126">bool is_userfunction(int key)</a>
+<a name="ln127">{</a>
+<a name="ln128">    return userfunc_index(key) != -1;</a>
+<a name="ln129">}</a>
+<a name="ln130"> </a>
+<a name="ln131">static bool is_userfunction(const keyseq &amp;seq)</a>
+<a name="ln132">{</a>
+<a name="ln133">    return userfunc_index(seq) != -1;</a>
+<a name="ln134">}</a>
+<a name="ln135"> </a>
+<a name="ln136">string get_userfunction(int key)</a>
+<a name="ln137">{</a>
+<a name="ln138">    int index = userfunc_index(key);</a>
+<a name="ln139">    return index == -1 ? nullptr : userfunctions[index];</a>
+<a name="ln140">}</a>
+<a name="ln141"> </a>
+<a name="ln142">static string get_userfunction(const keyseq &amp;seq)</a>
+<a name="ln143">{</a>
+<a name="ln144">    int index = userfunc_index(seq);</a>
+<a name="ln145">    return index == -1 ? nullptr : userfunctions[index];</a>
+<a name="ln146">}</a>
+<a name="ln147"> </a>
+<a name="ln148">static bool userfunc_referenced(int index, const macromap &amp;mm)</a>
+<a name="ln149">{</a>
+<a name="ln150">    for (const auto &amp;entry : mm)</a>
+<a name="ln151">        if (userfunc_index(entry.second) == index)</a>
+<a name="ln152">            return true;</a>
+<a name="ln153"> </a>
+<a name="ln154">    return false;</a>
+<a name="ln155">}</a>
+<a name="ln156"> </a>
+<a name="ln157">static bool userfunc_referenced(int index)</a>
+<a name="ln158">{</a>
+<a name="ln159">    for (auto m : all_maps)</a>
+<a name="ln160">        if (userfunc_referenced(index, *m))</a>
+<a name="ln161">            return true;</a>
+<a name="ln162"> </a>
+<a name="ln163">    return false;</a>
+<a name="ln164">}</a>
+<a name="ln165"> </a>
+<a name="ln166">// Expensive function to discard unused function names</a>
+<a name="ln167">static void userfunc_collectgarbage()</a>
+<a name="ln168">{</a>
+<a name="ln169">    for (int i = userfunctions.size() - 1; i &gt;= 0; --i)</a>
+<a name="ln170">    {</a>
+<a name="ln171">        if (!userfunctions.empty() &amp;&amp; !userfunc_referenced(i))</a>
+<a name="ln172">            userfunctions[i].clear();</a>
+<a name="ln173">    }</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">static int userfunc_getindex(const string &amp;fname)</a>
+<a name="ln177">{</a>
+<a name="ln178">    if (fname.length() == 0)</a>
+<a name="ln179">        return -1;</a>
+<a name="ln180"> </a>
+<a name="ln181">    userfunc_collectgarbage();</a>
+<a name="ln182"> </a>
+<a name="ln183">    // Pass 1 to see if we have this string already</a>
+<a name="ln184">    for (int i = 0, count = userfunctions.size(); i &lt; count; ++i)</a>
+<a name="ln185">    {</a>
+<a name="ln186">        if (userfunctions[i] == fname)</a>
+<a name="ln187">            return i;</a>
+<a name="ln188">    }</a>
+<a name="ln189"> </a>
+<a name="ln190">    // Pass 2 to hunt for gaps.</a>
+<a name="ln191">    for (int i = 0, count = userfunctions.size(); i &lt; count; ++i)</a>
+<a name="ln192">    {</a>
+<a name="ln193">        if (userfunctions[i].empty())</a>
+<a name="ln194">        {</a>
+<a name="ln195">            userfunctions[i] = fname;</a>
+<a name="ln196">            return i;</a>
+<a name="ln197">        }</a>
+<a name="ln198">    }</a>
+<a name="ln199"> </a>
+<a name="ln200">    userfunctions.push_back(fname);</a>
+<a name="ln201">    return userfunctions.size() - 1;</a>
+<a name="ln202">}</a>
+<a name="ln203"> </a>
+<a name="ln204">// Returns the name of the file that contains macros.</a>
+<a name="ln205">static string get_macro_file()</a>
+<a name="ln206">{</a>
+<a name="ln207">    string dir = !Options.macro_dir.empty() ? Options.macro_dir :</a>
+<a name="ln208">                 !SysEnv.crawl_dir.empty()  ? SysEnv.crawl_dir : &quot;&quot;;</a>
+<a name="ln209"> </a>
+<a name="ln210">    if (!dir.empty())</a>
+<a name="ln211">    {</a>
+<a name="ln212">#ifndef DGL_MACRO_ABSOLUTE_PATH</a>
+<a name="ln213">        if (dir[dir.length() - 1] != FILE_SEPARATOR)</a>
+<a name="ln214">            dir += FILE_SEPARATOR;</a>
+<a name="ln215">#endif</a>
+<a name="ln216">    }</a>
+<a name="ln217"> </a>
+<a name="ln218">#if defined(DGL_MACRO_ABSOLUTE_PATH)</a>
+<a name="ln219">    return dir.empty()? &quot;macro.txt&quot; : dir;</a>
+<a name="ln220">#endif</a>
+<a name="ln221"> </a>
+<a name="ln222">    check_mkdir(&quot;Macro directory&quot;, &amp;dir, true);</a>
+<a name="ln223"> </a>
+<a name="ln224">#if defined(DGL_NAMED_MACRO_FILE)</a>
+<a name="ln225">    return dir + strip_filename_unsafe_chars(you.your_name) + &quot;-macro.txt&quot;;</a>
+<a name="ln226">#else</a>
+<a name="ln227">    return dir + &quot;macro.txt&quot;;</a>
+<a name="ln228">#endif</a>
+<a name="ln229">}</a>
+<a name="ln230"> </a>
+<a name="ln231">static void buf2keyseq(const char *buff, keyseq &amp;k)</a>
+<a name="ln232">{</a>
+<a name="ln233">    // Sanity check</a>
+<a name="ln234">    if (!buff)</a>
+<a name="ln235">        return;</a>
+<a name="ln236"> </a>
+<a name="ln237">    // convert c_str to keyseq</a>
+<a name="ln238"> </a>
+<a name="ln239">    // Check for user functions</a>
+<a name="ln240">    if (*buff == '=' &amp;&amp; buff[1] == '=' &amp;&amp; buff[2] == '=' &amp;&amp; buff[3])</a>
+<a name="ln241">    {</a>
+<a name="ln242">        int index = userfunc_getindex(buff + 3);</a>
+<a name="ln243">        if (index != -1)</a>
+<a name="ln244">            k.push_back(USERFUNCBASE - index);</a>
+<a name="ln245">    }</a>
+<a name="ln246">    else</a>
+<a name="ln247">    {</a>
+<a name="ln248">        const int len = strlen(buff);</a>
+<a name="ln249">        for (int i = 0; i &lt; len; i++)</a>
+<a name="ln250">            k.push_back(buff[i]);</a>
+<a name="ln251">    }</a>
+<a name="ln252">}</a>
+<a name="ln253"> </a>
+<a name="ln254">static int read_key_code(string s)</a>
+<a name="ln255">{</a>
+<a name="ln256">    if (s.empty())</a>
+<a name="ln257">        return 0;</a>
+<a name="ln258"> </a>
+<a name="ln259">    int base = 10;</a>
+<a name="ln260">    if (s[0] == 'x')</a>
+<a name="ln261">    {</a>
+<a name="ln262">        s = s.substr(1);</a>
+<a name="ln263">        base = 16;</a>
+<a name="ln264">    }</a>
+<a name="ln265">    else if (s[0] == '^')</a>
+<a name="ln266">    {</a>
+<a name="ln267">        // ^A = 1, etc.</a>
+<a name="ln268">        return 1 + toupper_safe(s[1]) - 'A';</a>
+<a name="ln269">    }</a>
+<a name="ln270"> </a>
+<a name="ln271">    char *tail;</a>
+<a name="ln272">    return strtol(s.c_str(), &amp;tail, base);</a>
+<a name="ln273">}</a>
+<a name="ln274"> </a>
+<a name="ln275">/*</a>
+<a name="ln276"> * Takes as argument a string, and returns a sequence of keys described</a>
+<a name="ln277"> * by the string. Most characters produce their own ASCII code. These</a>
+<a name="ln278"> * are the cases:</a>
+<a name="ln279"> *   \\ produces the ASCII code of a single \</a>
+<a name="ln280"> *   \{123} produces 123 (decimal)</a>
+<a name="ln281"> *   \{^A}  produces 1 (Ctrl-A)</a>
+<a name="ln282"> *   \{x40} produces 64 (hexadecimal code)</a>
+<a name="ln283"> *   \{!more} or \{!m} disables -more- prompt until the end of the macro.</a>
+<a name="ln284"> */</a>
+<a name="ln285">static keyseq parse_keyseq(string s)</a>
+<a name="ln286">{</a>
+<a name="ln287">    int state = 0;</a>
+<a name="ln288">    keyseq v;</a>
+<a name="ln289"> </a>
+<a name="ln290">    if (starts_with(s, &quot;===&quot;))</a>
+<a name="ln291">    {</a>
+<a name="ln292">        buf2keyseq(s.c_str(), v);</a>
+<a name="ln293">        return v;</a>
+<a name="ln294">    }</a>
+<a name="ln295"> </a>
+<a name="ln296">    bool more_reset = false;</a>
+<a name="ln297">    for (int i = 0, size = s.length(); i &lt; size; ++i)</a>
+<a name="ln298">    {</a>
+<a name="ln299">        char c = s[i];</a>
+<a name="ln300"> </a>
+<a name="ln301">        switch (state)</a>
+<a name="ln302">        {</a>
+<a name="ln303">        case 0: // Normal state</a>
+<a name="ln304">            if (c == '\\')</a>
+<a name="ln305">                state = 1;</a>
+<a name="ln306">            else</a>
+<a name="ln307">                v.push_back(c);</a>
+<a name="ln308">            break;</a>
+<a name="ln309"> </a>
+<a name="ln310">        case 1: // Last char is a '\'</a>
+<a name="ln311">            if (c == '\\')</a>
+<a name="ln312">            {</a>
+<a name="ln313">                state = 0;</a>
+<a name="ln314">                v.push_back(c);</a>
+<a name="ln315">            }</a>
+<a name="ln316">            else if (c == '{')</a>
+<a name="ln317">                state = 2;</a>
+<a name="ln318">            // XXX Error handling</a>
+<a name="ln319">            break;</a>
+<a name="ln320"> </a>
+<a name="ln321">        case 2: // Inside \{}</a>
+<a name="ln322">        {</a>
+<a name="ln323">            const string::size_type clb = s.find('}', i);</a>
+<a name="ln324">            if (clb == string::npos)</a>
+<a name="ln325">                break;</a>
+<a name="ln326"> </a>
+<a name="ln327">            const string arg = s.substr(i, clb - i);</a>
+<a name="ln328">            if (!more_reset &amp;&amp; (arg == &quot;!more&quot; || arg == &quot;!m&quot;))</a>
+<a name="ln329">            {</a>
+<a name="ln330">                more_reset = true;</a>
+<a name="ln331">                v.push_back(KEY_MACRO_MORE_PROTECT);</a>
+<a name="ln332">            }</a>
+<a name="ln333">            else</a>
+<a name="ln334">            {</a>
+<a name="ln335">                const int key = read_key_code(arg);</a>
+<a name="ln336">                v.push_back(key);</a>
+<a name="ln337">            }</a>
+<a name="ln338"> </a>
+<a name="ln339">            state = 0;</a>
+<a name="ln340">            i = clb;</a>
+<a name="ln341">            break;</a>
+<a name="ln342">        }</a>
+<a name="ln343">        }</a>
+<a name="ln344">    }</a>
+<a name="ln345"> </a>
+<a name="ln346">    return v;</a>
+<a name="ln347">}</a>
+<a name="ln348"> </a>
+<a name="ln349">/*</a>
+<a name="ln350"> * Serialises a key sequence into a string of the format described</a>
+<a name="ln351"> * above.</a>
+<a name="ln352"> */</a>
+<a name="ln353">static string vtostr(const keyseq &amp;seq)</a>
+<a name="ln354">{</a>
+<a name="ln355">    ostringstream s;</a>
+<a name="ln356"> </a>
+<a name="ln357">    const keyseq *v = &amp;seq;</a>
+<a name="ln358">    keyseq dummy;</a>
+<a name="ln359">    if (is_userfunction(seq))</a>
+<a name="ln360">    {</a>
+<a name="ln361">        // Laboriously reconstruct the original user input</a>
+<a name="ln362">        string newseq = string(&quot;==&quot;) + get_userfunction(seq);</a>
+<a name="ln363">        buf2keyseq(newseq.c_str(), dummy);</a>
+<a name="ln364">        dummy.push_front('=');</a>
+<a name="ln365"> </a>
+<a name="ln366">        v = &amp;dummy;</a>
+<a name="ln367">    }</a>
+<a name="ln368"> </a>
+<a name="ln369">    for (auto key : *v)</a>
+<a name="ln370">    {</a>
+<a name="ln371">        if (key &lt;= 32 || key &gt; 127)</a>
+<a name="ln372">        {</a>
+<a name="ln373">            if (key == KEY_MACRO_MORE_PROTECT)</a>
+<a name="ln374">                s &lt;&lt; &quot;\\{!more}&quot;;</a>
+<a name="ln375">            else</a>
+<a name="ln376">            {</a>
+<a name="ln377">                char buff[20];</a>
+<a name="ln378">                snprintf(buff, sizeof(buff), &quot;\\{%d}&quot;, key);</a>
+<a name="ln379">                s &lt;&lt; buff;</a>
+<a name="ln380">            }</a>
+<a name="ln381">        }</a>
+<a name="ln382">        else if (key == '\\')</a>
+<a name="ln383">            s &lt;&lt; &quot;\\\\&quot;;</a>
+<a name="ln384">        else</a>
+<a name="ln385">            s &lt;&lt; static_cast&lt;char&gt;(key);</a>
+<a name="ln386">    }</a>
+<a name="ln387"> </a>
+<a name="ln388">    return s.str();</a>
+<a name="ln389">}</a>
+<a name="ln390"> </a>
+<a name="ln391">/*</a>
+<a name="ln392"> * Add a macro (surprise, surprise).</a>
+<a name="ln393"> */</a>
+<a name="ln394">static void macro_add(macromap &amp;mapref, keyseq key, keyseq action)</a>
+<a name="ln395">{</a>
+<a name="ln396">    mapref[key] = action;</a>
+<a name="ln397">}</a>
+<a name="ln398"> </a>
+<a name="ln399">/*</a>
+<a name="ln400"> * Remove a macro.</a>
+<a name="ln401"> */</a>
+<a name="ln402">static bool macro_del(macromap &amp;mapref, keyseq key)</a>
+<a name="ln403">{</a>
+<a name="ln404">    return mapref.erase(key) != 0;</a>
+<a name="ln405">}</a>
+<a name="ln406"> </a>
+<a name="ln407">static void _register_expanded_keys(int num, bool reverse);</a>
+<a name="ln408"> </a>
+<a name="ln409">// Safely add macro-expanded keystrokes to the end of Crawl's keyboard</a>
+<a name="ln410">// buffer. Macro-expanded keystrokes will be held in a separate</a>
+<a name="ln411">// keybuffer until the primary keybuffer is empty, at which point</a>
+<a name="ln412">// they'll be added to the primary keybuffer.</a>
+<a name="ln413">void macro_sendkeys_end_add_expanded(int key)</a>
+<a name="ln414">{</a>
+<a name="ln415">    SendKeysBuffer.push_back(key);</a>
+<a name="ln416">}</a>
+<a name="ln417"> </a>
+<a name="ln418">static void _macro_inject_sent_keys()</a>
+<a name="ln419">{</a>
+<a name="ln420">    if (Buffer.empty() &amp;&amp; !SendKeysBuffer.empty())</a>
+<a name="ln421">    {</a>
+<a name="ln422">        // Transfer keys from SendKeysBuffer to the main Buffer as</a>
+<a name="ln423">        // expanded keystrokes and empty SendKeysBuffer.</a>
+<a name="ln424">        macro_buf_add(SendKeysBuffer, false, true);</a>
+<a name="ln425">        SendKeysBuffer.clear();</a>
+<a name="ln426">    }</a>
+<a name="ln427">}</a>
+<a name="ln428"> </a>
+<a name="ln429">/*</a>
+<a name="ln430"> * Safely add a command to the end of the sendkeys keybuffer.</a>
+<a name="ln431"> */</a>
+<a name="ln432">void macro_sendkeys_end_add_cmd(command_type cmd)</a>
+<a name="ln433">{</a>
+<a name="ln434">    ASSERT_RANGE(cmd, CMD_NO_CMD + 1, CMD_MIN_SYNTHETIC);</a>
+<a name="ln435"> </a>
+<a name="ln436">    // There should be plenty of room between the synthetic keys</a>
+<a name="ln437">    // (KEY_MACRO_MORE_PROTECT == -10) and USERFUNCBASE (-10000) for</a>
+<a name="ln438">    // command_type to fit (currently 1000 through 2069).</a>
+<a name="ln439">    macro_sendkeys_end_add_expanded(-((int) cmd));</a>
+<a name="ln440">}</a>
+<a name="ln441"> </a>
+<a name="ln442">/*</a>
+<a name="ln443"> * Adds keypresses from a sequence into the internal keybuffer. Ignores</a>
+<a name="ln444"> * macros.</a>
+<a name="ln445"> */</a>
+<a name="ln446">void macro_buf_add(const keyseq &amp;actions, bool reverse, bool expanded)</a>
+<a name="ln447">{</a>
+<a name="ln448">    keyseq act;</a>
+<a name="ln449">    bool need_more_reset = false;</a>
+<a name="ln450">    for (auto key : actions)</a>
+<a name="ln451">    {</a>
+<a name="ln452">        if (key == KEY_MACRO_MORE_PROTECT)</a>
+<a name="ln453">        {</a>
+<a name="ln454">            key = KEY_MACRO_DISABLE_MORE;</a>
+<a name="ln455">            need_more_reset = true;</a>
+<a name="ln456">        }</a>
+<a name="ln457">        act.push_back(key);</a>
+<a name="ln458">    }</a>
+<a name="ln459">    if (need_more_reset)</a>
+<a name="ln460">        act.push_back(KEY_MACRO_ENABLE_MORE);</a>
+<a name="ln461"> </a>
+<a name="ln462">    Buffer.insert(reverse? Buffer.begin() : Buffer.end(),</a>
+<a name="ln463">                   act.begin(), act.end());</a>
+<a name="ln464"> </a>
+<a name="ln465">    if (expanded)</a>
+<a name="ln466">        _register_expanded_keys(act.size(), reverse);</a>
+<a name="ln467">}</a>
+<a name="ln468"> </a>
+<a name="ln469">/*</a>
+<a name="ln470"> * Adds a single keypress into the internal keybuffer.</a>
+<a name="ln471"> */</a>
+<a name="ln472">void macro_buf_add(int key, bool reverse, bool expanded)</a>
+<a name="ln473">{</a>
+<a name="ln474">    if (reverse)</a>
+<a name="ln475">        Buffer.push_front(key);</a>
+<a name="ln476">    else</a>
+<a name="ln477">        Buffer.push_back(key);</a>
+<a name="ln478">    if (expanded)</a>
+<a name="ln479">        _register_expanded_keys(1, reverse);</a>
+<a name="ln480">}</a>
+<a name="ln481"> </a>
+<a name="ln482">/*</a>
+<a name="ln483"> * Add a command into the internal keybuffer.</a>
+<a name="ln484"> */</a>
+<a name="ln485">void macro_buf_add_cmd(command_type cmd, bool reverse)</a>
+<a name="ln486">{</a>
+<a name="ln487">    ASSERT_RANGE(cmd, CMD_NO_CMD + 1, CMD_MIN_SYNTHETIC);</a>
+<a name="ln488"> </a>
+<a name="ln489">    // There should be plenty of room between the synthetic keys</a>
+<a name="ln490">    // (KEY_MACRO_MORE_PROTECT == -10) and USERFUNCBASE (-10000) for</a>
+<a name="ln491">    // command_type to fit (currently 1000 through 2069).</a>
+<a name="ln492">    macro_buf_add(-((int) cmd), reverse, true);</a>
+<a name="ln493">}</a>
+<a name="ln494"> </a>
+<a name="ln495">/*</a>
+<a name="ln496"> * Adds keypresses from a sequence into the internal keybuffer. Does some</a>
+<a name="ln497"> * O(N^2) analysis to the sequence to apply keymaps.</a>
+<a name="ln498"> */</a>
+<a name="ln499">static void macro_buf_add_long(keyseq actions,</a>
+<a name="ln500">                               macromap &amp;keymap = Keymaps[KMC_DEFAULT])</a>
+<a name="ln501">{</a>
+<a name="ln502">    keyseq tmp;</a>
+<a name="ln503"> </a>
+<a name="ln504">    // debug &lt;&lt; &quot;Adding: &quot; &lt;&lt; vtostr(actions) &lt;&lt; endl;</a>
+<a name="ln505">    // debug.flush();</a>
+<a name="ln506"> </a>
+<a name="ln507">    // Check whether any subsequences of the sequence are macros.</a>
+<a name="ln508">    // The matching starts from as early as possible, and is</a>
+<a name="ln509">    // as long as possible given the first constraint. I.e from</a>
+<a name="ln510">    // the sequence &quot;abcdef&quot; and macros &quot;ab&quot;, &quot;bcde&quot; and &quot;de&quot;</a>
+<a name="ln511">    // &quot;ab&quot; and &quot;de&quot; are recognised as macros.</a>
+<a name="ln512"> </a>
+<a name="ln513">    while (!actions.empty())</a>
+<a name="ln514">    {</a>
+<a name="ln515">        tmp = actions;</a>
+<a name="ln516"> </a>
+<a name="ln517">        while (!tmp.empty())</a>
+<a name="ln518">        {</a>
+<a name="ln519">            auto subst = keymap.find(tmp);</a>
+<a name="ln520">            // Found a macro. Add the expansion (action) of the</a>
+<a name="ln521">            // macro into the buffer.</a>
+<a name="ln522">            if (subst != keymap.end() &amp;&amp; !subst-&gt;second.empty())</a>
+<a name="ln523">            {</a>
+<a name="ln524">                macro_buf_add(subst-&gt;second, false, false);</a>
+<a name="ln525">                break;</a>
+<a name="ln526">            }</a>
+<a name="ln527"> </a>
+<a name="ln528">            // Didn't find a macro. Remove a key from the end</a>
+<a name="ln529">            // of the sequence, and try again.</a>
+<a name="ln530">            tmp.pop_back();</a>
+<a name="ln531">        }</a>
+<a name="ln532"> </a>
+<a name="ln533">        if (tmp.empty())</a>
+<a name="ln534">        {</a>
+<a name="ln535">            // Didn't find a macro. Add the first keypress of the sequence</a>
+<a name="ln536">            // into the buffer, remove it from the sequence, and try again.</a>
+<a name="ln537">            macro_buf_add(actions.front(), false, false);</a>
+<a name="ln538">            actions.pop_front();</a>
+<a name="ln539">        }</a>
+<a name="ln540">        else</a>
+<a name="ln541">        {</a>
+<a name="ln542">            // Found a macro, which has already been added above. Now just</a>
+<a name="ln543">            // remove the macroed keys from the sequence.</a>
+<a name="ln544">            for (unsigned int i = 0; i &lt; tmp.size(); i++)</a>
+<a name="ln545">                actions.pop_front();</a>
+<a name="ln546">        }</a>
+<a name="ln547">    }</a>
+<a name="ln548">}</a>
+<a name="ln549"> </a>
+<a name="ln550">// Number of keys from start of buffer that have already gone through</a>
+<a name="ln551">// macro expansion.</a>
+<a name="ln552">static int expanded_keys_left = 0;</a>
+<a name="ln553">static void _register_expanded_keys(int num, bool reverse)</a>
+<a name="ln554">{</a>
+<a name="ln555">    expanded_keys_left += num;</a>
+<a name="ln556">    if (!reverse)</a>
+<a name="ln557">    {</a>
+<a name="ln558">        // We added at the end of the buffer, so the whole buffer had</a>
+<a name="ln559">        // better be full of expanded keys.</a>
+<a name="ln560">        ASSERT((int)Buffer.size() == expanded_keys_left);</a>
+<a name="ln561">        expanded_keys_left = Buffer.size();</a>
+<a name="ln562">    }</a>
+<a name="ln563">}</a>
+<a name="ln564"> </a>
+<a name="ln565">static int macro_keys_left = -1;</a>
+<a name="ln566"> </a>
+<a name="ln567">void macro_clear_buffers()</a>
+<a name="ln568">{</a>
+<a name="ln569">    crawl_state.cancel_cmd_repeat();</a>
+<a name="ln570">    crawl_state.cancel_cmd_again();</a>
+<a name="ln571"> </a>
+<a name="ln572">    Buffer.clear();</a>
+<a name="ln573">    SendKeysBuffer.clear();</a>
+<a name="ln574">    expanded_keys_left = 0;</a>
+<a name="ln575">    macro_keys_left = -1;</a>
+<a name="ln576"> </a>
+<a name="ln577">    crawl_state.show_more_prompt = true;</a>
+<a name="ln578">}</a>
+<a name="ln579"> </a>
+<a name="ln580">bool is_processing_macro()</a>
+<a name="ln581">{</a>
+<a name="ln582">    return macro_keys_left &gt;= 0;</a>
+<a name="ln583">}</a>
+<a name="ln584"> </a>
+<a name="ln585">bool has_pending_input()</a>
+<a name="ln586">{</a>
+<a name="ln587">    return !Buffer.empty() || !SendKeysBuffer.empty();</a>
+<a name="ln588">}</a>
+<a name="ln589"> </a>
+<a name="ln590">/*</a>
+<a name="ln591"> * Command macros are only applied from the immediate front of the</a>
+<a name="ln592"> * buffer, and only when the game is expecting a command.</a>
+<a name="ln593"> */</a>
+<a name="ln594">static void macro_buf_apply_command_macro()</a>
+<a name="ln595">{</a>
+<a name="ln596">    if (macro_keys_left &gt; 0 || expanded_keys_left &gt; 0)</a>
+<a name="ln597">        return;</a>
+<a name="ln598"> </a>
+<a name="ln599">    keyseq tmp = Buffer;</a>
+<a name="ln600"> </a>
+<a name="ln601">    // find the longest match from the start of the buffer and replace it</a>
+<a name="ln602">    while (!tmp.empty())</a>
+<a name="ln603">    {</a>
+<a name="ln604">        auto expansion = Macros.find(tmp);</a>
+<a name="ln605"> </a>
+<a name="ln606">        if (expansion != Macros.end() &amp;&amp; !expansion-&gt;second.empty())</a>
+<a name="ln607">        {</a>
+<a name="ln608">            const keyseq &amp;result = expansion-&gt;second;</a>
+<a name="ln609"> </a>
+<a name="ln610">            // Found macro, remove match from front:</a>
+<a name="ln611">            for (unsigned int i = 0; i &lt; tmp.size(); i++)</a>
+<a name="ln612">                Buffer.pop_front();</a>
+<a name="ln613"> </a>
+<a name="ln614">            macro_keys_left = result.size();</a>
+<a name="ln615"> </a>
+<a name="ln616">            macro_buf_add(result, true, true);</a>
+<a name="ln617"> </a>
+<a name="ln618">            break;</a>
+<a name="ln619">        }</a>
+<a name="ln620"> </a>
+<a name="ln621">        tmp.pop_back();</a>
+<a name="ln622">    }</a>
+<a name="ln623">}</a>
+<a name="ln624"> </a>
+<a name="ln625">/*</a>
+<a name="ln626"> * Removes the earliest keypress from the keybuffer, and returns its</a>
+<a name="ln627"> * value. If buffer was empty, returns -1;</a>
+<a name="ln628"> */</a>
+<a name="ln629">int macro_buf_get()</a>
+<a name="ln630">{</a>
+<a name="ln631">    ASSERT(macro_keys_left &lt;= (int)Buffer.size()</a>
+<a name="ln632">           &amp;&amp; expanded_keys_left &lt;= (int)Buffer.size());</a>
+<a name="ln633"> </a>
+<a name="ln634">    _macro_inject_sent_keys();</a>
+<a name="ln635"> </a>
+<a name="ln636">    if (Buffer.empty())</a>
+<a name="ln637">    {</a>
+<a name="ln638">        // If we're trying to fetch a new keystroke, then the processing</a>
+<a name="ln639">        // of the previous keystroke is complete.</a>
+<a name="ln640">        if (macro_keys_left == 0)</a>
+<a name="ln641">            macro_keys_left = -1;</a>
+<a name="ln642"> </a>
+<a name="ln643">        return -1;</a>
+<a name="ln644">    }</a>
+<a name="ln645"> </a>
+<a name="ln646">    int key = Buffer.front();</a>
+<a name="ln647">    Buffer.pop_front();</a>
+<a name="ln648"> </a>
+<a name="ln649">    if (macro_keys_left &gt;= 0)</a>
+<a name="ln650">        macro_keys_left--;</a>
+<a name="ln651">    if (expanded_keys_left &gt; 0)</a>
+<a name="ln652">        expanded_keys_left--;</a>
+<a name="ln653"> </a>
+<a name="ln654">    for (key_recorder *recorder : recorders)</a>
+<a name="ln655">        recorder-&gt;add_key(key);</a>
+<a name="ln656"> </a>
+<a name="ln657">    return key;</a>
+<a name="ln658">}</a>
+<a name="ln659"> </a>
+<a name="ln660">void process_command_on_record(command_type cmd)</a>
+<a name="ln661">{</a>
+<a name="ln662">    const int key = command_to_key(cmd);</a>
+<a name="ln663">    if (key != '\0')</a>
+<a name="ln664">        for (key_recorder *recorder : recorders)</a>
+<a name="ln665">            recorder-&gt;add_key(key);</a>
+<a name="ln666">    process_command(cmd);</a>
+<a name="ln667">}</a>
+<a name="ln668"> </a>
+<a name="ln669">static void write_map(FILE *f, const macromap &amp;mp, const char *key)</a>
+<a name="ln670">{</a>
+<a name="ln671">    for (const auto &amp;entry : mp)</a>
+<a name="ln672">    {</a>
+<a name="ln673">        // Need this check, since empty values are added into the</a>
+<a name="ln674">        // macro struct for all used keyboard commands.</a>
+<a name="ln675">        if (entry.second.size())</a>
+<a name="ln676">        {</a>
+<a name="ln677">            fprintf(f, &quot;%s%s\nA:%s\n\n&quot;, OUTS(key),</a>
+<a name="ln678">                OUTS(vtostr(entry.first)), OUTS(vtostr(entry.second)));</a>
+<a name="ln679">        }</a>
+<a name="ln680">    }</a>
+<a name="ln681">}</a>
+<a name="ln682"> </a>
+<a name="ln683">/*</a>
+<a name="ln684"> * Saves macros into the macrofile, overwriting the old one.</a>
+<a name="ln685"> */</a>
+<a name="ln686">void macro_save()</a>
+<a name="ln687">{</a>
+<a name="ln688">    FILE *f;</a>
+<a name="ln689">    const string macrofile = get_macro_file();</a>
+<a name="ln690">    f = fopen_u(macrofile.c_str(), &quot;w&quot;);</a>
+<a name="ln691">    if (!f)</a>
+<a name="ln692">    {</a>
+<a name="ln693">        mprf(MSGCH_ERROR, &quot;Couldn't open %s for writing!&quot;, macrofile.c_str());</a>
+<a name="ln694">        return;</a>
+<a name="ln695">    }</a>
+<a name="ln696"> </a>
+<a name="ln697">    fprintf(f, &quot;# %s %s macro file\n&quot;</a>
+<a name="ln698">               &quot;# WARNING: This file is entirely auto-generated.\n&quot;</a>
+<a name="ln699">               &quot;\n&quot;</a>
+<a name="ln700">               &quot;# Key Mappings:\n&quot;,</a>
+<a name="ln701">            OUTS(CRAWL), // ok, localizing the game name is not likely</a>
+<a name="ln702">            OUTS(Version::Long)); // nor the version string</a>
+<a name="ln703">    for (int mc = KMC_DEFAULT; mc &lt; KMC_CONTEXT_COUNT; ++mc)</a>
+<a name="ln704">    {</a>
+<a name="ln705">        char buf[30] = &quot;K:&quot;;</a>
+<a name="ln706">        if (mc)</a>
+<a name="ln707">            snprintf(buf, sizeof buf, &quot;K%d:&quot;, mc);</a>
+<a name="ln708">        write_map(f, Keymaps[mc], buf);</a>
+<a name="ln709">    }</a>
+<a name="ln710"> </a>
+<a name="ln711">    fprintf(f, &quot;# Command Macros:\n&quot;);</a>
+<a name="ln712">    write_map(f, Macros, &quot;M:&quot;);</a>
+<a name="ln713"> </a>
+<a name="ln714">    crawl_state.unsaved_macros = false;</a>
+<a name="ln715">    fclose(f);</a>
+<a name="ln716">}</a>
+<a name="ln717"> </a>
+<a name="ln718">/*</a>
+<a name="ln719"> * Reads as many keypresses as are available (waiting for at least one),</a>
+<a name="ln720"> * and returns them as a single keyseq.</a>
+<a name="ln721"> */</a>
+<a name="ln722">static keyseq _getch_mul()</a>
+<a name="ln723">{</a>
+<a name="ln724">    keyseq keys;</a>
+<a name="ln725">    int    a;</a>
+<a name="ln726"> </a>
+<a name="ln727">    // Something's gone wrong with replaying keys if crawl needs to</a>
+<a name="ln728">    // get new keys from the user.</a>
+<a name="ln729">    if (crawl_state.is_replaying_keys())</a>
+<a name="ln730">    {</a>
+<a name="ln731">        mprf(MSGCH_ERROR, &quot;(Key replay ran out of keys)&quot;);</a>
+<a name="ln732">        crawl_state.cancel_cmd_repeat();</a>
+<a name="ln733">        crawl_state.cancel_cmd_again();</a>
+<a name="ln734">    }</a>
+<a name="ln735"> </a>
+<a name="ln736">    // The a == 0 test is legacy code that I don't dare to remove. I</a>
+<a name="ln737">    // have a vague recollection of it being a kludge for conio support.</a>
+<a name="ln738">    do</a>
+<a name="ln739">    {</a>
+<a name="ln740">        a = getch_ck();</a>
+<a name="ln741">        if (a != CK_NO_KEY)</a>
+<a name="ln742">            keys.push_back(a);</a>
+<a name="ln743">    }</a>
+<a name="ln744">    while (keys.size() == 0 || ((kbhit() || a == 0) &amp;&amp; a != CK_REDRAW));</a>
+<a name="ln745"> </a>
+<a name="ln746">    return keys;</a>
+<a name="ln747">}</a>
+<a name="ln748"> </a>
+<a name="ln749">/*</a>
+<a name="ln750"> * Replacement for getch(). Returns keys from the key buffer if available.</a>
+<a name="ln751"> * If not, adds some content to the buffer, and returns some of it.</a>
+<a name="ln752"> */</a>
+<a name="ln753">int getchm(KeymapContext mc)</a>
+<a name="ln754">{</a>
+<a name="ln755">    int a;</a>
+<a name="ln756"> </a>
+<a name="ln757">    // Got data from buffer.</a>
+<a name="ln758">    if ((a = macro_buf_get()) != -1)</a>
+<a name="ln759">        return a;</a>
+<a name="ln760"> </a>
+<a name="ln761">    // Read some keys...</a>
+<a name="ln762">    keyseq keys = _getch_mul();</a>
+<a name="ln763">    macro_buf_add_with_keymap(keys, mc);</a>
+<a name="ln764">    return macro_buf_get();</a>
+<a name="ln765">}</a>
+<a name="ln766"> </a>
+<a name="ln767">void macro_buf_add_with_keymap(keyseq keys, KeymapContext mc)</a>
+<a name="ln768">{</a>
+<a name="ln769">    if (mc == KMC_NONE)</a>
+<a name="ln770">        macro_buf_add(keys, false, false);</a>
+<a name="ln771">    else</a>
+<a name="ln772">        macro_buf_add_long(keys, Keymaps[mc]);</a>
+<a name="ln773">}</a>
+<a name="ln774"> </a>
+<a name="ln775">/**</a>
+<a name="ln776"> * Get a character?</a>
+<a name="ln777"> */</a>
+<a name="ln778">int get_ch()</a>
+<a name="ln779">{</a>
+<a name="ln780">    mouse_control mc(MOUSE_MODE_PROMPT);</a>
+<a name="ln781">    int gotched = getchm();</a>
+<a name="ln782"> </a>
+<a name="ln783">    if (gotched == 0)</a>
+<a name="ln784">        gotched = getchm();</a>
+<a name="ln785"> </a>
+<a name="ln786">    return gotched;</a>
+<a name="ln787">}</a>
+<a name="ln788"> </a>
+<a name="ln789">/*</a>
+<a name="ln790"> * Replacement for getch(). Returns keys from the key buffer if available.</a>
+<a name="ln791"> * If not, adds some content to the buffer, and returns some of it.</a>
+<a name="ln792"> */</a>
+<a name="ln793">int getch_with_command_macros()</a>
+<a name="ln794">{</a>
+<a name="ln795">    _macro_inject_sent_keys();</a>
+<a name="ln796"> </a>
+<a name="ln797">    if (Buffer.empty())</a>
+<a name="ln798">    {</a>
+<a name="ln799">        keyseq keys = _getch_mul();</a>
+<a name="ln800">        macro_buf_add_with_keymap(keys, KMC_DEFAULT);</a>
+<a name="ln801">    }</a>
+<a name="ln802"> </a>
+<a name="ln803">    // Apply longest matching macro at front of buffer:</a>
+<a name="ln804">    macro_buf_apply_command_macro();</a>
+<a name="ln805"> </a>
+<a name="ln806">    return macro_buf_get();</a>
+<a name="ln807">}</a>
+<a name="ln808"> </a>
+<a name="ln809">static string _buffer_to_string()</a>
+<a name="ln810">{</a>
+<a name="ln811">    string s;</a>
+<a name="ln812">    for (const int k : Buffer)</a>
+<a name="ln813">    {</a>
+<a name="ln814">        if (k &gt; 0 &amp;&amp; k &lt;= numeric_limits&lt;unsigned char&gt;::max())</a>
+<a name="ln815">        {</a>
+<a name="ln816">            char c = static_cast&lt;unsigned char&gt;(k);</a>
+<a name="ln817">            if (c == '[' || c == ']')</a>
+<a name="ln818">                s += &quot;\\&quot;;</a>
+<a name="ln819">            s += c;</a>
+<a name="ln820">        }</a>
+<a name="ln821">        else</a>
+<a name="ln822">            s += make_stringf(&quot;[%d]&quot;, k);</a>
+<a name="ln823">    }</a>
+<a name="ln824">    return s;</a>
+<a name="ln825">}</a>
+<a name="ln826"> </a>
+<a name="ln827">/*</a>
+<a name="ln828"> * Flush the buffer. Later we'll probably want to give the player options</a>
+<a name="ln829"> * as to when this happens (ex. always before command input, casting failed).</a>
+<a name="ln830"> */</a>
+<a name="ln831">void flush_input_buffer(int reason)</a>
+<a name="ln832">{</a>
+<a name="ln833">    ASSERT(reason != FLUSH_KEY_REPLAY_CANCEL</a>
+<a name="ln834">           || crawl_state.is_replaying_keys() || crawl_state.cmd_repeat_start);</a>
+<a name="ln835"> </a>
+<a name="ln836">    ASSERT(reason != FLUSH_ABORT_MACRO || is_processing_macro());</a>
+<a name="ln837"> </a>
+<a name="ln838">    // Any attempt to flush means that the processing of the previously</a>
+<a name="ln839">    // fetched keystroke is complete.</a>
+<a name="ln840">    if (macro_keys_left == 0)</a>
+<a name="ln841">        macro_keys_left = -1;</a>
+<a name="ln842"> </a>
+<a name="ln843">    if (crawl_state.is_replaying_keys() &amp;&amp; reason != FLUSH_ABORT_MACRO</a>
+<a name="ln844">        &amp;&amp; reason != FLUSH_KEY_REPLAY_CANCEL</a>
+<a name="ln845">        &amp;&amp; reason != FLUSH_REPLAY_SETUP_FAILURE</a>
+<a name="ln846">        &amp;&amp; reason != FLUSH_ON_FAILURE)</a>
+<a name="ln847">    {</a>
+<a name="ln848">        return;</a>
+<a name="ln849">    }</a>
+<a name="ln850"> </a>
+<a name="ln851">    if (Options.flush_input[ reason ] || reason == FLUSH_ABORT_MACRO</a>
+<a name="ln852">        || reason == FLUSH_KEY_REPLAY_CANCEL</a>
+<a name="ln853">        || reason == FLUSH_REPLAY_SETUP_FAILURE</a>
+<a name="ln854">        || reason == FLUSH_REPEAT_SETUP_DONE)</a>
+<a name="ln855">    {</a>
+<a name="ln856">        if (crawl_state.nonempty_buffer_flush_errors &amp;&amp; !Buffer.empty())</a>
+<a name="ln857">        {</a>
+<a name="ln858">            if (you.wizard) // crash -- intended for tests</a>
+<a name="ln859">            {</a>
+<a name="ln860">                mprf(MSGCH_ERROR,</a>
+<a name="ln861">                    &quot;Flushing non-empty key buffer (Buffer is '%s')&quot;,</a>
+<a name="ln862">                    _buffer_to_string().c_str());</a>
+<a name="ln863">                ASSERT(Buffer.empty());</a>
+<a name="ln864">            }</a>
+<a name="ln865">            else</a>
+<a name="ln866">                mprf(MSGCH_ERROR, &quot;Flushing non-empty key buffer&quot;);</a>
+<a name="ln867">        }</a>
+<a name="ln868">        while (!Buffer.empty())</a>
+<a name="ln869">        {</a>
+<a name="ln870">            const int key = Buffer.front();</a>
+<a name="ln871">            Buffer.pop_front();</a>
+<a name="ln872">            if (key == KEY_MACRO_ENABLE_MORE)</a>
+<a name="ln873">                crawl_state.show_more_prompt = true;</a>
+<a name="ln874">        }</a>
+<a name="ln875">        macro_keys_left = -1;</a>
+<a name="ln876">        expanded_keys_left = 0;</a>
+<a name="ln877">    }</a>
+<a name="ln878">}</a>
+<a name="ln879"> </a>
+<a name="ln880">static string _macro_prompt_string(const string &amp;macro_type)</a>
+<a name="ln881">{</a>
+<a name="ln882">    return make_stringf(&quot;Input %s action: &quot;, macro_type.c_str());</a>
+<a name="ln883">}</a>
+<a name="ln884"> </a>
+<a name="ln885">static void _macro_prompt(const string &amp;macro_type)</a>
+<a name="ln886">{</a>
+<a name="ln887">    msgwin_prompt(_macro_prompt_string(macro_type));</a>
+<a name="ln888">}</a>
+<a name="ln889"> </a>
+<a name="ln890">static void _input_action_raw(const string &amp;macro_type, keyseq* action)</a>
+<a name="ln891">{</a>
+<a name="ln892">    _macro_prompt(macro_type);</a>
+<a name="ln893">    const int x = wherex();</a>
+<a name="ln894">    const int y = wherey();</a>
+<a name="ln895">    bool done = false;</a>
+<a name="ln896"> </a>
+<a name="ln897">    while (!done)</a>
+<a name="ln898">    {</a>
+<a name="ln899">        cgotoxy(x, y);</a>
+<a name="ln900">        cprintf(&quot;%s&quot;, vtostr(*action).c_str());</a>
+<a name="ln901"> </a>
+<a name="ln902">        int input = getch_ck();</a>
+<a name="ln903"> </a>
+<a name="ln904">        switch (input)</a>
+<a name="ln905">        {</a>
+<a name="ln906">        CASE_ESCAPE</a>
+<a name="ln907">            done = true;</a>
+<a name="ln908">            *action = keyseq();</a>
+<a name="ln909">            break;</a>
+<a name="ln910"> </a>
+<a name="ln911">        case '\n':</a>
+<a name="ln912">        case '\r':</a>
+<a name="ln913">            done = true;</a>
+<a name="ln914">            break;</a>
+<a name="ln915"> </a>
+<a name="ln916">        default:</a>
+<a name="ln917">            action-&gt;push_back(input);</a>
+<a name="ln918">            break;</a>
+<a name="ln919">        }</a>
+<a name="ln920">    }</a>
+<a name="ln921"> </a>
+<a name="ln922">    msgwin_reply(vtostr(*action));</a>
+<a name="ln923">}</a>
+<a name="ln924"> </a>
+<a name="ln925">static void _input_action_text(const string &amp;macro_type, keyseq* action)</a>
+<a name="ln926">{</a>
+<a name="ln927">    char buff[1024];</a>
+<a name="ln928">    msgwin_get_line_autohist(_macro_prompt_string(macro_type),</a>
+<a name="ln929">                             buff, sizeof(buff));</a>
+<a name="ln930">    *action = parse_keyseq(buff);</a>
+<a name="ln931">}</a>
+<a name="ln932"> </a>
+<a name="ln933">static string _macro_type_name(bool keymap, KeymapContext keymc)</a>
+<a name="ln934">{</a>
+<a name="ln935">    return make_stringf(&quot;%s%s&quot;,</a>
+<a name="ln936">                        keymap ? (keymc == KMC_DEFAULT    ? &quot;default &quot; :</a>
+<a name="ln937">                                  keymc == KMC_LEVELMAP   ? &quot;level-map &quot; :</a>
+<a name="ln938">                                  keymc == KMC_TARGETING  ? &quot;targeting &quot; :</a>
+<a name="ln939">                                  keymc == KMC_CONFIRM    ? &quot;confirm &quot; :</a>
+<a name="ln940">                                  keymc == KMC_MENU       ? &quot;menu &quot;</a>
+<a name="ln941">                                  : &quot;buggy&quot;) : &quot;&quot;,</a>
+<a name="ln942">                        (keymap ? &quot;keymap&quot; : &quot;macro&quot;));</a>
+<a name="ln943">}</a>
+<a name="ln944"> </a>
+<a name="ln945">void macro_add_query()</a>
+<a name="ln946">{</a>
+<a name="ln947">    int input;</a>
+<a name="ln948">    bool keymap = false;</a>
+<a name="ln949">    bool raw = false;</a>
+<a name="ln950">    KeymapContext keymc = KMC_DEFAULT;</a>
+<a name="ln951"> </a>
+<a name="ln952">    clear_messages();</a>
+<a name="ln953">    mprf(MSGCH_PROMPT, &quot;(m)acro, (M)acro raw, keymap &quot;</a>
+<a name="ln954">                       &quot;[(k) default, (x) level-map, (t)argeting, &quot;</a>
+<a name="ln955">                       &quot;(c)onfirm, m(e)nu], (s)ave? &quot;);</a>
+<a name="ln956">    input = getch_ck();</a>
+<a name="ln957">    int low = toalower(input);</a>
+<a name="ln958"> </a>
+<a name="ln959">    if (low == 'k')</a>
+<a name="ln960">    {</a>
+<a name="ln961">        keymap = true;</a>
+<a name="ln962">        keymc  = KMC_DEFAULT;</a>
+<a name="ln963">    }</a>
+<a name="ln964">    else if (low == 'x')</a>
+<a name="ln965">    {</a>
+<a name="ln966">        keymap = true;</a>
+<a name="ln967">        keymc  = KMC_LEVELMAP;</a>
+<a name="ln968">    }</a>
+<a name="ln969">    else if (low == 't')</a>
+<a name="ln970">    {</a>
+<a name="ln971">        keymap = true;</a>
+<a name="ln972">        keymc  = KMC_TARGETING;</a>
+<a name="ln973">    }</a>
+<a name="ln974">    else if (low == 'c')</a>
+<a name="ln975">    {</a>
+<a name="ln976">        keymap = true;</a>
+<a name="ln977">        keymc  = KMC_CONFIRM;</a>
+<a name="ln978">    }</a>
+<a name="ln979">    else if (low == 'e')</a>
+<a name="ln980">    {</a>
+<a name="ln981">        keymap = true;</a>
+<a name="ln982">        keymc  = KMC_MENU;</a>
+<a name="ln983">    }</a>
+<a name="ln984">    else if (low == 'm')</a>
+<a name="ln985">    {</a>
+<a name="ln986">        keymap = false;</a>
+<a name="ln987">        raw = (input == 'M');</a>
+<a name="ln988">    }</a>
+<a name="ln989">    else if (input == 's')</a>
+<a name="ln990">    {</a>
+<a name="ln991">        mpr(&quot;Saving macros.&quot;);</a>
+<a name="ln992">        macro_save();</a>
+<a name="ln993">        return;</a>
+<a name="ln994">    }</a>
+<a name="ln995">    else</a>
+<a name="ln996">    {</a>
+<a name="ln997">        mpr(&quot;Aborting.&quot;);</a>
+<a name="ln998">        return;</a>
+<a name="ln999">    }</a>
+<a name="ln1000"> </a>
+<a name="ln1001">    // reference to the appropriate mapping</a>
+<a name="ln1002">    macromap &amp;mapref = (keymap ? Keymaps[keymc] : Macros);</a>
+<a name="ln1003">    const string macro_type = _macro_type_name(keymap, keymc);</a>
+<a name="ln1004">    const string trigger_prompt = make_stringf(&quot;Input %s trigger key: &quot;,</a>
+<a name="ln1005">                                               macro_type.c_str());</a>
+<a name="ln1006">    msgwin_prompt(trigger_prompt);</a>
+<a name="ln1007"> </a>
+<a name="ln1008">    keyseq key;</a>
+<a name="ln1009">    mouse_control mc(MOUSE_MODE_MACRO);</a>
+<a name="ln1010">    key = _getch_mul();</a>
+<a name="ln1011">    string key_str = vtostr(key);</a>
+<a name="ln1012">    key_str = replace_all(key_str, &quot;&lt;&quot;, &quot;&lt;&lt;&quot;);</a>
+<a name="ln1013"> </a>
+<a name="ln1014">    msgwin_reply(vtostr(key));</a>
+<a name="ln1015"> </a>
+<a name="ln1016">    if (mapref.count(key) &amp;&amp; !mapref[key].empty())</a>
+<a name="ln1017">    {</a>
+<a name="ln1018">        string action_str = vtostr(mapref[key]);</a>
+<a name="ln1019">        action_str = replace_all(action_str, &quot;&lt;&quot;, &quot;&lt;&lt;&quot;);</a>
+<a name="ln1020">        mprf(MSGCH_WARN, &quot;Current Action: %s&quot;, action_str.c_str());</a>
+<a name="ln1021">        mprf(MSGCH_PROMPT, &quot;Do you wish to (r)edefine, (c)lear, or (a)bort? &quot;);</a>
+<a name="ln1022"> </a>
+<a name="ln1023">        input = getch_ck();</a>
+<a name="ln1024"> </a>
+<a name="ln1025">        input = toalower(input);</a>
+<a name="ln1026">        if (input == 'c')</a>
+<a name="ln1027">        {</a>
+<a name="ln1028">            mprf(&quot;Cleared %s '%s' =&gt; '%s'.&quot;,</a>
+<a name="ln1029">                 macro_type.c_str(),</a>
+<a name="ln1030">                 key_str.c_str(),</a>
+<a name="ln1031">                 action_str.c_str());</a>
+<a name="ln1032">            macro_del(mapref, key);</a>
+<a name="ln1033">            crawl_state.unsaved_macros = true;</a>
+<a name="ln1034">            return;</a>
+<a name="ln1035">        }</a>
+<a name="ln1036">        else if (input != 'r')</a>
+<a name="ln1037">        {</a>
+<a name="ln1038">            canned_msg(MSG_OK);</a>
+<a name="ln1039">            return;</a>
+<a name="ln1040">        }</a>
+<a name="ln1041">    }</a>
+<a name="ln1042"> </a>
+<a name="ln1043">    keyseq action;</a>
+<a name="ln1044">    if (raw)</a>
+<a name="ln1045">        _input_action_raw(macro_type, &amp;action);</a>
+<a name="ln1046">    else</a>
+<a name="ln1047">        _input_action_text(macro_type, &amp;action);</a>
+<a name="ln1048"> </a>
+<a name="ln1049">    if (action.empty())</a>
+<a name="ln1050">    {</a>
+<a name="ln1051">        const bool deleted_macro = macro_del(mapref, key);</a>
+<a name="ln1052">        if (deleted_macro)</a>
+<a name="ln1053">        {</a>
+<a name="ln1054">            mprf(&quot;Deleted %s for '%s'.&quot;,</a>
+<a name="ln1055">                 macro_type.c_str(),</a>
+<a name="ln1056">                 key_str.c_str());</a>
+<a name="ln1057">        }</a>
+<a name="ln1058">        else</a>
+<a name="ln1059">            canned_msg(MSG_OK);</a>
+<a name="ln1060">    }</a>
+<a name="ln1061">    else</a>
+<a name="ln1062">    {</a>
+<a name="ln1063">        string action_str = vtostr(action);</a>
+<a name="ln1064">        action_str = replace_all(action_str, &quot;&lt;&quot;, &quot;&lt;&lt;&quot;);</a>
+<a name="ln1065">        macro_add(mapref, key, action);</a>
+<a name="ln1066">        mprf(&quot;Created %s '%s' =&gt; '%s'.&quot;,</a>
+<a name="ln1067">             macro_type.c_str(), key_str.c_str(), action_str.c_str());</a>
+<a name="ln1068">    }</a>
+<a name="ln1069"> </a>
+<a name="ln1070">    crawl_state.unsaved_macros = true;</a>
+<a name="ln1071">    redraw_screen();</a>
+<a name="ln1072">}</a>
+<a name="ln1073"> </a>
+<a name="ln1074">/*</a>
+<a name="ln1075"> * Initialises the macros.</a>
+<a name="ln1076"> */</a>
+<a name="ln1077">static void _read_macros_from(const char* filename)</a>
+<a name="ln1078">{</a>
+<a name="ln1079">    if (!file_exists(filename))</a>
+<a name="ln1080">        return;</a>
+<a name="ln1081"> </a>
+<a name="ln1082">    string s;</a>
+<a name="ln1083">    FileLineInput f(filename);</a>
+<a name="ln1084">    keyseq key, action;</a>
+<a name="ln1085">    bool keymap = false;</a>
+<a name="ln1086">    KeymapContext keymc = KMC_DEFAULT;</a>
+<a name="ln1087"> </a>
+<a name="ln1088">    while (!f.eof())</a>
+<a name="ln1089">    {</a>
+<a name="ln1090">        s = f.get_line();</a>
+<a name="ln1091">        trim_string(s);  // remove white space from ends</a>
+<a name="ln1092"> </a>
+<a name="ln1093">        if (s.empty() || s[0] == '#')</a>
+<a name="ln1094">            continue;    // skip comments</a>
+<a name="ln1095">        else if (s.substr(0, 2) == &quot;K:&quot;)</a>
+<a name="ln1096">        {</a>
+<a name="ln1097">            key = parse_keyseq(s.substr(2));</a>
+<a name="ln1098">            keymap = true;</a>
+<a name="ln1099">            keymc  = KMC_DEFAULT;</a>
+<a name="ln1100">        }</a>
+<a name="ln1101">        else if (s.length() &gt;= 3 &amp;&amp; s[0] == 'K' &amp;&amp; s[2] == ':')</a>
+<a name="ln1102">        {</a>
+<a name="ln1103">            const KeymapContext ctx = KeymapContext(KMC_DEFAULT + s[1] - '0');</a>
+<a name="ln1104">            if (ctx &gt;= KMC_DEFAULT &amp;&amp; ctx &lt; KMC_CONTEXT_COUNT)</a>
+<a name="ln1105">            {</a>
+<a name="ln1106">                key    = parse_keyseq(s.substr(3));</a>
+<a name="ln1107">                keymap = true;</a>
+<a name="ln1108">                keymc  = ctx;</a>
+<a name="ln1109">            }</a>
+<a name="ln1110">        }</a>
+<a name="ln1111">        else if (s.substr(0, 2) == &quot;M:&quot;)</a>
+<a name="ln1112">        {</a>
+<a name="ln1113">            key = parse_keyseq(s.substr(2));</a>
+<a name="ln1114">            keymap = false;</a>
+<a name="ln1115">        }</a>
+<a name="ln1116">        else if (s.substr(0, 2) == &quot;A:&quot;)</a>
+<a name="ln1117">        {</a>
+<a name="ln1118">            action = parse_keyseq(s.substr(2));</a>
+<a name="ln1119">            macro_add((keymap ? Keymaps[keymc] : Macros), key, action);</a>
+<a name="ln1120">        }</a>
+<a name="ln1121">    }</a>
+<a name="ln1122">}</a>
+<a name="ln1123"> </a>
+<a name="ln1124">/*</a>
+<a name="ln1125"> * Based on _read_macros_from(), reads macros or keymaps from rc files.</a>
+<a name="ln1126"> *</a>
+<a name="ln1127"> * @param field The orig_field (not lowercased) of the macro option (the</a>
+<a name="ln1128"> * bit after &quot;macros +=&quot;)</a>
+<a name="ln1129"> *</a>
+<a name="ln1130"> * @return The string of any errors which occurred, or &quot;&quot; if no error.</a>
+<a name="ln1131"> * %s is the field argument.</a>
+<a name="ln1132"> */</a>
+<a name="ln1133"> </a>
+<a name="ln1134">string read_rc_file_macro(const string&amp; field)</a>
+<a name="ln1135">{</a>
+<a name="ln1136">    const int first_space = field.find(' ');</a>
+<a name="ln1137"> </a>
+<a name="ln1138">    if (first_space &lt; 0)</a>
+<a name="ln1139">        return &quot;Cannot parse marcos += %s , there is only one argument&quot;;</a>
+<a name="ln1140"> </a>
+<a name="ln1141">    // Start by deciding what context the macro/keymap is in</a>
+<a name="ln1142">    const string context = field.substr(0, first_space);</a>
+<a name="ln1143"> </a>
+<a name="ln1144">    bool keymap = false;</a>
+<a name="ln1145">    KeymapContext keymc = KMC_DEFAULT;</a>
+<a name="ln1146"> </a>
+<a name="ln1147">    if (context == &quot;K&quot;)</a>
+<a name="ln1148">    {</a>
+<a name="ln1149">        keymap = true;</a>
+<a name="ln1150">        keymc  = KMC_DEFAULT;</a>
+<a name="ln1151">    }</a>
+<a name="ln1152">    else if (context.length() &gt;= 2 &amp;&amp; context[0] == 'K')</a>
+<a name="ln1153">    {</a>
+<a name="ln1154">        const KeymapContext ctx =</a>
+<a name="ln1155">              KeymapContext(KMC_DEFAULT + context[1] - '0');</a>
+<a name="ln1156"> </a>
+<a name="ln1157">        if (ctx &gt;= KMC_DEFAULT &amp;&amp; ctx &lt; KMC_CONTEXT_COUNT)</a>
+<a name="ln1158">        {</a>
+<a name="ln1159">            keymap = true;</a>
+<a name="ln1160">            keymc  = ctx;</a>
+<a name="ln1161">        }</a>
+<a name="ln1162">    }</a>
+<a name="ln1163">    else if (context == &quot;M&quot;)</a>
+<a name="ln1164">        keymap = false;</a>
+<a name="ln1165">    else</a>
+<a name="ln1166">        return &quot;'&quot; + context</a>
+<a name="ln1167">                   + &quot;' is not a valid macro or keymap context (macros += %s)&quot;;</a>
+<a name="ln1168"> </a>
+<a name="ln1169">    // Now grab the key and action to be performed</a>
+<a name="ln1170">    const string key_and_action = field.substr((first_space + 1));</a>
+<a name="ln1171"> </a>
+<a name="ln1172">    const int second_space = key_and_action.find(' ');</a>
+<a name="ln1173"> </a>
+<a name="ln1174">    if (second_space &lt; 0)</a>
+<a name="ln1175">        return &quot;Cannot parse marcos += %s , there are only two arguments&quot;;</a>
+<a name="ln1176"> </a>
+<a name="ln1177">    const string macro_key_string = key_and_action.substr(0, second_space);</a>
+<a name="ln1178">    const string action_string = key_and_action.substr((second_space + 1));</a>
+<a name="ln1179"> </a>
+<a name="ln1180"> </a>
+<a name="ln1181">    keyseq key = parse_keyseq(macro_key_string);</a>
+<a name="ln1182"> </a>
+<a name="ln1183">    keyseq action = parse_keyseq(action_string);</a>
+<a name="ln1184"> </a>
+<a name="ln1185">    macro_add((keymap ? Keymaps[keymc] : Macros), key, action);</a>
+<a name="ln1186"> </a>
+<a name="ln1187">    // If we didn't save here, macros in rc files would be saved iff you also</a>
+<a name="ln1188">    // changed another macro with cntrl-D and saved at the exit prompt.</a>
+<a name="ln1189">    // Consistent behavior works better.</a>
+<a name="ln1190">    macro_save();</a>
+<a name="ln1191"> </a>
+<a name="ln1192">    return &quot;&quot;;</a>
+<a name="ln1193">}</a>
+<a name="ln1194"> </a>
+<a name="ln1195">// useful for debugging</a>
+<a name="ln1196">string keyseq_to_str(const keyseq &amp;seq)</a>
+<a name="ln1197">{</a>
+<a name="ln1198">    string s = &quot;&quot;;</a>
+<a name="ln1199">    for (auto k : seq)</a>
+<a name="ln1200">    {</a>
+<a name="ln1201">        if (k == '\n' || k == '\r')</a>
+<a name="ln1202">            s += &quot;newline&quot;;</a>
+<a name="ln1203">        else if (k == '\t')</a>
+<a name="ln1204">            s += &quot;tab&quot;;</a>
+<a name="ln1205">        else</a>
+<a name="ln1206">            s += (char) k;</a>
+<a name="ln1207">        s += &quot;, &quot;;</a>
+<a name="ln1208">    }</a>
+<a name="ln1209">    return s.size() == 0 ? s : s.substr(0, s.size() - 2);</a>
+<a name="ln1210"> </a>
+<a name="ln1211">}</a>
+<a name="ln1212"> </a>
+<a name="ln1213">void macro_init()</a>
+<a name="ln1214">{</a>
+<a name="ln1215">    for (const auto &amp;fn : Options.additional_macro_files)</a>
+<a name="ln1216">        _read_macros_from(fn.c_str());</a>
+<a name="ln1217"> </a>
+<a name="ln1218">    _read_macros_from(get_macro_file().c_str());</a>
+<a name="ln1219">}</a>
+<a name="ln1220"> </a>
+<a name="ln1221">void macro_userfn(const char *keys, const char *regname)</a>
+<a name="ln1222">{</a>
+<a name="ln1223">    UNUSED(keys, regname);</a>
+<a name="ln1224">    // TODO: Implement.</a>
+<a name="ln1225">    // Converting 'keys' to a key sequence is the difficulty. Doing it portably</a>
+<a name="ln1226">    // requires a mapping of key names to whatever getch() spits back, unlikely</a>
+<a name="ln1227">    // to happen in a hurry.</a>
+<a name="ln1228">}</a>
+<a name="ln1229"> </a>
+<a name="ln1230">bool is_synthetic_key(int key)</a>
+<a name="ln1231">{</a>
+<a name="ln1232">    switch (key)</a>
+<a name="ln1233">    {</a>
+<a name="ln1234">    case KEY_MACRO_ENABLE_MORE:</a>
+<a name="ln1235">    case KEY_MACRO_DISABLE_MORE:</a>
+<a name="ln1236">    case KEY_MACRO_MORE_PROTECT:</a>
+<a name="ln1237">#ifdef USE_TILE</a>
+<a name="ln1238">    case CK_MOUSE_CMD:</a>
+<a name="ln1239">    case CK_REDRAW:</a>
+<a name="ln1240">#endif</a>
+<a name="ln1241">        return true;</a>
+<a name="ln1242">    default:</a>
+<a name="ln1243">        return false;</a>
+<a name="ln1244">    }</a>
+<a name="ln1245">}</a>
+<a name="ln1246"> </a>
+<a name="ln1247">key_recorder::key_recorder()</a>
+<a name="ln1248">    : paused(false)</a>
+<a name="ln1249">{</a>
+<a name="ln1250">    keys.clear();</a>
+<a name="ln1251">}</a>
+<a name="ln1252"> </a>
+<a name="ln1253">void key_recorder::add_key(int key, bool reverse)</a>
+<a name="ln1254">{</a>
+<a name="ln1255">    if (paused)</a>
+<a name="ln1256">        return;</a>
+<a name="ln1257"> </a>
+<a name="ln1258">    if (reverse)</a>
+<a name="ln1259">        keys.push_front(key);</a>
+<a name="ln1260">    else</a>
+<a name="ln1261">        keys.push_back(key);</a>
+<a name="ln1262">}</a>
+<a name="ln1263"> </a>
+<a name="ln1264">void key_recorder::clear()</a>
+<a name="ln1265">{</a>
+<a name="ln1266">    keys.clear();</a>
+<a name="ln1267">}</a>
+<a name="ln1268"> </a>
+<a name="ln1269">pause_all_key_recorders::pause_all_key_recorders()</a>
+<a name="ln1270">{</a>
+<a name="ln1271">    for (key_recorder *rec : recorders)</a>
+<a name="ln1272">    {</a>
+<a name="ln1273">        prev_pause_status.push_back(rec-&gt;paused);</a>
+<a name="ln1274">        rec-&gt;paused = true;</a>
+<a name="ln1275">    }</a>
+<a name="ln1276">}</a>
+<a name="ln1277"> </a>
+<a name="ln1278">pause_all_key_recorders::~pause_all_key_recorders()</a>
+<a name="ln1279">{</a>
+<a name="ln1280">    for (unsigned int i = 0; i &lt; recorders.size(); i++)</a>
+<a name="ln1281">        recorders[i]-&gt;paused = prev_pause_status[i];</a>
+<a name="ln1282">}</a>
+<a name="ln1283"> </a>
+<a name="ln1284">void add_key_recorder(key_recorder* recorder)</a>
+<a name="ln1285">{</a>
+<a name="ln1286">    ASSERT(find(begin(recorders), end(recorders), recorder) == end(recorders));</a>
+<a name="ln1287">    recorders.push_back(recorder);</a>
+<a name="ln1288">}</a>
+<a name="ln1289"> </a>
+<a name="ln1290">void remove_key_recorder(key_recorder* recorder)</a>
+<a name="ln1291">{</a>
+<a name="ln1292">    erase_val(recorders, recorder);</a>
+<a name="ln1293">}</a>
+<a name="ln1294"> </a>
+<a name="ln1295">int get_macro_buf_size()</a>
+<a name="ln1296">{</a>
+<a name="ln1297">    return Buffer.size();</a>
+<a name="ln1298">}</a>
+<a name="ln1299"> </a>
+<a name="ln1300">///////////////////////////////////////////////////////////////</a>
+<a name="ln1301">// Keybinding stuff</a>
+<a name="ln1302"> </a>
+<a name="ln1303">#define VALID_BIND_COMMAND(cmd) (cmd &gt; CMD_NO_CMD &amp;&amp; cmd &lt; CMD_MIN_SYNTHETIC)</a>
+<a name="ln1304"> </a>
+<a name="ln1305">void init_keybindings()</a>
+<a name="ln1306">{</a>
+<a name="ln1307">    int i;</a>
+<a name="ln1308"> </a>
+<a name="ln1309">    for (i = 0; _command_name_list[i].cmd != CMD_NO_CMD</a>
+<a name="ln1310">                &amp;&amp; _command_name_list[i].name != nullptr; i++)</a>
+<a name="ln1311">    {</a>
+<a name="ln1312">        command_name &amp;data = _command_name_list[i];</a>
+<a name="ln1313"> </a>
+<a name="ln1314">        ASSERT(VALID_BIND_COMMAND(data.cmd));</a>
+<a name="ln1315">        ASSERT(!_names_to_cmds.count(data.name));</a>
+<a name="ln1316">        ASSERT(_cmds_to_names.find(data.cmd)  == _cmds_to_names.end());</a>
+<a name="ln1317"> </a>
+<a name="ln1318">        _names_to_cmds[data.name] = data.cmd;</a>
+<a name="ln1319">        _cmds_to_names[data.cmd]  = data.name;</a>
+<a name="ln1320">    }</a>
+<a name="ln1321"> </a>
+<a name="ln1322">    ASSERT(i &gt;= 130);</a>
+<a name="ln1323"> </a>
+<a name="ln1324">    for (i = 0; _default_binding_list[i].cmd != CMD_NO_CMD</a>
+<a name="ln1325">                &amp;&amp; _default_binding_list[i].key != '\0'; i++)</a>
+<a name="ln1326">    {</a>
+<a name="ln1327">        default_binding &amp;data = _default_binding_list[i];</a>
+<a name="ln1328">        ASSERT(VALID_BIND_COMMAND(data.cmd));</a>
+<a name="ln1329"> </a>
+<a name="ln1330">        KeymapContext context = context_for_command(data.cmd);</a>
+<a name="ln1331"> </a>
+<a name="ln1332">        ASSERT(context &lt; KMC_CONTEXT_COUNT);</a>
+<a name="ln1333"> </a>
+<a name="ln1334">        key_to_cmd_map &amp;key_map = _keys_to_cmds[context];</a>
+<a name="ln1335">        cmd_to_key_map &amp;cmd_map = _cmds_to_keys[context];</a>
+<a name="ln1336"> </a>
+<a name="ln1337">        // Only one command per key, but it's okay to have several</a>
+<a name="ln1338">        // keys map to the same command.</a>
+<a name="ln1339">        ASSERT(!key_map.count(data.key));</a>
+<a name="ln1340"> </a>
+<a name="ln1341">        key_map[data.key] = data.cmd;</a>
+<a name="ln1342">        cmd_map[data.cmd] = data.key;</a>
+<a name="ln1343">    }</a>
+<a name="ln1344"> </a>
+<a name="ln1345">    ASSERT(i &gt;= 130);</a>
+<a name="ln1346">}</a>
+<a name="ln1347"> </a>
+<a name="ln1348">command_type name_to_command(string name)</a>
+<a name="ln1349">{</a>
+<a name="ln1350">    return static_cast&lt;command_type&gt;(lookup(_names_to_cmds, name, CMD_NO_CMD));</a>
+<a name="ln1351">}</a>
+<a name="ln1352"> </a>
+<a name="ln1353">string command_to_name(command_type cmd)</a>
+<a name="ln1354">{</a>
+<a name="ln1355">    return lookup(_cmds_to_names, cmd, &quot;CMD_NO_CMD&quot;);</a>
+<a name="ln1356">}</a>
+<a name="ln1357"> </a>
+<a name="ln1358">command_type key_to_command(int key, KeymapContext context)</a>
+<a name="ln1359">{</a>
+<a name="ln1360">    if (-key &gt; CMD_NO_CMD &amp;&amp; -key &lt; CMD_MIN_SYNTHETIC)</a>
+<a name="ln1361">    {</a>
+<a name="ln1362">        const command_type  cmd         = (command_type) -key;</a>
+<a name="ln1363">        const KeymapContext cmd_context = context_for_command(cmd);</a>
+<a name="ln1364"> </a>
+<a name="ln1365">        if (cmd == CMD_NO_CMD)</a>
+<a name="ln1366">            return CMD_NO_CMD;</a>
+<a name="ln1367"> </a>
+<a name="ln1368">        if (cmd_context != context)</a>
+<a name="ln1369">        {</a>
+<a name="ln1370">            mprf(MSGCH_ERROR,</a>
+<a name="ln1371">                 &quot;key_to_command(): command '%s' (%d:%d) wrong for desired &quot;</a>
+<a name="ln1372">                 &quot;context %d&quot;,</a>
+<a name="ln1373">                 command_to_name(cmd).c_str(), -key - CMD_NO_CMD,</a>
+<a name="ln1374">                 CMD_MAX_CMD + key, (int) context);</a>
+<a name="ln1375">            if (is_processing_macro())</a>
+<a name="ln1376">                flush_input_buffer(FLUSH_ABORT_MACRO);</a>
+<a name="ln1377">            if (crawl_state.is_replaying_keys()</a>
+<a name="ln1378">                || crawl_state.cmd_repeat_start)</a>
+<a name="ln1379">            {</a>
+<a name="ln1380">                flush_input_buffer(FLUSH_KEY_REPLAY_CANCEL);</a>
+<a name="ln1381">            }</a>
+<a name="ln1382">            flush_input_buffer(FLUSH_BEFORE_COMMAND);</a>
+<a name="ln1383">            return CMD_NO_CMD;</a>
+<a name="ln1384">        }</a>
+<a name="ln1385">        return cmd;</a>
+<a name="ln1386">    }</a>
+<a name="ln1387"> </a>
+<a name="ln1388">    const auto cmd = static_cast&lt;command_type&gt;(lookup(_keys_to_cmds[context],</a>
+<a name="ln1389">                                                      key, CMD_NO_CMD));</a>
+<a name="ln1390"> </a>
+<a name="ln1391">    ASSERT(cmd == CMD_NO_CMD || context_for_command(cmd) == context);</a>
+<a name="ln1392"> </a>
+<a name="ln1393">    return cmd;</a>
+<a name="ln1394">}</a>
+<a name="ln1395"> </a>
+<a name="ln1396">int command_to_key(command_type cmd)</a>
+<a name="ln1397">{</a>
+<a name="ln1398">    KeymapContext context = context_for_command(cmd);</a>
+<a name="ln1399"> </a>
+<a name="ln1400">    if (context == KMC_NONE)</a>
+<a name="ln1401">        return '\0';</a>
+<a name="ln1402"> </a>
+<a name="ln1403">    return lookup(_cmds_to_keys[context], cmd, '\0');</a>
+<a name="ln1404">}</a>
+<a name="ln1405"> </a>
+<a name="ln1406">KeymapContext context_for_command(command_type cmd)</a>
+<a name="ln1407">{</a>
+<a name="ln1408">    if (cmd &gt; CMD_NO_CMD &amp;&amp; cmd &lt;= CMD_MAX_NORMAL)</a>
+<a name="ln1409">        return KMC_DEFAULT;</a>
+<a name="ln1410"> </a>
+<a name="ln1411">    if (cmd &gt;= CMD_MIN_OVERMAP &amp;&amp; cmd &lt;= CMD_MAX_OVERMAP)</a>
+<a name="ln1412">        return KMC_LEVELMAP;</a>
+<a name="ln1413"> </a>
+<a name="ln1414">    if (cmd &gt;= CMD_MIN_TARGET &amp;&amp; cmd &lt;= CMD_MAX_TARGET)</a>
+<a name="ln1415">        return KMC_TARGETING;</a>
+<a name="ln1416"> </a>
+<a name="ln1417">#ifdef USE_TILE</a>
+<a name="ln1418">    if (cmd &gt;= CMD_MIN_DOLL &amp;&amp; cmd &lt;= CMD_MAX_DOLL)</a>
+<a name="ln1419">        return KMC_DOLL;</a>
+<a name="ln1420">#endif</a>
+<a name="ln1421"> </a>
+<a name="ln1422">    return KMC_NONE;</a>
+<a name="ln1423">}</a>
+<a name="ln1424"> </a>
+<a name="ln1425">void bind_command_to_key(command_type cmd, int key)</a>
+<a name="ln1426">{</a>
+<a name="ln1427">    KeymapContext context = context_for_command(cmd);</a>
+<a name="ln1428">    string   command_name = command_to_name(cmd);</a>
+<a name="ln1429"> </a>
+<a name="ln1430">    if (context == KMC_NONE || command_name == &quot;CMD_NO_CMD&quot;</a>
+<a name="ln1431">        || !VALID_BIND_COMMAND(cmd))</a>
+<a name="ln1432">    {</a>
+<a name="ln1433">        if (command_name == &quot;CMD_NO_CMD&quot;)</a>
+<a name="ln1434">        {</a>
+<a name="ln1435">            mprf(MSGCH_ERROR, &quot;Cannot bind command #%d to a key.&quot;,</a>
+<a name="ln1436">                 (int) cmd);</a>
+<a name="ln1437">            return;</a>
+<a name="ln1438">        }</a>
+<a name="ln1439"> </a>
+<a name="ln1440">        mprf(MSGCH_ERROR, &quot;Cannot bind command '%s' to a key.&quot;,</a>
+<a name="ln1441">             command_name.c_str());</a>
+<a name="ln1442">        return;</a>
+<a name="ln1443">    }</a>
+<a name="ln1444"> </a>
+<a name="ln1445">    if (is_userfunction(key))</a>
+<a name="ln1446">    {</a>
+<a name="ln1447">        mprf(MSGCH_ERROR, &quot;Cannot bind user function keys to a command.&quot;);</a>
+<a name="ln1448">        return;</a>
+<a name="ln1449">    }</a>
+<a name="ln1450"> </a>
+<a name="ln1451">    if (is_synthetic_key(key))</a>
+<a name="ln1452">    {</a>
+<a name="ln1453">        mprf(MSGCH_ERROR, &quot;Cannot bind synthetic keys to a command.&quot;);</a>
+<a name="ln1454">        return;</a>
+<a name="ln1455">    }</a>
+<a name="ln1456"> </a>
+<a name="ln1457">    // We're good.</a>
+<a name="ln1458">    key_to_cmd_map &amp;key_map = _keys_to_cmds[context];</a>
+<a name="ln1459">    cmd_to_key_map &amp;cmd_map = _cmds_to_keys[context];</a>
+<a name="ln1460"> </a>
+<a name="ln1461">    key_map[key] = cmd;</a>
+<a name="ln1462">    cmd_map[cmd] = key;</a>
+<a name="ln1463">}</a>
+<a name="ln1464"> </a>
+<a name="ln1465">static string _special_keys_to_string(int key)</a>
+<a name="ln1466">{</a>
+<a name="ln1467">    const bool shift = (key &gt;= CK_SHIFT_UP &amp;&amp; key &lt;= CK_SHIFT_PGDN);</a>
+<a name="ln1468">    const bool ctrl  = (key &gt;= CK_CTRL_UP &amp;&amp; key &lt;= CK_CTRL_PGDN);</a>
+<a name="ln1469"> </a>
+<a name="ln1470">    string cmd = &quot;&quot;;</a>
+<a name="ln1471"> </a>
+<a name="ln1472">    if (shift)</a>
+<a name="ln1473">    {</a>
+<a name="ln1474">        key -= (CK_SHIFT_UP - CK_UP);</a>
+<a name="ln1475">        cmd = &quot;Shift-&quot;;</a>
+<a name="ln1476">    }</a>
+<a name="ln1477">    else if (ctrl)</a>
+<a name="ln1478">    {</a>
+<a name="ln1479">        key -= (CK_CTRL_UP - CK_UP);</a>
+<a name="ln1480">        cmd = &quot;Ctrl-&quot;;</a>
+<a name="ln1481">    }</a>
+<a name="ln1482"> </a>
+<a name="ln1483">    switch (key)</a>
+<a name="ln1484">    {</a>
+<a name="ln1485">    case CK_ENTER:  cmd += &quot;Enter&quot;; break;</a>
+<a name="ln1486">    case CK_BKSP:   cmd += &quot;Backspace&quot;; break;</a>
+<a name="ln1487">    CASE_ESCAPE     cmd += &quot;Esc&quot;; break;</a>
+<a name="ln1488">    case CK_DELETE: cmd += &quot;Del&quot;; break;</a>
+<a name="ln1489">    case CK_UP:     cmd += &quot;Up&quot;; break;</a>
+<a name="ln1490">    case CK_DOWN:   cmd += &quot;Down&quot;; break;</a>
+<a name="ln1491">    case CK_LEFT:   cmd += &quot;Left&quot;; break;</a>
+<a name="ln1492">    case CK_RIGHT:  cmd += &quot;Right&quot;; break;</a>
+<a name="ln1493">    case CK_INSERT: cmd += &quot;Ins&quot;; break;</a>
+<a name="ln1494">    case CK_HOME:   cmd += &quot;Home&quot;; break;</a>
+<a name="ln1495">    case CK_END:    cmd += &quot;End&quot;; break;</a>
+<a name="ln1496">    case CK_CLEAR:  cmd += &quot;Clear&quot;; break;</a>
+<a name="ln1497">    case CK_PGUP:   cmd += &quot;PgUp&quot;; break;</a>
+<a name="ln1498">    case CK_PGDN:   cmd += &quot;PgDn&quot;; break;</a>
+<a name="ln1499">    }</a>
+<a name="ln1500"> </a>
+<a name="ln1501">    return cmd;</a>
+<a name="ln1502">}</a>
+<a name="ln1503"> </a>
+<a name="ln1504">string command_to_string(command_type cmd, bool tutorial)</a>
+<a name="ln1505">{</a>
+<a name="ln1506">    const int key = command_to_key(cmd);</a>
+<a name="ln1507"> </a>
+<a name="ln1508">    const string desc = _special_keys_to_string(key);</a>
+<a name="ln1509">    if (!desc.empty())</a>
+<a name="ln1510">        return desc;</a>
+<a name="ln1511"> </a>
+<a name="ln1512">    string result;</a>
+<a name="ln1513">    if (key &gt;= 32 &amp;&amp; key &lt; 256)</a>
+<a name="ln1514">    {</a>
+<a name="ln1515">        if (tutorial &amp;&amp; key &gt;= 'A' &amp;&amp; key &lt;= 'Z')</a>
+<a name="ln1516">            result = make_stringf(&quot;uppercase %c&quot;, (char) key);</a>
+<a name="ln1517">        else</a>
+<a name="ln1518">            result = string(1, (char) key);</a>
+<a name="ln1519">    }</a>
+<a name="ln1520">    else if (key &gt; 1000 &amp;&amp; key &lt;= 1009)</a>
+<a name="ln1521">    {</a>
+<a name="ln1522">        const int numpad = (key - 1000);</a>
+<a name="ln1523">        result = make_stringf(&quot;Numpad %d&quot;, numpad);</a>
+<a name="ln1524">    }</a>
+<a name="ln1525">#ifdef USE_TILE_LOCAL</a>
+<a name="ln1526">    // SDL allows control modifiers for some extra punctuation</a>
+<a name="ln1527">    else if (key &lt; 0 &amp;&amp; key &gt; SDLK_EXCLAIM - SDLK_a + 1)</a>
+<a name="ln1528">        result = make_stringf(&quot;Ctrl-%c&quot;, (char) (key + SDLK_a - 1));</a>
+<a name="ln1529">#endif</a>
+<a name="ln1530">    else</a>
+<a name="ln1531">    {</a>
+<a name="ln1532">        const int ch = key + 'A' - 1;</a>
+<a name="ln1533">        if (ch &gt;= 'A' &amp;&amp; ch &lt;= 'Z')</a>
+<a name="ln1534">            result = make_stringf(&quot;Ctrl-%c&quot;, (char) ch);</a>
+<a name="ln1535">        else</a>
+<a name="ln1536">            result = to_string(key);</a>
+<a name="ln1537">    }</a>
+<a name="ln1538"> </a>
+<a name="ln1539">    return result;</a>
+<a name="ln1540">}</a>
+<a name="ln1541"> </a>
+<a name="ln1542">void insert_commands(string &amp;desc, const vector&lt;command_type&gt; &amp;cmds, bool formatted)</a>
+<a name="ln1543">{</a>
+<a name="ln1544">    desc = untag_tiles_console(desc);</a>
+<a name="ln1545">    for (command_type cmd : cmds)</a>
+<a name="ln1546">    {</a>
+<a name="ln1547">        const string::size_type found = desc.find(&quot;%&quot;);</a>
+<a name="ln1548">        if (found == string::npos)</a>
+<a name="ln1549">            break;</a>
+<a name="ln1550"> </a>
+<a name="ln1551">        string command_name = command_to_string(cmd);</a>
+<a name="ln1552">        if (formatted &amp;&amp; command_name == &quot;&lt;&quot;)</a>
+<a name="ln1553">            command_name += &quot;&lt;&quot;;</a>
+<a name="ln1554">        else if (command_name == &quot;%&quot;)</a>
+<a name="ln1555">            command_name = &quot;percent&quot;;</a>
+<a name="ln1556"> </a>
+<a name="ln1557">        desc.replace(found, 1, command_name);</a>
+<a name="ln1558">    }</a>
+<a name="ln1559">    desc = replace_all(desc, &quot;percent&quot;, &quot;%&quot;);</a>
+<a name="ln1560">}</a>
+
+</code></pre>
+<div class="balloon" rel="1365"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v547/" target="_blank">V547</a> Expression 'cmd == CMD_NO_CMD' is always false.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>
